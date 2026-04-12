@@ -245,7 +245,7 @@ FUnrealBridgeServer::FExecResult FUnrealBridgeServer::ExecutePython(const FStrin
 		// into CommandEx.LogOutput and the combined text into CommandEx.CommandResult
 		FPythonCommandEx CommandEx;
 		CommandEx.Command = WrappedScript;
-		CommandEx.ExecutionMode = EPythonCommandExecutionMode::ExecuteStatement;
+		CommandEx.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
 		CommandEx.FileExecutionScope = EPythonFileExecutionScope::Public;
 
 		bool bExecSuccess = PythonPlugin->ExecPythonCommandEx(CommandEx);

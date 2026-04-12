@@ -1,0 +1,310 @@
+#pragma once
+
+#include "CoreMinimal.h"
+#include "Kismet/BlueprintFunctionLibrary.h"
+#include "UnrealBridgeLevelLibrary.generated.h"
+
+// ─── Transform ──────────────────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeTransform
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FVector Location = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly)
+	FRotator Rotation = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly)
+	FVector Scale = FVector::OneVector;
+};
+
+// ─── Actor brief (lightweight) ──────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeActorBrief
+{
+	GENERATED_BODY()
+
+	/** Internal FName */
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	/** User-visible label */
+	UPROPERTY(BlueprintReadOnly)
+	FString Label;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString ClassName;
+
+	UPROPERTY(BlueprintReadOnly)
+	FVector Location = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> Tags;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bHidden = false;
+};
+
+// ─── Component info ─────────────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeLevelComponentInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString ClassName;
+
+	/** Name of parent component (empty if root / non-scene) */
+	UPROPERTY(BlueprintReadOnly)
+	FString AttachParent;
+
+	UPROPERTY(BlueprintReadOnly)
+	FBridgeTransform RelativeTransform;
+};
+
+// ─── Actor info (detailed) ──────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeActorInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Label;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString ClassName;
+
+	/** Full path of the actor's class */
+	UPROPERTY(BlueprintReadOnly)
+	FString ClassPath;
+
+	UPROPERTY(BlueprintReadOnly)
+	FBridgeTransform Transform;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> Tags;
+
+	/** Parent actor name (empty if not attached) */
+	UPROPERTY(BlueprintReadOnly)
+	FString AttachedTo;
+
+	/** Attached child actor names */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> Children;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeLevelComponentInfo> Components;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bHidden = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bHiddenInGame = false;
+};
+
+// ─── Level summary ──────────────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeLevelSummary
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString LevelName;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString LevelPath;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumActors = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumStreamingLevels = 0;
+
+	/** "Editor", "PIE", "Game" */
+	UPROPERTY(BlueprintReadOnly)
+	FString WorldType;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bWorldPartition = false;
+};
+
+// ─── Streaming level ────────────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeStreamingLevel
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString PackageName;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bLoaded = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bVisible = false;
+};
+
+// ─── Radius hit ─────────────────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeActorRadiusHit
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString ClassName;
+
+	UPROPERTY(BlueprintReadOnly)
+	float Distance = 0.f;
+};
+
+/**
+ * Level / actor introspection via UnrealBridge. Operates on the editor world.
+ */
+UCLASS()
+class UNREALBRIDGE_API UUnrealBridgeLevelLibrary : public UBlueprintFunctionLibrary
+{
+	GENERATED_BODY()
+
+public:
+
+	// ─── Read ─────────────────────────────────────────────
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeLevelSummary GetLevelSummary();
+
+	/** Count actors passing optional class filter (short name or full path). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetActorCount(const FString& ClassFilter);
+
+	/**
+	 * Return actor labels (user-visible names). All filters are optional.
+	 * @param ClassFilter  Class short name or full path. Matches the actor's class or any parent.
+	 * @param TagFilter    Match actors having this tag.
+	 * @param NameFilter   Case-insensitive substring match on the label.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorNames(const FString& ClassFilter, const FString& TagFilter, const FString& NameFilter);
+
+	/**
+	 * Detailed list of actors in the level.
+	 * ⚠️ Can be large on populated levels. Prefer GetActorNames or restrict with filters.
+	 * @param MaxResults  0 = unlimited.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FBridgeActorBrief> ListActors(
+		const FString& ClassFilter,
+		const FString& TagFilter,
+		const FString& NameFilter,
+		bool bSelectedOnly,
+		int32 MaxResults);
+
+	/** Look up actor by FName or label. If duplicate labels exist, returns the first match. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeActorInfo GetActorInfo(const FString& ActorName);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeTransform GetActorTransform(const FString& ActorName);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FBridgeLevelComponentInfo> GetActorComponents(const FString& ActorName);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> FindActorsByClass(const FString& ClassPath, int32 MaxResults);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> FindActorsByTag(const FString& Tag);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetSelectedActors();
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FBridgeStreamingLevel> GetStreamingLevels();
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetCurrentLevelPath();
+
+	// ─── Write ────────────────────────────────────────────
+
+	/**
+	 * Spawn an actor from a class path.
+	 * @param ClassPath  Full class path ("/Script/Engine.StaticMeshActor") or Blueprint path
+	 *                   ("/Game/.../BP_Foo" — `_C` suffix optional).
+	 * @return The spawned actor's label, or empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString SpawnActor(const FString& ClassPath, FVector Location, FRotator Rotation);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool DestroyActor(const FString& ActorName);
+
+	/** Destroy many actors in a single undo transaction. Returns count actually destroyed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 DestroyActors(const TArray<FString>& ActorNames);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorTransform(const FString& ActorName, FVector Location, FRotator Rotation, FVector Scale);
+
+	/** Apply delta to current actor transform. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool MoveActor(const FString& ActorName, FVector DeltaLocation, FRotator DeltaRotation);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool AttachActor(const FString& ChildName, const FString& ParentName, const FString& SocketName);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool DetachActor(const FString& ActorName);
+
+	/** Select actors in the editor viewport. If bAddToSelection is false, clears selection first. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SelectActors(const TArray<FString>& ActorNames, bool bAddToSelection);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool DeselectAllActors();
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorLabel(const FString& ActorName, const FString& NewLabel);
+
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorHiddenInGame(const FString& ActorName, bool bHidden);
+
+	// ─── Deep queries ─────────────────────────────────────
+
+	/**
+	 * Return the exported-text value of a property.
+	 * PropertyPath supports dotted nesting into structs and subobjects, e.g.
+	 *   "RootComponent.RelativeLocation", "StaticMeshComponent.Mobility".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetActorProperty(const FString& ActorName, const FString& PropertyPath);
+
+	/**
+	 * Set a property from an exported-text value. Dotted path supported.
+	 * ⚠️ For transient struct fields (e.g. component RelativeLocation) prefer the
+	 * dedicated transform setters — direct struct writes won't trigger component updates.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorProperty(const FString& ActorName, const FString& PropertyPath, const FString& ExportedValue);
+
+	/** Recursive attachment hierarchy, one indented line per descendant. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetAttachmentTree(const FString& ActorName);
+
+	/** Actors within Radius (cm) of Location, distance-sorted. Optional class filter. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FBridgeActorRadiusHit> FindActorsInRadius(FVector Location, float Radius, const FString& ClassFilter);
+
+	/** Duplicate actors; returns labels of new copies. Single undo transaction. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> DuplicateActors(const TArray<FString>& ActorNames);
+};

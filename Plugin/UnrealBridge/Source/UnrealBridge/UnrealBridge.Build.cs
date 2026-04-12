@@ -21,6 +21,19 @@ public class UnrealBridge : ModuleRules
 			"JsonUtilities",
 			"PythonScriptPlugin",
 			"DeveloperSettings",
+			"BlueprintGraph",
+			"KismetCompiler",
+			"UMG",
+			"AssetRegistry",
+			"Kismet",
+			"UMGEditor",
+			"AnimGraph",
+			"UnrealEd",
+			"MovieScene",
+			"AnimGraphRuntime",
+			"ContentBrowser",
+			"ContentBrowserData",
+			"LevelEditor",
 		});
 	}
 }

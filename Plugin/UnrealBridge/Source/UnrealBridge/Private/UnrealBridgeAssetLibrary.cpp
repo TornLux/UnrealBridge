@@ -1,0 +1,604 @@
+// Ported from UnrealClientProtocol (MIT License - Italink)
+
+#include "UnrealBridgeAssetLibrary.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "Engine/Blueprint.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/DataAsset.h"
+#include "Misc/PackageName.h"
+
+// ─── Internal helpers ───────────────────────────────────────
+
+namespace BridgeAssetOps
+{
+	/** Strip surrounding single quotes from export-text paths. */
+	void ParsePathToObjectPath(const FString& InPath, FString& OutObjectPath)
+	{
+		OutObjectPath = InPath.TrimStartAndEnd();
+		int32 QuoteStart = INDEX_NONE;
+		if (OutObjectPath.FindChar(TEXT('\''), QuoteStart))
+		{
+			int32 QuoteEnd = INDEX_NONE;
+			if (OutObjectPath.FindLastChar(TEXT('\''), QuoteEnd) && QuoteEnd > QuoteStart)
+			{
+				OutObjectPath = OutObjectPath.Mid(QuoteStart + 1, QuoteEnd - QuoteStart - 1);
+			}
+		}
+	}
+
+	/** Resolve a Blueprint asset path to its GeneratedClass. */
+	UClass* ResolveBlueprintPathToClass(const FString& BlueprintClassPath)
+	{
+		FString ObjectPath;
+		ParsePathToObjectPath(BlueprintClassPath, ObjectPath);
+
+		UClass* BaseClass = nullptr;
+		UBlueprint* LoadedBP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *ObjectPath));
+		if (LoadedBP && LoadedBP->GeneratedClass)
+		{
+			BaseClass = LoadedBP->GeneratedClass;
+		}
+		if (!BaseClass)
+		{
+			BaseClass = FindObject<UClass>(nullptr, *ObjectPath);
+		}
+		if (!BaseClass && !ObjectPath.EndsWith(TEXT("_C")))
+		{
+			BaseClass = FindObject<UClass>(nullptr, *(ObjectPath + TEXT("_C")));
+		}
+		if (!BaseClass && !ObjectPath.EndsWith(TEXT("_C")))
+		{
+			BaseClass = LoadObject<UClass>(nullptr, *(ObjectPath + TEXT("_C")));
+		}
+		return BaseClass;
+	}
+
+	/** Convert an FAssetIdentifier to FSoftObjectPath. */
+	FSoftObjectPath ConvertAssetIdentifierToSoftObjectPath(const FAssetIdentifier& AssetIdentifier)
+	{
+		if (!AssetIdentifier.IsValid())
+		{
+			return FSoftObjectPath();
+		}
+		if (AssetIdentifier.PrimaryAssetType.IsValid())
+		{
+			return FSoftObjectPath(AssetIdentifier.ToString());
+		}
+		if (AssetIdentifier.IsPackage())
+		{
+			const FString PackageStr = AssetIdentifier.PackageName.ToString();
+			const FString ShortName = FPackageName::GetShortName(AssetIdentifier.PackageName);
+			return FSoftObjectPath(FString::Printf(TEXT("%s.%s"), *PackageStr, *ShortName));
+		}
+		return FSoftObjectPath(AssetIdentifier.ToString());
+	}
+
+	/** Gather derived class paths from AssetRegistry, skipping SKEL_/REINST_. */
+	void GatherDerivedClassPaths(
+		const TArray<UClass*>& BaseClasses,
+		const TSet<UClass*>& ExcludedClasses,
+		TSet<FTopLevelAssetPath>& OutDerivedClassPaths)
+	{
+		IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+		TArray<FTopLevelAssetPath> BaseClassPaths;
+		for (const UClass* C : BaseClasses)
+		{
+			if (C) BaseClassPaths.Emplace(C->GetClassPathName());
+		}
+
+		TSet<FTopLevelAssetPath> ExcludedClassPaths;
+		for (const UClass* C : ExcludedClasses)
+		{
+			if (C) ExcludedClassPaths.Emplace(C->GetClassPathName());
+		}
+
+		TSet<FTopLevelAssetPath> DerivedClassPaths;
+		AssetRegistry.GetDerivedClassNames(BaseClassPaths, ExcludedClassPaths, DerivedClassPaths);
+
+		for (const FTopLevelAssetPath& Path : DerivedClassPaths)
+		{
+			FString AssetName = Path.GetAssetName().ToString();
+			if (!AssetName.StartsWith(TEXT("SKEL_")) && !AssetName.StartsWith(TEXT("REINST_")))
+			{
+				OutDerivedClassPaths.Add(Path);
+			}
+		}
+	}
+
+	/** Normalize a content root path (trim, strip trailing slashes, ensure leading /). */
+	void NormalizeContentRoot(FString& Path)
+	{
+		Path.TrimStartAndEndInline();
+		while (Path.Len() > 1 && Path.EndsWith(TEXT("/")))
+		{
+			Path.LeftChopInline(1);
+		}
+		if (!Path.IsEmpty() && !Path.StartsWith(TEXT("/")))
+		{
+			Path = TEXT("/") + Path;
+		}
+	}
+} // namespace BridgeAssetOps
+
+// ─── Search query parser ────────────────────────────────────
+
+namespace BridgeAssetSearch
+{
+	struct FParsedQuery
+	{
+		TArray<FString> IncludeTokens;
+		TArray<FString> ExcludeTokens;
+		FString TypeFilter;
+	};
+
+	static bool ParseQuery(const FString& Query, FParsedQuery& OutParsed)
+	{
+		OutParsed.IncludeTokens.Reset();
+		OutParsed.ExcludeTokens.Reset();
+		OutParsed.TypeFilter.Reset();
+
+		FString Trimmed = Query.TrimStartAndEnd();
+		TArray<FString> Tokens;
+		Trimmed.ParseIntoArray(Tokens, TEXT(" "), true);
+
+		for (FString& Token : Tokens)
+		{
+			Token.TrimStartAndEndInline();
+			if (Token.IsEmpty()) continue;
+
+			if (Token.StartsWith(TEXT("!")))
+			{
+				FString Exclude = Token.Mid(1).TrimStartAndEnd();
+				if (!Exclude.IsEmpty())
+					OutParsed.ExcludeTokens.Add(MoveTemp(Exclude));
+			}
+			else if (Token.StartsWith(TEXT("&Type="), ESearchCase::IgnoreCase))
+			{
+				OutParsed.TypeFilter = Token.Mid(6).TrimStartAndEnd();
+			}
+			else
+			{
+				OutParsed.IncludeTokens.Add(MoveTemp(Token));
+			}
+		}
+
+		return OutParsed.IncludeTokens.Num() > 0 || !OutParsed.TypeFilter.IsEmpty();
+	}
+
+	static bool MatchesQuery(const FString& AssetName, const FString& Q, bool bCaseSensitive, bool bWholeWord)
+	{
+		FString Name = AssetName;
+		FString Query = Q;
+		if (!bCaseSensitive)
+		{
+			Name.ToLowerInline();
+			Query.ToLowerInline();
+		}
+		if (bWholeWord)
+		{
+			int32 Idx = 0;
+			while (Idx < Name.Len())
+			{
+				Idx = Name.Find(Query, ESearchCase::IgnoreCase, ESearchDir::FromStart, Idx);
+				if (Idx == INDEX_NONE) return false;
+				bool StartOK = (Idx == 0) || !FChar::IsAlnum(Name[Idx - 1]);
+				bool EndOK = (Idx + Query.Len() >= Name.Len()) || !FChar::IsAlnum(Name[Idx + Query.Len()]);
+				if (StartOK && EndOK) return true;
+				Idx++;
+			}
+			return false;
+		}
+		return Name.Contains(Query);
+	}
+
+	static bool MatchesParsedQuery(const FString& AssetName, const FParsedQuery& Parsed, bool bCaseSensitive, bool bWholeWord)
+	{
+		for (const FString& Token : Parsed.IncludeTokens)
+		{
+			if (!Token.IsEmpty() && !MatchesQuery(AssetName, Token, bCaseSensitive, bWholeWord))
+				return false;
+		}
+		for (const FString& Token : Parsed.ExcludeTokens)
+		{
+			if (!Token.IsEmpty() && MatchesQuery(AssetName, Token, bCaseSensitive, bWholeWord))
+				return false;
+		}
+		return true;
+	}
+
+	static bool MatchesTypeFilter(const FAssetData& Data, const FString& TypeFilter)
+	{
+		if (TypeFilter.IsEmpty()) return true;
+		FString ClassName = Data.AssetClassPath.GetAssetName().ToString();
+		return ClassName.Contains(TypeFilter, ESearchCase::IgnoreCase);
+	}
+
+	static void SearchAssetsInternal(
+		IAssetRegistry& Registry,
+		const FParsedQuery& Parsed,
+		EBridgeAssetSearchScope Scope,
+		const FString& InCustomPackagePath,
+		const FString& ClassFilter,
+		bool bCaseSensitive, bool bWholeWord,
+		int32 MaxResults,
+		TArray<FAssetData>& OutResults)
+	{
+		FARFilter Filter;
+		Filter.bRecursivePaths = true;
+
+		switch (Scope)
+		{
+		case EBridgeAssetSearchScope::AllAssets:
+		{
+			TArray<FString> RootPaths;
+			FPackageName::QueryRootContentPaths(RootPaths, false, false, true);
+			for (const FString& Root : RootPaths)
+			{
+				FString Path = Root;
+				if (!Path.StartsWith(TEXT("/"))) Path = TEXT("/") + Path;
+				if (!Path.IsEmpty()) Filter.PackagePaths.Add(FName(*Path));
+			}
+			if (Filter.PackagePaths.Num() == 0)
+			{
+				Filter.PackagePaths.Add(FName("/Game"));
+				Filter.PackagePaths.Add(FName("/Engine"));
+			}
+			break;
+		}
+		case EBridgeAssetSearchScope::Project:
+			Filter.PackagePaths.Add(FName("/Game"));
+			break;
+		case EBridgeAssetSearchScope::CustomPackagePath:
+		{
+			FString Path = InCustomPackagePath;
+			BridgeAssetOps::NormalizeContentRoot(Path);
+			Filter.PackagePaths.Add(FName(Path.IsEmpty() ? TEXT("/Game") : *Path));
+			break;
+		}
+		}
+
+		if (!ClassFilter.IsEmpty() && ClassFilter != TEXT("*") && ClassFilter.StartsWith(TEXT("/Script/")))
+		{
+			Filter.ClassPaths.Add(FTopLevelAssetPath(ClassFilter));
+			Filter.bRecursiveClasses = true;
+		}
+
+		TArray<FAssetData> AllCandidates;
+		Registry.GetAssets(Filter, AllCandidates);
+
+		for (const FAssetData& Data : AllCandidates)
+		{
+			if (OutResults.Num() >= MaxResults) break;
+			FString AssetName = Data.AssetName.ToString();
+			if (!MatchesParsedQuery(AssetName, Parsed, bCaseSensitive, bWholeWord)) continue;
+			if (!MatchesTypeFilter(Data, Parsed.TypeFilter)) continue;
+			OutResults.Add(Data);
+		}
+	}
+} // namespace BridgeAssetSearch
+
+// ═══════════════════════════════════════════════════════════
+//  Asset Search
+// ═══════════════════════════════════════════════════════════
+
+void UUnrealBridgeAssetLibrary::SearchAssets(
+	const FString& Query, EBridgeAssetSearchScope Scope, const FString& ClassFilter,
+	bool bCaseSensitive, bool bWholeWord, int32 MaxResults, int32 MinCharacters,
+	const FString& CustomPackagePath,
+	TArray<FSoftObjectPath>& OutSoftPaths, TArray<FString>& OutIncludeTokensForHighlight)
+{
+	using namespace BridgeAssetSearch;
+
+	OutSoftPaths.Reset();
+	OutIncludeTokensForHighlight.Reset();
+
+	FParsedQuery Parsed;
+	if (!ParseQuery(Query.TrimStartAndEnd(), Parsed)) return;
+	if (Parsed.IncludeTokens.Num() == 0 && Parsed.TypeFilter.IsEmpty()) return;
+
+	if (Parsed.IncludeTokens.Num() > 0)
+	{
+		int32 MinLen = Parsed.IncludeTokens[0].Len();
+		for (const FString& T : Parsed.IncludeTokens)
+			if (T.Len() < MinLen) MinLen = T.Len();
+		if (MinLen < MinCharacters) return;
+	}
+
+	OutIncludeTokensForHighlight = Parsed.IncludeTokens;
+
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Results;
+	SearchAssetsInternal(Registry, Parsed, Scope, CustomPackagePath, ClassFilter, bCaseSensitive, bWholeWord, MaxResults, Results);
+
+	OutSoftPaths.Reserve(Results.Num());
+	for (const FAssetData& Data : Results)
+		OutSoftPaths.Add(Data.GetSoftObjectPath());
+}
+
+void UUnrealBridgeAssetLibrary::SearchAssetsInAllContent(
+	const FString& Query, int32 MaxResults,
+	TArray<FSoftObjectPath>& OutSoftPaths, TArray<FString>& OutIncludeTokensForHighlight)
+{
+	SearchAssets(Query, EBridgeAssetSearchScope::AllAssets, FString(),
+		false, false, MaxResults, 1, FString(),
+		OutSoftPaths, OutIncludeTokensForHighlight);
+}
+
+void UUnrealBridgeAssetLibrary::SearchAssetsUnderPath(
+	const FString& ContentFolderPath, const FString& Query, int32 MaxResults,
+	TArray<FSoftObjectPath>& OutSoftPaths, TArray<FString>& OutIncludeTokensForHighlight)
+{
+	OutSoftPaths.Reset();
+	OutIncludeTokensForHighlight.Reset();
+	if (ContentFolderPath.TrimStartAndEnd().IsEmpty()) return;
+
+	SearchAssets(Query, EBridgeAssetSearchScope::CustomPackagePath, FString(),
+		false, false, MaxResults, 1, ContentFolderPath,
+		OutSoftPaths, OutIncludeTokensForHighlight);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Derived Classes
+// ═══════════════════════════════════════════════════════════
+
+void UUnrealBridgeAssetLibrary::GetDerivedClasses(
+	const TArray<UClass*>& BaseClasses, const TSet<UClass*>& ExcludedClasses,
+	TSet<UClass*>& OutDerivedClasses)
+{
+	auto ShouldSkip = [](const UClass* InClass)
+	{
+		constexpr EClassFlags InvalidFlags = CLASS_Hidden | CLASS_HideDropDown | CLASS_Deprecated | CLASS_Abstract | CLASS_NewerVersionExists;
+		return InClass->HasAnyClassFlags(InvalidFlags)
+			|| InClass->GetName().StartsWith(TEXT("SKEL_"))
+			|| InClass->GetName().StartsWith(TEXT("REINST_"));
+	};
+	GetDerivedClassesWithFilter(BaseClasses, ExcludedClasses, OutDerivedClasses, ShouldSkip);
+}
+
+void UUnrealBridgeAssetLibrary::GetDerivedClassesWithFilter(
+	const TArray<UClass*>& BaseClasses, const TSet<UClass*>& ExcludedClasses,
+	TSet<UClass*>& OutDerivedClasses, TFunction<bool(const UClass*)> ShouldSkipClassFilter)
+{
+	TSet<FTopLevelAssetPath> DerivedClassPaths;
+	BridgeAssetOps::GatherDerivedClassPaths(BaseClasses, ExcludedClasses, DerivedClassPaths);
+
+	for (const FTopLevelAssetPath& Path : DerivedClassPaths)
+	{
+		UClass* Class = FindObject<UClass>(nullptr, *Path.ToString());
+		if (!Class)
+		{
+			FString AssetPath = Path.ToString();
+			if (AssetPath.EndsWith(TEXT("_C")))
+			{
+				AssetPath.LeftChopInline(2);
+				UBlueprint* Blueprint = LoadObject<UBlueprint>(nullptr, *AssetPath);
+				if (Blueprint && Blueprint->GeneratedClass)
+					Class = Blueprint->GeneratedClass;
+			}
+		}
+
+		if (Class && !ShouldSkipClassFilter(Class))
+		{
+			OutDerivedClasses.Add(Class);
+		}
+	}
+}
+
+void UUnrealBridgeAssetLibrary::GetDerivedClassesByBlueprintPath(
+	const FString& BlueprintClassPath, TArray<UClass*>& OutDerivedClasses)
+{
+	OutDerivedClasses.Reset();
+	UClass* BaseClass = BridgeAssetOps::ResolveBlueprintPathToClass(BlueprintClassPath);
+	if (!BaseClass) return;
+
+	TArray<UClass*> BaseArr;
+	BaseArr.Add(BaseClass);
+	TSet<UClass*> DerivedSet;
+	auto ShouldSkip = [](const UClass* InClass)
+	{
+		constexpr EClassFlags InvalidFlags = CLASS_Hidden | CLASS_HideDropDown | CLASS_Deprecated | CLASS_Abstract | CLASS_NewerVersionExists;
+		return InClass->HasAnyClassFlags(InvalidFlags)
+			|| InClass->GetName().StartsWith(TEXT("SKEL_"))
+			|| InClass->GetName().StartsWith(TEXT("REINST_"));
+	};
+	GetDerivedClassesWithFilter(BaseArr, TSet<UClass*>(), DerivedSet, ShouldSkip);
+
+	for (UClass* C : DerivedSet)
+		OutDerivedClasses.Add(C);
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Asset References
+// ═══════════════════════════════════════════════════════════
+
+void UUnrealBridgeAssetLibrary::GetAssetReferences(
+	const FString& AssetPath,
+	TArray<FSoftObjectPath>& OutDependencies, TArray<FSoftObjectPath>& OutReferencers)
+{
+	OutDependencies.Reset();
+	OutReferencers.Reset();
+
+	FString ObjectPath;
+	BridgeAssetOps::ParsePathToObjectPath(AssetPath, ObjectPath);
+
+	FSoftObjectPath SoftPath(ObjectPath);
+	if (!SoftPath.IsValid()) return;
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(SoftPath);
+	if (!AssetData.IsValid()) return;
+
+	FAssetIdentifier GraphId(AssetData.PackageName);
+
+	TArray<FAssetIdentifier> Dependencies;
+	TArray<FAssetIdentifier> Referencers;
+	if (!AssetRegistry.GetDependencies(GraphId, Dependencies, UE::AssetRegistry::EDependencyCategory::All, UE::AssetRegistry::FDependencyQuery()))
+	{
+		GraphId = FAssetIdentifier(AssetData.PackageName, AssetData.AssetName);
+		AssetRegistry.GetDependencies(GraphId, Dependencies, UE::AssetRegistry::EDependencyCategory::All, UE::AssetRegistry::FDependencyQuery());
+	}
+	AssetRegistry.GetReferencers(GraphId, Referencers, UE::AssetRegistry::EDependencyCategory::All, UE::AssetRegistry::FDependencyQuery());
+
+	TSet<FSoftObjectPath> SeenDeps, SeenRefs;
+	for (const FAssetIdentifier& Id : Dependencies)
+	{
+		FSoftObjectPath SP = BridgeAssetOps::ConvertAssetIdentifierToSoftObjectPath(Id);
+		if (SP.IsValid() && !SeenDeps.Contains(SP))
+		{
+			SeenDeps.Add(SP);
+			OutDependencies.Add(SP);
+		}
+	}
+	for (const FAssetIdentifier& Id : Referencers)
+	{
+		FSoftObjectPath SP = BridgeAssetOps::ConvertAssetIdentifierToSoftObjectPath(Id);
+		if (SP.IsValid() && !SeenRefs.Contains(SP))
+		{
+			SeenRefs.Add(SP);
+			OutReferencers.Add(SP);
+		}
+	}
+}
+
+// ═══════════════════════════════════════════════════════════
+//  DataAsset Queries
+// ═══════════════════════════════════════════════════════════
+
+void UUnrealBridgeAssetLibrary::GetDataAssetsByBaseClass(
+	TSubclassOf<UDataAsset> BaseDataAssetClass, TArray<FAssetData>& OutAssetDatas)
+{
+	OutAssetDatas.Reset();
+	UClass* BaseClass = BaseDataAssetClass.Get();
+	if (!BaseClass || !BaseClass->IsChildOf(UDataAsset::StaticClass())) return;
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FARFilter Filter;
+	Filter.ClassPaths.Add(BaseClass->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+	AssetRegistry.GetAssets(Filter, OutAssetDatas);
+}
+
+void UUnrealBridgeAssetLibrary::GetDataAssetsByAssetPath(
+	const FString& DataAssetPath, TArray<FAssetData>& OutAssetDatas)
+{
+	OutAssetDatas.Reset();
+
+	FString ObjectPath;
+	BridgeAssetOps::ParsePathToObjectPath(DataAssetPath, ObjectPath);
+
+	UClass* BaseClass = nullptr;
+	UBlueprint* LoadedBP = Cast<UBlueprint>(StaticLoadObject(UBlueprint::StaticClass(), nullptr, *ObjectPath));
+	if (LoadedBP && LoadedBP->GeneratedClass && LoadedBP->GeneratedClass->IsChildOf(UDataAsset::StaticClass()))
+	{
+		BaseClass = LoadedBP->GeneratedClass;
+	}
+	if (!BaseClass)
+	{
+		UDataAsset* LoadedDA = Cast<UDataAsset>(StaticLoadObject(UDataAsset::StaticClass(), nullptr, *ObjectPath));
+		if (LoadedDA) BaseClass = LoadedDA->GetClass();
+	}
+
+	if (BaseClass) GetDataAssetsByBaseClass(BaseClass, OutAssetDatas);
+}
+
+void UUnrealBridgeAssetLibrary::GetDataAssetSoftPathsByBaseClass(
+	TSubclassOf<UDataAsset> BaseDataAssetClass, TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+	TArray<FAssetData> AssetDatas;
+	GetDataAssetsByBaseClass(BaseDataAssetClass, AssetDatas);
+	for (const FAssetData& Data : AssetDatas)
+		OutSoftPaths.Add(Data.GetSoftObjectPath());
+}
+
+void UUnrealBridgeAssetLibrary::GetDataAssetSoftPathsByAssetPath(
+	const FString& DataAssetPath, TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+
+	FString ObjectPath;
+	BridgeAssetOps::ParsePathToObjectPath(DataAssetPath, ObjectPath);
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	const FAssetData AssetData = AssetRegistry.GetAssetByObjectPath(FSoftObjectPath(ObjectPath));
+	if (!AssetData.IsValid()) return;
+
+	FTopLevelAssetPath BaseClassPath;
+	FString GeneratedClassPathStr;
+	if (AssetData.GetTagValue(FName("GeneratedClass"), GeneratedClassPathStr) && !GeneratedClassPathStr.IsEmpty())
+	{
+		BaseClassPath = FTopLevelAssetPath(GeneratedClassPathStr);
+	}
+	else
+	{
+		BaseClassPath = AssetData.AssetClassPath;
+	}
+	if (!BaseClassPath.IsValid()) return;
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(BaseClassPath);
+	Filter.bRecursiveClasses = true;
+	TArray<FAssetData> AssetDatas;
+	AssetRegistry.GetAssets(Filter, AssetDatas);
+
+	for (const FAssetData& Data : AssetDatas)
+		OutSoftPaths.Add(Data.GetSoftObjectPath());
+}
+
+// ═══════════════════════════════════════════════════════════
+//  Folder / Path Queries
+// ═══════════════════════════════════════════════════════════
+
+void UUnrealBridgeAssetLibrary::ListAssetsUnderPath(
+	const FString& FolderPath, bool bIncludeSubfolders,
+	TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+	FString BasePath = FolderPath.TrimStartAndEnd();
+	if (BasePath.IsEmpty()) return;
+
+	BridgeAssetOps::NormalizeContentRoot(BasePath);
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(*BasePath));
+	Filter.bRecursivePaths = bIncludeSubfolders;
+
+	TArray<FAssetData> AssetDatas;
+	AssetRegistry.GetAssets(Filter, AssetDatas);
+
+	OutSoftPaths.Reserve(AssetDatas.Num());
+	for (const FAssetData& Data : AssetDatas)
+		OutSoftPaths.Add(Data.GetSoftObjectPath());
+}
+
+void UUnrealBridgeAssetLibrary::ListAssetsUnderPathSimple(
+	const FString& ContentFolderPath, TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	ListAssetsUnderPath(ContentFolderPath, true, OutSoftPaths);
+}
+
+void UUnrealBridgeAssetLibrary::GetSubFolderPaths(
+	const FString& FolderPath, TArray<FString>& OutSubFolderPaths)
+{
+	OutSubFolderPaths.Reset();
+	FString BasePath = FolderPath.TrimStartAndEnd();
+	if (BasePath.IsEmpty()) return;
+
+	BridgeAssetOps::NormalizeContentRoot(BasePath);
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	AssetRegistry.GetSubPaths(BasePath, OutSubFolderPaths, false);
+}
+
+void UUnrealBridgeAssetLibrary::GetSubFolderNames(
+	const FName& FolderPath, TArray<FName>& OutSubFolderNames)
+{
+	OutSubFolderNames.Reset();
+	if (FolderPath.IsNone()) return;
+
+	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	AssetRegistry.GetSubPaths(FolderPath, OutSubFolderNames, false);
+}
