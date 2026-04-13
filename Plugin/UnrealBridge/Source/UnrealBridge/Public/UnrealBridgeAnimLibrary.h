@@ -332,6 +332,30 @@ struct FBridgeBoneInfo
 	FString ParentName;
 };
 
+// ─── Socket struct ──────────────────────────────────────────
+
+USTRUCT(BlueprintType)
+struct FBridgeSocketInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString SocketName;
+
+	/** Bone this socket is attached to */
+	UPROPERTY(BlueprintReadOnly)
+	FString ParentBoneName;
+
+	UPROPERTY(BlueprintReadOnly)
+	FVector RelativeLocation = FVector::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly)
+	FRotator RelativeRotation = FRotator::ZeroRotator;
+
+	UPROPERTY(BlueprintReadOnly)
+	FVector RelativeScale = FVector::OneVector;
+};
+
 // ─── Library class ──────────────────────────────────────────
 
 UCLASS()
@@ -380,4 +404,8 @@ public:
 	/** Get skeleton bone hierarchy. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static TArray<FBridgeBoneInfo> GetSkeletonBoneTree(const FString& SkeletonPath);
+
+	/** Get all sockets defined on a skeleton (attach points for weapons, FX, etc.). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FBridgeSocketInfo> GetSkeletonSockets(const FString& SkeletonPath);
 };

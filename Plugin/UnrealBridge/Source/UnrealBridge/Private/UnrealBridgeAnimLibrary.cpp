@@ -6,6 +6,7 @@
 #include "Animation/AnimationAsset.h"
 #include "Animation/BlendSpace.h"
 #include "Animation/Skeleton.h"
+#include "Engine/SkeletalMeshSocket.h"
 #include "Animation/AnimCurveTypes.h"
 #include "AnimationStateMachineGraph.h"
 #include "AnimGraphNode_StateMachineBase.h"
@@ -553,6 +554,35 @@ TArray<FBridgeBoneInfo> UUnrealBridgeAnimLibrary::GetSkeletonBoneTree(const FStr
 		if (Info.ParentIndex >= 0)
 			Info.ParentName = RefSkel.GetBoneName(Info.ParentIndex).ToString();
 
+		Result.Add(Info);
+	}
+
+	return Result;
+}
+
+// ─── GetSkeletonSockets ─────────────────────────────────────
+
+TArray<FBridgeSocketInfo> UUnrealBridgeAnimLibrary::GetSkeletonSockets(const FString& SkeletonPath)
+{
+	TArray<FBridgeSocketInfo> Result;
+
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Could not load Skeleton '%s'"), *SkeletonPath);
+		return Result;
+	}
+
+	for (USkeletalMeshSocket* Socket : Skel->Sockets)
+	{
+		if (!Socket) continue;
+
+		FBridgeSocketInfo Info;
+		Info.SocketName = Socket->SocketName.ToString();
+		Info.ParentBoneName = Socket->BoneName.ToString();
+		Info.RelativeLocation = Socket->RelativeLocation;
+		Info.RelativeRotation = Socket->RelativeRotation;
+		Info.RelativeScale = Socket->RelativeScale;
 		Result.Add(Info);
 	}
 

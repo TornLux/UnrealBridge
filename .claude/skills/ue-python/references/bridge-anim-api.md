@@ -227,3 +227,27 @@ for b in bones:
 | `bone_index` | int | Index in skeleton |
 | `parent_index` | int | Parent bone index (-1 for root) |
 | `parent_name` | str | Parent bone name (empty for root) |
+
+---
+
+## Skeleton Sockets
+
+### get_skeleton_sockets(skeleton_path) -> list[FBridgeSocketInfo]
+
+Get all sockets defined on a skeleton (attach points for weapons, FX, etc.).
+
+```python
+sockets = unreal.UnrealBridgeAnimLibrary.get_skeleton_sockets('/Game/Skel/SK_Character_Skeleton')
+for s in sockets:
+    print(f'{s.socket_name} on {s.parent_bone_name} @ {s.relative_location}')
+```
+
+### FBridgeSocketInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `socket_name` | str | Socket name |
+| `parent_bone_name` | str | Bone the socket is attached to |
+| `relative_location` | Vector | Offset from parent bone |
+| `relative_rotation` | Rotator | Rotation relative to parent bone |
+| `relative_scale` | Vector | Scale relative to parent bone |
