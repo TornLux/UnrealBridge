@@ -1471,3 +1471,213 @@ bool UUnrealBridgeBlueprintLibrary::AddBlueprintVariable(
 
 	return bSuccess;
 }
+
+// ─── RemoveBlueprintVariable ────────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::RemoveBlueprintVariable(
+	const FString& BlueprintPath, const FString& VariableName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	const FName VarName(*VariableName);
+	const int32 Idx = FBlueprintEditorUtils::FindNewVariableIndex(BP, VarName);
+	if (Idx == INDEX_NONE) return false;
+
+	FBlueprintEditorUtils::RemoveMemberVariable(BP, VarName);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+// ─── RenameBlueprintVariable ────────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::RenameBlueprintVariable(
+	const FString& BlueprintPath, const FString& OldName, const FString& NewName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	const FName OldVar(*OldName);
+	const FName NewVar(*NewName);
+	if (OldVar == NewVar || NewVar.IsNone()) return false;
+
+	if (FBlueprintEditorUtils::FindNewVariableIndex(BP, OldVar) == INDEX_NONE) return false;
+	if (FBlueprintEditorUtils::FindNewVariableIndex(BP, NewVar) != INDEX_NONE) return false;
+
+	FBlueprintEditorUtils::RenameMemberVariable(BP, OldVar, NewVar);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+// ─── Interface helpers ──────────────────────────────────────
+
+namespace BridgeBpInterfaceOps
+{
+	static UClass* ResolveInterfaceClass(const FString& InterfacePath)
+	{
+		if (InterfacePath.IsEmpty()) return nullptr;
+
+		// Try as a loaded / native class first.
+		if (UClass* Cls = FindObject<UClass>(nullptr, *InterfacePath))
+		{
+			return Cls;
+		}
+
+		// Try as a Blueprint interface asset path → GeneratedClass.
+		if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *InterfacePath))
+		{
+			return BP->GeneratedClass;
+		}
+
+		// Try LoadObject<UClass> for TopLevelAssetPath-style strings.
+		if (UClass* Cls = LoadObject<UClass>(nullptr, *InterfacePath))
+		{
+			return Cls;
+		}
+
+		// Try appending "_C" for Blueprint class paths.
+		const FString WithC = InterfacePath + TEXT("_C");
+		if (UClass* Cls = LoadObject<UClass>(nullptr, *WithC))
+		{
+			return Cls;
+		}
+		return nullptr;
+	}
+}
+
+// ─── AddBlueprintInterface ──────────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::AddBlueprintInterface(
+	const FString& BlueprintPath, const FString& InterfacePath)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	UClass* InterfaceClass = BridgeBpInterfaceOps::ResolveInterfaceClass(InterfacePath);
+	if (!InterfaceClass || !InterfaceClass->HasAnyClassFlags(CLASS_Interface))
+	{
+		return false;
+	}
+
+	const FString InterfaceClassName = InterfaceClass->GetPathName();
+	if (!FBlueprintEditorUtils::ImplementNewInterface(BP, FTopLevelAssetPath(InterfaceClassName)))
+	{
+		return false;
+	}
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+// ─── RemoveBlueprintInterface ───────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::RemoveBlueprintInterface(
+	const FString& BlueprintPath, const FString& InterfaceNameOrPath)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	UClass* InterfaceClass = BridgeBpInterfaceOps::ResolveInterfaceClass(InterfaceNameOrPath);
+
+	// Fallback: match by short name against implemented interfaces.
+	if (!InterfaceClass)
+	{
+		for (const FBPInterfaceDescription& Impl : BP->ImplementedInterfaces)
+		{
+			if (Impl.Interface && Impl.Interface->GetName() == InterfaceNameOrPath)
+			{
+				InterfaceClass = Impl.Interface;
+				break;
+			}
+		}
+	}
+	if (!InterfaceClass) return false;
+
+	const bool bWasImplemented = BP->ImplementedInterfaces.ContainsByPredicate(
+		[InterfaceClass](const FBPInterfaceDescription& D) { return D.Interface == InterfaceClass; });
+	if (!bWasImplemented) return false;
+
+	FBlueprintEditorUtils::RemoveInterface(BP, FTopLevelAssetPath(InterfaceClass->GetPathName()), /*bPreserveFunctions*/ false);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+// ─── AddBlueprintComponent ──────────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::AddBlueprintComponent(
+	const FString& BlueprintPath,
+	const FString& ComponentClassPath,
+	const FString& ComponentName,
+	const FString& ParentComponentName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	USimpleConstructionScript* SCS = BP->SimpleConstructionScript;
+	if (!SCS) return false;
+
+	// Resolve component class.
+	UClass* CompClass = FindObject<UClass>(nullptr, *ComponentClassPath);
+	if (!CompClass)
+	{
+		CompClass = LoadObject<UClass>(nullptr, *ComponentClassPath);
+	}
+	if (!CompClass)
+	{
+		CompClass = LoadObject<UClass>(nullptr, *(ComponentClassPath + TEXT("_C")));
+	}
+	if (!CompClass || !CompClass->IsChildOf(UActorComponent::StaticClass()))
+	{
+		return false;
+	}
+
+	const FName DesiredName(*ComponentName);
+	if (DesiredName.IsNone()) return false;
+
+	// Reject duplicate names.
+	for (USCS_Node* Existing : SCS->GetAllNodes())
+	{
+		if (Existing && Existing->GetVariableName() == DesiredName)
+		{
+			return false;
+		}
+	}
+
+	USCS_Node* NewNode = SCS->CreateNode(CompClass, DesiredName);
+	if (!NewNode) return false;
+
+	USCS_Node* ParentNode = nullptr;
+	if (!ParentComponentName.IsEmpty())
+	{
+		const FName ParentName(*ParentComponentName);
+		for (USCS_Node* Candidate : SCS->GetAllNodes())
+		{
+			if (Candidate && Candidate->GetVariableName() == ParentName)
+			{
+				ParentNode = Candidate;
+				break;
+			}
+		}
+	}
+
+	if (ParentNode)
+	{
+		ParentNode->AddChildNode(NewNode);
+	}
+	else
+	{
+		// Attach under an existing root, or become the root if none yet.
+		const TArray<USCS_Node*> Roots = SCS->GetRootNodes();
+		if (Roots.Num() > 0 && Roots[0])
+		{
+			Roots[0]->AddChildNode(NewNode);
+		}
+		else
+		{
+			SCS->AddNode(NewNode);
+		}
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}

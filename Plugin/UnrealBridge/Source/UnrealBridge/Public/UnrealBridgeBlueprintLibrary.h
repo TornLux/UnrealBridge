@@ -667,4 +667,46 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static bool AddBlueprintVariable(const FString& BlueprintPath, const FString& Name, const FString& TypeString, const FString& DefaultValue);
+
+	/**
+	 * Remove a member variable from a Blueprint by name. Compiles on success.
+	 * @return true on success
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveBlueprintVariable(const FString& BlueprintPath, const FString& VariableName);
+
+	/**
+	 * Rename a member variable on a Blueprint. Compiles on success.
+	 * @return true on success
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RenameBlueprintVariable(const FString& BlueprintPath, const FString& OldName, const FString& NewName);
+
+	/**
+	 * Add an interface implementation to a Blueprint. InterfacePath can be a content path
+	 * to a Blueprint interface (e.g. "/Game/BPI_Foo") or a native class path
+	 * ("/Script/MyModule.UMyInterface"). Compiles on success.
+	 * @return true on success
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AddBlueprintInterface(const FString& BlueprintPath, const FString& InterfacePath);
+
+	/**
+	 * Remove an interface implementation from a Blueprint by class name or path. Compiles on success.
+	 * @return true on success
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveBlueprintInterface(const FString& BlueprintPath, const FString& InterfaceNameOrPath);
+
+	/**
+	 * Add a new component to an Actor Blueprint's SimpleConstructionScript.
+	 * ComponentClassPath: native class path (e.g. "/Script/Engine.StaticMeshComponent")
+	 * or Blueprint component class path with trailing _C.
+	 * ComponentName: variable name for the new component (must be unique within the BP).
+	 * ParentComponentName: optional — attach under this component (empty = attach under root, or become root if none).
+	 * Compiles on success.
+	 * @return true on success
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AddBlueprintComponent(const FString& BlueprintPath, const FString& ComponentClassPath, const FString& ComponentName, const FString& ParentComponentName);
 };

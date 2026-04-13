@@ -472,3 +472,70 @@ ok = unreal.UnrealBridgeBlueprintLibrary.add_blueprint_variable(
     '/Game/BP/MyBP', 'SpawnLocation', 'Vector', '(X=0,Y=0,Z=100)'
 )
 ```
+
+### remove_blueprint_variable(blueprint_path, variable_name) -> bool
+
+Remove a member variable by name and recompile. Returns `False` if the variable doesn't exist.
+
+```python
+unreal.UnrealBridgeBlueprintLibrary.remove_blueprint_variable('/Game/BP/MyBP', 'Score')
+```
+
+### rename_blueprint_variable(blueprint_path, old_name, new_name) -> bool
+
+Rename a member variable and recompile. Returns `False` if the old name is missing, the new name already exists, or `new_name` is empty.
+
+```python
+unreal.UnrealBridgeBlueprintLibrary.rename_blueprint_variable('/Game/BP/MyBP', 'Health', 'HP')
+```
+
+### add_blueprint_interface(blueprint_path, interface_path) -> bool
+
+Add an interface implementation to a Blueprint and recompile. `interface_path` can be:
+
+- a native interface class path: `/Script/GameplayAbilities.AbilitySystemInterface`
+- a Blueprint interface asset path: `/Game/Interfaces/BPI_Interactable`
+- a Blueprint interface class path: `/Game/Interfaces/BPI_Interactable.BPI_Interactable_C`
+
+Returns `False` if the path doesn't resolve to a `UINTERFACE` (`CLASS_Interface` flag).
+
+```python
+unreal.UnrealBridgeBlueprintLibrary.add_blueprint_interface(
+    '/Game/BP/MyBP',
+    '/Script/GameplayAbilities.AbilitySystemInterface',
+)
+```
+
+### remove_blueprint_interface(blueprint_path, interface_name_or_path) -> bool
+
+Remove an interface implementation. Accepts a full path or the short class name (e.g. `AbilitySystemInterface`, `BPI_Interactable_C`). Returns `False` if the interface isn't implemented on the BP.
+
+```python
+unreal.UnrealBridgeBlueprintLibrary.remove_blueprint_interface('/Game/BP/MyBP', 'BPI_Interactable_C')
+```
+
+### add_blueprint_component(blueprint_path, component_class_path, component_name, parent_component_name="") -> bool
+
+Add a new component node to an Actor Blueprint's `SimpleConstructionScript` and recompile.
+
+- `component_class_path`: native class path (`/Script/Engine.StaticMeshComponent`) or Blueprint component class (`/Game/BP/BP_MyComp.BP_MyComp_C`).
+- `component_name`: new variable name for the node (must be unique within the BP).
+- `parent_component_name`: attach under this existing component. Empty string = attach under the current root, or become the root if no root exists yet.
+
+Returns `False` if the class isn't a `UActorComponent` subclass, the name collides, or SCS creation fails.
+
+```python
+unreal.UnrealBridgeBlueprintLibrary.add_blueprint_component(
+    '/Game/BP/MyBP',
+    '/Script/Engine.StaticMeshComponent',
+    'BodyMesh',
+    '',          # attach under root
+)
+
+unreal.UnrealBridgeBlueprintLibrary.add_blueprint_component(
+    '/Game/BP/MyBP',
+    '/Script/Engine.PointLightComponent',
+    'HeadLight',
+    'BodyMesh',  # attach under BodyMesh
+)
+```
