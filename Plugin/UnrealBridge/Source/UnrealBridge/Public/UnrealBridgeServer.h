@@ -30,6 +30,14 @@ public:
 	/** Whether the server is currently listening. */
 	bool IsRunning() const;
 
+	/**
+	 * Mark the editor as fully initialized (main frame created). Until this is
+	 * set, Python exec requests are rejected with a "not ready" error to avoid
+	 * racing the render thread during SlateRHIRenderer::CreateViewport.
+	 */
+	void SetEditorReady(bool bReady);
+	bool IsEditorReady() const;
+
 private:
 	/** Called by FTcpListener when a new client connects. */
 	bool OnConnectionAccepted(FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint);
@@ -55,4 +63,5 @@ private:
 	TUniquePtr<FTcpListener> Listener;
 	int32 ListenPort = 9876;
 	FThreadSafeBool bIsRunning = false;
+	FThreadSafeBool bEditorReady = false;
 };

@@ -1,5 +1,7 @@
 #include "UnrealBridgeModule.h"
 #include "UnrealBridgeServer.h"
+#include "Interfaces/IMainFrameModule.h"
+#include "Modules/ModuleManager.h"
 
 #define LOCTEXT_NAMESPACE "FUnrealBridgeModule"
 
@@ -17,6 +19,29 @@ void FUnrealBridgeModule::StartupModule()
 	else
 	{
 		UE_LOG(LogTemp, Error, TEXT("UnrealBridge: Failed to start server on port %d"), DefaultPort);
+	}
+
+	// Gate Python exec on main-frame creation to avoid racing SlateRHIRenderer::CreateViewport
+	// during editor startup, which previously caused EXCEPTION_ACCESS_VIOLATION crashes when
+	// clients hammered the bridge with ping/exec during boot.
+	TWeakPtr<FUnrealBridgeServer> WeakServer = Server;
+	auto OnMainFrameReady = [WeakServer](TSharedPtr<SWindow>, bool)
+	{
+		if (TSharedPtr<FUnrealBridgeServer> Pinned = WeakServer.Pin())
+		{
+			Pinned->SetEditorReady(true);
+		}
+	};
+
+	IMainFrameModule& MainFrame = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
+	if (MainFrame.IsWindowInitialized())
+	{
+		// Already created (e.g. hot-reload) — flip immediately.
+		Server->SetEditorReady(true);
+	}
+	else
+	{
+		MainFrame.OnMainFrameCreationFinished().AddLambda(OnMainFrameReady);
 	}
 }
 

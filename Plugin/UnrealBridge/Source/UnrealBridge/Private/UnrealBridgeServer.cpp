@@ -79,6 +79,20 @@ bool FUnrealBridgeServer::IsRunning() const
 	return bIsRunning;
 }
 
+void FUnrealBridgeServer::SetEditorReady(bool bReady)
+{
+	bEditorReady = bReady;
+	if (bReady)
+	{
+		UE_LOG(LogUnrealBridge, Log, TEXT("Editor reported ready — Python exec now accepted"));
+	}
+}
+
+bool FUnrealBridgeServer::IsEditorReady() const
+{
+	return bEditorReady;
+}
+
 // ─────────────────────────────────────────────────────────────
 // Connection handling
 // ─────────────────────────────────────────────────────────────
@@ -159,6 +173,17 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 			Response->SetBoolField(TEXT("success"), true);
 			Response->SetStringField(TEXT("output"), TEXT("pong"));
 			Response->SetStringField(TEXT("error"), TEXT(""));
+			Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+		}
+		else if (!bEditorReady)
+		{
+			// Reject Python exec while the editor is still initializing.
+			// Dispatching to the GameThread during SlateRHIRenderer::CreateViewport's
+			// render-fence can crash the editor, so fail fast with a clear signal.
+			Response->SetBoolField(TEXT("success"), false);
+			Response->SetStringField(TEXT("output"), TEXT(""));
+			Response->SetStringField(TEXT("error"), TEXT("editor not ready — main frame not yet created"));
+			Response->SetBoolField(TEXT("ready"), false);
 		}
 		else
 		{
@@ -173,6 +198,7 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 			Response->SetBoolField(TEXT("success"), Result.bSuccess);
 			Response->SetStringField(TEXT("output"), Result.Output);
 			Response->SetStringField(TEXT("error"), Result.Error);
+			Response->SetBoolField(TEXT("ready"), true);
 		}
 
 		// 5. Serialize and send response

@@ -68,7 +68,13 @@ def cmd_ping(args):
             print(json.dumps(resp, ensure_ascii=False))
         else:
             if resp.get("success"):
-                print(f"Connected to UnrealBridge at {args.host}:{args.port}")
+                ready = resp.get("ready")
+                suffix = ""
+                if ready is False:
+                    suffix = " (editor still initializing — exec will be rejected)"
+                elif ready is True:
+                    suffix = " (ready)"
+                print(f"Connected to UnrealBridge at {args.host}:{args.port}{suffix}")
             else:
                 print(f"ERROR: Unexpected response: {resp}", file=sys.stderr)
                 return 1
