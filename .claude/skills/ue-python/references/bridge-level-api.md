@@ -54,13 +54,17 @@ Count actors passing an optional class filter (short name or full path). Empty s
 
 Return **labels** (user-visible names). All filters are optional (pass "" to skip). `name_filter` is a case-insensitive substring match on the label.
 
+> ⚠️ **Token cost: MEDIUM–HIGH on populated levels.** No built-in result cap. On World Partition / open-world maps (5k+ actors) an unfiltered call returns thousands of strings. **Always pass at least one filter**, or use `get_actor_count` first to size the sweep.
+
 ```python
 names = unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', 'Wall')
 ```
 
 ### list_actors(class_filter, tag_filter, name_filter, selected_only, max_results) -> list[FBridgeActorBrief]
 
-Detailed list. `max_results=0` = unlimited. ⚠️ Large on populated levels — prefer `get_actor_names` or tighten filters.
+Detailed list. `max_results=0` = unlimited.
+
+> ⚠️ **Token cost: HIGH.** Each brief carries 6 fields (name, label, class, location, tags, hidden). Multiply by actor count — an unfiltered `max_results=0` on a WP map can return several hundred KB. **Never pass `max_results=0` without a narrowing filter.** Prefer `get_actor_names` (labels only) for discovery, then `get_actor_info` on the specific actor.
 
 ```python
 briefs = unreal.UnrealBridgeLevelLibrary.list_actors('', '', '', False, 50)
@@ -86,6 +90,8 @@ Return labels of actors matching a class path. Accepts short name or full `/Scri
 ### find_actors_by_tag(tag) -> list[str]
 
 Return labels of actors having the given tag.
+
+> ⚠️ **Token cost: MEDIUM.** No result cap. If the tag is broad (e.g. "Enemy" on hundreds of spawns), the return can grow large. Check `get_actor_count` or use `find_actors_by_class` with `max_results` when scale is unknown.
 
 ### find_actors_in_radius(location, radius, class_filter) -> list[FBridgeActorRadiusHit]
 

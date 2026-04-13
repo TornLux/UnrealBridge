@@ -27,6 +27,8 @@ for sm in machines:
 
 List all nodes in the AnimGraph with connections. Shows the animation pipeline topology.
 
+> ⚠️ **Token cost: MEDIUM–HIGH on large ABPs.** Returns every node plus all pose-link connections. Production character ABPs (ALS/Lyra) routinely expose 80–200 nodes. Prefer `get_anim_graph_info` for state-machine shape and `get_anim_slots`/`get_anim_linked_layers` for targeted questions; reach for this only when you need the full pose pipeline, and use `get_anim_node_details(path, node_title)` to drill into one node.
+
 ```python
 nodes = unreal.UnrealBridgeAnimLibrary.get_anim_graph_nodes('/Game/Anim/ABP_Character')
 for n in nodes:
@@ -211,6 +213,8 @@ for s in info.samples:
 ### get_skeleton_bone_tree(skeleton_path) -> list[FBridgeBoneInfo]
 
 Get the full bone hierarchy of a skeleton.
+
+> ⚠️ **Token cost: MEDIUM–HIGH on high-res rigs.** No result cap and no filter. MetaHuman skeletons are ~700 bones × 4 fields; custom rigs with facial joints can exceed 1000. If you only need a specific bone or a subtree, filter the result client-side after one call — but don't call this in a loop.
 
 ```python
 bones = unreal.UnrealBridgeAnimLibrary.get_skeleton_bone_tree('/Game/Skel/SK_Character_Skeleton')

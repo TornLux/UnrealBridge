@@ -57,6 +57,8 @@ paths, _ = unreal.UnrealBridgeAssetLibrary.search_assets_under_path('/Game/Chara
 
 Get all classes derived from the given base classes. Skips hidden, deprecated, abstract, SKEL_, REINST_ classes.
 
+> ⚠️ **Token cost: MEDIUM–HIGH for broad bases.** Passing `UObject` / `UActorComponent` / `AActor` will walk the entire class tree. Narrow to the most specific base you care about.
+
 ```python
 base = [unreal.Actor.static_class()]
 excluded = set()
@@ -127,6 +129,8 @@ paths = unreal.UnrealBridgeAssetLibrary.list_assets_under_path('/Game/Characters
 
 Also: `list_assets_under_path_simple(path)` — always recursive.
 
+> ⚠️ **Token cost: HIGH on broad paths.** No result cap. `list_assets_under_path('/Game', True)` on a production project returns tens of thousands of paths (~60 chars each). **Always scope to a subfolder**, or use `search_assets_under_path(folder, query, max_results)` when you're looking for specific assets.
+
 ### get_sub_folder_paths(folder_path) -> list[str]
 
 Get immediate sub-folder paths.
@@ -186,6 +190,8 @@ if info.found:
 ### get_assets_by_class(class_path, search_sub_classes) -> list[SoftObjectPath]
 
 Wraps `IAssetRegistry::GetAssetsByClass` with a plain string `class_path`. Accepts any `TopLevelAssetPath`: engine class (`/Script/Engine.Texture2D`), or a Blueprint generated class (`/Game/BP/BP_MyActor.BP_MyActor_C`).
+
+> ⚠️ **Token cost: HIGH for broad base classes.** `search_sub_classes=True` on `/Script/Engine.Object` or `/Script/Engine.Actor` sweeps the whole registry and can return 10k+ paths. Pick the narrowest class you can, and prefer `search_assets` when a name-keyword narrows the set.
 
 ```python
 # All Texture2D assets (no subclasses)

@@ -8,6 +8,8 @@ Module: `unreal.UnrealBridgeUMGLibrary`
 
 Get the widget hierarchy of a Widget Blueprint as a flat list with parent references.
 
+> ⚠️ **Token cost: MEDIUM–HIGH on complex HUDs.** No result cap. A production HUD or inventory screen can hold 100–400+ widgets, each emitting 6 fields. When you only need one widget, use `search_widgets(path, query)` to locate it first, then `get_widget_properties(path, widget_name)` for detail.
+
 ```python
 widgets = unreal.UnrealBridgeUMGLibrary.get_widget_tree('/Game/UI/WBP_MainMenu')
 for w in widgets:

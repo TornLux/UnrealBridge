@@ -171,6 +171,8 @@ unreal.UnrealBridgeDataTableLibrary.set_data_table_row_fields(
 
 Return the full DataTable as a pretty-printed JSON string. Empty string on failure.
 
+> ⚠️ **Token cost: HIGH.** Returns the entire table inline in the response — scales with rows × struct depth. On large tables (hundreds of rows, nested structs) this can easily cost tens of thousands of tokens. Prefer `export_data_table_to_json(path, file)` + file read, or use the row/field/column accessors.
+
 ### export_data_table_to_json(data_table_path, out_json_file_path) -> bool
 
 Export to a JSON file (absolute filesystem path).

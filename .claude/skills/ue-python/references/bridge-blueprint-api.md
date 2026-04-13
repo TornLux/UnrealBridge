@@ -72,6 +72,8 @@ all_vars = unreal.UnrealBridgeBlueprintLibrary.get_blueprint_variables('/Game/BP
 
 List all functions and events.
 
+> ⚠️ **Token cost: MEDIUM–HIGH.** Returns full `FBridgeFunctionInfo` per function (params, description, category, access). A Character BP with 30+ functions × multi-param signatures × tooltips easily runs several KB. **Prefer `get_blueprint_overview`** (returns compact `FBridgeFunctionSummary` — name + kind + signature) when you only need a catalog. `include_inherited=True` multiplies the output by the inheritance chain depth.
+
 ```python
 funcs = unreal.UnrealBridgeBlueprintLibrary.get_blueprint_functions('/Game/BP/MyBP')
 for f in funcs:
@@ -279,6 +281,8 @@ for e in edges:
 
 All nodes in a specific function graph. `function_name=""` = EventGraph. `node_type_filter` optional ("FunctionCall", "VariableGet", "VariableSet", "Branch", "Cast", "Macro", "Event", ...); empty = all nodes.
 
+> ⚠️ **Token cost: HIGH on dense graphs.** No result cap. Complex EventGraphs (Lyra/ALS-style) can have 200–1000+ nodes. **Always pass `node_type_filter`** ("FunctionCall" alone usually shrinks output 3–5×), or prefer `get_function_execution_flow` (exec-only ordered walk) / `get_function_call_graph` (call edges only).
+
 ```python
 nodes = unreal.UnrealBridgeBlueprintLibrary.get_function_nodes('/Game/BP/MyBP', '', 'FunctionCall')
 for n in nodes:
@@ -336,6 +340,8 @@ for s in steps:
 
 Get all pin-to-pin connections (exec + data) in a function graph. Node indices match `get_function_nodes(path, func, "")` order. Pass empty string for EventGraph.
 
+> ⚠️ **Token cost: HIGH on dense graphs.** Wire count scales ~2–4× node count; a 300-node graph can emit 1000+ connections. Call only after you've confirmed the graph is small (via `get_function_call_graph` or `get_function_execution_flow`), and only when you actually need pin-level wiring.
+
 ```python
 connections = unreal.UnrealBridgeBlueprintLibrary.get_node_pin_connections('/Game/BP/MyBP', '')
 for c in connections:
@@ -384,6 +390,8 @@ for p in props:
 ### search_blueprint_nodes(blueprint_path, query, graph_name="") -> list[FBridgeNodeSearchResult]
 
 Search all nodes in a Blueprint by title/type/detail substring. Empty `graph_name` searches all graphs.
+
+> ⚠️ **Token cost: MEDIUM–HIGH for broad queries.** No result cap. A vague query ("Set", "Get") on a large BP can match hundreds of nodes across every graph. Use specific substrings and pass the `node_type_filter` parameter when possible; scope to a single `graph_name` when you already know where to look.
 
 ```python
 results = unreal.UnrealBridgeBlueprintLibrary.search_blueprint_nodes(
