@@ -255,3 +255,55 @@ for s in sockets:
 | `relative_location` | Vector | Offset from parent bone |
 | `relative_rotation` | Rotator | Rotation relative to parent bone |
 | `relative_scale` | Vector | Scale relative to parent bone |
+
+---
+
+## Write Ops
+
+All writes mark the package dirty in memory. The caller is responsible for `unreal.EditorAssetLibrary.save_asset(path)` to persist. Crashing / killing the editor before save discards the changes.
+
+### add_anim_notify(sequence_path, notify_name, trigger_time, duration) -> bool
+
+Append a name-only notify to an `AnimSequence` / `AnimSequenceBase`. `duration > 0` stores a state-notify duration (without a notify-state class — useful as a marker you later hook up manually). Trigger time outside `[0, play_length]` is rejected.
+
+```python
+ok = unreal.UnrealBridgeAnimLibrary.add_anim_notify(
+    '/Game/Anim/Attack', 'HitFrame', 0.42, 0.0)            # instant
+ok = unreal.UnrealBridgeAnimLibrary.add_anim_notify(
+    '/Game/Anim/Attack', 'HitWindow', 0.30, 0.15)          # stateful window
+```
+
+### remove_anim_notifies_by_name(sequence_path, notify_name) -> int
+
+Remove every notify whose name matches (exact `FName` compare). Returns count removed.
+
+```python
+n = unreal.UnrealBridgeAnimLibrary.remove_anim_notifies_by_name('/Game/Anim/Attack', 'HitFrame')
+```
+
+### set_anim_sequence_rate_scale(sequence_path, rate_scale) -> bool
+
+Set `RateScale` on an `UAnimSequence`. Accepts negative values (reversed playback).
+
+### add_montage_section(montage_path, section_name, start_time) -> bool
+
+Add a new composite section. Rejects duplicate name or out-of-range `start_time`. Sections are re-sorted by start time.
+
+```python
+unreal.UnrealBridgeAnimLibrary.add_montage_section('/Game/Anim/AM_Combo', 'Swing2', 0.45)
+```
+
+### set_montage_section_next(montage_path, section_name, next_section_name) -> bool
+
+Wire `section_name -> next_section_name` for auto-advance. Pass `""` for `next_section_name` to clear the link. Returns false when either section is missing.
+
+### list_assets_for_skeleton(skeleton_path, asset_type, max_results) -> list[str]
+
+Find anim assets bound to a skeleton via `FAssetData` `Skeleton` tag. `asset_type` accepts `"Sequence"`, `"Montage"`, `"BlendSpace"`, or `""` for all three.
+
+> ⚠️ **Token cost: MEDIUM–HIGH on game-scale libraries.** Characters with production animation sets (Lyra, ALS, TLOU-style) often have 1000–4000+ sequences. Always pass `max_results > 0` unless you really need the full set, and narrow `asset_type` when you only want one kind.
+
+```python
+montages = unreal.UnrealBridgeAnimLibrary.list_assets_for_skeleton(
+    '/Game/Characters/Hero/SK_Hero_Skeleton.SK_Hero_Skeleton', 'Montage', 100)
+```

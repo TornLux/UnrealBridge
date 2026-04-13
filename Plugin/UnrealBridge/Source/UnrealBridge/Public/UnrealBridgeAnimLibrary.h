@@ -408,4 +408,38 @@ public:
 	/** Get all sockets defined on a skeleton (attach points for weapons, FX, etc.). */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static TArray<FBridgeSocketInfo> GetSkeletonSockets(const FString& SkeletonPath);
+
+	// ─── Write ops ───────────────────────────────────────────
+
+	/**
+	 * Add a name-only anim notify to an AnimSequence at TriggerTime.
+	 * Duration > 0 creates a state notify (without a class); 0 creates an instant notify.
+	 * Returns true on success; marks the package dirty on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool AddAnimNotify(const FString& SequencePath, const FString& NotifyName, float TriggerTime, float Duration);
+
+	/** Remove all notifies whose NotifyName matches (case-insensitive). Returns removed count. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static int32 RemoveAnimNotifiesByName(const FString& SequencePath, const FString& NotifyName);
+
+	/** Set RateScale on an AnimSequence. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetAnimSequenceRateScale(const FString& SequencePath, float RateScale);
+
+	/** Add a composite section to a montage. Returns false when name already exists or StartTime invalid. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool AddMontageSection(const FString& MontagePath, const FString& SectionName, float StartTime);
+
+	/** Wire SectionName -> NextSectionName on a montage; pass empty NextSectionName to clear the link. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetMontageSectionNext(const FString& MontagePath, const FString& SectionName, const FString& NextSectionName);
+
+	/**
+	 * List anim assets (AnimSequence / AnimMontage / BlendSpace) bound to a given skeleton via the AssetRegistry.
+	 * @param AssetType  "Sequence", "Montage", "BlendSpace", or "" for all three.
+	 * @param MaxResults 0 = unlimited.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FString> ListAssetsForSkeleton(const FString& SkeletonPath, const FString& AssetType, int32 MaxResults);
 };

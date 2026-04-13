@@ -6,6 +6,8 @@
 #include "Animation/AnimationAsset.h"
 #include "Animation/BlendSpace.h"
 #include "Animation/Skeleton.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
 #include "Engine/SkeletalMeshSocket.h"
 #include "Animation/AnimCurveTypes.h"
 #include "AnimationStateMachineGraph.h"
@@ -587,4 +589,218 @@ TArray<FBridgeSocketInfo> UUnrealBridgeAnimLibrary::GetSkeletonSockets(const FSt
 	}
 
 	return Result;
+}
+
+// ─── Write ops ──────────────────────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::AddAnimNotify(
+	const FString& SequencePath, const FString& NotifyName, float TriggerTime, float Duration)
+{
+	UAnimSequenceBase* Seq = LoadObject<UAnimSequenceBase>(nullptr, *SequencePath);
+	if (!Seq)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddAnimNotify failed to load '%s'"), *SequencePath);
+		return false;
+	}
+	if (TriggerTime < 0.f || TriggerTime > Seq->GetPlayLength())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddAnimNotify TriggerTime %f out of range [0, %f]"),
+			TriggerTime, Seq->GetPlayLength());
+		return false;
+	}
+
+	Seq->Modify();
+
+	FAnimNotifyEvent Ev;
+	Ev.NotifyName = FName(*NotifyName);
+	Ev.SetTime(TriggerTime);
+	Ev.TrackIndex = 0;
+	Ev.Notify = nullptr;
+	Ev.NotifyStateClass = nullptr;
+	if (Duration > 0.f)
+	{
+		Ev.SetDuration(FMath::Min(Duration, Seq->GetPlayLength() - TriggerTime));
+	}
+	Seq->Notifies.Add(Ev);
+
+	// Sort notifies by trigger time (editor convention).
+	Seq->Notifies.Sort([](const FAnimNotifyEvent& A, const FAnimNotifyEvent& B) {
+		return A.GetTime() < B.GetTime();
+	});
+
+	Seq->PostEditChange();
+	Seq->MarkPackageDirty();
+	return true;
+}
+
+int32 UUnrealBridgeAnimLibrary::RemoveAnimNotifiesByName(
+	const FString& SequencePath, const FString& NotifyName)
+{
+	UAnimSequenceBase* Seq = LoadObject<UAnimSequenceBase>(nullptr, *SequencePath);
+	if (!Seq)
+	{
+		return 0;
+	}
+
+	const FName Target(*NotifyName);
+	const int32 Before = Seq->Notifies.Num();
+	Seq->Modify();
+	Seq->Notifies.RemoveAll([&](const FAnimNotifyEvent& E) {
+		return E.NotifyName == Target;
+	});
+	const int32 Removed = Before - Seq->Notifies.Num();
+	if (Removed > 0)
+	{
+		Seq->PostEditChange();
+		Seq->MarkPackageDirty();
+	}
+	return Removed;
+}
+
+bool UUnrealBridgeAnimLibrary::SetAnimSequenceRateScale(
+	const FString& SequencePath, float RateScale)
+{
+	UAnimSequence* Seq = LoadObject<UAnimSequence>(nullptr, *SequencePath);
+	if (!Seq)
+	{
+		return false;
+	}
+	Seq->Modify();
+	Seq->RateScale = RateScale;
+	Seq->PostEditChange();
+	Seq->MarkPackageDirty();
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::AddMontageSection(
+	const FString& MontagePath, const FString& SectionName, float StartTime)
+{
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+	if (!Montage)
+	{
+		return false;
+	}
+	if (StartTime < 0.f || StartTime > Montage->GetPlayLength())
+	{
+		return false;
+	}
+	const FName Target(*SectionName);
+	for (const FCompositeSection& Existing : Montage->CompositeSections)
+	{
+		if (Existing.SectionName == Target)
+		{
+			return false;
+		}
+	}
+
+	Montage->Modify();
+	FCompositeSection NewSection;
+	NewSection.SectionName = Target;
+	NewSection.SetTime(StartTime);
+	Montage->CompositeSections.Add(NewSection);
+
+	Montage->CompositeSections.Sort([](const FCompositeSection& A, const FCompositeSection& B) {
+		return A.GetTime() < B.GetTime();
+	});
+
+	Montage->PostEditChange();
+	Montage->MarkPackageDirty();
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::SetMontageSectionNext(
+	const FString& MontagePath, const FString& SectionName, const FString& NextSectionName)
+{
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+	if (!Montage)
+	{
+		return false;
+	}
+	const FName Target(*SectionName);
+	const FName Next = NextSectionName.IsEmpty() ? NAME_None : FName(*NextSectionName);
+
+	// Verify Next exists when non-empty.
+	if (Next != NAME_None)
+	{
+		bool bFoundNext = false;
+		for (const FCompositeSection& S : Montage->CompositeSections)
+		{
+			if (S.SectionName == Next) { bFoundNext = true; break; }
+		}
+		if (!bFoundNext) { return false; }
+	}
+
+	for (FCompositeSection& S : Montage->CompositeSections)
+	{
+		if (S.SectionName == Target)
+		{
+			Montage->Modify();
+			S.NextSectionName = Next;
+			Montage->PostEditChange();
+			Montage->MarkPackageDirty();
+			return true;
+		}
+	}
+	return false;
+}
+
+// ─── Cross-asset query ─────────────────────────────────────
+
+TArray<FString> UUnrealBridgeAnimLibrary::ListAssetsForSkeleton(
+	const FString& SkeletonPath, const FString& AssetType, int32 MaxResults)
+{
+	TArray<FString> Results;
+
+	USkeleton* TargetSkel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!TargetSkel)
+	{
+		return Results;
+	}
+	const FString TargetSkelStr = FSoftObjectPath(TargetSkel).ToString();
+
+	FARFilter Filter;
+	if (AssetType == TEXT("Sequence"))
+	{
+		Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
+	}
+	else if (AssetType == TEXT("Montage"))
+	{
+		Filter.ClassPaths.Add(UAnimMontage::StaticClass()->GetClassPathName());
+	}
+	else if (AssetType == TEXT("BlendSpace"))
+	{
+		Filter.ClassPaths.Add(UBlendSpace::StaticClass()->GetClassPathName());
+	}
+	else
+	{
+		Filter.ClassPaths.Add(UAnimSequence::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(UAnimMontage::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(UBlendSpace::StaticClass()->GetClassPathName());
+	}
+	Filter.bRecursiveClasses = true;
+
+	FAssetRegistryModule& ARM =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AR = ARM.Get();
+	TArray<FAssetData> Assets;
+	AR.GetAssets(Filter, Assets);
+
+	for (const FAssetData& AD : Assets)
+	{
+		FString SkelTag;
+		if (!AD.GetTagValue(TEXT("Skeleton"), SkelTag))
+		{
+			continue;
+		}
+		// Tag value often embeds the path like "Skeleton'/Game/.../SK_Skel.SK_Skel'" or a bare soft path.
+		if (SkelTag.Contains(TargetSkelStr))
+		{
+			Results.Add(AD.GetSoftObjectPath().ToString());
+			if (MaxResults > 0 && Results.Num() >= MaxResults)
+			{
+				break;
+			}
+		}
+	}
+	return Results;
 }
