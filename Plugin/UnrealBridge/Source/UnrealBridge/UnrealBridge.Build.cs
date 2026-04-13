@@ -34,6 +34,9 @@ public class UnrealBridge : ModuleRules
 			"ContentBrowser",
 			"ContentBrowserData",
 			"LevelEditor",
+			"GameplayAbilities",
+			"GameplayTags",
+			"GameplayTasks",
 		});
 	}
 }
