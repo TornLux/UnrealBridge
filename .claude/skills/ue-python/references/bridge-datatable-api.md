@@ -142,3 +142,39 @@ Export to a CSV file (absolute filesystem path).
 ### import_data_table_from_csv(data_table_path, csv_file_path) -> bool
 
 Import from a CSV file (absolute path). **Replaces** existing rows.
+
+---
+
+## Extra reads / bulk write / JSON IO
+
+### does_data_table_row_exist(data_table_path, row_name) -> bool
+
+Cheap existence check — no field data returned.
+
+```python
+if unreal.UnrealBridgeDataTableLibrary.does_data_table_row_exist('/Game/Data/DT_Weapons', 'Sword_01'):
+    ...
+```
+
+### set_data_table_row_fields(data_table_path, row_name, field_values) -> bool
+
+Atomically set multiple fields on an existing row from an export-text dict. Unknown fields are ignored. One scoped transaction covers the whole change. Returns `True` if the row existed **and** at least one field was updated.
+
+```python
+unreal.UnrealBridgeDataTableLibrary.set_data_table_row_fields(
+    '/Game/Data/DT_Weapons', 'Sword_01',
+    {'Damage': '50.0', 'Range': '120.0', 'Name': '"Steel Sword"'}
+)
+```
+
+### get_data_table_as_json_string(data_table_path) -> str
+
+Return the full DataTable as a pretty-printed JSON string. Empty string on failure.
+
+### export_data_table_to_json(data_table_path, out_json_file_path) -> bool
+
+Export to a JSON file (absolute filesystem path).
+
+### import_data_table_from_json(data_table_path, json_file_path) -> bool
+
+Import rows from a JSON file (absolute path). **Replaces** existing rows. Returns `False` if the file is unreadable or the importer reports errors.

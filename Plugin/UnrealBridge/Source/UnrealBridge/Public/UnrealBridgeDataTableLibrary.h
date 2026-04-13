@@ -180,4 +180,37 @@ public:
 	/** Import rows from a CSV file (absolute path). Replaces existing rows. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
 	static bool ImportDataTableFromCSV(const FString& DataTablePath, const FString& CsvFilePath);
+
+	// ─── Extra reads / bulk write / JSON IO ───────────────────
+
+	/** Cheap row-exists check (no field data returned). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static bool DoesDataTableRowExist(const FString& DataTablePath, const FString& RowName);
+
+	/**
+	 * Atomically set multiple fields on a single row from an exported-text map.
+	 * Unknown fields are ignored; the row must already exist. One scoped transaction
+	 * covers the whole change.
+	 * @return true if the row existed and at least one field was updated
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static bool SetDataTableRowFields(
+		const FString& DataTablePath,
+		const FString& RowName,
+		const TMap<FString, FString>& FieldValues);
+
+	/** Return the full DataTable as a pretty-printed JSON string. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static FString GetDataTableAsJSONString(const FString& DataTablePath);
+
+	/** Export the DataTable to a pretty-printed JSON file (absolute path). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static bool ExportDataTableToJSON(const FString& DataTablePath, const FString& OutJsonFilePath);
+
+	/**
+	 * Import rows from a JSON file (absolute path). Replaces existing rows.
+	 * Returns false if the file is unreadable or the importer reports errors.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static bool ImportDataTableFromJSON(const FString& DataTablePath, const FString& JsonFilePath);
 };

@@ -501,4 +501,115 @@ bool UUnrealBridgeDataTableLibrary::ImportDataTableFromCSV(const FString& DataTa
 	return Errors.Num() == 0;
 }
 
+// ─── DoesDataTableRowExist ──────────────────────────────────
+
+bool UUnrealBridgeDataTableLibrary::DoesDataTableRowExist(
+	const FString& DataTablePath, const FString& RowName)
+{
+	UDataTable* DT = LoadDT(DataTablePath);
+	if (!DT) return false;
+	return DT->GetRowMap().Contains(FName(*RowName));
+}
+
+// ─── SetDataTableRowFields ──────────────────────────────────
+
+bool UUnrealBridgeDataTableLibrary::SetDataTableRowFields(
+	const FString& DataTablePath,
+	const FString& RowName,
+	const TMap<FString, FString>& FieldValues)
+{
+	UDataTable* DT = LoadDT(DataTablePath);
+	if (!DT) return false;
+
+	const UScriptStruct* RowStruct = DT->GetRowStruct();
+	if (!RowStruct) return false;
+
+	uint8* const* RowPtr = DT->GetRowMap().Find(FName(*RowName));
+	if (!RowPtr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Row '%s' not found"), *RowName);
+		return false;
+	}
+
+	FScopedTransaction Transaction(LOCTEXT("SetDataTableRowFields", "Set DataTable Row Fields"));
+	DT->Modify();
+	FDataTableEditorUtils::BroadcastPreChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowData);
+
+	int32 NumApplied = 0;
+	for (const TPair<FString, FString>& Entry : FieldValues)
+	{
+		FProperty* Prop = FindProperty(RowStruct, Entry.Key);
+		if (!Prop)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Field '%s' not found"), *Entry.Key);
+			continue;
+		}
+		if (ImportFieldText(Prop, *RowPtr, Entry.Value))
+		{
+			++NumApplied;
+		}
+	}
+
+	FDataTableEditorUtils::BroadcastPostChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowData);
+	DT->MarkPackageDirty();
+	return NumApplied > 0;
+}
+
+// ─── GetDataTableAsJSONString ───────────────────────────────
+
+FString UUnrealBridgeDataTableLibrary::GetDataTableAsJSONString(const FString& DataTablePath)
+{
+	UDataTable* DT = LoadDT(DataTablePath);
+	if (!DT) return FString();
+	return DT->GetTableAsJSON();
+}
+
+// ─── ExportDataTableToJSON ──────────────────────────────────
+
+bool UUnrealBridgeDataTableLibrary::ExportDataTableToJSON(
+	const FString& DataTablePath, const FString& OutJsonFilePath)
+{
+	UDataTable* DT = LoadDT(DataTablePath);
+	if (!DT) return false;
+
+	const FString Contents = DT->GetTableAsJSON();
+	if (Contents.IsEmpty()) return false;
+
+	if (!FFileHelper::SaveStringToFile(Contents, *OutJsonFilePath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Could not write JSON file '%s'"), *OutJsonFilePath);
+		return false;
+	}
+	return true;
+}
+
+// ─── ImportDataTableFromJSON ────────────────────────────────
+
+bool UUnrealBridgeDataTableLibrary::ImportDataTableFromJSON(
+	const FString& DataTablePath, const FString& JsonFilePath)
+{
+	UDataTable* DT = LoadDT(DataTablePath);
+	if (!DT) return false;
+
+	FString Content;
+	if (!FFileHelper::LoadFileToString(Content, *JsonFilePath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Could not read JSON file '%s'"), *JsonFilePath);
+		return false;
+	}
+
+	FScopedTransaction Transaction(LOCTEXT("ImportDataTableFromJSON", "Import DataTable From JSON"));
+	DT->Modify();
+	FDataTableEditorUtils::BroadcastPreChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
+
+	TArray<FString> Errors = DT->CreateTableFromJSONString(Content);
+
+	FDataTableEditorUtils::BroadcastPostChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
+	DT->MarkPackageDirty();
+
+	for (const FString& E : Errors)
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge JSON import: %s"), *E);
+	return Errors.Num() == 0;
+}
+
 #undef LOCTEXT_NAMESPACE
