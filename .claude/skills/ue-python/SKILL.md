@@ -43,6 +43,16 @@ Hallucinated parameter lists waste large numbers of bridge round-trips. Enforce 
 4. **Prefer one well-formed script over speculative probes.** Write the full sequence in a temp `.py` and use `exec-file` rather than chaining guessy `exec` calls.
 5. **If a reference doc contradicts the header,** trust the header and update the doc in the same change.
 
+### Execution discipline (mandatory)
+
+Every task executed through this skill MUST follow these principles — no exceptions:
+
+1. **`exec-file` by default.** Whenever a task needs more than one bridge call, write a `.py` file and use `exec-file`. A single `exec-file` round-trip replaces N chained `exec` calls and collapses N result blobs into one. Only use inline `exec` for a genuinely single one-liner (e.g. `ping`, a single property read).
+2. **Minimum tokens, maximum efficiency.** Before any bridge call, ask: "Can I batch this with the next call?" If yes, batch. Do not print large intermediate dumps — print only what you need to make the next decision (GUIDs, booleans, counts). Use `json.dumps` to keep structured output compact.
+3. **Read the reference first.** Always `Read`/`Grep` the relevant `references/bridge-*-api.md` (or the C++ header) before invoking a function whose signature is not already confirmed in this session. Reading a doc is cheaper than a failed round-trip.
+4. **No API hallucination, no parameter guessing.** Never invent function names, parameter names, parameter order, or parameter counts. If you are not certain of a signature, look it up. A guessed call that errors burns a full round-trip and often leaks a long traceback into context.
+5. **Stop on the first signature error.** `TypeError` / `AttributeError` means your assumption is wrong. Do not retry with another guess — re-read the signature, then issue one corrected call.
+
 | Topic | Reference file | When to read |
 |-------|---------------|--------------|
 | Blueprint queries | `${CLAUDE_SKILL_DIR}/references/bridge-blueprint-api.md` | Getting parent class, class hierarchy, variables, functions, components, overview, execution flow, node search, write operations |
