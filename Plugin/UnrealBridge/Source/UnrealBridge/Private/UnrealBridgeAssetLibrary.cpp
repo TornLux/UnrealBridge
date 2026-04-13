@@ -1,12 +1,16 @@
 // Ported from UnrealClientProtocol (MIT License - Italink)
 
 #include "UnrealBridgeAssetLibrary.h"
+#include "AssetRegistry/ARFilter.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/DataAsset.h"
+#include "UObject/ObjectRedirector.h"
+#include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
+#include "UObject/TopLevelAssetPath.h"
 
 // ─── Internal helpers ───────────────────────────────────────
 
@@ -601,4 +605,155 @@ void UUnrealBridgeAssetLibrary::GetSubFolderNames(
 
 	IAssetRegistry& AssetRegistry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	AssetRegistry.GetSubPaths(FolderPath, OutSubFolderNames, false);
+}
+
+// ─── Registry Metadata (no load) ────────────────────────────
+
+namespace BridgeAssetOps
+{
+	/** Turn an input path (content path, object path, export-text) into a FSoftObjectPath usable by the registry. */
+	static FSoftObjectPath MakeSoftPath(const FString& InPath)
+	{
+		FString ObjectPath;
+		ParsePathToObjectPath(InPath, ObjectPath);
+		if (ObjectPath.IsEmpty())
+		{
+			return FSoftObjectPath();
+		}
+		// If no '.' separator, assume content path like "/Game/Foo/Bar" → "/Game/Foo/Bar.Bar"
+		if (!ObjectPath.Contains(TEXT(".")))
+		{
+			FString LeafName;
+			int32 SlashIdx;
+			if (ObjectPath.FindLastChar(TEXT('/'), SlashIdx))
+			{
+				LeafName = ObjectPath.Mid(SlashIdx + 1);
+				ObjectPath = ObjectPath + TEXT(".") + LeafName;
+			}
+		}
+		return FSoftObjectPath(ObjectPath);
+	}
+
+	/** Parse a TopLevelAssetPath from string, tolerating empty input. */
+	static bool TryParseTopLevelPath(const FString& InClassPath, FTopLevelAssetPath& Out)
+	{
+		if (InClassPath.IsEmpty()) return false;
+		FTopLevelAssetPath Parsed;
+		Parsed.TrySetPath(InClassPath);
+		if (Parsed.IsNull()) return false;
+		Out = Parsed;
+		return true;
+	}
+}
+
+bool UUnrealBridgeAssetLibrary::DoesAssetExist(const FString& AssetPath)
+{
+	const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPath);
+	if (Soft.IsNull()) return false;
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	return AR.GetAssetByObjectPath(Soft).IsValid();
+}
+
+FBridgeAssetInfo UUnrealBridgeAssetLibrary::GetAssetInfo(const FString& AssetPath)
+{
+	FBridgeAssetInfo Result;
+
+	const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPath);
+	if (Soft.IsNull()) return Result;
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	const FAssetData Data = AR.GetAssetByObjectPath(Soft);
+	if (!Data.IsValid()) return Result;
+
+	Result.bFound = true;
+	Result.PackageName = Data.PackageName.ToString();
+	Result.AssetName = Data.AssetName.ToString();
+	Result.ClassPath = Data.AssetClassPath.ToString();
+	Result.bIsRedirector = (Data.AssetClassPath == UObjectRedirector::StaticClass()->GetClassPathName());
+
+	FString Filename;
+	if (FPackageName::DoesPackageExist(Result.PackageName, &Filename))
+	{
+		const int64 Size = IFileManager::Get().FileSize(*Filename);
+		if (Size > 0) Result.DiskSize = Size;
+	}
+
+	for (const TPair<FName, FAssetTagValueRef>& Pair : Data.TagsAndValues)
+	{
+		FBridgeAssetTag KV;
+		KV.Key = Pair.Key.ToString();
+		KV.Value = Pair.Value.AsString();
+		Result.Tags.Add(KV);
+	}
+
+	return Result;
+}
+
+void UUnrealBridgeAssetLibrary::GetAssetsByClass(
+	const FString& ClassPath,
+	bool bSearchSubClasses,
+	TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+
+	FTopLevelAssetPath ClassTop;
+	if (!BridgeAssetOps::TryParseTopLevelPath(ClassPath, ClassTop))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetAssetsByClass invalid ClassPath '%s'"), *ClassPath);
+		return;
+	}
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Datas;
+	AR.GetAssetsByClass(ClassTop, Datas, bSearchSubClasses);
+
+	OutSoftPaths.Reserve(Datas.Num());
+	for (const FAssetData& D : Datas)
+	{
+		OutSoftPaths.Add(D.ToSoftObjectPath());
+	}
+}
+
+void UUnrealBridgeAssetLibrary::GetAssetsByTagValue(
+	const FString& TagName,
+	const FString& TagValue,
+	const FString& OptionalClassPath,
+	TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+	if (TagName.IsEmpty()) return;
+
+	FARFilter Filter;
+	Filter.bRecursiveClasses = true;
+	Filter.TagsAndValues.Add(FName(*TagName), TagValue);
+
+	FTopLevelAssetPath ClassTop;
+	if (BridgeAssetOps::TryParseTopLevelPath(OptionalClassPath, ClassTop))
+	{
+		Filter.ClassPaths.Add(ClassTop);
+	}
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Datas;
+	AR.GetAssets(Filter, Datas);
+
+	OutSoftPaths.Reserve(Datas.Num());
+	for (const FAssetData& D : Datas)
+	{
+		OutSoftPaths.Add(D.ToSoftObjectPath());
+	}
+}
+
+FString UUnrealBridgeAssetLibrary::ResolveRedirector(const FString& AssetPath)
+{
+	const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPath);
+	if (Soft.IsNull()) return FString();
+
+	UObjectRedirector* Redirector = LoadObject<UObjectRedirector>(nullptr, *Soft.ToString());
+	if (!Redirector || !Redirector->DestinationObject)
+	{
+		return FString();
+	}
+	return Redirector->DestinationObject->GetPathName();
 }

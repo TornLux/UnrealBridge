@@ -136,3 +136,88 @@ subs = unreal.UnrealBridgeAssetLibrary.get_sub_folder_paths('/Game')
 ```
 
 Also: `get_sub_folder_names(folder_path)` — returns FName instead of FString.
+
+---
+
+## Registry Metadata (no load)
+
+These queries hit the AssetRegistry only — no assets are loaded. They are cheap and safe to call on large sweeps.
+
+### does_asset_exist(asset_path) -> bool
+
+Check whether the AssetRegistry knows about a path. Accepts content path (`/Game/Foo/Bar`), object path (`/Game/Foo/Bar.Bar`), or export-text with quotes.
+
+```python
+unreal.UnrealBridgeAssetLibrary.does_asset_exist('/Game/BP/BP_MyActor')  # True/False
+```
+
+### get_asset_info(asset_path) -> FBridgeAssetInfo
+
+Read registry-backed metadata: class path, redirector flag, disk size, and every tag key/value pair.
+
+```python
+info = unreal.UnrealBridgeAssetLibrary.get_asset_info('/Game/BP/BP_MyActor')
+if info.found:
+    print(info.package_name, info.asset_name, info.class_path)
+    print('Disk size:', info.disk_size, 'bytes')
+    for tag in info.tags:
+        print(f'  {tag.key} = {tag.value}')
+```
+
+#### FBridgeAssetInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `found` | bool | True if the registry returned a valid entry |
+| `package_name` | str | e.g. `/Game/BP/BP_MyActor` |
+| `asset_name` | str | Leaf name |
+| `class_path` | str | `TopLevelAssetPath` string, e.g. `/Script/Engine.Blueprint` |
+| `is_redirector` | bool | True if class is `ObjectRedirector` |
+| `disk_size` | int | `.uasset`/`.umap` size in bytes, or `-1` if unresolved |
+| `tags` | list[FBridgeAssetTag] | All AssetRegistry tag key/value pairs |
+
+#### FBridgeAssetTag fields
+
+| Field | Type |
+|-------|------|
+| `key` | str |
+| `value` | str |
+
+### get_assets_by_class(class_path, search_sub_classes) -> list[SoftObjectPath]
+
+Wraps `IAssetRegistry::GetAssetsByClass` with a plain string `class_path`. Accepts any `TopLevelAssetPath`: engine class (`/Script/Engine.Texture2D`), or a Blueprint generated class (`/Game/BP/BP_MyActor.BP_MyActor_C`).
+
+```python
+# All Texture2D assets (no subclasses)
+tex = unreal.UnrealBridgeAssetLibrary.get_assets_by_class('/Script/Engine.Texture2D', False)
+
+# All actors derived from a specific Blueprint
+derived = unreal.UnrealBridgeAssetLibrary.get_assets_by_class(
+    '/Game/BP/BP_BaseEnemy.BP_BaseEnemy_C', True)
+```
+
+### get_assets_by_tag_value(tag_name, tag_value, optional_class_path) -> list[SoftObjectPath]
+
+Find every asset whose AssetRegistry tag matches `(tag_name, tag_value)`. Optionally narrow the sweep to a class path (`''` = all classes, recursive).
+
+```python
+# All Blueprints whose ParentClass tag is DamageType
+same_parent = unreal.UnrealBridgeAssetLibrary.get_assets_by_tag_value(
+    'ParentClass',
+    "/Script/CoreUObject.Class'/Script/Engine.DamageType'",
+    '/Script/Engine.Blueprint')
+```
+
+Common registry tags: `ParentClass`, `GeneratedClass`, `NativeParentClass`, `BlueprintType`, plus any `AssetRegistrySearchable` property the asset exposes.
+
+### resolve_redirector(asset_path) -> str
+
+Follow a single redirector hop. Returns the destination object path, or an empty string when the path isn't a redirector.
+
+```python
+target = unreal.UnrealBridgeAssetLibrary.resolve_redirector('/Paper2D/DummySpriteTexture')
+if target:
+    print('Redirects to:', target)
+```
+
+For batch redirector cleanup, pair this with `get_assets_by_class('/Script/CoreUObject.ObjectRedirector', False)` and `unreal.UnrealBridgeEditorLibrary.fixup_redirectors(...)`.

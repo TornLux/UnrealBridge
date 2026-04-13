@@ -15,6 +15,52 @@ enum class EBridgeAssetSearchScope : uint8
 	CustomPackagePath    UMETA(DisplayName = "Custom Package Root"),
 };
 
+/** A single AssetRegistry tag key/value pair. */
+USTRUCT(BlueprintType)
+struct FBridgeAssetTag
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Key;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Value;
+};
+
+/** Registry-backed asset metadata (no asset loading). */
+USTRUCT(BlueprintType)
+struct FBridgeAssetInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString PackageName;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString AssetName;
+
+	/** TopLevelAssetPath of the asset's class (e.g. "/Script/Engine.Blueprint"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ClassPath;
+
+	/** True if this asset is an ObjectRedirector. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsRedirector = false;
+
+	/** Whether the registry actually found this asset. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	/** Size in bytes of the .uasset/.umap on disk; -1 if not resolvable. */
+	UPROPERTY(BlueprintReadOnly)
+	int64 DiskSize = -1;
+
+	/** All AssetRegistry tag key/value pairs (may be empty). */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeAssetTag> Tags;
+};
+
 /**
  * Asset query utilities exposed to Python/Blueprint via UnrealBridge.
  * Ported from UnrealClientProtocol (MIT License - Italink).
@@ -153,4 +199,42 @@ public:
 	static void GetSubFolderNames(
 		const FName& FolderPath,
 		TArray<FName>& OutSubFolderNames);
+
+	// ── Registry Metadata (no load) ───────────────────────────
+
+	/** Does the AssetRegistry know about this asset path (no load). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static bool DoesAssetExist(const FString& AssetPath);
+
+	/** Registry-backed asset metadata: class path, redirector flag, disk size, all tags. No load. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static FBridgeAssetInfo GetAssetInfo(const FString& AssetPath);
+
+	/**
+	 * All assets of a given class. ClassPath is a TopLevelAssetPath string, e.g.
+	 * "/Script/Engine.Texture2D" or "/Game/BP/BP_MyActor.BP_MyActor_C".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetAssetsByClass(
+		const FString& ClassPath,
+		bool bSearchSubClasses,
+		TArray<FSoftObjectPath>& OutSoftPaths);
+
+	/**
+	 * All assets whose AssetRegistry tag matches (TagName, TagValue). Optional class filter
+	 * narrows the sweep ("" = all classes, accepts TopLevelAssetPath string).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetAssetsByTagValue(
+		const FString& TagName,
+		const FString& TagValue,
+		const FString& OptionalClassPath,
+		TArray<FSoftObjectPath>& OutSoftPaths);
+
+	/**
+	 * If AssetPath resolves to a UObjectRedirector, follow one hop and return the target
+	 * object path as a string. Returns empty string when not a redirector or on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static FString ResolveRedirector(const FString& AssetPath);
 };
