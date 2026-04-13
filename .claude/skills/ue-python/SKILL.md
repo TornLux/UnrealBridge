@@ -33,6 +33,16 @@ Options: `--host`, `--port` (default 9876), `--timeout` (default 30), `--json`
 
 **Before writing UE Python code, Read the relevant reference file to find available APIs.** Do not guess API signatures — look them up first.
 
+### Signature verification (mandatory)
+
+Hallucinated parameter lists waste large numbers of bridge round-trips. Enforce these rules for every `unreal.UnrealBridge*Library.*` call:
+
+1. **Look up before you call.** For any bridge function with >2 parameters, or any function you have not called in this session, `Grep` / `Read` the relevant `references/bridge-*-api.md` for its signature before issuing the `exec`.
+2. **If the reference doesn't list it,** read the `UFUNCTION` declaration in `Plugin/UnrealBridge/Source/UnrealBridge/Public/UnrealBridge*Library.h` — that is the ground truth. Do not infer from the function name.
+3. **On the first `TypeError` / `AttributeError`, stop.** Do not append another positional arg and retry. Re-read the signature, fix the call, then retry once. Repeated blind retries are the failure mode this rule exists to prevent.
+4. **Prefer one well-formed script over speculative probes.** Write the full sequence in a temp `.py` and use `exec-file` rather than chaining guessy `exec` calls.
+5. **If a reference doc contradicts the header,** trust the header and update the doc in the same change.
+
 | Topic | Reference file | When to read |
 |-------|---------------|--------------|
 | Blueprint queries | `${CLAUDE_SKILL_DIR}/references/bridge-blueprint-api.md` | Getting parent class, class hierarchy, variables, functions, components, overview, execution flow, node search, write operations |
