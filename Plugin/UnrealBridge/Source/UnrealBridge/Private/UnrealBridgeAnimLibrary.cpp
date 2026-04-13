@@ -26,7 +26,7 @@
 
 // ─── Helpers ────────────────────────────────────────────────
 
-namespace
+namespace BridgeAnimImpl
 {
 	/**
 	 * Get the untranslated (source / English) form of a node title.
@@ -85,7 +85,7 @@ TArray<FBridgeStateMachineInfo> UUnrealBridgeAnimLibrary::GetAnimGraphInfo(const
 {
 	TArray<FBridgeStateMachineInfo> Result;
 
-	UAnimBlueprint* ABP = LoadABP(AnimBlueprintPath);
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
 	if (!ABP) return Result;
 
 	for (UEdGraph* Graph : ABP->FunctionGraphs)
@@ -101,7 +101,7 @@ TArray<FBridgeStateMachineInfo> UUnrealBridgeAnimLibrary::GetAnimGraphInfo(const
 			if (!SMGraph) continue;
 
 			FBridgeStateMachineInfo SMInfo;
-			SMInfo.Name = GetNodeTitleSource(SMNode);
+			SMInfo.Name = BridgeAnimImpl::GetNodeTitleSource(SMNode);
 
 			FString DefaultStateName;
 			for (UEdGraphNode* SMGraphNode : SMGraph->Nodes)
@@ -165,10 +165,10 @@ TArray<FBridgeAnimGraphNodeInfo> UUnrealBridgeAnimLibrary::GetAnimGraphNodes(con
 {
 	TArray<FBridgeAnimGraphNodeInfo> Result;
 
-	UAnimBlueprint* ABP = LoadABP(AnimBlueprintPath);
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
 	if (!ABP) return Result;
 
-	UEdGraph* AnimGraph = FindAnimGraph(ABP);
+	UEdGraph* AnimGraph = BridgeAnimImpl::FindAnimGraph(ABP);
 	if (!AnimGraph) return Result;
 
 	// Build node index map
@@ -186,7 +186,7 @@ TArray<FBridgeAnimGraphNodeInfo> UUnrealBridgeAnimLibrary::GetAnimGraphNodes(con
 
 		FBridgeAnimGraphNodeInfo Info;
 		Info.NodeIndex = i;
-		Info.NodeTitle = GetNodeTitleSource(Node);
+		Info.NodeTitle = BridgeAnimImpl::GetNodeTitleSource(Node);
 		Info.NodeType = Node->GetClass()->GetName();
 
 		// Extract detail for known types
@@ -196,7 +196,7 @@ TArray<FBridgeAnimGraphNodeInfo> UUnrealBridgeAnimLibrary::GetAnimGraphNodes(con
 			if (FAnimNode_Base* FNode = AnimNode->GetFNode())
 			{
 				// Use the node's description text for detail (untranslated)
-				Info.Detail = GetNodeTitleSource(AnimNode, ENodeTitleType::ListView);
+				Info.Detail = BridgeAnimImpl::GetNodeTitleSource(AnimNode, ENodeTitleType::ListView);
 			}
 		}
 
@@ -233,7 +233,7 @@ TArray<FBridgeAnimLayerInfo> UUnrealBridgeAnimLibrary::GetAnimLinkedLayers(const
 {
 	TArray<FBridgeAnimLayerInfo> Result;
 
-	UAnimBlueprint* ABP = LoadABP(AnimBlueprintPath);
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
 	if (!ABP) return Result;
 
 	for (UEdGraph* Graph : ABP->FunctionGraphs)
@@ -248,7 +248,7 @@ TArray<FBridgeAnimLayerInfo> UUnrealBridgeAnimLibrary::GetAnimLinkedLayers(const
 			FBridgeAnimLayerInfo Info;
 
 			// Parse from node title (format: "InterfaceName - LayerName"), use source text
-			FString FullTitle = GetNodeTitleSource(LayerNode);
+			FString FullTitle = BridgeAnimImpl::GetNodeTitleSource(LayerNode);
 			FString Left, Right;
 			if (FullTitle.Split(TEXT(" - "), &Left, &Right))
 			{
@@ -275,7 +275,7 @@ TArray<FBridgeAnimSlotInfo> UUnrealBridgeAnimLibrary::GetAnimSlots(const FString
 {
 	TArray<FBridgeAnimSlotInfo> Result;
 
-	UAnimBlueprint* ABP = LoadABP(AnimBlueprintPath);
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
 	if (!ABP) return Result;
 
 	for (UEdGraph* Graph : ABP->FunctionGraphs)
@@ -289,7 +289,7 @@ TArray<FBridgeAnimSlotInfo> UUnrealBridgeAnimLibrary::GetAnimSlots(const FString
 
 			FBridgeAnimSlotInfo Info;
 			Info.GraphName = Graph->GetName();
-			Info.NodeTitle = GetNodeTitleSource(SlotNode);
+			Info.NodeTitle = BridgeAnimImpl::GetNodeTitleSource(SlotNode);
 
 			// Access the internal FAnimNode_Slot to get SlotName
 			FStructProperty* NodeProp = SlotNode->GetFNodeProperty();
@@ -316,10 +316,10 @@ TArray<FString> UUnrealBridgeAnimLibrary::GetAnimNodeDetails(
 {
 	TArray<FString> Result;
 
-	UAnimBlueprint* ABP = LoadABP(AnimBlueprintPath);
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
 	if (!ABP) return Result;
 
-	UEdGraph* AnimGraph = FindAnimGraph(ABP);
+	UEdGraph* AnimGraph = BridgeAnimImpl::FindAnimGraph(ABP);
 	if (!AnimGraph) return Result;
 
 	if (NodeIndex < 0 || NodeIndex >= AnimGraph->Nodes.Num())
@@ -373,7 +373,7 @@ TArray<FString> UUnrealBridgeAnimLibrary::GetAnimCurves(const FString& AnimBluep
 {
 	TArray<FString> Result;
 
-	UAnimBlueprint* ABP = LoadABP(AnimBlueprintPath);
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
 	if (!ABP) return Result;
 
 	// Gather from skeleton's curve metadata
@@ -417,7 +417,7 @@ FBridgeAnimSequenceInfo UUnrealBridgeAnimLibrary::GetAnimSequenceInfo(const FStr
 	Result.bHasRootMotion = Seq->bEnableRootMotion;
 
 	// Notifies
-	GatherNotifies(Seq, Result.Notifies);
+	BridgeAnimImpl::GatherNotifies(Seq, Result.Notifies);
 
 	// Curves
 	const FRawCurveTracks& Curves = Seq->GetCurveData();
@@ -477,7 +477,7 @@ FBridgeMontageInfo UUnrealBridgeAnimLibrary::GetMontageInfo(const FString& Monta
 	}
 
 	// Notifies
-	GatherNotifies(Montage, Result.Notifies);
+	BridgeAnimImpl::GatherNotifies(Montage, Result.Notifies);
 
 	return Result;
 }

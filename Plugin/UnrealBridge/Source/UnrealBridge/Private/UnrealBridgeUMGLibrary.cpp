@@ -14,7 +14,7 @@
 
 // ─── Helpers ────────────────────────────────────────────────
 
-namespace
+namespace BridgeUMGImpl
 {
 	UWidgetBlueprint* LoadWBP(const FString& Path)
 	{
@@ -94,12 +94,12 @@ TArray<FBridgeWidgetInfo> UUnrealBridgeUMGLibrary::GetWidgetTree(const FString& 
 {
 	TArray<FBridgeWidgetInfo> Result;
 
-	UWidgetBlueprint* WBP = LoadWBP(WidgetBlueprintPath);
+	UWidgetBlueprint* WBP = BridgeUMGImpl::LoadWBP(WidgetBlueprintPath);
 	if (!WBP) return Result;
 
 	if (WBP->WidgetTree && WBP->WidgetTree->RootWidget)
 	{
-		GatherWidgets(WBP->WidgetTree->RootWidget, TEXT(""), Result);
+		BridgeUMGImpl::GatherWidgets(WBP->WidgetTree->RootWidget, TEXT(""), Result);
 	}
 
 	return Result;
@@ -112,10 +112,10 @@ TArray<FBridgeWidgetPropertyValue> UUnrealBridgeUMGLibrary::GetWidgetProperties(
 {
 	TArray<FBridgeWidgetPropertyValue> Result;
 
-	UWidgetBlueprint* WBP = LoadWBP(WidgetBlueprintPath);
+	UWidgetBlueprint* WBP = BridgeUMGImpl::LoadWBP(WidgetBlueprintPath);
 	if (!WBP) return Result;
 
-	UWidget* Widget = FindWidgetByName(WBP, WidgetName);
+	UWidget* Widget = BridgeUMGImpl::FindWidgetByName(WBP, WidgetName);
 	if (!Widget) return Result;
 
 	UObject* CDO = Widget->GetClass()->GetDefaultObject();
@@ -137,7 +137,7 @@ TArray<FBridgeWidgetPropertyValue> UUnrealBridgeUMGLibrary::GetWidgetProperties(
 		{
 			FBridgeWidgetPropertyValue PV;
 			PV.Name = Prop->GetName();
-			PV.Type = PropertyTypeToString(Prop);
+			PV.Type = BridgeUMGImpl::PropertyTypeToString(Prop);
 
 			FString ExportedValue;
 			Prop->ExportTextItem_Direct(ExportedValue, WidgetValue, CDOValue, Widget, PPF_None);
@@ -157,7 +157,7 @@ TArray<FBridgeWidgetAnimationInfo> UUnrealBridgeUMGLibrary::GetWidgetAnimations(
 {
 	TArray<FBridgeWidgetAnimationInfo> Result;
 
-	UWidgetBlueprint* WBP = LoadWBP(WidgetBlueprintPath);
+	UWidgetBlueprint* WBP = BridgeUMGImpl::LoadWBP(WidgetBlueprintPath);
 	if (!WBP) return Result;
 
 	for (UWidgetAnimation* Anim : WBP->Animations)
@@ -241,7 +241,7 @@ TArray<FBridgeWidgetBindingInfo> UUnrealBridgeUMGLibrary::GetWidgetBindings(
 {
 	TArray<FBridgeWidgetBindingInfo> Result;
 
-	UWidgetBlueprint* WBP = LoadWBP(WidgetBlueprintPath);
+	UWidgetBlueprint* WBP = BridgeUMGImpl::LoadWBP(WidgetBlueprintPath);
 	if (!WBP) return Result;
 
 	for (const FDelegateEditorBinding& Binding : WBP->Bindings)
@@ -271,7 +271,7 @@ TArray<FBridgeWidgetEventInfo> UUnrealBridgeUMGLibrary::GetWidgetEvents(
 {
 	TArray<FBridgeWidgetEventInfo> Result;
 
-	UWidgetBlueprint* WBP = LoadWBP(WidgetBlueprintPath);
+	UWidgetBlueprint* WBP = BridgeUMGImpl::LoadWBP(WidgetBlueprintPath);
 	if (!WBP) return Result;
 
 	// Scan event graph for component bound event nodes (OnClicked, etc.)
@@ -321,10 +321,10 @@ bool UUnrealBridgeUMGLibrary::SetWidgetProperty(
 	const FString& WidgetBlueprintPath, const FString& WidgetName,
 	const FString& PropertyName, const FString& Value)
 {
-	UWidgetBlueprint* WBP = LoadWBP(WidgetBlueprintPath);
+	UWidgetBlueprint* WBP = BridgeUMGImpl::LoadWBP(WidgetBlueprintPath);
 	if (!WBP) return false;
 
-	UWidget* Widget = FindWidgetByName(WBP, WidgetName);
+	UWidget* Widget = BridgeUMGImpl::FindWidgetByName(WBP, WidgetName);
 	if (!Widget) return false;
 
 	FProperty* Prop = Widget->GetClass()->FindPropertyByName(FName(*PropertyName));

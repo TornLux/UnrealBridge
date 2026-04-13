@@ -34,7 +34,7 @@
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
-namespace
+namespace BridgeEditorImpl
 {
 	UWorld* GetEditorWorld()
 	{
@@ -90,7 +90,7 @@ FBridgeEditorState UUnrealBridgeEditorLibrary::GetEditorState()
 	S.bIsPIE = IsInPIE();
 	S.bIsPaused = IsPlayInEditorPaused();
 
-	if (UWorld* World = GetEditorWorld())
+	if (UWorld* World = BridgeEditorImpl::GetEditorWorld())
 	{
 		if (UPackage* Pkg = World->GetOutermost())
 		{
@@ -177,7 +177,7 @@ FString UUnrealBridgeEditorLibrary::GetContentBrowserPath()
 FBridgeViewportCamera UUnrealBridgeEditorLibrary::GetEditorViewportCamera()
 {
 	FBridgeViewportCamera Cam;
-	if (FLevelEditorViewportClient* VC = GetActiveViewportClient())
+	if (FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient())
 	{
 		Cam.Location = VC->GetViewLocation();
 		Cam.Rotation = VC->GetViewRotation();
@@ -188,7 +188,7 @@ FBridgeViewportCamera UUnrealBridgeEditorLibrary::GetEditorViewportCamera()
 
 // ─── Asset control ──────────────────────────────────────────
 
-namespace
+namespace BridgeEditorImpl
 {
 	UObject* LoadAssetFromPath(const FString& AssetPath)
 	{
@@ -210,7 +210,7 @@ bool UUnrealBridgeEditorLibrary::OpenAsset(const FString& AssetPath)
 	{
 		return false;
 	}
-	UObject* A = LoadAssetFromPath(AssetPath);
+	UObject* A = BridgeEditorImpl::LoadAssetFromPath(AssetPath);
 	if (!A)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: OpenAsset could not load '%s'"), *AssetPath);
@@ -237,7 +237,7 @@ bool UUnrealBridgeEditorLibrary::CloseAllAssetEditors()
 
 bool UUnrealBridgeEditorLibrary::SaveAsset(const FString& AssetPath)
 {
-	UObject* A = LoadAssetFromPath(AssetPath);
+	UObject* A = BridgeEditorImpl::LoadAssetFromPath(AssetPath);
 	if (!A)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SaveAsset could not load '%s'"), *AssetPath);
@@ -263,7 +263,7 @@ bool UUnrealBridgeEditorLibrary::SaveCurrentLevel()
 
 bool UUnrealBridgeEditorLibrary::ReloadAsset(const FString& AssetPath)
 {
-	UObject* A = LoadAssetFromPath(AssetPath);
+	UObject* A = BridgeEditorImpl::LoadAssetFromPath(AssetPath);
 	if (!A)
 	{
 		return false;
@@ -285,7 +285,7 @@ bool UUnrealBridgeEditorLibrary::SetContentBrowserSelection(const TArray<FString
 	TArray<FAssetData> ADs;
 	for (const FString& P : AssetPaths)
 	{
-		UObject* O = LoadAssetFromPath(P);
+		UObject* O = BridgeEditorImpl::LoadAssetFromPath(P);
 		if (O)
 		{
 			ADs.Emplace(O);
@@ -337,7 +337,7 @@ bool UUnrealBridgeEditorLibrary::FocusViewportOnSelection()
 
 bool UUnrealBridgeEditorLibrary::SetEditorViewportCamera(FVector Location, FRotator Rotation, float FOV)
 {
-	FLevelEditorViewportClient* VC = GetActiveViewportClient();
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
 	if (!VC)
 	{
 		return false;
@@ -426,7 +426,7 @@ bool UUnrealBridgeEditorLibrary::Redo()
 
 // ─── Console / CVar ─────────────────────────────────────────
 
-namespace
+namespace BridgeEditorImpl
 {
 	class FCaptureDevice : public FOutputDevice
 	{
@@ -442,11 +442,11 @@ namespace
 
 FString UUnrealBridgeEditorLibrary::ExecuteConsoleCommand(const FString& Command)
 {
-	FCaptureDevice Dev;
+	BridgeEditorImpl::FCaptureDevice Dev;
 	GLog->AddOutputDevice(&Dev);
 	if (GEngine)
 	{
-		GEngine->Exec(GetEditorWorld(), *Command, Dev);
+		GEngine->Exec(BridgeEditorImpl::GetEditorWorld(), *Command, Dev);
 	}
 	GLog->RemoveOutputDevice(&Dev);
 	return Dev.Output;
@@ -572,11 +572,11 @@ TArray<FString> UUnrealBridgeEditorLibrary::ListCVars(const FString& Keyword)
 
 // ─── Dirty-state tracking ──────────────────────────────────
 
-namespace
+namespace BridgeEditorImpl
 {
 	UPackage* FindPackageForAssetPath(const FString& AssetPath)
 	{
-		UObject* Asset = LoadAssetFromPath(AssetPath);
+		UObject* Asset = BridgeEditorImpl::LoadAssetFromPath(AssetPath);
 		return Asset ? Asset->GetPackage() : nullptr;
 	}
 }
@@ -603,13 +603,13 @@ TArray<FString> UUnrealBridgeEditorLibrary::GetDirtyPackageNames()
 
 bool UUnrealBridgeEditorLibrary::IsAssetDirty(const FString& AssetPath)
 {
-	const UPackage* Pkg = FindPackageForAssetPath(AssetPath);
+	const UPackage* Pkg = BridgeEditorImpl::FindPackageForAssetPath(AssetPath);
 	return Pkg && Pkg->IsDirty();
 }
 
 bool UUnrealBridgeEditorLibrary::MarkAssetDirty(const FString& AssetPath)
 {
-	UPackage* Pkg = FindPackageForAssetPath(AssetPath);
+	UPackage* Pkg = BridgeEditorImpl::FindPackageForAssetPath(AssetPath);
 	if (!Pkg)
 	{
 		return false;
@@ -624,7 +624,7 @@ bool UUnrealBridgeEditorLibrary::IsAssetEditorOpen(const FString& AssetPath)
 	{
 		return false;
 	}
-	UObject* Asset = LoadAssetFromPath(AssetPath);
+	UObject* Asset = BridgeEditorImpl::LoadAssetFromPath(AssetPath);
 	if (!Asset)
 	{
 		return false;
@@ -643,7 +643,7 @@ int32 UUnrealBridgeEditorLibrary::SaveAssets(const TArray<FString>& AssetPaths)
 	Packages.Reserve(AssetPaths.Num());
 	for (const FString& P : AssetPaths)
 	{
-		if (UPackage* Pkg = FindPackageForAssetPath(P))
+		if (UPackage* Pkg = BridgeEditorImpl::FindPackageForAssetPath(P))
 		{
 			Packages.AddUnique(Pkg);
 		}

@@ -12,7 +12,7 @@
 
 // ─── Helpers ────────────────────────────────────────────────
 
-namespace
+namespace BridgeDataTableImpl
 {
 	UDataTable* LoadDT(const FString& Path)
 	{
@@ -77,7 +77,7 @@ namespace
 FBridgeDataTableInfo UUnrealBridgeDataTableLibrary::GetDataTableRows(const FString& DataTablePath)
 {
 	FBridgeDataTableInfo Result;
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return Result;
 
 	Result.Name = DT->GetName();
@@ -91,7 +91,7 @@ FBridgeDataTableInfo UUnrealBridgeDataTableLibrary::GetDataTableRows(const FStri
 	const TMap<FName, uint8*>& RowMap = DT->GetRowMap();
 	Result.NumRows = RowMap.Num();
 	for (const auto& Pair : RowMap)
-		Result.Rows.Add(BuildRow(Pair.Key, Pair.Value, RowStruct, nullptr));
+		Result.Rows.Add(BridgeDataTableImpl::BuildRow(Pair.Key, Pair.Value, RowStruct, nullptr));
 
 	return Result;
 }
@@ -101,7 +101,7 @@ FBridgeDataTableInfo UUnrealBridgeDataTableLibrary::GetDataTableRows(const FStri
 FBridgeDataTableInfo UUnrealBridgeDataTableLibrary::GetDataTableSummary(const FString& DataTablePath)
 {
 	FBridgeDataTableInfo Result;
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return Result;
 
 	Result.Name = DT->GetName();
@@ -120,7 +120,7 @@ FBridgeDataTableInfo UUnrealBridgeDataTableLibrary::GetDataTableSummary(const FS
 TArray<FString> UUnrealBridgeDataTableLibrary::GetDataTableRowNames(const FString& DataTablePath)
 {
 	TArray<FString> Result;
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return Result;
 
 	for (const auto& Pair : DT->GetRowMap())
@@ -133,7 +133,7 @@ TArray<FString> UUnrealBridgeDataTableLibrary::GetDataTableRowNames(const FStrin
 FBridgeDataTableRow UUnrealBridgeDataTableLibrary::GetDataTableRow(const FString& DataTablePath, const FString& RowName)
 {
 	FBridgeDataTableRow Result;
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return Result;
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
@@ -142,7 +142,7 @@ FBridgeDataTableRow UUnrealBridgeDataTableLibrary::GetDataTableRow(const FString
 	uint8* const* RowPtr = DT->GetRowMap().Find(FName(*RowName));
 	if (!RowPtr) return Result;
 
-	return BuildRow(FName(*RowName), *RowPtr, RowStruct, nullptr);
+	return BridgeDataTableImpl::BuildRow(FName(*RowName), *RowPtr, RowStruct, nullptr);
 }
 
 // ─── GetDataTableRowField ───────────────────────────────────
@@ -150,7 +150,7 @@ FBridgeDataTableRow UUnrealBridgeDataTableLibrary::GetDataTableRow(const FString
 FString UUnrealBridgeDataTableLibrary::GetDataTableRowField(
 	const FString& DataTablePath, const FString& RowName, const FString& FieldName)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return FString();
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
@@ -159,10 +159,10 @@ FString UUnrealBridgeDataTableLibrary::GetDataTableRowField(
 	uint8* const* RowPtr = DT->GetRowMap().Find(FName(*RowName));
 	if (!RowPtr) return FString();
 
-	FProperty* Prop = FindProperty(RowStruct, FieldName);
+	FProperty* Prop = BridgeDataTableImpl::FindProperty(RowStruct, FieldName);
 	if (!Prop) return FString();
 
-	return ExportFieldValue(Prop, *RowPtr);
+	return BridgeDataTableImpl::ExportFieldValue(Prop, *RowPtr);
 }
 
 // ─── GetDataTableColumn ─────────────────────────────────────
@@ -170,13 +170,13 @@ FString UUnrealBridgeDataTableLibrary::GetDataTableRowField(
 TArray<FString> UUnrealBridgeDataTableLibrary::GetDataTableColumn(const FString& DataTablePath, const FString& FieldName)
 {
 	TArray<FString> Result;
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return Result;
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
 	if (!RowStruct) return Result;
 
-	FProperty* Prop = FindProperty(RowStruct, FieldName);
+	FProperty* Prop = BridgeDataTableImpl::FindProperty(RowStruct, FieldName);
 	if (!Prop)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Field '%s' not found on DataTable '%s'"), *FieldName, *DataTablePath);
@@ -185,7 +185,7 @@ TArray<FString> UUnrealBridgeDataTableLibrary::GetDataTableColumn(const FString&
 
 	for (const auto& Pair : DT->GetRowMap())
 	{
-		Result.Add(FString::Printf(TEXT("%s = %s"), *Pair.Key.ToString(), *ExportFieldValue(Prop, Pair.Value)));
+		Result.Add(FString::Printf(TEXT("%s = %s"), *Pair.Key.ToString(), *BridgeDataTableImpl::ExportFieldValue(Prop, Pair.Value)));
 	}
 	return Result;
 }
@@ -198,7 +198,7 @@ FBridgeDataTableInfo UUnrealBridgeDataTableLibrary::GetDataTableRowsFiltered(
 	const TArray<FString>& ColumnFilter)
 {
 	FBridgeDataTableInfo Result;
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return Result;
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
@@ -223,7 +223,7 @@ FBridgeDataTableInfo UUnrealBridgeDataTableLibrary::GetDataTableRowsFiltered(
 	for (const auto& Pair : DT->GetRowMap())
 	{
 		if (RowAllow.Num() > 0 && !RowAllow.Contains(Pair.Key)) continue;
-		Result.Rows.Add(BuildRow(Pair.Key, Pair.Value, RowStruct, ColumnAllow.Num() > 0 ? &ColumnAllow : nullptr));
+		Result.Rows.Add(BridgeDataTableImpl::BuildRow(Pair.Key, Pair.Value, RowStruct, ColumnAllow.Num() > 0 ? &ColumnAllow : nullptr));
 	}
 	Result.NumRows = Result.Rows.Num();
 	return Result;
@@ -237,7 +237,7 @@ TArray<FString> UUnrealBridgeDataTableLibrary::SearchDataTableRows(
 	const TArray<FString>& ColumnFilter)
 {
 	TArray<FString> Result;
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT || Keyword.IsEmpty()) return Result;
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
@@ -258,7 +258,7 @@ TArray<FString> UUnrealBridgeDataTableLibrary::SearchDataTableRows(
 			for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
 			{
 				if (ColumnAllow.Num() > 0 && !ColumnAllow.Contains(It->GetName())) continue;
-				FString V = ExportFieldValue(*It, Pair.Value);
+				FString V = BridgeDataTableImpl::ExportFieldValue(*It, Pair.Value);
 				if (V.Contains(Keyword, ESearchCase::IgnoreCase))
 				{
 					bMatched = true;
@@ -309,7 +309,7 @@ bool UUnrealBridgeDataTableLibrary::SetDataTableRowField(
 	const FString& FieldName,
 	const FString& ExportedValue)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
@@ -322,7 +322,7 @@ bool UUnrealBridgeDataTableLibrary::SetDataTableRowField(
 		return false;
 	}
 
-	FProperty* Prop = FindProperty(RowStruct, FieldName);
+	FProperty* Prop = BridgeDataTableImpl::FindProperty(RowStruct, FieldName);
 	if (!Prop)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Field '%s' not found"), *FieldName);
@@ -333,7 +333,7 @@ bool UUnrealBridgeDataTableLibrary::SetDataTableRowField(
 	DT->Modify();
 	FDataTableEditorUtils::BroadcastPreChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowData);
 
-	const bool bOk = ImportFieldText(Prop, *RowPtr, ExportedValue);
+	const bool bOk = BridgeDataTableImpl::ImportFieldText(Prop, *RowPtr, ExportedValue);
 
 	FDataTableEditorUtils::BroadcastPostChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowData);
 	DT->MarkPackageDirty();
@@ -347,7 +347,7 @@ bool UUnrealBridgeDataTableLibrary::AddDataTableRow(
 	const FString& RowName,
 	const TMap<FString, FString>& FieldValues)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
@@ -366,8 +366,8 @@ bool UUnrealBridgeDataTableLibrary::AddDataTableRow(
 
 	for (const TPair<FString, FString>& KV : FieldValues)
 	{
-		if (FProperty* Prop = FindProperty(RowStruct, KV.Key))
-			ImportFieldText(Prop, NewRow, KV.Value);
+		if (FProperty* Prop = BridgeDataTableImpl::FindProperty(RowStruct, KV.Key))
+			BridgeDataTableImpl::ImportFieldText(Prop, NewRow, KV.Value);
 	}
 
 	FDataTableEditorUtils::BroadcastPostChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowData);
@@ -379,7 +379,7 @@ bool UUnrealBridgeDataTableLibrary::AddDataTableRow(
 
 bool UUnrealBridgeDataTableLibrary::RemoveDataTableRow(const FString& DataTablePath, const FString& RowName)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	FScopedTransaction Transaction(LOCTEXT("RemoveDataTableRow", "Remove DataTable Row"));
@@ -395,7 +395,7 @@ bool UUnrealBridgeDataTableLibrary::DuplicateDataTableRow(
 	const FString& SourceRowName,
 	const FString& NewRowName)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	FScopedTransaction Transaction(LOCTEXT("DuplicateDataTableRow", "Duplicate DataTable Row"));
@@ -411,7 +411,7 @@ bool UUnrealBridgeDataTableLibrary::RenameDataTableRow(
 	const FString& OldRowName,
 	const FString& NewRowName)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	FScopedTransaction Transaction(LOCTEXT("RenameDataTableRow", "Rename DataTable Row"));
@@ -426,7 +426,7 @@ bool UUnrealBridgeDataTableLibrary::ReorderDataTableRows(
 	const FString& DataTablePath,
 	const TArray<FString>& OrderedNames)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	FScopedTransaction Transaction(LOCTEXT("ReorderDataTableRows", "Reorder DataTable Rows"));
@@ -464,7 +464,7 @@ bool UUnrealBridgeDataTableLibrary::ReorderDataTableRows(
 
 bool UUnrealBridgeDataTableLibrary::ExportDataTableToCSV(const FString& DataTablePath, const FString& OutCsvFilePath)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	const FString Csv = DT->GetTableAsCSV();
@@ -477,7 +477,7 @@ bool UUnrealBridgeDataTableLibrary::ExportDataTableToCSV(const FString& DataTabl
 
 bool UUnrealBridgeDataTableLibrary::ImportDataTableFromCSV(const FString& DataTablePath, const FString& CsvFilePath)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	FString Content;
@@ -506,7 +506,7 @@ bool UUnrealBridgeDataTableLibrary::ImportDataTableFromCSV(const FString& DataTa
 bool UUnrealBridgeDataTableLibrary::DoesDataTableRowExist(
 	const FString& DataTablePath, const FString& RowName)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 	return DT->GetRowMap().Contains(FName(*RowName));
 }
@@ -518,7 +518,7 @@ bool UUnrealBridgeDataTableLibrary::SetDataTableRowFields(
 	const FString& RowName,
 	const TMap<FString, FString>& FieldValues)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	const UScriptStruct* RowStruct = DT->GetRowStruct();
@@ -538,13 +538,13 @@ bool UUnrealBridgeDataTableLibrary::SetDataTableRowFields(
 	int32 NumApplied = 0;
 	for (const TPair<FString, FString>& Entry : FieldValues)
 	{
-		FProperty* Prop = FindProperty(RowStruct, Entry.Key);
+		FProperty* Prop = BridgeDataTableImpl::FindProperty(RowStruct, Entry.Key);
 		if (!Prop)
 		{
 			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Field '%s' not found"), *Entry.Key);
 			continue;
 		}
-		if (ImportFieldText(Prop, *RowPtr, Entry.Value))
+		if (BridgeDataTableImpl::ImportFieldText(Prop, *RowPtr, Entry.Value))
 		{
 			++NumApplied;
 		}
@@ -559,7 +559,7 @@ bool UUnrealBridgeDataTableLibrary::SetDataTableRowFields(
 
 FString UUnrealBridgeDataTableLibrary::GetDataTableAsJSONString(const FString& DataTablePath)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return FString();
 	return DT->GetTableAsJSON();
 }
@@ -569,7 +569,7 @@ FString UUnrealBridgeDataTableLibrary::GetDataTableAsJSONString(const FString& D
 bool UUnrealBridgeDataTableLibrary::ExportDataTableToJSON(
 	const FString& DataTablePath, const FString& OutJsonFilePath)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	const FString Contents = DT->GetTableAsJSON();
@@ -588,7 +588,7 @@ bool UUnrealBridgeDataTableLibrary::ExportDataTableToJSON(
 bool UUnrealBridgeDataTableLibrary::ImportDataTableFromJSON(
 	const FString& DataTablePath, const FString& JsonFilePath)
 {
-	UDataTable* DT = LoadDT(DataTablePath);
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
 	FString Content;

@@ -293,13 +293,11 @@ void UUnrealBridgeAssetLibrary::SearchAssets(
 	const FString& CustomPackagePath,
 	TArray<FSoftObjectPath>& OutSoftPaths, TArray<FString>& OutIncludeTokensForHighlight)
 {
-	using namespace BridgeAssetSearch;
-
 	OutSoftPaths.Reset();
 	OutIncludeTokensForHighlight.Reset();
 
-	FParsedQuery Parsed;
-	if (!ParseQuery(Query.TrimStartAndEnd(), Parsed)) return;
+	BridgeAssetSearch::FParsedQuery Parsed;
+	if (!BridgeAssetSearch::ParseQuery(Query.TrimStartAndEnd(), Parsed)) return;
 	if (Parsed.IncludeTokens.Num() == 0 && Parsed.TypeFilter.IsEmpty()) return;
 
 	if (Parsed.IncludeTokens.Num() > 0)
@@ -314,7 +312,7 @@ void UUnrealBridgeAssetLibrary::SearchAssets(
 
 	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
 	TArray<FAssetData> Results;
-	SearchAssetsInternal(Registry, Parsed, Scope, CustomPackagePath, ClassFilter, bCaseSensitive, bWholeWord, MaxResults, Results);
+	BridgeAssetSearch::SearchAssetsInternal(Registry, Parsed, Scope, CustomPackagePath, ClassFilter, bCaseSensitive, bWholeWord, MaxResults, Results);
 
 	OutSoftPaths.Reserve(Results.Num());
 	for (const FAssetData& Data : Results)

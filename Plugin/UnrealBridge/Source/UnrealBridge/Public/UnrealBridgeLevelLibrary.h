@@ -152,6 +152,25 @@ struct FBridgeStreamingLevel
 	bool bVisible = false;
 };
 
+// ─── Actor bounds ───────────────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeActorBounds
+{
+	GENERATED_BODY()
+
+	/** World-space center of the bounds box. */
+	UPROPERTY(BlueprintReadOnly)
+	FVector Origin = FVector::ZeroVector;
+
+	/** Half-extents on each axis. */
+	UPROPERTY(BlueprintReadOnly)
+	FVector BoxExtent = FVector::ZeroVector;
+
+	/** Radius of the bounding sphere. */
+	UPROPERTY(BlueprintReadOnly)
+	float SphereRadius = 0.f;
+};
+
 // ─── Radius hit ─────────────────────────────────────────────
 USTRUCT(BlueprintType)
 struct FBridgeActorRadiusHit
@@ -307,4 +326,29 @@ public:
 	/** Duplicate actors; returns labels of new copies. Single undo transaction. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static TArray<FString> DuplicateActors(const TArray<FString>& ActorNames);
+
+	// ─── Spatial queries ──────────────────────────────────
+
+	/**
+	 * World-space bounds of an actor (all colliding + non-colliding primitives).
+	 * Returns zero-bounds if the actor has no renderable/collision geometry.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeActorBounds GetActorBounds(const FString& ActorName);
+
+	/** Labels of actors whose location falls inside the axis-aligned box [Min, Max]. Optional class filter. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorsInBox(FVector Min, FVector Max, const FString& ClassFilter);
+
+	/** Label of the actor nearest to Location, or empty string if none match. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString FindNearestActor(FVector Location, const FString& ClassFilter);
+
+	/** Distance between two actors' world locations (cm). Returns -1 if either is missing. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static float GetActorDistance(const FString& ActorA, const FString& ActorB);
+
+	/** True if the given actor is currently selected in the editor viewport. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool IsActorSelected(const FString& ActorName);
 };

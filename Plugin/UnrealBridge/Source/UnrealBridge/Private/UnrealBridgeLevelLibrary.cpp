@@ -21,7 +21,7 @@
 
 // ─── Helpers ────────────────────────────────────────────────
 
-namespace
+namespace BridgeLevelImpl
 {
 	UWorld* GetEditorWorld()
 	{
@@ -120,7 +120,7 @@ namespace
 		return CI;
 	}
 
-	bool IsActorSelected(AActor* Actor)
+	bool ActorIsSelected(AActor* Actor)
 	{
 		if (!GEditor || !Actor)
 		{
@@ -135,7 +135,7 @@ namespace
 FBridgeLevelSummary UUnrealBridgeLevelLibrary::GetLevelSummary()
 {
 	FBridgeLevelSummary S;
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return S;
@@ -172,7 +172,7 @@ FBridgeLevelSummary UUnrealBridgeLevelLibrary::GetLevelSummary()
 
 int32 UUnrealBridgeLevelLibrary::GetActorCount(const FString& ClassFilter)
 {
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return 0;
@@ -180,7 +180,7 @@ int32 UUnrealBridgeLevelLibrary::GetActorCount(const FString& ClassFilter)
 	int32 N = 0;
 	for (TActorIterator<AActor> It(World); It; ++It)
 	{
-		if (MatchesClassFilter(It->GetClass(), ClassFilter))
+		if (BridgeLevelImpl::MatchesClassFilter(It->GetClass(), ClassFilter))
 		{
 			++N;
 		}
@@ -191,7 +191,7 @@ int32 UUnrealBridgeLevelLibrary::GetActorCount(const FString& ClassFilter)
 TArray<FString> UUnrealBridgeLevelLibrary::GetActorNames(const FString& ClassFilter, const FString& TagFilter, const FString& NameFilter)
 {
 	TArray<FString> Out;
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return Out;
@@ -204,7 +204,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::GetActorNames(const FString& ClassFil
 		{
 			continue;
 		}
-		if (!MatchesClassFilter(A->GetClass(), ClassFilter))
+		if (!BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter))
 		{
 			continue;
 		}
@@ -230,7 +230,7 @@ TArray<FBridgeActorBrief> UUnrealBridgeLevelLibrary::ListActors(
 	int32 MaxResults)
 {
 	TArray<FBridgeActorBrief> Out;
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return Out;
@@ -243,7 +243,7 @@ TArray<FBridgeActorBrief> UUnrealBridgeLevelLibrary::ListActors(
 		{
 			continue;
 		}
-		if (!MatchesClassFilter(A->GetClass(), ClassFilter))
+		if (!BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter))
 		{
 			continue;
 		}
@@ -256,11 +256,11 @@ TArray<FBridgeActorBrief> UUnrealBridgeLevelLibrary::ListActors(
 		{
 			continue;
 		}
-		if (bSelectedOnly && !IsActorSelected(A))
+		if (bSelectedOnly && !BridgeLevelImpl::ActorIsSelected(A))
 		{
 			continue;
 		}
-		Out.Add(MakeBrief(A));
+		Out.Add(BridgeLevelImpl::MakeBrief(A));
 		if (MaxResults > 0 && Out.Num() >= MaxResults)
 		{
 			break;
@@ -272,8 +272,8 @@ TArray<FBridgeActorBrief> UUnrealBridgeLevelLibrary::ListActors(
 FBridgeActorInfo UUnrealBridgeLevelLibrary::GetActorInfo(const FString& ActorName)
 {
 	FBridgeActorInfo Info;
-	UWorld* World = GetEditorWorld();
-	AActor* Actor = FindActor(World, ActorName);
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AActor* Actor = BridgeLevelImpl::FindActor(World, ActorName);
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Actor '%s' not found"), *ActorName);
@@ -284,7 +284,7 @@ FBridgeActorInfo UUnrealBridgeLevelLibrary::GetActorInfo(const FString& ActorNam
 	Info.Label = Actor->GetActorLabel();
 	Info.ClassName = Actor->GetClass()->GetName();
 	Info.ClassPath = Actor->GetClass()->GetPathName();
-	Info.Transform = ToBridgeTransform(Actor->GetActorTransform());
+	Info.Transform = BridgeLevelImpl::ToBridgeTransform(Actor->GetActorTransform());
 	for (const FName& Tag : Actor->Tags)
 	{
 		Info.Tags.Add(Tag.ToString());
@@ -312,7 +312,7 @@ FBridgeActorInfo UUnrealBridgeLevelLibrary::GetActorInfo(const FString& ActorNam
 	{
 		if (C)
 		{
-			Info.Components.Add(MakeComponentInfo(C));
+			Info.Components.Add(BridgeLevelImpl::MakeComponentInfo(C));
 		}
 	}
 	return Info;
@@ -321,9 +321,9 @@ FBridgeActorInfo UUnrealBridgeLevelLibrary::GetActorInfo(const FString& ActorNam
 FBridgeTransform UUnrealBridgeLevelLibrary::GetActorTransform(const FString& ActorName)
 {
 	FBridgeTransform T;
-	if (AActor* A = FindActor(GetEditorWorld(), ActorName))
+	if (AActor* A = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName))
 	{
-		T = ToBridgeTransform(A->GetActorTransform());
+		T = BridgeLevelImpl::ToBridgeTransform(A->GetActorTransform());
 	}
 	return T;
 }
@@ -331,7 +331,7 @@ FBridgeTransform UUnrealBridgeLevelLibrary::GetActorTransform(const FString& Act
 TArray<FBridgeLevelComponentInfo> UUnrealBridgeLevelLibrary::GetActorComponents(const FString& ActorName)
 {
 	TArray<FBridgeLevelComponentInfo> Out;
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Actor '%s' not found"), *ActorName);
@@ -343,7 +343,7 @@ TArray<FBridgeLevelComponentInfo> UUnrealBridgeLevelLibrary::GetActorComponents(
 	{
 		if (C)
 		{
-			Out.Add(MakeComponentInfo(C));
+			Out.Add(BridgeLevelImpl::MakeComponentInfo(C));
 		}
 	}
 	return Out;
@@ -352,7 +352,7 @@ TArray<FBridgeLevelComponentInfo> UUnrealBridgeLevelLibrary::GetActorComponents(
 TArray<FString> UUnrealBridgeLevelLibrary::FindActorsByClass(const FString& ClassPath, int32 MaxResults)
 {
 	TArray<FString> Out;
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return Out;
@@ -364,7 +364,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::FindActorsByClass(const FString& Clas
 		{
 			continue;
 		}
-		if (MatchesClassFilter(A->GetClass(), ClassPath))
+		if (BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassPath))
 		{
 			Out.Add(A->GetActorLabel());
 			if (MaxResults > 0 && Out.Num() >= MaxResults)
@@ -379,7 +379,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::FindActorsByClass(const FString& Clas
 TArray<FString> UUnrealBridgeLevelLibrary::FindActorsByTag(const FString& Tag)
 {
 	TArray<FString> Out;
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World || Tag.IsEmpty())
 	{
 		return Out;
@@ -417,7 +417,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::GetSelectedActors()
 TArray<FBridgeStreamingLevel> UUnrealBridgeLevelLibrary::GetStreamingLevels()
 {
 	TArray<FBridgeStreamingLevel> Out;
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return Out;
@@ -439,7 +439,7 @@ TArray<FBridgeStreamingLevel> UUnrealBridgeLevelLibrary::GetStreamingLevels()
 
 FString UUnrealBridgeLevelLibrary::GetCurrentLevelPath()
 {
-	if (UWorld* World = GetEditorWorld())
+	if (UWorld* World = BridgeLevelImpl::GetEditorWorld())
 	{
 		if (UPackage* Pkg = World->GetOutermost())
 		{
@@ -451,7 +451,7 @@ FString UUnrealBridgeLevelLibrary::GetCurrentLevelPath()
 
 // ─── Write ──────────────────────────────────────────────────
 
-namespace
+namespace BridgeLevelImpl
 {
 	UClass* ResolveActorClass(const FString& ClassPath)
 	{
@@ -484,12 +484,12 @@ namespace
 
 FString UUnrealBridgeLevelLibrary::SpawnActor(const FString& ClassPath, FVector Location, FRotator Rotation)
 {
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return FString();
 	}
-	UClass* Cls = ResolveActorClass(ClassPath);
+	UClass* Cls = BridgeLevelImpl::ResolveActorClass(ClassPath);
 	if (!Cls)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Could not resolve actor class '%s'"), *ClassPath);
@@ -510,8 +510,8 @@ FString UUnrealBridgeLevelLibrary::SpawnActor(const FString& ClassPath, FVector 
 
 bool UUnrealBridgeLevelLibrary::DestroyActor(const FString& ActorName)
 {
-	UWorld* World = GetEditorWorld();
-	AActor* Actor = FindActor(World, ActorName);
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AActor* Actor = BridgeLevelImpl::FindActor(World, ActorName);
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Actor '%s' not found"), *ActorName);
@@ -524,7 +524,7 @@ bool UUnrealBridgeLevelLibrary::DestroyActor(const FString& ActorName)
 
 int32 UUnrealBridgeLevelLibrary::DestroyActors(const TArray<FString>& ActorNames)
 {
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return 0;
@@ -533,7 +533,7 @@ int32 UUnrealBridgeLevelLibrary::DestroyActors(const TArray<FString>& ActorNames
 	int32 Count = 0;
 	for (const FString& Name : ActorNames)
 	{
-		if (AActor* A = FindActor(World, Name))
+		if (AActor* A = BridgeLevelImpl::FindActor(World, Name))
 		{
 			A->Modify();
 			if (World->EditorDestroyActor(A, true))
@@ -547,7 +547,7 @@ int32 UUnrealBridgeLevelLibrary::DestroyActors(const TArray<FString>& ActorNames
 
 bool UUnrealBridgeLevelLibrary::SetActorTransform(const FString& ActorName, FVector Location, FRotator Rotation, FVector Scale)
 {
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Actor '%s' not found"), *ActorName);
@@ -562,7 +562,7 @@ bool UUnrealBridgeLevelLibrary::SetActorTransform(const FString& ActorName, FVec
 
 bool UUnrealBridgeLevelLibrary::MoveActor(const FString& ActorName, FVector DeltaLocation, FRotator DeltaRotation)
 {
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Actor '%s' not found"), *ActorName);
@@ -578,9 +578,9 @@ bool UUnrealBridgeLevelLibrary::MoveActor(const FString& ActorName, FVector Delt
 
 bool UUnrealBridgeLevelLibrary::AttachActor(const FString& ChildName, const FString& ParentName, const FString& SocketName)
 {
-	UWorld* World = GetEditorWorld();
-	AActor* Child = FindActor(World, ChildName);
-	AActor* Parent = FindActor(World, ParentName);
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AActor* Child = BridgeLevelImpl::FindActor(World, ChildName);
+	AActor* Parent = BridgeLevelImpl::FindActor(World, ParentName);
 	if (!Child || !Parent)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AttachActor — child or parent not found"));
@@ -604,7 +604,7 @@ bool UUnrealBridgeLevelLibrary::AttachActor(const FString& ChildName, const FStr
 
 bool UUnrealBridgeLevelLibrary::DetachActor(const FString& ActorName)
 {
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		return false;
@@ -626,7 +626,7 @@ bool UUnrealBridgeLevelLibrary::SelectActors(const TArray<FString>& ActorNames, 
 	{
 		return false;
 	}
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return false;
@@ -637,7 +637,7 @@ bool UUnrealBridgeLevelLibrary::SelectActors(const TArray<FString>& ActorNames, 
 	}
 	for (const FString& Name : ActorNames)
 	{
-		if (AActor* A = FindActor(World, Name))
+		if (AActor* A = BridgeLevelImpl::FindActor(World, Name))
 		{
 			GEditor->SelectActor(A, true, true, true, false);
 		}
@@ -658,7 +658,7 @@ bool UUnrealBridgeLevelLibrary::DeselectAllActors()
 
 bool UUnrealBridgeLevelLibrary::SetActorLabel(const FString& ActorName, const FString& NewLabel)
 {
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		return false;
@@ -671,7 +671,7 @@ bool UUnrealBridgeLevelLibrary::SetActorLabel(const FString& ActorName, const FS
 
 bool UUnrealBridgeLevelLibrary::SetActorHiddenInGame(const FString& ActorName, bool bHidden)
 {
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		return false;
@@ -684,7 +684,7 @@ bool UUnrealBridgeLevelLibrary::SetActorHiddenInGame(const FString& ActorName, b
 
 // ─── Deep queries ───────────────────────────────────────────
 
-namespace
+namespace BridgeLevelImpl
 {
 	/**
 	 * Walk a dotted property path. On success fills OutProp + OutContainer so caller
@@ -789,14 +789,14 @@ namespace
 		Actor->GetAttachedActors(Children);
 		for (AActor* C : Children)
 		{
-			CollectAttachmentTree(C, Depth + 1, Out);
+			BridgeLevelImpl::CollectAttachmentTree(C, Depth + 1, Out);
 		}
 	}
 }
 
 FString UUnrealBridgeLevelLibrary::GetActorProperty(const FString& ActorName, const FString& PropertyPath)
 {
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Actor '%s' not found"), *ActorName);
@@ -805,7 +805,7 @@ FString UUnrealBridgeLevelLibrary::GetActorProperty(const FString& ActorName, co
 	FProperty* Prop = nullptr;
 	void* Container = nullptr;
 	UObject* Owner = nullptr;
-	if (!ResolvePropertyPath(Actor, PropertyPath, Prop, Container, Owner))
+	if (!BridgeLevelImpl::ResolvePropertyPath(Actor, PropertyPath, Prop, Container, Owner))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Property path '%s' not found on '%s'"), *PropertyPath, *ActorName);
 		return FString();
@@ -818,7 +818,7 @@ FString UUnrealBridgeLevelLibrary::GetActorProperty(const FString& ActorName, co
 
 bool UUnrealBridgeLevelLibrary::SetActorProperty(const FString& ActorName, const FString& PropertyPath, const FString& ExportedValue)
 {
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		return false;
@@ -826,7 +826,7 @@ bool UUnrealBridgeLevelLibrary::SetActorProperty(const FString& ActorName, const
 	FProperty* Prop = nullptr;
 	void* Container = nullptr;
 	UObject* Owner = nullptr;
-	if (!ResolvePropertyPath(Actor, PropertyPath, Prop, Container, Owner))
+	if (!BridgeLevelImpl::ResolvePropertyPath(Actor, PropertyPath, Prop, Container, Owner))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Property path '%s' not found on '%s'"), *PropertyPath, *ActorName);
 		return false;
@@ -863,19 +863,19 @@ bool UUnrealBridgeLevelLibrary::SetActorProperty(const FString& ActorName, const
 TArray<FString> UUnrealBridgeLevelLibrary::GetAttachmentTree(const FString& ActorName)
 {
 	TArray<FString> Out;
-	AActor* Actor = FindActor(GetEditorWorld(), ActorName);
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	if (!Actor)
 	{
 		return Out;
 	}
-	CollectAttachmentTree(Actor, 0, Out);
+	BridgeLevelImpl::CollectAttachmentTree(Actor, 0, Out);
 	return Out;
 }
 
 TArray<FBridgeActorRadiusHit> UUnrealBridgeLevelLibrary::FindActorsInRadius(FVector Location, float Radius, const FString& ClassFilter)
 {
 	TArray<FBridgeActorRadiusHit> Out;
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World || Radius <= 0.f)
 	{
 		return Out;
@@ -888,7 +888,7 @@ TArray<FBridgeActorRadiusHit> UUnrealBridgeLevelLibrary::FindActorsInRadius(FVec
 		{
 			continue;
 		}
-		if (!MatchesClassFilter(A->GetClass(), ClassFilter))
+		if (!BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter))
 		{
 			continue;
 		}
@@ -914,7 +914,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::DuplicateActors(const TArray<FString>
 	{
 		return Out;
 	}
-	UWorld* World = GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
 	if (!World)
 	{
 		return Out;
@@ -927,7 +927,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::DuplicateActors(const TArray<FString>
 	FScopedTransaction Tr(LOCTEXT("DuplicateActors", "Duplicate Actors"));
 	for (const FString& Name : ActorNames)
 	{
-		AActor* Src = FindActor(World, Name);
+		AActor* Src = BridgeLevelImpl::FindActor(World, Name);
 		if (!Src)
 		{
 			continue;
@@ -938,6 +938,96 @@ TArray<FString> UUnrealBridgeLevelLibrary::DuplicateActors(const TArray<FString>
 		}
 	}
 	return Out;
+}
+
+// ─── Spatial queries ───────────────────────────────────────
+
+FBridgeActorBounds UUnrealBridgeLevelLibrary::GetActorBounds(const FString& ActorName)
+{
+	FBridgeActorBounds Out;
+	AActor* A = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!A)
+	{
+		return Out;
+	}
+	FVector Origin, Extent;
+	A->GetActorBounds(/*bOnlyCollidingComponents=*/false, Origin, Extent, /*bIncludeFromChildActors=*/true);
+	Out.Origin = Origin;
+	Out.BoxExtent = Extent;
+	Out.SphereRadius = Extent.Size();
+	return Out;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorsInBox(FVector Min, FVector Max, const FString& ClassFilter)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	const FBox Box(Min, Max);
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A || !BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter))
+		{
+			continue;
+		}
+		if (Box.IsInsideOrOn(A->GetActorLocation()))
+		{
+			Out.Add(A->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+FString UUnrealBridgeLevelLibrary::FindNearestActor(FVector Location, const FString& ClassFilter)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return FString();
+	}
+	AActor* Best = nullptr;
+	double BestDistSq = TNumericLimits<double>::Max();
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A || !BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter))
+		{
+			continue;
+		}
+		const double DistSq = FVector::DistSquared(A->GetActorLocation(), Location);
+		if (DistSq < BestDistSq)
+		{
+			BestDistSq = DistSq;
+			Best = A;
+		}
+	}
+	return Best ? Best->GetActorLabel() : FString();
+}
+
+float UUnrealBridgeLevelLibrary::GetActorDistance(const FString& ActorA, const FString& ActorB)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AActor* A = BridgeLevelImpl::FindActor(World, ActorA);
+	AActor* B = BridgeLevelImpl::FindActor(World, ActorB);
+	if (!A || !B)
+	{
+		return -1.f;
+	}
+	return (float)FVector::Dist(A->GetActorLocation(), B->GetActorLocation());
+}
+
+bool UUnrealBridgeLevelLibrary::IsActorSelected(const FString& ActorName)
+{
+	if (!GEditor)
+	{
+		return false;
+	}
+	AActor* A = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	return A && GEditor->GetSelectedActors()->IsSelected(A);
 }
 
 #undef LOCTEXT_NAMESPACE
