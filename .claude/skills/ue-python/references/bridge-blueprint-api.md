@@ -707,12 +707,12 @@ Add a **Call** (Broadcast) node. Pins: `execute` (in), `then` (out), plus any di
 
 ### add_dispatcher_bind_node(blueprint_path, graph_name, dispatcher_name, unbind, x, y) -> str
 
-Add a **Bind** (`unbind=False`) or **Unbind** (`unbind=True`) node. Pins: `execute` (in), `then` (out), `Event` (delegate in) — wire this to a `CustomEvent`'s `OutputDelegate` to register a callback.
+Add a **Bind** (`unbind=False`) or **Unbind** (`unbind=True`) node. Pins: `execute` (in), `then` (out), `Delegate` (delegate in) — wire this to a `CustomEvent`'s `OutputDelegate` to register a callback.
 
 ```python
 ce   = lib.add_custom_event_node(bp, g, 'OnHealthChangedHandler', 0, 400)
 bind = lib.add_dispatcher_bind_node(bp, g, 'OnHealthChanged', False, 400, 400)
-lib.connect_graph_pins(bp, g, ce, 'OutputDelegate', bind, 'Event')
+lib.connect_graph_pins(bp, g, ce, 'OutputDelegate', bind, 'Delegate')
 ```
 
 ## P0 — Interface override
@@ -856,7 +856,7 @@ Create a `K2Node_CustomEvent` whose signature (output pins) matches the dispatch
 lib.add_event_dispatcher(bp, 'OnFired')
 evt  = lib.add_dispatcher_event_node(bp, 'EventGraph', 'OnFired', 1400, 400)
 bind = lib.add_dispatcher_bind_node(bp, 'EventGraph', 'OnFired', False, 1700, 400)
-# wire:  evt.Delegate → bind.Event ;  Self node → bind.Target
+lib.connect_graph_pins(bp, 'EventGraph', evt, 'OutputDelegate', bind, 'Delegate')
 ```
 
 ---
