@@ -202,4 +202,29 @@ public:
 	/** Compile the listed Blueprints. Returns per-BP success + error summary. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static TArray<FBridgeCompileResult> CompileBlueprints(const TArray<FString>& BlueprintPaths);
+
+	// ─── Dirty-state tracking ────────────────────────────
+
+	/** Package names of all currently-dirty `/Game/...` packages. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static TArray<FString> GetDirtyPackageNames();
+
+	/** True if the asset's package has unsaved modifications. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsAssetDirty(const FString& AssetPath);
+
+	/** Mark the asset's package dirty (useful after external mutations). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool MarkAssetDirty(const FString& AssetPath);
+
+	/** True if an asset editor tab is currently open for this asset. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsAssetEditorOpen(const FString& AssetPath);
+
+	/**
+	 * Save the listed assets (silent — no save dialog). Returns the number
+	 * of packages successfully written.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 SaveAssets(const TArray<FString>& AssetPaths);
 };

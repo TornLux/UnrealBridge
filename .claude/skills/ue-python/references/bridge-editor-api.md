@@ -165,6 +165,43 @@ Fix up object redirectors under the given content paths (e.g. `/Game/Foo`). Re-s
 n = unreal.UnrealBridgeEditorLibrary.fixup_redirectors(['/Game'])
 ```
 
+### get_dirty_package_names() -> list[str]
+
+Package names of all currently-dirty packages in `/Game/` and plugin content mounts (`/Script/` and `/Temp/` are skipped). Useful for "what will be saved next?" style prompts.
+
+```python
+dirty = unreal.UnrealBridgeEditorLibrary.get_dirty_package_names()
+print('\n'.join(dirty))
+```
+
+### is_asset_dirty(asset_path) -> bool
+
+True if the asset's package has unsaved modifications.
+
+### mark_asset_dirty(asset_path) -> bool
+
+Mark the asset's package dirty — useful after direct C++/Python mutations that didn't already notify the package.
+
+### is_asset_editor_open(asset_path) -> bool
+
+True if an asset editor tab is currently open for this asset.
+
+```python
+if unreal.UnrealBridgeEditorLibrary.is_asset_editor_open('/Game/BP/BP_Hero'):
+    unreal.UnrealBridgeEditorLibrary.close_all_asset_editors()
+```
+
+### save_assets(asset_paths) -> int
+
+Save the listed assets silently (no save dialog). Returns the number of packages successfully written. Assets that couldn't be resolved are skipped.
+
+```python
+saved = unreal.UnrealBridgeEditorLibrary.save_assets([
+    '/Game/Data/DT_Weapons',
+    '/Game/BP/BP_Hero',
+])
+```
+
 ### compile_blueprints(blueprint_paths) -> list[FBridgeCompileResult]
 
 Compile the listed Blueprints. Returns per-BP success + error summary.

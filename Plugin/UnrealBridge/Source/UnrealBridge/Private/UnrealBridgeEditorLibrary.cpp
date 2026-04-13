@@ -570,4 +570,105 @@ TArray<FString> UUnrealBridgeEditorLibrary::ListCVars(const FString& Keyword)
 	return Out;
 }
 
+// ─── Dirty-state tracking ──────────────────────────────────
+
+namespace
+{
+	UPackage* FindPackageForAssetPath(const FString& AssetPath)
+	{
+		UObject* Asset = LoadAssetFromPath(AssetPath);
+		return Asset ? Asset->GetPackage() : nullptr;
+	}
+}
+
+TArray<FString> UUnrealBridgeEditorLibrary::GetDirtyPackageNames()
+{
+	TArray<FString> Out;
+	for (TObjectIterator<UPackage> It; It; ++It)
+	{
+		UPackage* Pkg = *It;
+		if (Pkg && Pkg->IsDirty())
+		{
+			const FString Name = Pkg->GetName();
+			// Skip script packages and engine transient buckets; keep /Game/ and plugin mounts.
+			if (!Name.StartsWith(TEXT("/Script/")) && !Name.StartsWith(TEXT("/Temp/")) && Name != TEXT("/Engine/Transient"))
+			{
+				Out.Add(Name);
+			}
+		}
+	}
+	Out.Sort();
+	return Out;
+}
+
+bool UUnrealBridgeEditorLibrary::IsAssetDirty(const FString& AssetPath)
+{
+	const UPackage* Pkg = FindPackageForAssetPath(AssetPath);
+	return Pkg && Pkg->IsDirty();
+}
+
+bool UUnrealBridgeEditorLibrary::MarkAssetDirty(const FString& AssetPath)
+{
+	UPackage* Pkg = FindPackageForAssetPath(AssetPath);
+	if (!Pkg)
+	{
+		return false;
+	}
+	Pkg->MarkPackageDirty();
+	return true;
+}
+
+bool UUnrealBridgeEditorLibrary::IsAssetEditorOpen(const FString& AssetPath)
+{
+	if (!GEditor)
+	{
+		return false;
+	}
+	UObject* Asset = LoadAssetFromPath(AssetPath);
+	if (!Asset)
+	{
+		return false;
+	}
+	UAssetEditorSubsystem* AES = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (!AES)
+	{
+		return false;
+	}
+	return AES->FindEditorForAsset(Asset, /*bFocusIfOpen=*/false) != nullptr;
+}
+
+int32 UUnrealBridgeEditorLibrary::SaveAssets(const TArray<FString>& AssetPaths)
+{
+	TArray<UPackage*> Packages;
+	Packages.Reserve(AssetPaths.Num());
+	for (const FString& P : AssetPaths)
+	{
+		if (UPackage* Pkg = FindPackageForAssetPath(P))
+		{
+			Packages.AddUnique(Pkg);
+		}
+	}
+	if (Packages.Num() == 0)
+	{
+		return 0;
+	}
+	const FEditorFileUtils::EPromptReturnCode Ret = FEditorFileUtils::PromptForCheckoutAndSave(
+		Packages,
+		/*bCheckDirty=*/false,
+		/*bPromptToSave=*/false);
+	if (Ret != FEditorFileUtils::PR_Success && Ret != FEditorFileUtils::PR_Declined)
+	{
+		return 0;
+	}
+	int32 Saved = 0;
+	for (UPackage* Pkg : Packages)
+	{
+		if (Pkg && !Pkg->IsDirty())
+		{
+			++Saved;
+		}
+	}
+	return Saved;
+}
+
 #undef LOCTEXT_NAMESPACE
