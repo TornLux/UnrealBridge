@@ -693,3 +693,210 @@ TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListGameplayTags(
 	}
 	return Results;
 }
+
+// ─── AttributeSet listing ───────────────────────────────────
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAttributeSets(
+	const FString& Filter, int32 MaxResults)
+{
+	TArray<FString> Results;
+
+	if (Filter.IsEmpty() && MaxResults <= 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: ListAttributeSets refuses empty filter with MaxResults=0."));
+		return Results;
+	}
+
+	TArray<UClass*> Derived;
+	GetDerivedClasses(UAttributeSet::StaticClass(), Derived, true);
+
+	const bool bHasFilter = !Filter.IsEmpty();
+	for (UClass* C : Derived)
+	{
+		if (!C || C->HasAnyClassFlags(CLASS_Abstract))
+		{
+			continue;
+		}
+		const FString Path = C->GetPathName();
+		if (bHasFilter && !Path.Contains(Filter))
+		{
+			continue;
+		}
+		Results.Add(Path);
+		if (MaxResults > 0 && Results.Num() >= MaxResults)
+		{
+			break;
+		}
+	}
+	return Results;
+}
+
+// ─── Live attribute read ────────────────────────────────────
+
+FBridgeAttributeValue UUnrealBridgeGameplayAbilityLibrary::GetAttributeValue(
+	const FString& ActorName, const FString& AttributeName)
+{
+	FBridgeAttributeValue Result;
+	Result.AttributeName = AttributeName;
+
+	AActor* Actor = BridgeGameplayAbilityImpl::FindEditorActor(ActorName);
+	if (!Actor)
+	{
+		return Result;
+	}
+
+	UAbilitySystemComponent* ASC = nullptr;
+	if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Actor))
+	{
+		ASC = ASI->GetAbilitySystemComponent();
+	}
+	if (!ASC)
+	{
+		ASC = Actor->FindComponentByClass<UAbilitySystemComponent>();
+	}
+	if (!ASC)
+	{
+		return Result;
+	}
+
+	// Accept "Set.Attribute" or bare "Attribute".
+	FString BareName = AttributeName;
+	int32 DotIdx;
+	if (AttributeName.FindChar('.', DotIdx))
+	{
+		BareName = AttributeName.Mid(DotIdx + 1);
+	}
+
+	for (const UAttributeSet* AS : ASC->GetSpawnedAttributes())
+	{
+		if (!AS)
+		{
+			continue;
+		}
+		for (TFieldIterator<FStructProperty> It(AS->GetClass()); It; ++It)
+		{
+			FStructProperty* Prop = *It;
+			if (!Prop || Prop->Struct != FGameplayAttributeData::StaticStruct())
+			{
+				continue;
+			}
+			if (Prop->GetName() != BareName)
+			{
+				continue;
+			}
+			FGameplayAttribute Attr(Prop);
+			Result.bFound = true;
+			Result.CurrentValue = ASC->GetNumericAttribute(Attr);
+			Result.BaseValue = ASC->GetNumericAttributeBase(Attr);
+			return Result;
+		}
+	}
+	return Result;
+}
+
+// ─── Active effects ─────────────────────────────────────────
+
+TArray<FBridgeActiveEffectInfo> UUnrealBridgeGameplayAbilityLibrary::GetActorActiveEffects(
+	const FString& ActorName, int32 MaxResults)
+{
+	TArray<FBridgeActiveEffectInfo> Results;
+
+	AActor* Actor = BridgeGameplayAbilityImpl::FindEditorActor(ActorName);
+	if (!Actor)
+	{
+		return Results;
+	}
+
+	UAbilitySystemComponent* ASC = nullptr;
+	if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Actor))
+	{
+		ASC = ASI->GetAbilitySystemComponent();
+	}
+	if (!ASC)
+	{
+		ASC = Actor->FindComponentByClass<UAbilitySystemComponent>();
+	}
+	if (!ASC)
+	{
+		return Results;
+	}
+
+	const UWorld* World = Actor->GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.f;
+
+	FGameplayEffectQuery EmptyQuery;
+	TArray<FActiveGameplayEffectHandle> Handles = ASC->GetActiveEffects(EmptyQuery);
+
+	for (const FActiveGameplayEffectHandle& H : Handles)
+	{
+		const FActiveGameplayEffect* AE = ASC->GetActiveGameplayEffect(H);
+		if (!AE)
+		{
+			continue;
+		}
+
+		FBridgeActiveEffectInfo Info;
+		if (AE->Spec.Def)
+		{
+			Info.EffectClassName = AE->Spec.Def->GetClass()->GetName();
+		}
+
+		const float Duration = AE->GetDuration();
+		Info.Duration = Duration;
+		// UE uses 0 for infinite on FActiveGameplayEffect::GetDuration(); -1 is clearer for callers.
+		Info.TimeRemaining = (Duration <= 0.f) ? -1.f : FMath::Max(0.f, AE->GetEndTime() - Now);
+		Info.PeriodSeconds = AE->Spec.GetPeriod();
+		Info.StackCount = AE->Spec.GetStackCount();
+
+		for (const FGameplayTag& T : AE->Spec.DynamicGrantedTags)
+		{
+			Info.DynamicGrantedTags.Add(T.ToString());
+		}
+
+		Results.Add(Info);
+		if (MaxResults > 0 && Results.Num() >= MaxResults)
+		{
+			break;
+		}
+	}
+	return Results;
+}
+
+// ─── Tag hierarchy browse ───────────────────────────────────
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::FindChildTags(
+	const FString& ParentTag, bool bRecursive)
+{
+	TArray<FString> Results;
+
+	const FGameplayTag Parent =
+		FGameplayTag::RequestGameplayTag(FName(*ParentTag), false);
+	if (!Parent.IsValid())
+	{
+		return Results;
+	}
+
+	UGameplayTagsManager& TagsManager = UGameplayTagsManager::Get();
+	const FGameplayTagContainer Children = TagsManager.RequestGameplayTagChildren(Parent);
+
+	const FString ParentStr = Parent.ToString();
+	int32 ParentDots = 0;
+	for (TCHAR C : ParentStr) { if (C == '.') ++ParentDots; }
+
+	for (const FGameplayTag& Child : Children)
+	{
+		const FString S = Child.ToString();
+		if (!bRecursive)
+		{
+			int32 ChildDots = 0;
+			for (TCHAR C : S) { if (C == '.') ++ChildDots; }
+			if (ChildDots != ParentDots + 1)
+			{
+				continue;
+			}
+		}
+		Results.Add(S);
+	}
+	return Results;
+}

@@ -182,6 +182,88 @@ if info.found:
 
 ---
 
+## List AttributeSets
+
+### list_attribute_sets(filter, max_results) -> list[str]
+
+List loaded `UAttributeSet` subclasses (native + already-loaded BP). BP attribute sets not yet loaded into memory will not appear — open a referencing asset first. Empty filter + `max_results=0` is refused.
+
+```python
+sets = unreal.UnrealBridgeGameplayAbilityLibrary.list_attribute_sets('MyGame', 50)
+for s in sets:
+    print(s)
+```
+
+---
+
+## Live Attribute Read
+
+### get_attribute_value(actor_name, attribute_name) -> FBridgeAttributeValue
+
+Read the current and base value of an attribute on an actor's ASC. `attribute_name` may be qualified (`"MyAttributeSet.Health"`) or bare (`"Health"`).
+
+```python
+v = unreal.UnrealBridgeGameplayAbilityLibrary.get_attribute_value('BP_Hero_C_1', 'Health')
+if v.found:
+    print(f'{v.attribute_name}: {v.current_value} (base {v.base_value})')
+```
+
+### FBridgeAttributeValue fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `attribute_name` | str | Echoed query |
+| `found` | bool | Resolved on a spawned AttributeSet |
+| `current_value` | float | Modified value |
+| `base_value` | float | Pre-modifier value |
+
+---
+
+## Active Effects
+
+### get_actor_active_effects(actor_name, max_results) -> list[FBridgeActiveEffectInfo]
+
+Enumerate currently active GameplayEffects on an actor's ASC with timing / stack data.
+
+> ⚠️ **Token cost: LOW–MEDIUM.** Output scales with active-effect count × granted-tag count. A heavily buffed raid boss can easily have 20+ concurrent effects; pass `max_results` to cap. Design-time tag-inheritance from the GE class is **not** included — use `get_gameplay_effect_blueprint_info` on the class for that. Only `Spec.DynamicGrantedTags` (runtime granted) is emitted here.
+
+```python
+effs = unreal.UnrealBridgeGameplayAbilityLibrary.get_actor_active_effects('BP_Hero_C_1', 0)
+for e in effs:
+    remain = 'infinite' if e.time_remaining < 0 else f'{e.time_remaining:.1f}s'
+    print(f'{e.effect_class_name} stacks={e.stack_count} remaining={remain} period={e.period_seconds}')
+    for t in e.dynamic_granted_tags:
+        print(f'  +{t}')
+```
+
+### FBridgeActiveEffectInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `effect_class_name` | str | GE class name |
+| `time_remaining` | float | Seconds left; -1 for infinite / no duration |
+| `duration` | float | Total duration at application |
+| `stack_count` | int | Current stacks |
+| `period_seconds` | float | Period (0 = non-periodic) |
+| `dynamic_granted_tags` | list[str] | Runtime dynamic tags on the spec |
+
+---
+
+## Tag Hierarchy Browse
+
+### find_child_tags(parent_tag, recursive) -> list[str]
+
+Enumerate children of a gameplay tag in the hierarchy. With `recursive=False`, returns only immediate children (one extra dot segment); `True` returns all descendants. Invalid parent → empty list.
+
+```python
+# Direct children
+immediate = unreal.UnrealBridgeGameplayAbilityLibrary.find_child_tags('Mover', False)
+# Whole subtree
+subtree = unreal.UnrealBridgeGameplayAbilityLibrary.find_child_tags('Ability.Combat', True)
+```
+
+---
+
 ## Gameplay Tag Registry
 
 ### list_gameplay_tags(filter, max_results) -> list[str]

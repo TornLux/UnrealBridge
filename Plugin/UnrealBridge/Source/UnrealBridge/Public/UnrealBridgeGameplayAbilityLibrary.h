@@ -152,6 +152,57 @@ struct FBridgeAttributeSetInfo
 	TArray<FBridgeAttributeInfo> Attributes;
 };
 
+/** Live attribute value read from an ASC. */
+USTRUCT(BlueprintType)
+struct FBridgeAttributeValue
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString AttributeName;
+
+	/** True when the attribute was resolved on the actor's ASC. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	/** Current (modified) value. */
+	UPROPERTY(BlueprintReadOnly)
+	float CurrentValue = 0.f;
+
+	/** Base value (pre-modifier). */
+	UPROPERTY(BlueprintReadOnly)
+	float BaseValue = 0.f;
+};
+
+/** One active GameplayEffect entry on an ASC. */
+USTRUCT(BlueprintType)
+struct FBridgeActiveEffectInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString EffectClassName;
+
+	/** Seconds remaining; -1 for infinite / non-duration effects. */
+	UPROPERTY(BlueprintReadOnly)
+	float TimeRemaining = 0.f;
+
+	/** Total duration of this application. */
+	UPROPERTY(BlueprintReadOnly)
+	float Duration = 0.f;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 StackCount = 1;
+
+	/** Period length for periodic effects (0 = non-periodic). */
+	UPROPERTY(BlueprintReadOnly)
+	float PeriodSeconds = 0.f;
+
+	/** Dynamic tags granted by the spec (design-time component tags live on the GE class). */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> DynamicGrantedTags;
+};
+
 // ─── Actor ASC structs ──────────────────────────────────────
 
 /** One granted ability spec entry on an ASC. */
@@ -265,4 +316,36 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
 	static TArray<FString> ListGameplayTags(const FString& Filter, int32 MaxResults);
+
+	/**
+	 * List loaded UAttributeSet subclasses (native + already-loaded BP).
+	 * Note: BP attribute sets that have not been loaded into memory yet will not appear; open a
+	 * relevant asset or run an ability that references them first.
+	 * @param Filter       Case-insensitive substring on class name/path; "" matches all (requires MaxResults > 0).
+	 * @param MaxResults   0 = unlimited (only when Filter is non-empty — empty filter + 0 is refused).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> ListAttributeSets(const FString& Filter, int32 MaxResults);
+
+	/**
+	 * Read a live attribute value off an actor's ASC.
+	 * @param ActorName        Actor label or name in the editor world.
+	 * @param AttributeName    Attribute field name; may be qualified ("MyAttributeSet.Health") or bare ("Health").
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static FBridgeAttributeValue GetAttributeValue(const FString& ActorName, const FString& AttributeName);
+
+	/**
+	 * Enumerate active GameplayEffects on an actor's ASC with remaining-time/stack metadata.
+	 * @param MaxResults   0 = unlimited.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FBridgeActiveEffectInfo> GetActorActiveEffects(const FString& ActorName, int32 MaxResults);
+
+	/**
+	 * Enumerate children of a gameplay tag in the tag hierarchy.
+	 * @param bRecursive   When true, returns all descendants; when false, only immediate children.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> FindChildTags(const FString& ParentTag, bool bRecursive);
 };
