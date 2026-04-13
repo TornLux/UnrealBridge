@@ -211,6 +211,10 @@ struct FBridgeNodeInfo
 	/** Node comment if any */
 	UPROPERTY(BlueprintReadOnly)
 	FString Comment;
+
+	/** NodeGuid (digits form, 32-hex); pass to connect_graph_pins / remove_graph_node / etc. */
+	UPROPERTY(BlueprintReadOnly)
+	FString NodeGuid;
 };
 
 // ─── Overview structs ───────────────────────────────────────

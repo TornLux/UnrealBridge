@@ -614,6 +614,7 @@ TArray<FBridgeNodeInfo> UUnrealBridgeBlueprintLibrary::GetFunctionNodes(
 			Info.Title = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
 			Info.NodeType = NodeType;
 			Info.Comment = Node->NodeComment;
+			Info.NodeGuid = Node->NodeGuid.ToString(EGuidFormats::Digits);
 
 			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
 			{
