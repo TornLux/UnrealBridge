@@ -54,10 +54,35 @@ Length-prefixed JSON over TCP on port 9876 (localhost only).
 
 ## Development Workflow
 
-1. Edit C++ source in `Plugin/UnrealBridge/Source/`
-2. Run `sync_plugin.bat` to copy plugin to the UE project
-3. Open/reload UE Editor to compile; check Output Log for `LogUnrealBridge` messages
-4. Test with `bridge.py ping` then run test scripts (`test_final.py`, etc.) via bridge
+Edit C++ source in `Plugin/UnrealBridge/Source/`, then run the standard sync → compile → launch → verify → shutdown pipeline below. If the editor is already running when you start, close it first (a running editor locks the plugin DLL and blocks sync/compile).
+
+1. **Sync plugin to project**
+   ```bash
+   cmd.exe //c "G:\\Claude\\UnrealBridge\\sync_plugin.bat"
+   ```
+   Mirrors `Plugin/UnrealBridge/` → `G:\UEProjects\GameplayLocomotion\Plugins\UnrealBridge\`.
+
+2. **Compile editor target** (headless, via UBT — no editor needed)
+   ```bash
+   cmd.exe //c "G:\\UEProjects\\GameplayLocomotion\\Build.bat"
+   ```
+   Defaults to `GameplayLocomotionEditor Win64 Development`. Stop and fix errors before proceeding — do not launch the editor on a failed build.
+
+3. **Launch editor** (detached so the shell returns immediately)
+   ```bash
+   cmd.exe //c start "" "G:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealEditor.exe" "G:\UEProjects\GameplayLocomotion\GameplayLocomotion.uproject"
+   ```
+
+4. **Wait for readiness, then verify new functionality**
+   - Poll `python .claude/skills/ue-python/scripts/bridge.py ping` until it connects (TCP server comes up at `PostEngineInit`).
+   - Confirm Python is live: `bridge.py exec "import unreal; print(unreal.SystemLibrary.get_project_directory())"`.
+   - Exercise the feature you changed via `bridge.py exec` or `exec-file` (e.g. call the new `unreal.<Library>.<method>()`). Check return values and `LogUnrealBridge` output.
+
+5. **Shut down the editor cleanly**
+   ```bash
+   python .claude/skills/ue-python/scripts/bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"
+   ```
+   Verify with `tasklist //FI "IMAGENAME eq UnrealEditor.exe"` — should report no matching process. Only fall back to `taskkill` if `quit_editor` fails to terminate.
 
 ## Important Notes
 

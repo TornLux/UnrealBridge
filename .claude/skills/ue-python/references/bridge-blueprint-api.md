@@ -255,6 +255,48 @@ for g in graphs:
 
 ---
 
+## Graph Analysis
+
+### get_function_call_graph(blueprint_path, function_name) -> list[FBridgeCallEdge]
+
+Return only the outgoing call edges of a function (what it calls). Lightweight — no node details, just the call relationships. Pass empty string for EventGraph.
+
+```python
+edges = unreal.UnrealBridgeBlueprintLibrary.get_function_call_graph('/Game/BP/MyBP', 'TakeDamage')
+for e in edges:
+    print(f'  -> [{e.target_kind}] {e.target_class}::{e.target_name}')
+```
+
+### FBridgeCallEdge fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `target_name` | str | Called function/event name |
+| `target_class` | str | Target class or object ("KismetMathLibrary", "Self", etc.) |
+| `target_kind` | str | "Function", "Event", "Macro" |
+
+### get_function_nodes(blueprint_path, function_name, node_type_filter) -> list[FBridgeNodeInfo]
+
+All nodes in a specific function graph. `function_name=""` = EventGraph. `node_type_filter` optional ("FunctionCall", "VariableGet", "VariableSet", "Branch", "Cast", "Macro", "Event", ...); empty = all nodes.
+
+```python
+nodes = unreal.UnrealBridgeBlueprintLibrary.get_function_nodes('/Game/BP/MyBP', '', 'FunctionCall')
+for n in nodes:
+    print(f'[{n.node_type}] {n.title}  target={n.target_class} var={n.variable_name}')
+```
+
+### FBridgeNodeInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | str | Node title as shown in editor |
+| `node_type` | str | "FunctionCall", "VariableGet", "VariableSet", "Branch", "ForEach", "Cast", "Event", "Macro", "Spawn", "Timeline", "Knot", "Other" |
+| `target_class` | str | For function calls: the target class |
+| `variable_name` | str | For variable nodes: the variable name |
+| `comment` | str | Node comment if any |
+
+---
+
 ## Execution Flow
 
 ### get_function_execution_flow(blueprint_path, function_name) -> list[FBridgeExecStep]
