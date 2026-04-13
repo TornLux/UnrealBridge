@@ -228,3 +228,45 @@ Select in the editor viewport. If `add_to_selection` is False, the selection is 
 ### set_actor_label(actor_name, new_label) -> bool
 
 ### set_actor_hidden_in_game(actor_name, hidden) -> bool
+
+---
+
+## Read — Spatial Queries
+
+### get_actor_bounds(actor_name) -> FBridgeActorBounds
+
+World-space bounds of `actor_name` (all colliding + non-colliding primitives, including child actors). Zero-bounds if the actor has no renderable/collision geometry or is missing.
+
+```python
+b = unreal.UnrealBridgeLevelLibrary.get_actor_bounds('BP_Cube_1')
+print(b.origin, b.box_extent, b.sphere_radius)
+```
+
+### FBridgeActorBounds fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `origin` | Vector | World-space center of the AABB |
+| `box_extent` | Vector | Half-extents on each axis |
+| `sphere_radius` | float | Bounding sphere radius |
+
+### get_actors_in_box(min, max, class_filter) -> list[str]
+
+Labels of actors whose world location lies inside the axis-aligned box `[min, max]`. Pass empty string for `class_filter` to match any class.
+
+```python
+names = unreal.UnrealBridgeLevelLibrary.get_actors_in_box(
+    unreal.Vector(-500,-500,0), unreal.Vector(500,500,500), '')
+```
+
+### find_nearest_actor(location, class_filter) -> str
+
+Label of the actor nearest to `location`, or empty string if none match `class_filter`.
+
+### get_actor_distance(actor_a, actor_b) -> float
+
+Distance between two actors' world locations in cm. Returns `-1.0` if either actor is missing.
+
+### is_actor_selected(actor_name) -> bool
+
+`True` if `actor_name` is currently selected in the editor viewport.
