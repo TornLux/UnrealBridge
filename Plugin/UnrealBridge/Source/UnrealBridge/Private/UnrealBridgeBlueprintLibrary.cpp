@@ -38,6 +38,11 @@
 #include "Engine/TimelineTemplate.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "Kismet2/KismetDebugUtilities.h"
+#include "Kismet2/Breakpoint.h"
+#include "K2Node_SpawnActorFromClass.h"
+#include "K2Node_MakeStruct.h"
+#include "K2Node_BreakStruct.h"
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -3023,6 +3028,211 @@ FString UUnrealBridgeBlueprintLibrary::AddDispatcherEventNode(
 			Node->CreateUserDefinedPin(It->GetFName(), PinType, EGPD_Output, /*bUseUniqueName*/false);
 		}
 	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ═══ P2 implementation ═══════════════════════════════════════════
+
+namespace BridgeBpP2Impl
+{
+	UScriptStruct* ResolveStruct(const FString& StructPath)
+	{
+		if (StructPath.IsEmpty()) return nullptr;
+		if (UScriptStruct* S = FindObject<UScriptStruct>(nullptr, *StructPath)) return S;
+		if (UScriptStruct* S = LoadObject<UScriptStruct>(nullptr, *StructPath)) return S;
+		if (UScriptStruct* S = FindFirstObject<UScriptStruct>(*StructPath, EFindFirstObjectOptions::NativeFirst))
+		{
+			return S;
+		}
+		return nullptr;
+	}
+
+	UK2Node_CallFunction* AddKSLCall(UBlueprint* BP, UEdGraph* Graph, const TCHAR* FnName, int32 X, int32 Y)
+	{
+		UFunction* Fn = UKismetSystemLibrary::StaticClass()->FindFunctionByName(FName(FnName));
+		if (!Fn) return nullptr;
+		UK2Node_CallFunction* Node = NewObject<UK2Node_CallFunction>(Graph);
+		Node->FunctionReference.SetExternalMember(Fn->GetFName(), UKismetSystemLibrary::StaticClass());
+		BridgeBpP0Impl::FinalizeNewNode(Graph, Node, X, Y);
+		return Node;
+	}
+}
+
+// ─── Batch A: CallFunction wrappers ────────────────────────────
+
+FString UUnrealBridgeBlueprintLibrary::AddDelayNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	float DurationSeconds, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+	Graph->Modify(); BP->Modify();
+	UK2Node_CallFunction* Node = BridgeBpP2Impl::AddKSLCall(BP, Graph, TEXT("Delay"), X, Y);
+	if (!Node) return FString();
+	if (UEdGraphPin* P = Node->FindPin(TEXT("Duration")))
+	{
+		GetDefault<UEdGraphSchema_K2>()->TrySetDefaultValue(*P, FString::SanitizeFloat(DurationSeconds));
+	}
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddSetTimerByFunctionNameNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& FunctionName, float TimeSeconds, bool bLooping, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+	Graph->Modify(); BP->Modify();
+	UK2Node_CallFunction* Node = BridgeBpP2Impl::AddKSLCall(BP, Graph, TEXT("K2_SetTimer"), X, Y);
+	if (!Node) return FString();
+	const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
+	if (UEdGraphPin* P = Node->FindPin(TEXT("FunctionName"))) K2->TrySetDefaultValue(*P, FunctionName);
+	if (UEdGraphPin* P = Node->FindPin(TEXT("Time")))         K2->TrySetDefaultValue(*P, FString::SanitizeFloat(TimeSeconds));
+	if (UEdGraphPin* P = Node->FindPin(TEXT("bLooping")))     K2->TrySetDefaultValue(*P, bLooping ? TEXT("true") : TEXT("false"));
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddSpawnActorFromClassNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& ActorClassPath, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+	UClass* SpawnClass = BridgeBlueprintGraphWriteImpl::ResolveTargetClass(BP, ActorClassPath);
+	if (!SpawnClass || !SpawnClass->IsChildOf(AActor::StaticClass())) return FString();
+	Graph->Modify(); BP->Modify();
+	UK2Node_SpawnActorFromClass* Node = NewObject<UK2Node_SpawnActorFromClass>(Graph);
+	// SpawnActorFromClass::PostPlacedNewNode requires pins to exist (uses FindPinChecked),
+	// so allocate pins first, add to graph, then post-place.
+	Node->CreateNewGuid();
+	Node->NodePosX = X;
+	Node->NodePosY = Y;
+	Graph->AddNode(Node, /*bFromUI*/false, /*bSelectNewNode*/false);
+	Node->AllocateDefaultPins();
+	Node->PostPlacedNewNode();
+	if (UEdGraphPin* ClassPin = Node->GetClassPin())
+	{
+		ClassPin->DefaultObject = SpawnClass;
+		ClassPin->DefaultValue.Empty();
+		// Trigger pin regeneration (exposed spawn vars) without a full reconstruct.
+		Node->PinDefaultValueChanged(ClassPin);
+	}
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── Batch B: Struct Make / Break ─────────────────────────────
+
+FString UUnrealBridgeBlueprintLibrary::AddMakeStructNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& StructPath, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+	UScriptStruct* S = BridgeBpP2Impl::ResolveStruct(StructPath);
+	// Allow native-make structs too by passing bForInternalUse=true (matches "advanced" UI path).
+	if (!S || !UK2Node_MakeStruct::CanBeMade(S, /*bForInternalUse*/true)) return FString();
+	Graph->Modify(); BP->Modify();
+	UK2Node_MakeStruct* Node = NewObject<UK2Node_MakeStruct>(Graph);
+	Node->StructType = S;
+	BridgeBpP0Impl::FinalizeNewNode(Graph, Node, X, Y);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddBreakStructNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& StructPath, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+	UScriptStruct* S = BridgeBpP2Impl::ResolveStruct(StructPath);
+	if (!S) return FString();
+	// Note: UK2Node_BreakStruct::CanBeBroken is not DLL-exported; rely on compile-time validation instead.
+	Graph->Modify(); BP->Modify();
+	UK2Node_BreakStruct* Node = NewObject<UK2Node_BreakStruct>(Graph);
+	Node->StructType = S;
+	BridgeBpP0Impl::FinalizeNewNode(Graph, Node, X, Y);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── Batch C: Graph extras ─────────────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::CreateMacroGraph(
+	const FString& BlueprintPath, const FString& MacroName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	const FName MName(*MacroName);
+	if (MName.IsNone()) return false;
+	for (UEdGraph* G : BP->MacroGraphs) { if (G && G->GetFName() == MName) return false; }
+
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, MName, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	FBlueprintEditorUtils::AddMacroGraph(BP, NewGraph, /*bIsUserCreated*/true, /*SignatureFromClass*/nullptr);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::AddBreakpoint(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, bool bEnabled)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+	FKismetDebugUtilities::CreateBreakpoint(BP, Node, bEnabled);
+	FKismetDebugUtilities::SetBreakpointEnabled(Node, BP, bEnabled);
+	return true;
+}
+
+// ─── Batch D: Timeline ─────────────────────────────────────────
+
+FString UUnrealBridgeBlueprintLibrary::AddTimelineNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& TimelineTemplateName, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+	if (!FBlueprintEditorUtils::DoesSupportTimelines(BP)) return FString();
+
+	FName TLName;
+	if (TimelineTemplateName.IsEmpty())
+	{
+		TLName = FBlueprintEditorUtils::FindUniqueTimelineName(BP);
+	}
+	else
+	{
+		TLName = FName(*TimelineTemplateName);
+	}
+
+	Graph->Modify(); BP->Modify();
+
+	UTimelineTemplate* Template = nullptr;
+	const int32 ExistingIdx = FBlueprintEditorUtils::FindTimelineIndex(BP, TLName);
+	if (ExistingIdx != INDEX_NONE)
+	{
+		Template = BP->Timelines[ExistingIdx];
+	}
+	else
+	{
+		Template = FBlueprintEditorUtils::AddNewTimeline(BP, TLName);
+	}
+	if (!Template) return FString();
+
+	UK2Node_Timeline* Node = NewObject<UK2Node_Timeline>(Graph);
+	Node->TimelineName = TLName;
+	Node->TimelineGuid = Template->TimelineGuid;
+	Node->bAutoPlay = Template->bAutoPlay;
+	Node->bLoop = Template->bLoop;
+	Node->bReplicated = Template->bReplicated;
+	Node->bIgnoreTimeDilation = Template->bIgnoreTimeDilation;
+	BridgeBpP0Impl::FinalizeNewNode(Graph, Node, X, Y);
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);

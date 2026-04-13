@@ -861,6 +861,91 @@ bind = lib.add_dispatcher_bind_node(bp, 'EventGraph', 'OnFired', False, 1700, 40
 
 ---
 
+## P2 — CallFunction convenience wrappers
+
+### add_delay_node(blueprint_path, graph_name, duration_seconds, x, y) -> str
+
+Insert a latent `Delay` node (`UKismetSystemLibrary::Delay`) and pre-fill the `Duration` pin. Returns the new node GUID.
+
+```python
+lib.add_delay_node(bp, 'EventGraph', 0.25, 600, 0)
+```
+
+### add_set_timer_by_function_name_node(blueprint_path, graph_name, function_name, time_seconds, looping, x, y) -> str
+
+Insert a "Set Timer by Function Name" node (`UKismetSystemLibrary::K2_SetTimer`) with `FunctionName` / `Time` / `bLooping` pin defaults pre-filled.
+
+```python
+lib.add_set_timer_by_function_name_node(bp, 'EventGraph', 'TickHandler', 0.5, True, 800, 0)
+```
+
+### add_spawn_actor_from_class_node(blueprint_path, graph_name, actor_class_path, x, y) -> str
+
+Insert a `K2Node_SpawnActorFromClass` node and default its `Class` pin to the resolved actor class. The class must be `AActor`-derived. After the class is set the node regenerates its exposed-spawn pins automatically.
+
+```python
+lib.add_spawn_actor_from_class_node(bp, 'EventGraph',
+    '/Script/Engine.StaticMeshActor', 1000, 0)
+```
+
+---
+
+## P2 — Struct Make / Break
+
+### add_make_struct_node(blueprint_path, graph_name, struct_path, x, y) -> str
+
+Insert a `K2Node_MakeStruct` for a `UScriptStruct`. Pass an asset path (`/Game/Foo/MyStruct`) for a Blueprint struct or a script path (`/Script/Engine.MaterialParameterInfo`) for a native one. Native structs that have a dedicated "Make X" function (e.g. `Vector`, `Rotator`, `Transform`) are still supported via the internal-use path; for those, prefer `add_call_function_node` against `MakeVector` / `MakeRotator` / `MakeTransform` for the standard editor look.
+
+```python
+lib.add_make_struct_node(bp, 'EventGraph',
+    '/Script/Engine.MaterialParameterInfo', 0, 200)
+```
+
+### add_break_struct_node(blueprint_path, graph_name, struct_path, x, y) -> str
+
+Insert a `K2Node_BreakStruct`. Same struct-path semantics as `add_make_struct_node`. Works with native-make structs (Vector etc.) since BreakStruct does not have the same restriction.
+
+```python
+lib.add_break_struct_node(bp, 'EventGraph', '/Script/CoreUObject.Vector', 400, 200)
+```
+
+---
+
+## P2 — Graph extras
+
+### create_macro_graph(blueprint_path, macro_name) -> bool
+
+Create a new user-defined macro graph on the Blueprint. Returns `False` if a macro with that name already exists. There is currently no `remove_macro_graph` — use a unique name per call if you need to re-create.
+
+```python
+lib.create_macro_graph(bp, 'IsTargetVisible')
+```
+
+### add_breakpoint(blueprint_path, graph_name, node_guid, enabled) -> bool
+
+Create or toggle a debug breakpoint on a node. If a breakpoint already exists the call is idempotent and just updates the enabled state. Useful for guiding the user when debugging a generated graph.
+
+```python
+node = lib.add_branch_node(bp, 'EventGraph', 0, 0)
+lib.add_breakpoint(bp, 'EventGraph', node, True)
+```
+
+---
+
+## P2 — Timeline
+
+### add_timeline_node(blueprint_path, graph_name, timeline_template_name, x, y) -> str
+
+Insert a `K2Node_Timeline`. If `timeline_template_name` is empty, a unique name is auto-generated. If a `UTimelineTemplate` with that name already exists on the Blueprint it is reused; otherwise a new template is created via `FBlueprintEditorUtils::AddNewTimeline`. Cost: medium-to-high — adds a new variable to the BP and triggers structural change.
+
+The returned node has no tracks yet. The current bridge has no track-edit API; populate tracks via the Timeline editor in UE, or use the Python `unreal.TimelineTemplate` reflection if you need tracks set programmatically.
+
+```python
+tl = lib.add_timeline_node(bp, 'EventGraph', 'Fade', 200, 600)
+```
+
+---
+
 ### End-to-end example — one node-graph build, one compile
 
 ```python

@@ -1005,4 +1005,54 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static FString AddDispatcherEventNode(const FString& BlueprintPath, const FString& GraphName,
 		const FString& DispatcherName, int32 X, int32 Y);
+
+	// ═══ P2 — CallFunction convenience wrappers ═════════════════════
+
+	/** Insert a Delay latent node (KismetSystemLibrary::Delay) with Duration pin default. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddDelayNode(const FString& BlueprintPath, const FString& GraphName,
+		float DurationSeconds, int32 X, int32 Y);
+
+	/** Insert a "Set Timer by Function Name" node (K2_SetTimer) with pin defaults set. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddSetTimerByFunctionNameNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& FunctionName, float TimeSeconds, bool bLooping, int32 X, int32 Y);
+
+	/** Insert a SpawnActorFromClass node with its Class pin defaulted to the given actor class. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddSpawnActorFromClassNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& ActorClassPath, int32 X, int32 Y);
+
+	// ═══ P2 — Struct Make / Break ═══════════════════════════════════
+
+	/** Insert a MakeStruct node for the given UScriptStruct path (e.g. /Script/CoreUObject.Vector). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddMakeStructNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& StructPath, int32 X, int32 Y);
+
+	/** Insert a BreakStruct node for the given UScriptStruct path. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddBreakStructNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& StructPath, int32 X, int32 Y);
+
+	// ═══ P2 — Graph extras ══════════════════════════════════════════
+
+	/** Create an empty user-defined macro graph. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool CreateMacroGraph(const FString& BlueprintPath, const FString& MacroName);
+
+	/** Create / toggle a debug breakpoint on a node (by GUID). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AddBreakpoint(const FString& BlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, bool bEnabled);
+
+	// ═══ P2 — Timeline ══════════════════════════════════════════════
+
+	/**
+	 * Insert a Timeline node. If TimelineTemplateName is empty, a unique name is chosen.
+	 * The node auto-creates a new UTimelineTemplate on the Blueprint if none exists with that name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddTimelineNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& TimelineTemplateName, int32 X, int32 Y);
 };
