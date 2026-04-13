@@ -489,6 +489,25 @@ struct FBridgeTimelineInfo
 	TArray<FBridgeTimelineTrack> Tracks;
 };
 
+/** A single message produced by the Blueprint compiler. */
+USTRUCT(BlueprintType)
+struct FBridgeCompileMessage
+{
+	GENERATED_BODY()
+
+	/** "Error" | "Warning" | "Note" | "Info" */
+	UPROPERTY(BlueprintReadOnly)
+	FString Severity;
+
+	/** Plain-text message with object/node tokens flattened to names. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Message;
+
+	/** NodeGuid (digits) of the first graph node referenced by the message, or "" if none. */
+	UPROPERTY(BlueprintReadOnly)
+	FString NodeGuid;
+};
+
 // ─── Function Library ────────────────────────────────────────
 
 UCLASS()
@@ -751,4 +770,239 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static bool SetGraphNodePosition(const FString& BlueprintPath, const FString& GraphName,
 		const FString& NodeGuid, int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Add a K2Node_Event that overrides a parent-class BlueprintImplementableEvent / BlueprintNativeEvent
+	 * (e.g. "ReceiveTick", "ReceiveBeginPlay" on AActor). If a matching event already exists on the graph
+	 * (including a "ghost" default event), its existing GUID is returned and it is re-enabled/repositioned.
+	 * @param ParentClassPath  Empty = BP's ParentClass; otherwise full class path.
+	 * @return node GUID on success, empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddEventNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& ParentClassPath, const FString& EventName, int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Set a pin's default (literal) value via the K2 schema. Accepts the same text form the Details
+	 * panel uses — e.g. "1.0", "(X=1,Y=0,Z=0)", "true".
+	 * @return true on success; false if node/pin missing or the schema rejects the value.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetPinDefaultValue(const FString& BlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, const FString& PinName, const FString& NewDefaultValue);
+
+	// ═══ P0 — Control-flow / basic nodes ═══════════════════════════
+
+	/** Add a Branch (If-Then-Else) node. Returns node GUID or "" on failure. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddBranchNode(const FString& BlueprintPath, const FString& GraphName,
+		int32 NodePosX, int32 NodePosY);
+
+	/** Add a Sequence node with the given number of Then pins (clamped 2..16). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddSequenceNode(const FString& BlueprintPath, const FString& GraphName,
+		int32 PinCount, int32 NodePosX, int32 NodePosY);
+
+	/** Add a DynamicCast node. `bPure` → no exec pins. `TargetClassPath` can be a native or BP class path. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddCastNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& TargetClassPath, bool bPure, int32 NodePosX, int32 NodePosY);
+
+	/** Add a Self reference node. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddSelfNode(const FString& BlueprintPath, const FString& GraphName,
+		int32 NodePosX, int32 NodePosY);
+
+	/** Add a Custom Event node (K2Node_CustomEvent) with the given name. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddCustomEventNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& EventName, int32 NodePosX, int32 NodePosY);
+
+	// ═══ P0 — Function/event graph management ═══════════════════════
+
+	/** Create an empty user-defined function graph (with default entry/return). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool CreateFunctionGraph(const FString& BlueprintPath, const FString& FunctionName);
+
+	/** Remove a user-defined function graph by name. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveFunctionGraph(const FString& BlueprintPath, const FString& FunctionName);
+
+	/** Rename a user-defined function graph. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RenameFunctionGraph(const FString& BlueprintPath, const FString& OldName, const FString& NewName);
+
+	/**
+	 * Add a parameter to a function graph.
+	 * `bIsReturn=false` → input pin on FunctionEntry. `bIsReturn=true` → output pin on FunctionResult
+	 * (result node auto-created if absent). TypeString uses the same format as AddBlueprintVariable.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AddFunctionParameter(const FString& BlueprintPath, const FString& FunctionName,
+		const FString& ParamName, const FString& TypeString, bool bIsReturn);
+
+	/**
+	 * Set flags on a function (pure, const, category, access).
+	 * AccessSpecifier: "public" | "protected" | "private" (empty = leave unchanged).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetFunctionMetadata(const FString& BlueprintPath, const FString& FunctionName,
+		bool bPure, bool bConst, const FString& Category, const FString& AccessSpecifier);
+
+	// ═══ P0 — Event Dispatcher write ops ════════════════════════════
+
+	/** Add a new Event Dispatcher (multicast delegate) with no parameters. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AddEventDispatcher(const FString& BlueprintPath, const FString& DispatcherName);
+
+	/** Remove an Event Dispatcher by name. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveEventDispatcher(const FString& BlueprintPath, const FString& DispatcherName);
+
+	/** Rename an Event Dispatcher. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RenameEventDispatcher(const FString& BlueprintPath, const FString& OldName, const FString& NewName);
+
+	/** Add a Call (Broadcast) node for a self Event Dispatcher. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddDispatcherCallNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& DispatcherName, int32 NodePosX, int32 NodePosY);
+
+	/** Add a Bind/Unbind node for a self Event Dispatcher. `bUnbind=true` → unbind. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddDispatcherBindNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& DispatcherName, bool bUnbind, int32 NodePosX, int32 NodePosY);
+
+	// NOTE: for "assign custom event to dispatcher", use AddCustomEventNode and connect
+	// its OutputDelegate to AddDispatcherBindNode's event pin manually.
+
+	// ═══ P0 — Interface override ════════════════════════════════════
+
+	/**
+	 * Materialize an interface function as an editable graph on this Blueprint.
+	 * No-op (returns true) if the function is already implemented or is an event-type member.
+	 * The interface must already be added via AddBlueprintInterface.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool ImplementInterfaceFunction(const FString& BlueprintPath,
+		const FString& InterfacePath, const FString& FunctionName);
+
+	/** Add a K2Node_Message ("Call Function (Message)") for an interface method. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddInterfaceMessageNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& InterfacePath, const FString& FunctionName, int32 NodePosX, int32 NodePosY);
+
+	// ═══ P0 — Variable metadata / type ══════════════════════════════
+
+	/**
+	 * Set common flags on a Blueprint member variable.
+	 * ReplicationMode: ""|"None"|"Replicated"|"RepNotify" (empty = leave unchanged).
+	 * Empty Category/Tooltip strings leave existing values untouched; pass " " (single space) to clear.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetVariableMetadata(const FString& BlueprintPath, const FString& VariableName,
+		bool bInstanceEditable, bool bBlueprintReadOnly, bool bExposeOnSpawn, bool bPrivate,
+		const FString& Category, const FString& Tooltip, const FString& ReplicationMode);
+
+	/** Change the type (and container kind) of an existing member variable. Uses AddBlueprintVariable's type syntax. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetVariableType(const FString& BlueprintPath, const FString& VariableName,
+		const FString& NewTypeString);
+
+	// ═══ P0 — Compile feedback ══════════════════════════════════════
+
+	/** Compile and return all messages (errors + warnings + notes). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeCompileMessage> GetCompileErrors(const FString& BlueprintPath);
+
+	// ═══ P1 — Control-flow: loops / select / literal ════════════════
+
+	/** Insert a ForEachLoop (or ForEachLoopWithBreak if bWithBreak) macro node. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddForeachNode(const FString& BlueprintPath, const FString& GraphName,
+		bool bWithBreak, int32 X, int32 Y);
+
+	/** Insert a ForLoop (or ForLoopWithBreak if bWithBreak) macro node. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddForLoopNode(const FString& BlueprintPath, const FString& GraphName,
+		bool bWithBreak, int32 X, int32 Y);
+
+	/** Insert a WhileLoop macro node. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddWhileLoopNode(const FString& BlueprintPath, const FString& GraphName,
+		int32 X, int32 Y);
+
+	/** Insert a Select node. Wildcard by default; discriminator/options wire up via pin connections. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddSelectNode(const FString& BlueprintPath, const FString& GraphName,
+		int32 X, int32 Y);
+
+	/** Insert a Make Literal <Type> call node. TypeString: Int|Int64|Float|Double|Bool|Byte|Name|String|Text. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddMakeLiteralNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& TypeString, const FString& Value, int32 X, int32 Y);
+
+	// ═══ P1 — Graph layout ═════════════════════════════════════════
+
+	/**
+	 * Align / distribute nodes. Axis: Left, Right, Top, Bottom, CenterHorizontal,
+	 * CenterVertical, DistributeHorizontal, DistributeVertical.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AlignNodes(const FString& BlueprintPath, const FString& GraphName,
+		const TArray<FString>& NodeGuids, const FString& Axis);
+
+	/** Add a comment box wrapping the provided node guids (pass empty to just position). Returns new comment GUID. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddCommentBox(const FString& BlueprintPath, const FString& GraphName,
+		const TArray<FString>& NodeGuids, const FString& Text,
+		int32 X, int32 Y, int32 Width, int32 Height);
+
+	/** Insert a reroute (knot) node. Caller wires pins afterwards via ConnectGraphPins. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddRerouteNode(const FString& BlueprintPath, const FString& GraphName,
+		int32 X, int32 Y);
+
+	/** State: Enabled | Disabled | DevelopmentOnly. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetNodeEnabled(const FString& BlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, const FString& EnabledState);
+
+	// ═══ P1 — Class settings ═══════════════════════════════════════
+
+	/** Change a Blueprint's parent class. Recompiles. HIGH RISK — may discard incompatible components/vars. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool ReparentBlueprint(const FString& BlueprintPath, const FString& NewParentPath);
+
+	/** Set BP display name / description / category / namespace. Empty string = leave unchanged. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetBlueprintMetadata(const FString& BlueprintPath,
+		const FString& DisplayName, const FString& Description,
+		const FString& Category, const FString& Namespace);
+
+	// ═══ P1 — Component tree ═══════════════════════════════════════
+
+	/** Move a component under a new parent (empty NewParentName = make it a scene root). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool ReparentComponent(const FString& BlueprintPath,
+		const FString& ComponentName, const FString& NewParentName);
+
+	/** Reorder a component within its current parent's child list (or root list). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool ReorderComponent(const FString& BlueprintPath,
+		const FString& ComponentName, int32 NewIndex);
+
+	/** Remove a component node from the SCS. Children are also removed (use carefully). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveComponent(const FString& BlueprintPath, const FString& ComponentName);
+
+	// ═══ P1 — Dispatcher event node ════════════════════════════════
+
+	/**
+	 * Create a CustomEvent whose signature matches the dispatcher's. Caller still needs
+	 * an AddDelegate node + a Self-typed target pin to actually bind it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddDispatcherEventNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& DispatcherName, int32 X, int32 Y);
 };

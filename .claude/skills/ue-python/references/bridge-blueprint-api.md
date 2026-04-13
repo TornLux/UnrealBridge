@@ -598,6 +598,267 @@ Remove a node by GUID; breaks all existing pin links first.
 
 Reposition a node. Cheap layout cleanup after a batch of creations.
 
+### add_event_node(blueprint_path, graph_name, parent_class_path, event_name, x, y) -> str
+
+Add a `K2Node_Event` that overrides a parent-class `BlueprintImplementableEvent` / `BlueprintNativeEvent` (e.g. `ReceiveTick`, `ReceiveBeginPlay` on `AActor`). Pass `""` for `parent_class_path` to use the BP's own `ParentClass`.
+
+Idempotent: if a matching event (including the default "ghost" `ReceiveBeginPlay` / `ReceiveTick` placeholder) is already on the graph, its existing GUID is returned and the node is re-enabled + repositioned instead of duplicated. Returns `""` if the parent class or function can't be resolved.
+
+```python
+tick_guid = lib.add_event_node('/Game/BP/BP_Hero', 'EventGraph',
+    '', 'ReceiveTick', 0, 0)                 # uses BP.ParentClass (AActor)
+bp_guid   = lib.add_event_node('/Game/BP/BP_Hero', 'EventGraph',
+    '/Script/Engine.Actor', 'ReceiveBeginPlay', 0, 200)
+```
+
+### set_pin_default_value(blueprint_path, graph_name, node_guid, pin_name, new_default_value) -> bool
+
+Set a pin's literal default via the K2 schema — the same text form the Details panel accepts: `"1.0"`, `"true"`, `"(X=1,Y=0,Z=0)"`, `"Hello"`, etc. Only affects unconnected pins (a connected pin ignores its default). Returns `False` if the node/pin is missing; the schema silently accepts malformed text, so verify with `get_node_pin_connections` if in doubt.
+
+```python
+print_g = lib.add_call_function_node(bp, g,
+    '/Script/Engine.KismetSystemLibrary', 'PrintString', 900, 0)
+lib.set_pin_default_value(bp, g, print_g, 'InString',  'Hello from bridge')
+lib.set_pin_default_value(bp, g, print_g, 'Duration',  '5.0')
+lib.set_pin_default_value(bp, g, print_g, 'TextColor', '(R=1,G=0,B=0,A=1)')
+```
+
+## P0 — Control-flow nodes
+
+Essential graph primitives beyond Call-Function / Variable Get-Set. All take `(x, y)` and return a node GUID string; empty string on failure. None auto-compile.
+
+### add_branch_node(blueprint_path, graph_name, x, y) -> str
+
+Add `K2Node_IfThenElse` (Branch). Pin names: `Condition` (in), `then` (exec out true), `else` (exec out false).
+
+```python
+br = lib.add_branch_node(bp, g, 400, 0)
+lib.connect_graph_pins(bp, g, some_bool_g, 'ReturnValue', br, 'Condition')
+```
+
+### add_sequence_node(blueprint_path, graph_name, pin_count, x, y) -> str
+
+`K2Node_ExecutionSequence`. `pin_count` clamped to `[2, 16]`. Pins `Then 0`, `Then 1`, … are added in order.
+
+### add_cast_node(blueprint_path, graph_name, target_class_path, pure, x, y) -> str
+
+`K2Node_DynamicCast`. `pure=True` → no exec pins (implicit cast). Pins: `Object` (in), `As<Class>` (out), + exec pair when impure. `target_class_path` accepts native (`/Script/Engine.Pawn`) or BP (`/Game/Foo/BP_X`) paths.
+
+### add_self_node(blueprint_path, graph_name, x, y) -> str
+
+`K2Node_Self` — the `self` reference. Pin: `self` (out).
+
+### add_custom_event_node(blueprint_path, graph_name, event_name, x, y) -> str
+
+Add a `K2Node_CustomEvent`. `event_name` is auto-uniquified against the BP (adds `_0`, `_1`, …) — check `get_function_nodes` if you need the final name. Pins: `OutputDelegate` (delegate out, used for Bind-to-Event patterns), `then` (exec out).
+
+## P0 — Function / event graph management
+
+Graph-level ops. All compile implicitly where needed.
+
+### create_function_graph(blueprint_path, function_name) -> bool
+
+Create an empty user-defined function graph with default entry + result nodes. Returns `False` if the name is taken.
+
+### remove_function_graph(blueprint_path, function_name) -> bool
+
+Remove a user function. Recompiles.
+
+### rename_function_graph(blueprint_path, old_name, new_name) -> bool
+
+Rename. Updates references across the BP.
+
+### add_function_parameter(blueprint_path, function_name, param_name, type_string, is_return) -> bool
+
+Add an input (`is_return=False`) or output/return pin (`is_return=True`). `type_string` syntax matches `add_blueprint_variable`: `"Int"`, `"Float"`, `"Vector"`, `"Array of Int"`, `"BP_Foo"`, etc. When `is_return=True` and the function has no result node yet, one is auto-created.
+
+```python
+lib.create_function_graph(bp, 'Fn_Add')
+lib.add_function_parameter(bp, 'Fn_Add', 'A',   'Int', False)
+lib.add_function_parameter(bp, 'Fn_Add', 'B',   'Int', False)
+lib.add_function_parameter(bp, 'Fn_Add', 'Sum', 'Int', True)
+```
+
+### set_function_metadata(blueprint_path, function_name, pure, const, category, access_specifier) -> bool
+
+Toggle `BlueprintPure` / `Const`, set Category, and access (`"public"` / `"protected"` / `"private"`; empty string = leave unchanged). Empty `category` also leaves unchanged.
+
+## P0 — Event Dispatcher write ops
+
+Event dispatchers = multicast delegates exposed on a BP. Creating one generates both a member variable (of `MulticastDelegate` type) and a signature graph.
+
+### add_event_dispatcher(blueprint_path, dispatcher_name) -> bool
+
+Create a new no-parameter event dispatcher. Recompiles. Returns `False` if the name collides with an existing variable or dispatcher.
+
+**Adding parameters**: after creation, open the signature graph via standard MyBlueprint UI, or use `add_function_parameter(bp, dispatcher_name, ...)` — the signature graph is indexed by the same name. (Params are not wired through this helper yet; manual edit is fine.)
+
+### remove_event_dispatcher(blueprint_path, dispatcher_name) -> bool
+
+Remove variable + signature graph.
+
+### rename_event_dispatcher(blueprint_path, old_name, new_name) -> bool
+
+Renames both the variable and the signature graph in sync.
+
+### add_dispatcher_call_node(blueprint_path, graph_name, dispatcher_name, x, y) -> str
+
+Add a **Call** (Broadcast) node. Pins: `execute` (in), `then` (out), plus any dispatcher params as inputs.
+
+### add_dispatcher_bind_node(blueprint_path, graph_name, dispatcher_name, unbind, x, y) -> str
+
+Add a **Bind** (`unbind=False`) or **Unbind** (`unbind=True`) node. Pins: `execute` (in), `then` (out), `Event` (delegate in) — wire this to a `CustomEvent`'s `OutputDelegate` to register a callback.
+
+```python
+ce   = lib.add_custom_event_node(bp, g, 'OnHealthChangedHandler', 0, 400)
+bind = lib.add_dispatcher_bind_node(bp, g, 'OnHealthChanged', False, 400, 400)
+lib.connect_graph_pins(bp, g, ce, 'OutputDelegate', bind, 'Event')
+```
+
+## P0 — Interface override
+
+### implement_interface_function(blueprint_path, interface_path, function_name) -> bool
+
+Materialize an interface function as an editable graph on this BP. Idempotent: returns `True` without duplicating if the function is already implemented.
+
+**Rules**:
+- Interface must already be added via `add_blueprint_interface`.
+- **Event-type interface members** (no return / no out params, `BlueprintImplementableEvent`-style) return `False` — for those use `add_event_node` on the EventGraph instead.
+- **Function-type members** get a new function graph with the interface's signature (auto-created by `add_blueprint_interface` already; this helper is the explicit path for cases where it wasn't).
+
+### add_interface_message_node(blueprint_path, graph_name, interface_path, function_name, x, y) -> str
+
+Add a `K2Node_Message` — the "Call Function (Message)" variant that dispatches against any object that may-or-may-not implement the interface. Pins include `Target` (object ref input) plus the interface function's params.
+
+## P0 — Variable metadata / type
+
+### set_variable_metadata(blueprint_path, variable_name, instance_editable, blueprint_read_only, expose_on_spawn, private, category, tooltip, replication_mode) -> bool
+
+Bulk-set editor-panel flags. Pass empty string for `category`/`tooltip`/`replication_mode` to leave unchanged.
+
+- `replication_mode`: `""` (leave) | `"None"` | `"Replicated"` | `"RepNotify"` (RepNotify function name must be wired separately — not covered here)
+- `private` toggles the `BlueprintPrivate` metadata key
+
+```python
+lib.set_variable_metadata(bp, 'Health',
+    instance_editable=True, blueprint_read_only=False,
+    expose_on_spawn=True, private=False,
+    category='Stats', tooltip='Current health', replication_mode='Replicated')
+```
+
+### set_variable_type(blueprint_path, variable_name, new_type_string) -> bool
+
+Change the type of an existing member variable in-place. Accepts container syntax — `"Array of Int"`, `"Array of Vector"`, etc. Triggers a recompile. Nodes referencing the old type may error in the compile log — inspect with `get_compile_errors` after.
+
+## P0 — Compile feedback
+
+### get_compile_errors(blueprint_path) -> list[FBridgeCompileMessage]
+
+Compile the BP and return all compiler messages (errors + warnings + notes + info). `FBridgeCompileMessage` fields:
+
+- `severity: str` — `"Error"` | `"Warning"` | `"Note"` | `"Info"`
+- `message: str` — flattened human-readable message
+- `node_guid: str` — GUID of the first referenced graph node, or `""`
+
+**Cost: medium-to-high** — a clean compile returns ~1 Info message, but a broken BP can easily return 20–100 messages with long descriptive text. Filter client-side by severity before printing if you only care about errors:
+
+```python
+msgs = lib.get_compile_errors(bp)
+errs = [m for m in msgs if m.severity == 'Error']
+for e in errs[:10]:
+    print(f'{e.message[:200]}  node={e.node_guid}')
+```
+
+---
+
+## P1 — Loops, Select, Literal
+
+Macro-based nodes live in `/Engine/EditorBlueprintResources/StandardMacros`. These helpers spawn `K2Node_MacroInstance` pointed at the right macro graph.
+
+### add_foreach_node(blueprint_path, graph_name, with_break, x, y) -> str
+### add_for_loop_node(blueprint_path, graph_name, with_break, x, y) -> str
+### add_while_loop_node(blueprint_path, graph_name, x, y) -> str
+
+Loops. `with_break=True` yields the `WithBreak` variant with an extra Break exec pin.
+
+```python
+lib.add_foreach_node(bp, 'EventGraph', False, 800, 400)   # ForEachLoop
+lib.add_for_loop_node(bp, 'EventGraph', True, 800, 600)   # ForLoopWithBreak
+lib.add_while_loop_node(bp, 'EventGraph', 800, 800)
+```
+
+### add_select_node(blueprint_path, graph_name, x, y) -> str
+
+Wildcard `K2Node_Select`. Pin type / option count auto-resolve once you wire the Index pin (Bool / Byte / Enum / Int).
+
+### add_make_literal_node(blueprint_path, graph_name, type_string, value, x, y) -> str
+
+Wraps `UKismetSystemLibrary::MakeLiteral<T>`. `type_string` is one of: `Int`, `Int64`, `Float` (→Double), `Double`, `Bool`, `Byte`, `Name`, `String`, `Text`. `value` is assigned to the `Value` pin default (pass empty string to leave default).
+
+```python
+lib.add_make_literal_node(bp, 'EventGraph', 'Int',    '42',    1000, 200)
+lib.add_make_literal_node(bp, 'EventGraph', 'String', 'hello', 1000, 300)
+```
+
+## P1 — Layout ops
+
+### align_nodes(blueprint_path, graph_name, guids, axis) -> bool
+
+Align or distribute 2+ selected nodes. `axis` ∈ `Left`, `Right`, `Top`, `Bottom`, `CenterHorizontal`, `CenterVertical`, `DistributeHorizontal`, `DistributeVertical`. Matches the editor's Q/W/A/S/align-distribute shortcuts.
+
+### add_comment_box(blueprint_path, graph_name, guids, text, x, y, width, height) -> str
+
+Create a comment frame. If `guids` is non-empty, the frame auto-sizes to fit those nodes (x/y/width/height ignored); otherwise places at (x,y) with size (width,height) (defaults 400×200 if zero). Returns the comment's GUID.
+
+### add_reroute_node(blueprint_path, graph_name, x, y) -> str
+
+Insert a `K2Node_Knot` pass-through. Wire pins yourself with `connect_graph_pins` — Knot input pin is `0`, output pin is `1`.
+
+### set_node_enabled(blueprint_path, graph_name, node_guid, state) -> bool
+
+`state` ∈ `Enabled`, `Disabled`, `DevelopmentOnly`.
+
+## P1 — Class settings
+
+### reparent_blueprint(blueprint_path, new_parent_path) -> bool
+
+Change the BP's parent class and recompile. **HIGH RISK** — reparenting outside the current hierarchy can drop components, variables, and function overrides that don't exist on the new parent. Returns `True` if already parented to the same class (noop) or after a successful reparent.
+
+### set_blueprint_metadata(blueprint_path, display_name, description, category, namespace) -> bool
+
+Set class-level metadata. Pass an empty string to leave a field unchanged.
+
+```python
+lib.set_blueprint_metadata(bp, 'My Hero', 'Player pawn', 'Bridge|Demo', '')
+```
+
+## P1 — Component tree
+
+### reparent_component(blueprint_path, component_name, new_parent_name) -> bool
+
+Detach the SCS node and reattach under `new_parent_name` (empty string → promote to scene root).
+
+### reorder_component(blueprint_path, component_name, new_index) -> bool
+
+Reorder within the current parent's child list (or the root list if the component is a root node). Index is clamped to valid range.
+
+### remove_component(blueprint_path, component_name) -> bool
+
+Delete an SCS node. Children are removed too — use `reparent_component` first if you want to keep them.
+
+## P1 — Dispatcher event node
+
+### add_dispatcher_event_node(blueprint_path, graph_name, dispatcher_name, x, y) -> str
+
+Create a `K2Node_CustomEvent` whose signature (output pins) matches the dispatcher's delegate signature. Typically wired via an `add_dispatcher_bind_node(..., unbind=False)` + a `Self` → Target pin — the CustomEvent's Delegate output pin connects to the Bind node's Event pin.
+
+```python
+lib.add_event_dispatcher(bp, 'OnFired')
+evt  = lib.add_dispatcher_event_node(bp, 'EventGraph', 'OnFired', 1400, 400)
+bind = lib.add_dispatcher_bind_node(bp, 'EventGraph', 'OnFired', False, 1700, 400)
+# wire:  evt.Delegate → bind.Event ;  Self node → bind.Target
+```
+
 ---
 
 ### End-to-end example — one node-graph build, one compile
