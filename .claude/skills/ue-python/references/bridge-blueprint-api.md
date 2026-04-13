@@ -547,3 +547,73 @@ unreal.UnrealBridgeBlueprintLibrary.add_blueprint_component(
     'BodyMesh',  # attach under BodyMesh
 )
 ```
+
+---
+
+## Graph Node Write Ops
+
+Low-level graph manipulation. **Token budget matters here** — these calls return only a GUID (create) or bool (connect/remove/move) so a multi-node build doesn't flood context. Do not re-read the whole graph after each op; track GUIDs in your script and only call `get_function_nodes` when you actually need to inspect.
+
+**Layout convention**: caller owns positions. Default grid of **300px column × 150px row** keeps a graph readable — build exec flow left-to-right, keep data inputs above/below the consuming node. Always pass deliberate `(x, y)` so the graph opens tidy; overlapping nodes are the #1 reason a graph becomes unreadable.
+
+**Compile**: none of these auto-compile. Run one `compile_blueprints([path])` after a batch of edits, not per-op.
+
+### add_call_function_node(blueprint_path, graph_name, target_class_path, function_name, x, y) -> str
+
+Create a Call-Function node. Pass `""` for `target_class_path` to call on self. Returns the node GUID (32-hex-char string) or `""` on failure.
+
+```python
+guid = unreal.UnrealBridgeBlueprintLibrary.add_call_function_node(
+    '/Game/BP/BP_Hero', 'EventGraph',
+    '/Script/Engine.KismetSystemLibrary', 'PrintString',
+    400, 0)
+```
+
+### add_variable_node(blueprint_path, graph_name, variable_name, is_set, x, y) -> str
+
+Create a Variable Get (`is_set=False`) or Set (`is_set=True`) node for a self-member variable (declared on the BP or inherited). Returns node GUID or `""` on failure.
+
+```python
+get_guid = lib.add_variable_node('/Game/BP/BP_Hero', 'EventGraph', 'Health', False, 0, 200)
+set_guid = lib.add_variable_node('/Game/BP/BP_Hero', 'EventGraph', 'Health', True,  400, 200)
+```
+
+### connect_graph_pins(blueprint_path, graph_name, src_node_guid, src_pin_name, dst_node_guid, dst_pin_name) -> bool
+
+Connect pins through the K2 schema. Handles type coercion (e.g. int → string auto-inserts a conversion where supported). Returns `False` when nodes/pins are missing or types are incompatible.
+
+Use `get_node_pin_connections` or `get_function_nodes` to look up pin names when unsure.
+
+```python
+lib.connect_graph_pins('/Game/BP/BP_Hero', 'EventGraph',
+    get_guid, 'Health',       # source: VarGet.Health output
+    set_guid, 'Health')       # target: VarSet.Health input
+```
+
+### remove_graph_node(blueprint_path, graph_name, node_guid) -> bool
+
+Remove a node by GUID; breaks all existing pin links first.
+
+### set_graph_node_position(blueprint_path, graph_name, node_guid, x, y) -> bool
+
+Reposition a node. Cheap layout cleanup after a batch of creations.
+
+---
+
+### End-to-end example — one node-graph build, one compile
+
+```python
+lib = unreal.UnrealBridgeBlueprintLibrary
+bp = '/Game/BP/BP_Hero'
+g  = 'EventGraph'
+
+get_g = lib.add_variable_node(bp, g, 'Health', False,   0, 200)
+set_g = lib.add_variable_node(bp, g, 'Health', True,  600, 200)
+print_g = lib.add_call_function_node(bp, g,
+    '/Script/Engine.KismetSystemLibrary', 'PrintString',  900, 0)
+
+lib.connect_graph_pins(bp, g, get_g, 'Health', set_g, 'Health')
+lib.connect_graph_pins(bp, g, get_g, 'Health', print_g, 'InString')
+
+unreal.UnrealBridgeEditorLibrary.compile_blueprints([bp])
+```

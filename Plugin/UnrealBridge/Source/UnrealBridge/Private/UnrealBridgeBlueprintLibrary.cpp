@@ -1681,3 +1681,208 @@ bool UUnrealBridgeBlueprintLibrary::AddBlueprintComponent(
 	FKismetEditorUtilities::CompileBlueprint(BP);
 	return true;
 }
+
+// ─── Graph node write ops ──────────────────────────────────
+
+namespace BridgeBlueprintGraphWriteImpl
+{
+	UEdGraph* FindGraphByName(UBlueprint* BP, const FString& GraphName)
+	{
+		if (!BP) return nullptr;
+		for (UEdGraph* G : BP->FunctionGraphs) { if (G && G->GetName() == GraphName) return G; }
+		for (UEdGraph* G : BP->UbergraphPages) { if (G && G->GetName() == GraphName) return G; }
+		for (UEdGraph* G : BP->MacroGraphs)    { if (G && G->GetName() == GraphName) return G; }
+		for (UEdGraph* G : BP->DelegateSignatureGraphs) { if (G && G->GetName() == GraphName) return G; }
+		return nullptr;
+	}
+
+	UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FString& GuidStr)
+	{
+		if (!Graph) return nullptr;
+		FGuid Guid;
+		if (!FGuid::Parse(GuidStr, Guid)) return nullptr;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (N && N->NodeGuid == Guid) return N;
+		}
+		return nullptr;
+	}
+
+	UClass* ResolveTargetClass(UBlueprint* BP, const FString& TargetClassPath)
+	{
+		if (TargetClassPath.IsEmpty())
+		{
+			return BP->GeneratedClass ? BP->GeneratedClass : BP->ParentClass;
+		}
+		if (UClass* C = FindObject<UClass>(nullptr, *TargetClassPath))
+		{
+			return C;
+		}
+		if (UClass* C = LoadObject<UClass>(nullptr, *TargetClassPath))
+		{
+			return C;
+		}
+		// Try BP asset path (auto-append _C).
+		const FString WithC = TargetClassPath.EndsWith(TEXT("_C"))
+			? TargetClassPath : TargetClassPath + TEXT("_C");
+		if (UClass* C = LoadObject<UClass>(nullptr, *WithC))
+		{
+			return C;
+		}
+		if (UBlueprint* Other = LoadObject<UBlueprint>(nullptr, *TargetClassPath))
+		{
+			return Other->GeneratedClass;
+		}
+		return nullptr;
+	}
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddCallFunctionNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& TargetClassPath, const FString& FunctionName,
+	int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return FString();
+
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+
+	UClass* TargetClass = BridgeBlueprintGraphWriteImpl::ResolveTargetClass(BP, TargetClassPath);
+	if (!TargetClass) return FString();
+
+	UFunction* Fn = TargetClass->FindFunctionByName(FName(*FunctionName));
+	if (!Fn) return FString();
+
+	Graph->Modify();
+	BP->Modify();
+
+	UK2Node_CallFunction* Node = NewObject<UK2Node_CallFunction>(Graph);
+	Node->CreateNewGuid();
+	Node->SetFromFunction(Fn);
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, /*bFromUI*/false, /*bSelectNewNode*/false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddVariableNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& VariableName, bool bIsSet,
+	int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return FString();
+
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+
+	const FName VarFName(*VariableName);
+
+	// Resolve against either this BP's declared vars or an inherited property.
+	bool bSelfDeclared = false;
+	for (const FBPVariableDescription& V : BP->NewVariables)
+	{
+		if (V.VarName == VarFName) { bSelfDeclared = true; break; }
+	}
+	UClass* SearchClass = BP->GeneratedClass ? BP->GeneratedClass : BP->ParentClass;
+	FProperty* Prop = SearchClass ? FindFProperty<FProperty>(SearchClass, VarFName) : nullptr;
+	if (!bSelfDeclared && !Prop)
+	{
+		return FString();
+	}
+
+	Graph->Modify();
+	BP->Modify();
+
+	UK2Node_Variable* Node = bIsSet
+		? (UK2Node_Variable*)NewObject<UK2Node_VariableSet>(Graph)
+		: (UK2Node_Variable*)NewObject<UK2Node_VariableGet>(Graph);
+	Node->CreateNewGuid();
+	Node->VariableReference.SetSelfMember(VarFName);
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, false, false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+bool UUnrealBridgeBlueprintLibrary::ConnectGraphPins(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& SourceNodeGuid, const FString& SourcePinName,
+	const FString& TargetNodeGuid, const FString& TargetPinName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+
+	UEdGraphNode* SrcNode = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, SourceNodeGuid);
+	UEdGraphNode* DstNode = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, TargetNodeGuid);
+	if (!SrcNode || !DstNode) return false;
+
+	UEdGraphPin* SrcPin = SrcNode->FindPin(SourcePinName);
+	UEdGraphPin* DstPin = DstNode->FindPin(TargetPinName);
+	if (!SrcPin || !DstPin) return false;
+
+	const UEdGraphSchema* Schema = Graph->GetSchema();
+	if (!Schema) return false;
+
+	Graph->Modify();
+	BP->Modify();
+
+	const bool bConnected = Schema->TryCreateConnection(SrcPin, DstPin);
+	if (bConnected)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	}
+	return bConnected;
+}
+
+bool UUnrealBridgeBlueprintLibrary::RemoveGraphNode(
+	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+
+	UEdGraphNode* Node = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+
+	Graph->Modify();
+	BP->Modify();
+	Node->BreakAllNodeLinks();
+	Graph->RemoveNode(Node);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::SetGraphNodePosition(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+
+	UEdGraphNode* Node = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+
+	Node->Modify();
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}

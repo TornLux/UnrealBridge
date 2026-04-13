@@ -709,4 +709,46 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static bool AddBlueprintComponent(const FString& BlueprintPath, const FString& ComponentClassPath, const FString& ComponentName, const FString& ParentComponentName);
+
+	// ── Graph node write ops ──
+	// Intentionally return minimal values (GUID or bool) to keep round-trip cost low.
+	// None auto-compile; call CompileBlueprint once after a batch of graph edits.
+	// Callers drive layout via explicit (X, Y) — recommended: 300px column, 150px row spacing.
+
+	/**
+	 * Add a Call-Function node to a graph.
+	 * @param TargetClassPath  Empty for self (the Blueprint's own generated/parent class); otherwise a class path.
+	 * @return node GUID on success, empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddCallFunctionNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& TargetClassPath, const FString& FunctionName, int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Add a VariableGet (bIsSet=false) or VariableSet (bIsSet=true) node for a self-member variable.
+	 * Variable may be declared on the Blueprint or inherited from a parent.
+	 * @return node GUID on success, empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddVariableNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& VariableName, bool bIsSet, int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Connect two pins identified by node GUID + pin name. Uses the K2 schema's TryCreateConnection
+	 * so it respects type coercion and exec-link rules.
+	 * @return true on success; false when nodes/pins missing or types incompatible.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool ConnectGraphPins(const FString& BlueprintPath, const FString& GraphName,
+		const FString& SourceNodeGuid, const FString& SourcePinName,
+		const FString& TargetNodeGuid, const FString& TargetPinName);
+
+	/** Remove a node by GUID, breaking all its pin links. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveGraphNode(const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid);
+
+	/** Reposition a node by GUID for tidy layout. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetGraphNodePosition(const FString& BlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, int32 NodePosX, int32 NodePosY);
 };
