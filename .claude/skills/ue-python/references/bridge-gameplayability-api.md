@@ -373,6 +373,85 @@ for p in all_abilities:
 
 ---
 
+## List GameplayEffect Blueprints
+
+### list_gameplay_effect_blueprints(filter, max_results) -> list[str]
+
+AssetRegistry scan for every `UGameplayEffect` Blueprint asset path with optional case-insensitive path substring filter. Empty filter + `max_results=0` is **refused**.
+
+Complements `list_gameplay_effects_by_tag` when you don't yet know which tags the project registers, or when inspecting effects by folder convention.
+
+> ⚠️ **Token cost: MEDIUM–HIGH on large projects.** Loads every Blueprint asset to test class hierarchy (same cost profile as `list_ability_blueprints`). Prefer a narrow filter.
+
+```python
+ges = unreal.UnrealBridgeGameplayAbilityLibrary.list_gameplay_effect_blueprints('/Game/Effects', 100)
+for p in ges:
+    print(p)
+```
+
+---
+
+## List AttributeSet Blueprints
+
+### list_attribute_set_blueprints(filter, max_results) -> list[str]
+
+AssetRegistry scan for on-disk `UAttributeSet` BP subclasses — reports them without loading the classes (unlike `list_attribute_sets`, which only reports already-loaded classes). **Native** AttributeSets do not appear here; use `list_attribute_sets` for those. Empty filter + `max_results=0` is refused.
+
+Use both together to get a complete picture:
+
+```python
+loaded = unreal.UnrealBridgeGameplayAbilityLibrary.list_attribute_sets('', 200)
+bp = unreal.UnrealBridgeGameplayAbilityLibrary.list_attribute_set_blueprints('', 200)
+# loaded covers natives + already-loaded BPs; bp covers on-disk BPs even when unloaded.
+```
+
+> Token cost: MEDIUM. BP AttributeSets are uncommon in most projects, so output is typically small.
+
+---
+
+## Tag Validation / Matching
+
+### is_valid_gameplay_tag(tag_string) -> bool
+### tag_matches(tag_a, tag_b, exact_match) -> bool
+
+Cheap no-side-effect helpers for tag plumbing:
+
+- `is_valid_gameplay_tag` → `True` when `tag_string` is registered with `UGameplayTagsManager`. Use before any tag-query call to avoid silent empty results on typos.
+- `tag_matches(A, B, exact)`:
+  - `exact=True` → `A == B`
+  - `exact=False` → `A == B` OR `B` is a descendant of `A` (i.e. `B.MatchesTag(A)`, so parent tags match children). **Order matters**: the first arg is the parent query, the second is the candidate.
+  - Returns `False` when either tag is unregistered.
+
+> Token cost: MINIMAL. Safe in hot loops.
+
+```python
+GA = unreal.UnrealBridgeGameplayAbilityLibrary
+if GA.is_valid_gameplay_tag('Ability.Combat.Melee'):
+    print(GA.tag_matches('Ability.Combat', 'Ability.Combat.Melee', False))  # True
+    print(GA.tag_matches('Ability.Combat', 'Ability.Combat.Melee', True))   # False
+```
+
+---
+
+## Batch Live Attribute Read
+
+### get_actor_attributes(actor_name) -> list[FBridgeAttributeValue]
+
+Return every live attribute on every spawned AttributeSet of an actor's ASC in one call. Each entry's `attribute_name` is qualified (`"MyAttributeSet.Health"`) so you can distinguish attributes that share a bare name across sets.
+
+Cheaper than looping `get_attribute_value` per attribute — a single ASC walk and no per-call actor lookup. Empty list when the actor has no ASC or no spawned attribute sets.
+
+> Token cost: LOW–MEDIUM. Scales with attribute count (usually 5–30 per actor).
+
+```python
+for a in unreal.UnrealBridgeGameplayAbilityLibrary.get_actor_attributes('BP_Hero_C_1'):
+    print(f'{a.attribute_name}: {a.current_value} (base {a.base_value})')
+```
+
+All returned entries have `found=True`; the field is kept for struct-schema parity with `get_attribute_value`.
+
+---
+
 ## Gameplay Tag Registry
 
 ### list_gameplay_tags(filter, max_results) -> list[str]

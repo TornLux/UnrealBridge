@@ -428,4 +428,46 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
 	static TArray<FString> ListAbilityBlueprints(const FString& Filter, int32 MaxResults);
+
+	/**
+	 * List all UGameplayEffect Blueprint asset paths in the AssetRegistry, with optional case-insensitive
+	 * path substring filter. Empty filter + MaxResults=0 is refused. Complements ListGameplayEffectsByTag
+	 * when you don't yet know which tags are registered in the project.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> ListGameplayEffectBlueprints(const FString& Filter, int32 MaxResults);
+
+	/**
+	 * List UAttributeSet Blueprint asset paths in the AssetRegistry. Unlike ListAttributeSets (which only
+	 * reports loaded classes), this finds on-disk BP subclasses without loading them. Native AttributeSet
+	 * classes are not included here — use ListAttributeSets for those.
+	 * Empty filter + MaxResults=0 is refused.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> ListAttributeSetBlueprints(const FString& Filter, int32 MaxResults);
+
+	/**
+	 * Quick validity check — true when TagString is registered with UGameplayTagsManager.
+	 * No side effects; safe to call in a hot loop to sanitise user-supplied tag input before
+	 * passing to tag-query calls.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool IsValidGameplayTag(const FString& TagString);
+
+	/**
+	 * Test whether TagA matches TagB under gameplay-tag hierarchy rules.
+	 *  - bExactMatch=true  → true only when A == B.
+	 *  - bExactMatch=false → true when A equals B or any ancestor of B equals A (A matches B via MatchesTag on B, i.e. B is a descendant of A or equal).
+	 * Returns false when either tag is unregistered.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool TagMatches(const FString& TagA, const FString& TagB, bool bExactMatch);
+
+	/**
+	 * Read every live attribute on every spawned AttributeSet of an actor's ASC in one call.
+	 * Cheaper than looping GetAttributeValue per attribute — a single ASC walk. Empty list when
+	 * the actor has no ASC or no spawned attribute sets.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FBridgeAttributeValue> GetActorAttributes(const FString& ActorName);
 };

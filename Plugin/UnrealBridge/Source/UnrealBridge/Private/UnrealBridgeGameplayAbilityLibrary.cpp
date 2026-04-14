@@ -1142,6 +1142,188 @@ TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAbilityBlueprints(
 	return Results;
 }
 
+// ─── List GE / AttributeSet Blueprints ──────────────────────
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListGameplayEffectBlueprints(
+	const FString& Filter, int32 MaxResults)
+{
+	TArray<FString> Results;
+
+	if (Filter.IsEmpty() && MaxResults <= 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: ListGameplayEffectBlueprints refuses empty filter with MaxResults=0."));
+		return Results;
+	}
+
+	FAssetRegistryModule& ARM =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AR = ARM.Get();
+
+	FARFilter ARFilter;
+	ARFilter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	ARFilter.bRecursiveClasses = true;
+
+	TArray<FAssetData> Assets;
+	AR.GetAssets(ARFilter, Assets);
+
+	const bool bHasFilter = !Filter.IsEmpty();
+	for (const FAssetData& AD : Assets)
+	{
+		UBlueprint* BP = Cast<UBlueprint>(AD.GetAsset());
+		if (!BP || !BP->GeneratedClass)
+		{
+			continue;
+		}
+		if (!BP->GeneratedClass->IsChildOf(UGameplayEffect::StaticClass()))
+		{
+			continue;
+		}
+		const FString Path = AD.GetSoftObjectPath().ToString();
+		if (bHasFilter && !Path.Contains(Filter))
+		{
+			continue;
+		}
+		Results.Add(Path);
+		if (MaxResults > 0 && Results.Num() >= MaxResults)
+		{
+			break;
+		}
+	}
+	return Results;
+}
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAttributeSetBlueprints(
+	const FString& Filter, int32 MaxResults)
+{
+	TArray<FString> Results;
+
+	if (Filter.IsEmpty() && MaxResults <= 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: ListAttributeSetBlueprints refuses empty filter with MaxResults=0."));
+		return Results;
+	}
+
+	FAssetRegistryModule& ARM =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AR = ARM.Get();
+
+	FARFilter ARFilter;
+	ARFilter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	ARFilter.bRecursiveClasses = true;
+
+	TArray<FAssetData> Assets;
+	AR.GetAssets(ARFilter, Assets);
+
+	const bool bHasFilter = !Filter.IsEmpty();
+	for (const FAssetData& AD : Assets)
+	{
+		UBlueprint* BP = Cast<UBlueprint>(AD.GetAsset());
+		if (!BP || !BP->GeneratedClass)
+		{
+			continue;
+		}
+		if (!BP->GeneratedClass->IsChildOf(UAttributeSet::StaticClass()))
+		{
+			continue;
+		}
+		const FString Path = AD.GetSoftObjectPath().ToString();
+		if (bHasFilter && !Path.Contains(Filter))
+		{
+			continue;
+		}
+		Results.Add(Path);
+		if (MaxResults > 0 && Results.Num() >= MaxResults)
+		{
+			break;
+		}
+	}
+	return Results;
+}
+
+// ─── Tag validation / matching ──────────────────────────────
+
+bool UUnrealBridgeGameplayAbilityLibrary::IsValidGameplayTag(const FString& TagString)
+{
+	if (TagString.IsEmpty())
+	{
+		return false;
+	}
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
+	return Tag.IsValid();
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::TagMatches(
+	const FString& TagA, const FString& TagB, bool bExactMatch)
+{
+	const FGameplayTag A = FGameplayTag::RequestGameplayTag(FName(*TagA), false);
+	const FGameplayTag B = FGameplayTag::RequestGameplayTag(FName(*TagB), false);
+	if (!A.IsValid() || !B.IsValid())
+	{
+		return false;
+	}
+	if (bExactMatch)
+	{
+		return A == B;
+	}
+	// "A matches B" meaning B is a descendant of A (or equal).
+	return B.MatchesTag(A);
+}
+
+// ─── Batch live attribute read ──────────────────────────────
+
+TArray<FBridgeAttributeValue> UUnrealBridgeGameplayAbilityLibrary::GetActorAttributes(
+	const FString& ActorName)
+{
+	TArray<FBridgeAttributeValue> Results;
+
+	AActor* Actor = BridgeGameplayAbilityImpl::FindEditorActor(ActorName);
+	if (!Actor)
+	{
+		return Results;
+	}
+
+	UAbilitySystemComponent* ASC = nullptr;
+	if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Actor))
+	{
+		ASC = ASI->GetAbilitySystemComponent();
+	}
+	if (!ASC)
+	{
+		ASC = Actor->FindComponentByClass<UAbilitySystemComponent>();
+	}
+	if (!ASC)
+	{
+		return Results;
+	}
+
+	for (const UAttributeSet* AS : ASC->GetSpawnedAttributes())
+	{
+		if (!AS)
+		{
+			continue;
+		}
+		const FString SetName = AS->GetClass()->GetName();
+		for (TFieldIterator<FStructProperty> It(AS->GetClass()); It; ++It)
+		{
+			FStructProperty* Prop = *It;
+			if (!Prop || Prop->Struct != FGameplayAttributeData::StaticStruct())
+			{
+				continue;
+			}
+			FGameplayAttribute Attr(Prop);
+			FBridgeAttributeValue V;
+			V.AttributeName = FString::Printf(TEXT("%s.%s"), *SetName, *Prop->GetName());
+			V.bFound = true;
+			V.CurrentValue = ASC->GetNumericAttribute(Attr);
+			V.BaseValue = ASC->GetNumericAttributeBase(Attr);
+			Results.Add(V);
+		}
+	}
+	return Results;
+}
+
 // ─── Tag hierarchy browse ───────────────────────────────────
 
 TArray<FString> UUnrealBridgeGameplayAbilityLibrary::FindChildTags(
