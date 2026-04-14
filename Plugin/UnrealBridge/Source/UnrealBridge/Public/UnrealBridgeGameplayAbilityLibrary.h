@@ -282,6 +282,88 @@ struct FBridgeActorAbilitySystemInfo
 	TArray<FString> AttributeSetClasses;
 };
 
+/** Design-time tag requirement sets on a UGameplayAbility CDO. */
+USTRUCT(BlueprintType)
+struct FBridgeAbilityTagRequirements
+{
+	GENERATED_BODY()
+
+	/** Resolved ability class name (empty on failure). */
+	UPROPERTY(BlueprintReadOnly)
+	FString AbilityClassName;
+
+	/** Abilities with any of these tags are cancelled when this ability activates. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> CancelAbilitiesWithTag;
+
+	/** Abilities with any of these tags are blocked while this ability is active. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> BlockAbilitiesWithTag;
+
+	/** Tags applied to the activating owner while this ability is active. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> ActivationOwnedTags;
+
+	/** Owner must have all of these tags to activate. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> ActivationRequiredTags;
+
+	/** Blocked if the owner has any of these tags. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> ActivationBlockedTags;
+
+	/** Source actor must have all of these tags. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> SourceRequiredTags;
+
+	/** Blocked if the source actor has any of these tags. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> SourceBlockedTags;
+
+	/** Target actor must have all of these tags. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> TargetRequiredTags;
+
+	/** Blocked if the target actor has any of these tags. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> TargetBlockedTags;
+};
+
+/** One FAbilityTriggerData entry on a UGameplayAbility CDO. */
+USTRUCT(BlueprintType)
+struct FBridgeAbilityTriggerInfo
+{
+	GENERATED_BODY()
+
+	/** Trigger tag string. */
+	UPROPERTY(BlueprintReadOnly)
+	FString TriggerTag;
+
+	/** "GameplayEvent", "OwnedTagAdded", "OwnedTagPresent", or "Unknown". */
+	UPROPERTY(BlueprintReadOnly)
+	FString TriggerSource;
+};
+
+/** One currently-active ability on an ASC (ActiveCount > 0). */
+USTRUCT(BlueprintType)
+struct FBridgeActiveAbilityInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString AbilityClassName;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 Level = 1;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 InputID = -1;
+
+	/** Number of currently running instances (always >= 1 when reported). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 ActiveCount = 0;
+};
+
 /**
  * GameplayAbilitySystem introspection via UnrealBridge.
  */
@@ -470,4 +552,48 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
 	static TArray<FBridgeAttributeValue> GetActorAttributes(const FString& ActorName);
+
+	/**
+	 * Read the full tag-requirement surface of a UGameplayAbility Blueprint's CDO — every
+	 * activation/source/target/cancel/block container in one call. Complements
+	 * GetGameplayAbilityBlueprintInfo (which only reports AssetTags).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static FBridgeAbilityTagRequirements GetAbilityTagRequirements(const FString& AbilityBlueprintPath);
+
+	/**
+	 * Enumerate FAbilityTriggerData entries on a UGameplayAbility Blueprint's CDO. Empty list
+	 * when the ability isn't event/tag-triggered.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FBridgeAbilityTriggerInfo> GetAbilityTriggers(const FString& AbilityBlueprintPath);
+
+	/**
+	 * Return tags currently blocking ability activation on an actor's ASC
+	 * (ASC->GetBlockedAbilityTags() — tags contributed by other active abilities' BlockAbilitiesWithTag).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> GetActorBlockedAbilityTags(const FString& ActorName);
+
+	/**
+	 * Check whether an ability would pass its Activation/Source/Target tag requirements against an
+	 * actor's current ASC tag state. Runs UGameplayAbility::DoesAbilitySatisfyTagRequirements.
+	 * Does not check cost, cooldown, or blocked tags — pair with GetAbilityCooldownInfo and
+	 * GetActorBlockedAbilityTags for a fuller picture.
+	 *
+	 * @param OutBlockingTags   Populated with the tags that caused failure (empty on success).
+	 * @return true when all tag gates pass.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool ActorAbilityMeetsTagRequirements(
+		const FString& ActorName,
+		const FString& AbilityBlueprintPath,
+		TArray<FString>& OutBlockingTags);
+
+	/**
+	 * Enumerate abilities whose ActiveCount > 0 on an actor's ASC. This is a targeted subset of
+	 * GetActorAbilitySystemInfo().granted_abilities — only the currently-running ones, with stack count.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FBridgeActiveAbilityInfo> GetActorActiveAbilities(const FString& ActorName);
 };

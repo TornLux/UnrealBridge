@@ -1,4 +1,4 @@
 {
-  "next_index": 6,
+  "next_index": 0,
   "libraries": ["Anim", "Asset", "Blueprint", "DataTable", "Editor", "Level", "GameplayAbility"]
 }

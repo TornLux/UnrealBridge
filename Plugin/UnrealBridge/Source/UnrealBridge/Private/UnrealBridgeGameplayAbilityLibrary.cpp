@@ -1361,3 +1361,238 @@ TArray<FString> UUnrealBridgeGameplayAbilityLibrary::FindChildTags(
 	}
 	return Results;
 }
+
+// ─── Ability tag requirements / triggers ────────────────────
+
+namespace BridgeGameplayAbilityImpl
+{
+	/** Read an FGameplayTagContainer UPROPERTY by name from an object (works for protected/private). */
+	void ReadTagContainerProperty(UObject* Obj, const TCHAR* PropName, TArray<FString>& Out)
+	{
+		if (!Obj)
+		{
+			return;
+		}
+		FStructProperty* SP = FindFProperty<FStructProperty>(Obj->GetClass(), PropName);
+		if (!SP || SP->Struct != TBaseStructure<FGameplayTagContainer>::Get())
+		{
+			return;
+		}
+		const FGameplayTagContainer* TC = SP->ContainerPtrToValuePtr<FGameplayTagContainer>(Obj);
+		if (TC)
+		{
+			TagContainerToStrings(*TC, Out);
+		}
+	}
+
+	FString TriggerSourceToString(int32 Value)
+	{
+		switch (Value)
+		{
+		case 0: return TEXT("GameplayEvent");
+		case 1: return TEXT("OwnedTagAdded");
+		case 2: return TEXT("OwnedTagPresent");
+		default: return TEXT("Unknown");
+		}
+	}
+} // namespace BridgeGameplayAbilityImpl
+
+FBridgeAbilityTagRequirements UUnrealBridgeGameplayAbilityLibrary::GetAbilityTagRequirements(
+	const FString& AbilityBlueprintPath)
+{
+	FBridgeAbilityTagRequirements Result;
+
+	UClass* AbilityClass = BridgeGameplayAbilityImpl::LoadGeneratedClassFromBlueprint(AbilityBlueprintPath);
+	if (!AbilityClass || !AbilityClass->IsChildOf(UGameplayAbility::StaticClass()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: '%s' is not a UGameplayAbility Blueprint"), *AbilityBlueprintPath);
+		return Result;
+	}
+	UGameplayAbility* CDO = AbilityClass->GetDefaultObject<UGameplayAbility>();
+	if (!CDO)
+	{
+		return Result;
+	}
+
+	Result.AbilityClassName = AbilityClass->GetName();
+
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("CancelAbilitiesWithTag"),  Result.CancelAbilitiesWithTag);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("BlockAbilitiesWithTag"),   Result.BlockAbilitiesWithTag);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("ActivationOwnedTags"),     Result.ActivationOwnedTags);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("ActivationRequiredTags"),  Result.ActivationRequiredTags);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("ActivationBlockedTags"),   Result.ActivationBlockedTags);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("SourceRequiredTags"),      Result.SourceRequiredTags);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("SourceBlockedTags"),       Result.SourceBlockedTags);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("TargetRequiredTags"),      Result.TargetRequiredTags);
+	BridgeGameplayAbilityImpl::ReadTagContainerProperty(CDO, TEXT("TargetBlockedTags"),       Result.TargetBlockedTags);
+
+	return Result;
+}
+
+TArray<FBridgeAbilityTriggerInfo> UUnrealBridgeGameplayAbilityLibrary::GetAbilityTriggers(
+	const FString& AbilityBlueprintPath)
+{
+	TArray<FBridgeAbilityTriggerInfo> Results;
+
+	UClass* AbilityClass = BridgeGameplayAbilityImpl::LoadGeneratedClassFromBlueprint(AbilityBlueprintPath);
+	if (!AbilityClass || !AbilityClass->IsChildOf(UGameplayAbility::StaticClass()))
+	{
+		return Results;
+	}
+	UGameplayAbility* CDO = AbilityClass->GetDefaultObject<UGameplayAbility>();
+	if (!CDO)
+	{
+		return Results;
+	}
+
+	FArrayProperty* ArrayProp =
+		FindFProperty<FArrayProperty>(UGameplayAbility::StaticClass(), TEXT("AbilityTriggers"));
+	if (!ArrayProp)
+	{
+		return Results;
+	}
+	FStructProperty* InnerStruct = CastField<FStructProperty>(ArrayProp->Inner);
+	if (!InnerStruct || !InnerStruct->Struct)
+	{
+		return Results;
+	}
+
+	FStructProperty* TagProp = FindFProperty<FStructProperty>(InnerStruct->Struct, TEXT("TriggerTag"));
+	FProperty* SourceProp = InnerStruct->Struct->FindPropertyByName(TEXT("TriggerSource"));
+	FByteProperty* SourceByteProp = CastField<FByteProperty>(SourceProp);
+	FEnumProperty* SourceEnumProp = CastField<FEnumProperty>(SourceProp);
+
+	FScriptArrayHelper Helper(ArrayProp, ArrayProp->ContainerPtrToValuePtr<void>(CDO));
+	for (int32 i = 0; i < Helper.Num(); ++i)
+	{
+		const void* ElemPtr = Helper.GetRawPtr(i);
+
+		FBridgeAbilityTriggerInfo Out;
+
+		if (TagProp && TagProp->Struct == TBaseStructure<FGameplayTag>::Get())
+		{
+			const FGameplayTag* Tag = TagProp->ContainerPtrToValuePtr<FGameplayTag>(ElemPtr);
+			if (Tag && Tag->IsValid())
+			{
+				Out.TriggerTag = Tag->ToString();
+			}
+		}
+
+		int32 SourceVal = 0;
+		if (SourceByteProp)
+		{
+			SourceVal = static_cast<int32>(SourceByteProp->GetPropertyValue_InContainer(ElemPtr));
+		}
+		else if (SourceEnumProp)
+		{
+			if (FNumericProperty* Underlying = SourceEnumProp->GetUnderlyingProperty())
+			{
+				SourceVal = static_cast<int32>(Underlying->GetSignedIntPropertyValue(
+					SourceEnumProp->ContainerPtrToValuePtr<void>(ElemPtr)));
+			}
+		}
+		Out.TriggerSource = BridgeGameplayAbilityImpl::TriggerSourceToString(SourceVal);
+
+		Results.Add(Out);
+	}
+	return Results;
+}
+
+// ─── Actor ASC tag / activation queries ─────────────────────
+
+namespace BridgeGameplayAbilityImpl
+{
+	UAbilitySystemComponent* ResolveActorASC(const FString& ActorName, AActor*& OutActor)
+	{
+		OutActor = FindEditorActor(ActorName);
+		if (!OutActor)
+		{
+			return nullptr;
+		}
+		if (IAbilitySystemInterface* Iface = Cast<IAbilitySystemInterface>(OutActor))
+		{
+			if (UAbilitySystemComponent* ASC = Iface->GetAbilitySystemComponent())
+			{
+				return ASC;
+			}
+		}
+		return OutActor->FindComponentByClass<UAbilitySystemComponent>();
+	}
+} // namespace BridgeGameplayAbilityImpl
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::GetActorBlockedAbilityTags(const FString& ActorName)
+{
+	TArray<FString> Results;
+	AActor* Actor = nullptr;
+	UAbilitySystemComponent* ASC = BridgeGameplayAbilityImpl::ResolveActorASC(ActorName, Actor);
+	if (!ASC)
+	{
+		return Results;
+	}
+	FGameplayTagContainer Blocked;
+	ASC->GetBlockedAbilityTags(Blocked);
+	BridgeGameplayAbilityImpl::TagContainerToStrings(Blocked, Results);
+	return Results;
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::ActorAbilityMeetsTagRequirements(
+	const FString& ActorName,
+	const FString& AbilityBlueprintPath,
+	TArray<FString>& OutBlockingTags)
+{
+	OutBlockingTags.Reset();
+
+	AActor* Actor = nullptr;
+	UAbilitySystemComponent* ASC = BridgeGameplayAbilityImpl::ResolveActorASC(ActorName, Actor);
+	if (!ASC)
+	{
+		return false;
+	}
+
+	UClass* AbilityClass = BridgeGameplayAbilityImpl::LoadGeneratedClassFromBlueprint(AbilityBlueprintPath);
+	if (!AbilityClass || !AbilityClass->IsChildOf(UGameplayAbility::StaticClass()))
+	{
+		return false;
+	}
+	UGameplayAbility* CDO = AbilityClass->GetDefaultObject<UGameplayAbility>();
+	if (!CDO)
+	{
+		return false;
+	}
+
+	FGameplayTagContainer Relevant;
+	const bool bOk = CDO->DoesAbilitySatisfyTagRequirements(*ASC, nullptr, nullptr, &Relevant);
+	BridgeGameplayAbilityImpl::TagContainerToStrings(Relevant, OutBlockingTags);
+	return bOk;
+}
+
+TArray<FBridgeActiveAbilityInfo> UUnrealBridgeGameplayAbilityLibrary::GetActorActiveAbilities(
+	const FString& ActorName)
+{
+	TArray<FBridgeActiveAbilityInfo> Results;
+	AActor* Actor = nullptr;
+	UAbilitySystemComponent* ASC = BridgeGameplayAbilityImpl::ResolveActorASC(ActorName, Actor);
+	if (!ASC)
+	{
+		return Results;
+	}
+
+	for (const FGameplayAbilitySpec& Spec : ASC->GetActivatableAbilities())
+	{
+		if (!Spec.IsActive())
+		{
+			continue;
+		}
+		FBridgeActiveAbilityInfo Info;
+		if (Spec.Ability)
+		{
+			Info.AbilityClassName = Spec.Ability->GetClass()->GetName();
+		}
+		Info.Level = Spec.Level;
+		Info.InputID = Spec.InputID;
+		Info.ActiveCount = Spec.ActiveCount;
+		Results.Add(Info);
+	}
+	return Results;
+}

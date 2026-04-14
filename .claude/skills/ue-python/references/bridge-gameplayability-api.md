@@ -468,6 +468,127 @@ for t in tags:
 
 ---
 
+## Ability Tag Requirements
+
+### get_ability_tag_requirements(ability_blueprint_path) -> FBridgeAbilityTagRequirements
+
+Read every activation/source/target/cancel/block tag container from a `UGameplayAbility` Blueprint's CDO in one call. `get_gameplay_ability_blueprint_info` only reports `AssetTags`; use this when you need the full tag gating surface (what prevents activation, what the ability cancels/blocks, what it grants to the owner while active).
+
+Accessed via reflection so `protected` UPROPERTY visibility isn't an issue.
+
+> Token cost: LOW. Nine short tag lists; typical abilities populate 0–3 of them.
+
+```python
+req = unreal.UnrealBridgeGameplayAbilityLibrary.get_ability_tag_requirements(
+    '/Game/Abilities/GA_Dash')
+print('Blocks:', list(req.block_abilities_with_tag))
+print('Cancels:', list(req.cancel_abilities_with_tag))
+print('RequiresOwner:', list(req.activation_required_tags))
+print('BlockedByOwner:', list(req.activation_blocked_tags))
+print('GrantsWhileActive:', list(req.activation_owned_tags))
+```
+
+### FBridgeAbilityTagRequirements fields
+
+| Field | Description |
+|-------|-------------|
+| `ability_class_name` | Resolved class name (empty on failure) |
+| `cancel_abilities_with_tag` | Abilities with any of these tags are cancelled when this activates |
+| `block_abilities_with_tag` | Abilities with any of these tags are blocked while this is active |
+| `activation_owned_tags` | Tags applied to the owner while the ability is running |
+| `activation_required_tags` | Owner must have **all** of these to activate |
+| `activation_blocked_tags` | Owner with **any** of these cannot activate |
+| `source_required_tags` / `source_blocked_tags` | Source actor gating |
+| `target_required_tags` / `target_blocked_tags` | Target actor gating |
+
+---
+
+## Ability Triggers
+
+### get_ability_triggers(ability_blueprint_path) -> list[FBridgeAbilityTriggerInfo]
+
+Enumerate `FAbilityTriggerData` entries on the ability CDO. Returns empty when the ability isn't event-triggered (most button-pressed abilities).
+
+> Token cost: MINIMAL. Usually 0–2 entries per ability.
+
+```python
+for t in unreal.UnrealBridgeGameplayAbilityLibrary.get_ability_triggers(
+        '/Game/Abilities/GA_OnDamageReaction'):
+    print(t.trigger_tag, t.trigger_source)
+```
+
+### FBridgeAbilityTriggerInfo fields
+
+| Field | Description |
+|-------|-------------|
+| `trigger_tag` | Tag the trigger responds to |
+| `trigger_source` | `GameplayEvent` / `OwnedTagAdded` / `OwnedTagPresent` / `Unknown` |
+
+---
+
+## ASC Blocked Ability Tags
+
+### get_actor_blocked_ability_tags(actor_name) -> list[str]
+
+Return the tags currently blocking ability activation on an actor's ASC — the live `BlockedAbilityTags` tag count container. Tags populate when another ability's `BlockAbilitiesWithTag` is active, or when gameplay code calls `BlockAbilitiesWithTags`.
+
+> Token cost: MINIMAL.
+
+```python
+blocked = unreal.UnrealBridgeGameplayAbilityLibrary.get_actor_blocked_ability_tags('BP_Hero_C_1')
+for t in blocked:
+    print('blocked:', t)
+```
+
+Empty list when the actor has no ASC, no blocked tags, or doesn't exist (silent).
+
+---
+
+## Activation Tag Check
+
+### actor_ability_meets_tag_requirements(actor_name, ability_blueprint_path) -> bool | None
+
+Run `UGameplayAbility::DoesAbilitySatisfyTagRequirements` against an actor's ASC tag state. Checks **only** the ability's tag gates (Activation Required/Blocked, Source/Target Required/Blocked) — does **not** check cost, cooldown, or the ASC's own `BlockedAbilityTags`. Pair with `get_ability_cooldown_info` and `get_actor_blocked_ability_tags` for a full activation gate.
+
+> ⚠️ **Python binding quirk.** The UFUNCTION returns `bool` plus an `OutBlockingTags` ref — Python collapses this to **`list[str]` on success (empty list = all gates passed) or `None` on failure (bad actor/path/no ASC).** The boolean return isn't exposed directly; interpret `result == []` as "passes", a non-empty list as "fails with these tags relevant", and `None` as "couldn't run".
+
+```python
+GA = unreal.UnrealBridgeGameplayAbilityLibrary
+r = GA.actor_ability_meets_tag_requirements('BP_Hero_C_1', '/Game/Abilities/GA_Dash')
+if r is None:
+    print('no ASC / bad path')
+elif not r:
+    print('would activate')
+else:
+    print('blocked by tags:', list(r))
+```
+
+---
+
+## Active Abilities
+
+### get_actor_active_abilities(actor_name) -> list[FBridgeActiveAbilityInfo]
+
+Enumerate abilities whose `ActiveCount > 0` on an actor's ASC — the currently-running subset of `granted_abilities`. Useful during PIE to see what's running right now.
+
+> Token cost: LOW. Output is bounded by concurrently-active ability count (usually 0–5).
+
+```python
+for a in unreal.UnrealBridgeGameplayAbilityLibrary.get_actor_active_abilities('BP_Hero_C_1'):
+    print(f'{a.ability_class_name} lvl={a.level} instances={a.active_count}')
+```
+
+### FBridgeActiveAbilityInfo fields
+
+| Field | Description |
+|-------|-------------|
+| `ability_class_name` | Running ability's class name |
+| `level` | Spec level |
+| `input_id` | Bound input ID (-1 if none) |
+| `active_count` | Concurrently-running instances (≥1) |
+
+---
+
 ## Native UE Python fallbacks
 
 ```python
