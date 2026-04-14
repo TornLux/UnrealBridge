@@ -426,6 +426,46 @@ struct FBridgeAnimSyncMarker
 	int32 TrackIndex = -1;
 };
 
+// ─── AnimBlueprint metadata struct ──────────────────────────
+
+USTRUCT(BlueprintType)
+struct FBridgeAnimBlueprintInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	/** Parent class full path (e.g. "/Script/Engine.AnimInstance"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ParentClass;
+
+	/** Target skeleton soft object path. */
+	UPROPERTY(BlueprintReadOnly)
+	FString TargetSkeleton;
+
+	/** Editor preview skeletal mesh soft object path (empty if unset). */
+	UPROPERTY(BlueprintReadOnly)
+	FString PreviewSkeletalMesh;
+
+	/** True for a Template (skeleton-agnostic) AnimBlueprint. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsTemplate = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumStateMachines = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumLinkedLayers = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumSlots = 0;
+
+	/** Implemented AnimLayer interfaces (class names). */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> ImplementedInterfaces;
+};
+
 // ─── Blend Profile structs ──────────────────────────────────
 
 USTRUCT(BlueprintType)
@@ -596,4 +636,35 @@ public:
 	/** Move an existing montage composite section to a new start time. Sections are re-sorted on success. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static bool SetMontageSectionStartTime(const FString& MontagePath, const FString& SectionName, float StartTime);
+
+	/**
+	 * Append a sync marker to an AnimSequence's AuthoredSyncMarkers.
+	 * Rejects empty name and out-of-range time; duplicates (same name+time) are allowed (matches editor behaviour).
+	 * Marks the package dirty on success; markers are re-sorted by time.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool AddAnimSyncMarker(const FString& SequencePath, const FString& MarkerName, float Time);
+
+	/** Remove every authored sync marker whose name matches (exact FName compare). Returns removed count. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static int32 RemoveAnimSyncMarkersByName(const FString& SequencePath, const FString& MarkerName);
+
+	/**
+	 * Set the transform of an existing socket on a skeleton. Returns false when the socket is missing.
+	 * Marks the skeleton package dirty on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetSkeletonSocketTransform(const FString& SkeletonPath, const FString& SocketName,
+		FVector RelativeLocation, FRotator RelativeRotation, FVector RelativeScale);
+
+	/**
+	 * Rename an existing socket on a skeleton. Fails when the old socket is missing or the new name is empty / already used.
+	 * Marks the skeleton package dirty on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool RenameSkeletonSocket(const FString& SkeletonPath, const FString& OldName, const FString& NewName);
+
+	/** Get high-level AnimBlueprint metadata: parent class, target skeleton, preview mesh, graph counts, interfaces. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FBridgeAnimBlueprintInfo GetAnimBlueprintInfo(const FString& AnimBlueprintPath);
 };

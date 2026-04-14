@@ -497,3 +497,92 @@ Move an existing composite section to a new `start_time` (in seconds, `[0, play_
 unreal.UnrealBridgeAnimLibrary.set_montage_section_start_time(
     '/Game/Anim/AM_Combo', 'Swing2', 0.60)
 ```
+
+---
+
+## Sync Marker Write Ops
+
+### add_anim_sync_marker(sequence_path, marker_name, time) -> bool
+
+Append an authored sync marker to an `UAnimSequence`. Rejects empty name or `time` outside `[0, play_length]`. After write, `RefreshSyncMarkerDataFromAuthored` is called so the skeleton's unique-marker-name cache is updated and the marker is usable at runtime. Markers are re-sorted by time. Marks the package dirty on success.
+
+> Token cost: LOW. One round-trip, bool return.
+
+```python
+ok = unreal.UnrealBridgeAnimLibrary.add_anim_sync_marker(
+    '/Game/Anim/Run_Fwd', 'LeftFoot', 0.25)
+if ok:
+    unreal.EditorAssetLibrary.save_asset('/Game/Anim/Run_Fwd')
+```
+
+### remove_anim_sync_markers_by_name(sequence_path, marker_name) -> int
+
+Remove every authored sync marker whose name matches (exact `FName` compare). Returns the count removed; `0` if none matched. `RefreshSyncMarkerDataFromAuthored` is called when any were removed.
+
+```python
+n = unreal.UnrealBridgeAnimLibrary.remove_anim_sync_markers_by_name(
+    '/Game/Anim/Run_Fwd', 'LeftFoot')
+```
+
+---
+
+## Socket Write Ops (edit / rename)
+
+### set_skeleton_socket_transform(skeleton_path, socket_name, relative_location, relative_rotation, relative_scale) -> bool
+
+Overwrite the transform of an existing socket on a skeleton. Returns `False` when the socket is missing. Marks the skeleton package dirty on success — caller must save to persist.
+
+```python
+ok = unreal.UnrealBridgeAnimLibrary.set_skeleton_socket_transform(
+    '/Game/Skel/SK_Hero_Skeleton',
+    'weapon_r_socket',
+    unreal.Vector(5.0, 2.0, 0.0),
+    unreal.Rotator(0.0, 90.0, 0.0),
+    unreal.Vector(1.0, 1.0, 1.0))
+```
+
+### rename_skeleton_socket(skeleton_path, old_name, new_name) -> bool
+
+Rename an existing skeleton socket. Fails when the old socket does not exist, `new_name` is empty, `old_name == new_name`, or another socket already uses `new_name`.
+
+> Note: existing meshes / attachments that reference the old socket name will break — fix those up separately.
+
+```python
+ok = unreal.UnrealBridgeAnimLibrary.rename_skeleton_socket(
+    '/Game/Skel/SK_Hero_Skeleton', 'weapon_socket', 'weapon_r_socket')
+```
+
+---
+
+## AnimBlueprint Metadata
+
+### get_anim_blueprint_info(anim_blueprint_path) -> FBridgeAnimBlueprintInfo
+
+Single-call summary of an AnimBlueprint's high-level shape: parent class, target skeleton, preview mesh, counts of state machines / linked layers / slots, and implemented interfaces. Cheap alternative to `get_anim_graph_info + get_anim_linked_layers + get_anim_slots` when you only want counts and which ALI interfaces the ABP exposes.
+
+> Token cost: LOW. Fixed-size record plus a short interface-name list (typically 0–3 entries).
+
+```python
+info = unreal.UnrealBridgeAnimLibrary.get_anim_blueprint_info('/Game/Anim/ABP_Character')
+print(f'{info.name} : {info.parent_class}')
+print(f'  skeleton = {info.target_skeleton}')
+print(f'  preview_mesh = {info.preview_skeletal_mesh}')
+print(f'  template = {info.is_template}')
+print(f'  SMs={info.num_state_machines}  layers={info.num_linked_layers}  slots={info.num_slots}')
+for iface in info.implemented_interfaces:
+    print(f'  implements {iface}')
+```
+
+### FBridgeAnimBlueprintInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | ABP asset name |
+| `parent_class` | str | Parent class path (e.g. `/Script/Engine.AnimInstance`) |
+| `target_skeleton` | str | Target skeleton soft path (empty on a Template ABP) |
+| `preview_skeletal_mesh` | str | Editor preview mesh soft path (empty if unset) |
+| `is_template` | bool | True for skeleton-agnostic Template AnimBlueprints |
+| `num_state_machines` | int | Count of `AnimGraphNode_StateMachineBase` across all graphs |
+| `num_linked_layers` | int | Count of `AnimGraphNode_LinkedAnimLayer` bindings |
+| `num_slots` | int | Count of `AnimGraphNode_Slot` nodes |
+| `implemented_interfaces` | list[str] | AnimLayer interface class names |

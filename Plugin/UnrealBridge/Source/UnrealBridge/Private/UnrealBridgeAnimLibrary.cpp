@@ -9,6 +9,8 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "Engine/SkeletalMeshSocket.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/BlueprintGeneratedClass.h"
 #include "Animation/AnimCurveTypes.h"
 #include "AnimationStateMachineGraph.h"
 #include "AnimGraphNode_StateMachineBase.h"
@@ -1107,4 +1109,159 @@ bool UUnrealBridgeAnimLibrary::SetMontageSectionStartTime(
 	Montage->PostEditChange();
 	Montage->MarkPackageDirty();
 	return true;
+}
+
+// ─── AddAnimSyncMarker ─────────────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::AddAnimSyncMarker(const FString& SequencePath, const FString& MarkerName, float Time)
+{
+	if (MarkerName.IsEmpty()) return false;
+	UAnimSequence* Seq = LoadObject<UAnimSequence>(nullptr, *SequencePath);
+	if (!Seq) return false;
+	if (Time < 0.f || Time > Seq->GetPlayLength()) return false;
+
+	Seq->Modify();
+	FAnimSyncMarker Marker;
+	Marker.MarkerName = FName(*MarkerName);
+	Marker.Time = Time;
+#if WITH_EDITORONLY_DATA
+	Marker.TrackIndex = 0;
+#endif
+	Seq->AuthoredSyncMarkers.Add(Marker);
+	Seq->AuthoredSyncMarkers.Sort([](const FAnimSyncMarker& A, const FAnimSyncMarker& B) {
+		return A.Time < B.Time;
+	});
+	// Keep the skeleton's cached unique marker names in sync so the marker is usable at runtime.
+	Seq->RefreshSyncMarkerDataFromAuthored();
+	Seq->PostEditChange();
+	Seq->MarkPackageDirty();
+	return true;
+}
+
+// ─── RemoveAnimSyncMarkersByName ───────────────────────────
+
+int32 UUnrealBridgeAnimLibrary::RemoveAnimSyncMarkersByName(const FString& SequencePath, const FString& MarkerName)
+{
+	UAnimSequence* Seq = LoadObject<UAnimSequence>(nullptr, *SequencePath);
+	if (!Seq) return 0;
+
+	const FName Target(*MarkerName);
+	const int32 Removed = Seq->AuthoredSyncMarkers.RemoveAll([Target](const FAnimSyncMarker& M) {
+		return M.MarkerName == Target;
+	});
+	if (Removed > 0)
+	{
+		Seq->Modify();
+		Seq->RefreshSyncMarkerDataFromAuthored();
+		Seq->PostEditChange();
+		Seq->MarkPackageDirty();
+	}
+	return Removed;
+}
+
+// ─── SetSkeletonSocketTransform ────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::SetSkeletonSocketTransform(const FString& SkeletonPath, const FString& SocketName,
+	FVector RelativeLocation, FRotator RelativeRotation, FVector RelativeScale)
+{
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel) return false;
+
+	const FName Target(*SocketName);
+	USkeletalMeshSocket* Found = nullptr;
+	for (USkeletalMeshSocket* S : Skel->Sockets)
+	{
+		if (S && S->SocketName == Target) { Found = S; break; }
+	}
+	if (!Found) return false;
+
+	Skel->Modify();
+	Found->Modify();
+	Found->RelativeLocation = RelativeLocation;
+	Found->RelativeRotation = RelativeRotation;
+	Found->RelativeScale = RelativeScale;
+	Found->PostEditChange();
+	Skel->PostEditChange();
+	Skel->MarkPackageDirty();
+	return true;
+}
+
+// ─── RenameSkeletonSocket ──────────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::RenameSkeletonSocket(const FString& SkeletonPath, const FString& OldName, const FString& NewName)
+{
+	if (NewName.IsEmpty()) return false;
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel) return false;
+
+	const FName OldFName(*OldName);
+	const FName NewFName(*NewName);
+	if (OldFName == NewFName) return false;
+
+	USkeletalMeshSocket* Found = nullptr;
+	for (USkeletalMeshSocket* S : Skel->Sockets)
+	{
+		if (!S) continue;
+		if (S->SocketName == NewFName) return false; // name collision
+		if (S->SocketName == OldFName) Found = S;
+	}
+	if (!Found) return false;
+
+	Skel->Modify();
+	Found->Modify();
+	Found->SocketName = NewFName;
+	Found->PostEditChange();
+	Skel->PostEditChange();
+	Skel->MarkPackageDirty();
+	return true;
+}
+
+// ─── GetAnimBlueprintInfo ──────────────────────────────────
+
+FBridgeAnimBlueprintInfo UUnrealBridgeAnimLibrary::GetAnimBlueprintInfo(const FString& AnimBlueprintPath)
+{
+	FBridgeAnimBlueprintInfo Info;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return Info;
+
+	Info.Name = ABP->GetName();
+	if (ABP->ParentClass)
+	{
+		Info.ParentClass = ABP->ParentClass->GetPathName();
+	}
+	if (ABP->TargetSkeleton)
+	{
+		Info.TargetSkeleton = FSoftObjectPath(ABP->TargetSkeleton).ToString();
+	}
+#if WITH_EDITORONLY_DATA
+	if (USkeletalMesh* PreviewMesh = ABP->GetPreviewMesh())
+	{
+		Info.PreviewSkeletalMesh = FSoftObjectPath(PreviewMesh).ToString();
+	}
+	Info.bIsTemplate = ABP->bIsTemplate;
+#endif
+
+	// Count state machines, linked-layer bindings, slot nodes across all graphs.
+	for (UEdGraph* Graph : ABP->FunctionGraphs)
+	{
+		if (!Graph) continue;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+			if (Node->IsA<UAnimGraphNode_StateMachineBase>()) Info.NumStateMachines++;
+			else if (Node->IsA<UAnimGraphNode_LinkedAnimLayer>()) Info.NumLinkedLayers++;
+			else if (Node->IsA<UAnimGraphNode_Slot>()) Info.NumSlots++;
+		}
+	}
+
+	for (const FBPInterfaceDescription& Iface : ABP->ImplementedInterfaces)
+	{
+		if (Iface.Interface)
+		{
+			Info.ImplementedInterfaces.Add(Iface.Interface->GetName());
+		}
+	}
+
+	return Info;
 }
