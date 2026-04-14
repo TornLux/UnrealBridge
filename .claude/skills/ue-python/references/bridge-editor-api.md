@@ -72,6 +72,14 @@ Select a set of assets in the Content Browser.
 
 Navigate the Content Browser to the asset and highlight it.
 
+### set_content_browser_path(folder_path) -> bool
+
+Navigate the Content Browser to a folder (e.g. `/Game/Maps`). Returns False if the `ContentBrowser` module isn't loaded.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_content_browser_path('/Game/Maps')
+```
+
 ---
 
 ## Viewport
@@ -94,6 +102,14 @@ Current perspective viewport camera.
 
 Frame the viewport on the currently selected actor(s).
 
+### take_high_res_screenshot(resolution_multiplier) -> bool
+
+Queue a high-res screenshot of the active level viewport. `resolution_multiplier` scales viewport size (1.0 = native). Output is written to `<Project>/Saved/Screenshots/WindowsEditor/` (engine-named). Returns True if the request was queued.
+
+```python
+unreal.UnrealBridgeEditorLibrary.take_high_res_screenshot(2.0)  # 2x native
+```
+
 ---
 
 ## Asset Control
@@ -113,6 +129,26 @@ Save all dirty packages. Returns True if the save attempt finished without user 
 ### save_current_level() -> bool
 
 ### reload_asset(asset_path) -> bool
+
+---
+
+## Level / Map Control
+
+### load_level(level_path, prompt_save_changes) -> bool
+
+Load a map into the editor. `level_path` is a package path like `/Game/Maps/MyLevel`. If `prompt_save_changes` is True and there are unsaved map changes, the user is prompted; if False, unsaved changes are discarded silently.
+
+```python
+unreal.UnrealBridgeEditorLibrary.load_level('/Game/Maps/TestLevel', True)
+```
+
+### create_new_level(save_existing) -> bool
+
+Create a new empty level and make it the current editor world. If `save_existing` is True, unsaved map changes prompt for save first; cancel returns False.
+
+```python
+unreal.UnrealBridgeEditorLibrary.create_new_level(True)
+```
 
 ---
 
@@ -189,6 +225,23 @@ True if an asset editor tab is currently open for this asset.
 ```python
 if unreal.UnrealBridgeEditorLibrary.is_asset_editor_open('/Game/BP/BP_Hero'):
     unreal.UnrealBridgeEditorLibrary.close_all_asset_editors()
+```
+
+### is_asset_loaded(asset_path) -> bool
+
+True if the asset's package is already loaded in memory. Does NOT force-load the asset — useful to probe load state before deciding whether to trigger an expensive load.
+
+```python
+if not unreal.UnrealBridgeEditorLibrary.is_asset_loaded('/Game/BP/BP_Hero.BP_Hero'):
+    print('not loaded — skipping cheap probe')
+```
+
+### close_asset_editor(asset_path) -> bool
+
+Close the editor tab for a single asset. Returns False if no editor was open for that asset.
+
+```python
+unreal.UnrealBridgeEditorLibrary.close_asset_editor('/Game/BP/BP_Hero')
 ```
 
 ### save_assets(asset_paths) -> int

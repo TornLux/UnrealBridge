@@ -227,4 +227,43 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static int32 SaveAssets(const TArray<FString>& AssetPaths);
+
+	// ─── Level / map control ─────────────────────────────
+
+	/**
+	 * Load a map into the editor. Accepts a package path like `/Game/Maps/MyLevel`.
+	 * If there are unsaved changes the user is prompted unless `bPromptSaveChanges`
+	 * is false (then unsaved changes are discarded).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool LoadLevel(const FString& LevelPath, bool bPromptSaveChanges);
+
+	/** Create a new empty level and make it the current editor world. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool CreateNewLevel(bool bSaveExisting);
+
+	// ─── Asset editor / browser extras ───────────────────
+
+	/** Close the editor tab for a single asset. Returns false if no editor was open. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool CloseAssetEditor(const FString& AssetPath);
+
+	/** True if the asset's package is already loaded in memory (does NOT force-load). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsAssetLoaded(const FString& AssetPath);
+
+	/** Navigate the Content Browser to a folder (e.g. `/Game/Maps`). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetContentBrowserPath(const FString& FolderPath);
+
+	// ─── Viewport capture ────────────────────────────────
+
+	/**
+	 * Request a high-res screenshot of the active level viewport.
+	 * Writes to `Saved/Screenshots/...` by default — the engine decides the
+	 * filename; `ResolutionMultiplier` scales the viewport size (1.0 = native).
+	 * Returns true if the request was queued.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool TakeHighResScreenshot(float ResolutionMultiplier);
 };

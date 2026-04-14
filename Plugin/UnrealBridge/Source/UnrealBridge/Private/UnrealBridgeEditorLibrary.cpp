@@ -31,6 +31,8 @@
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
 #include "UObject/Package.h"
+#include "UObject/UObjectGlobals.h"
+#include "HighResScreenshot.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -669,6 +671,100 @@ int32 UUnrealBridgeEditorLibrary::SaveAssets(const TArray<FString>& AssetPaths)
 		}
 	}
 	return Saved;
+}
+
+// ─── Level / map control ───────────────────────────────────
+
+bool UUnrealBridgeEditorLibrary::LoadLevel(const FString& LevelPath, bool bPromptSaveChanges)
+{
+	if (LevelPath.IsEmpty())
+	{
+		return false;
+	}
+	if (bPromptSaveChanges)
+	{
+		if (!FEditorFileUtils::SaveDirtyPackages(/*bPromptUserToSave=*/true, /*bSaveMapPackages=*/true, /*bSaveContentPackages=*/false))
+		{
+			// User cancelled save prompt.
+			return false;
+		}
+	}
+	return UEditorLoadingAndSavingUtils::LoadMap(LevelPath) != nullptr;
+}
+
+bool UUnrealBridgeEditorLibrary::CreateNewLevel(bool bSaveExisting)
+{
+	return UEditorLoadingAndSavingUtils::NewBlankMap(bSaveExisting) != nullptr;
+}
+
+// ─── Asset editor / browser extras ─────────────────────────
+
+bool UUnrealBridgeEditorLibrary::CloseAssetEditor(const FString& AssetPath)
+{
+	if (!GEditor)
+	{
+		return false;
+	}
+	UObject* Asset = BridgeEditorImpl::LoadAssetFromPath(AssetPath);
+	if (!Asset)
+	{
+		return false;
+	}
+	UAssetEditorSubsystem* AES = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+	if (!AES)
+	{
+		return false;
+	}
+	if (AES->FindEditorForAsset(Asset, /*bFocusIfOpen=*/false) == nullptr)
+	{
+		return false;
+	}
+	AES->CloseAllEditorsForAsset(Asset);
+	return true;
+}
+
+bool UUnrealBridgeEditorLibrary::IsAssetLoaded(const FString& AssetPath)
+{
+	if (AssetPath.IsEmpty())
+	{
+		return false;
+	}
+	return FindObject<UObject>(nullptr, *AssetPath) != nullptr;
+}
+
+bool UUnrealBridgeEditorLibrary::SetContentBrowserPath(const FString& FolderPath)
+{
+	if (FolderPath.IsEmpty())
+	{
+		return false;
+	}
+	if (!FModuleManager::Get().IsModuleLoaded("ContentBrowser"))
+	{
+		return false;
+	}
+	FContentBrowserModule& CBM = FModuleManager::GetModuleChecked<FContentBrowserModule>("ContentBrowser");
+	TArray<FString> Folders;
+	Folders.Add(FolderPath);
+	CBM.Get().SyncBrowserToFolders(Folders);
+	return true;
+}
+
+// ─── Viewport capture ──────────────────────────────────────
+
+bool UUnrealBridgeEditorLibrary::TakeHighResScreenshot(float ResolutionMultiplier)
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC || !VC->Viewport)
+	{
+		return false;
+	}
+	const float Mult = ResolutionMultiplier > 0.f ? ResolutionMultiplier : 1.f;
+	GetHighResScreenshotConfig().SetResolution(
+		FMath::Max(1, (int32)(VC->Viewport->GetSizeXY().X * Mult)),
+		FMath::Max(1, (int32)(VC->Viewport->GetSizeXY().Y * Mult)),
+		1.f);
+	VC->Viewport->TakeHighResScreenShot();
+	return true;
 }
 
 #undef LOCTEXT_NAMESPACE
