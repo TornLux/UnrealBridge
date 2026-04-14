@@ -296,6 +296,79 @@ AL = unreal.UnrealBridgeAssetLibrary
 redirectors = AL.find_redirectors_under_path('/Game', True)
 print(f'{len(redirectors)} redirectors to fix up')
 # package-level string paths for fixup_redirectors:
-pkg_paths = [str(r).split('.')[0] for r in
-             [r.export_text() for r in redirectors]]
+pkg_paths = [r.export_text().split('.')[0] for r in redirectors]
+```
+
+> Note on `SoftObjectPath`: `str(p)` returns `"<Struct 'SoftObjectPath' ... {}>"` in UE 5.7. Use `p.export_text()` to get the `"/Game/Foo/Bar.Bar"` object path; strip on `'.'` for the package path.
+
+---
+
+## Cheap counts & batched per-asset queries
+
+Follow-up helpers for callers processing many assets. All registry-only, no load.
+
+### get_asset_count_under_path(folder_path, class_filter, recursive) -> int
+
+One registry sweep, returns only the count. Cheap scoping check before deciding whether a folder is small enough to list. `class_filter=''` counts any class; otherwise pass a TopLevelAssetPath.
+
+> Token footprint: 1 integer. 1 round-trip.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+n_all = AL.get_asset_count_under_path('/Game', '', True)           # e.g. 775
+n_bp  = AL.get_asset_count_under_path('/Game', '/Script/Engine.Blueprint', True)  # e.g. 101
+```
+
+### get_package_dependencies(package_name, hard_only) -> list[str]
+
+Package-level dependencies as string package names. Pass a package path like `"/Game/BP/BP_MyActor"` (no `.AssetName` suffix). When `hard_only=True`, only `Hard|Game` deps (cooker-relevant); otherwise all categories.
+
+Cheaper and coarser than `get_asset_references` — works at package granularity and returns strings, not soft paths.
+
+> Token footprint: 1 string per dep. 1 round-trip.
+
+```python
+deps = unreal.UnrealBridgeAssetLibrary.get_package_dependencies(
+    '/Game/UltraDynamicSky/Blueprints/Ultra_Dynamic_Sky', False)
+print(len(deps), 'deps')
+```
+
+### get_package_referencers(package_name, hard_only) -> list[str]
+
+Mirror of `get_package_dependencies`. Who references this package? Useful before rename/delete to gauge breakage.
+
+```python
+refs = unreal.UnrealBridgeAssetLibrary.get_package_referencers(
+    '/Game/BP/BP_MyActor', False)
+```
+
+### get_asset_tag_values_batch(asset_paths, tag_name) -> list[str]
+
+Read a single tag from many assets in one call. Output is aligned 1:1 with input — unknown asset or missing tag yields `""` at that index. Replaces N `get_asset_tag_value` round-trips.
+
+> Token footprint: 1 tag string per asset. 1 round-trip.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+paths = AL.get_assets_by_class('/Script/Engine.Blueprint', False)
+obj_paths = [p.export_text() for p in paths[:100]]
+parents = AL.get_asset_tag_values_batch(obj_paths, 'ParentClass')
+for path, pc in zip(obj_paths, parents):
+    if pc:
+        print(path, '->', pc)
+```
+
+### get_asset_disk_sizes_batch(asset_paths) -> list[int]
+
+Disk size in bytes for many assets. Output aligned 1:1 with input; unresolved entries are `-1`. Use when you want sizes only and want to avoid N `get_asset_info` calls (each of which returns all tags).
+
+> Token footprint: 1 integer per asset. 1 round-trip. Still O(N) FileManager calls on the GameThread, so keep batches reasonable (thousands is fine; hundreds of thousands is not).
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+paths = AL.list_assets_under_path_simple('/Game/Textures')
+obj_paths = [p.export_text() for p in paths]
+sizes = AL.get_asset_disk_sizes_batch(obj_paths)
+total = sum(s for s in sizes if s > 0)
+print('Total texture bytes:', total)
 ```

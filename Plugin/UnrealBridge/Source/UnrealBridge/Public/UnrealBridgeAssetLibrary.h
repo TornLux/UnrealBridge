@@ -287,4 +287,60 @@ public:
 		const FString& FolderPath,
 		bool bRecursive,
 		TArray<FSoftObjectPath>& OutSoftPaths);
+
+	// ── Cheap counts & batched per-asset queries ────────────────
+
+	/**
+	 * Count assets under a content folder in a single registry sweep. No soft paths
+	 * are materialized — cheap way to decide whether a folder is small enough to list.
+	 * Optional ClassFilter is a TopLevelAssetPath ("" = any class). Returns 0 on
+	 * unknown folder.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static int32 GetAssetCountUnderPath(
+		const FString& FolderPath,
+		const FString& ClassFilter,
+		bool bRecursive);
+
+	/**
+	 * Package-level dependencies. PackageName is a content path like "/Game/BP/BP_MyActor"
+	 * (no class-name suffix). When bHardOnly is true, only Hard+Game dependencies are
+	 * returned (cooker-relevant); otherwise all categories. Returns package name strings.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetPackageDependencies(
+		const FString& PackageName,
+		bool bHardOnly,
+		TArray<FString>& OutDependencyPackageNames);
+
+	/**
+	 * Package-level referencers. Mirror of GetPackageDependencies. Useful before
+	 * rename/delete to check "who would break if this package goes away".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetPackageReferencers(
+		const FString& PackageName,
+		bool bHardOnly,
+		TArray<FString>& OutReferencerPackageNames);
+
+	/**
+	 * Batch read of a single AssetRegistry tag value for many asset paths, one
+	 * registry pass. OutValues is aligned 1:1 with AssetPaths — missing assets or
+	 * missing tags produce an empty string at that index.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetAssetTagValuesBatch(
+		const TArray<FString>& AssetPaths,
+		const FString& TagName,
+		TArray<FString>& OutValues);
+
+	/**
+	 * Batch disk size (bytes) for many asset paths. OutSizes is aligned 1:1 with
+	 * AssetPaths; unresolved entries are -1. Sidesteps N GetAssetInfo round-trips
+	 * when the caller only wants sizes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetAssetDiskSizesBatch(
+		const TArray<FString>& AssetPaths,
+		TArray<int64>& OutSizes);
 };

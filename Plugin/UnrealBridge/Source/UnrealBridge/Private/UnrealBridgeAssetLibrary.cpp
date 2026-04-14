@@ -884,3 +884,149 @@ FString UUnrealBridgeAssetLibrary::ResolveRedirector(const FString& AssetPath)
 	}
 	return Redirector->DestinationObject->GetPathName();
 }
+
+// ─── Cheap counts & batched per-asset queries ───────────────
+
+int32 UUnrealBridgeAssetLibrary::GetAssetCountUnderPath(
+	const FString& FolderPath,
+	const FString& ClassFilter,
+	bool bRecursive)
+{
+	FString BasePath = FolderPath.TrimStartAndEnd();
+	if (BasePath.IsEmpty()) return 0;
+	BridgeAssetOps::NormalizeContentRoot(BasePath);
+
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(*BasePath));
+	Filter.bRecursivePaths = bRecursive;
+
+	FTopLevelAssetPath ClassTop;
+	if (BridgeAssetOps::TryParseTopLevelPath(ClassFilter, ClassTop))
+	{
+		Filter.ClassPaths.Add(ClassTop);
+		Filter.bRecursiveClasses = bRecursive;
+	}
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Datas;
+	AR.GetAssets(Filter, Datas);
+	return Datas.Num();
+}
+
+namespace BridgeAssetOps
+{
+	static void GatherPackageLinks(
+		const FString& PackageName,
+		bool bHardOnly,
+		bool bReferencers,
+		TArray<FString>& OutPackageNames)
+	{
+		OutPackageNames.Reset();
+
+		FString Trimmed = PackageName.TrimStartAndEnd();
+		if (Trimmed.IsEmpty()) return;
+		// If caller passed an object path "/Game/Foo/Bar.Bar", strip to package.
+		int32 DotIdx;
+		if (Trimmed.FindChar(TEXT('.'), DotIdx))
+		{
+			Trimmed = Trimmed.Left(DotIdx);
+		}
+		if (!Trimmed.StartsWith(TEXT("/"))) Trimmed = TEXT("/") + Trimmed;
+
+		IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		const FName PkgName(*Trimmed);
+
+		UE::AssetRegistry::FDependencyQuery Query;
+		if (bHardOnly)
+		{
+			Query.Required = UE::AssetRegistry::EDependencyProperty::Hard | UE::AssetRegistry::EDependencyProperty::Game;
+		}
+
+		TArray<FName> Links;
+		if (bReferencers)
+		{
+			AR.GetReferencers(PkgName, Links, UE::AssetRegistry::EDependencyCategory::Package, Query);
+		}
+		else
+		{
+			AR.GetDependencies(PkgName, Links, UE::AssetRegistry::EDependencyCategory::Package, Query);
+		}
+
+		OutPackageNames.Reserve(Links.Num());
+		for (const FName& L : Links)
+		{
+			OutPackageNames.Add(L.ToString());
+		}
+	}
+}
+
+void UUnrealBridgeAssetLibrary::GetPackageDependencies(
+	const FString& PackageName,
+	bool bHardOnly,
+	TArray<FString>& OutDependencyPackageNames)
+{
+	BridgeAssetOps::GatherPackageLinks(PackageName, bHardOnly, /*bReferencers=*/false, OutDependencyPackageNames);
+}
+
+void UUnrealBridgeAssetLibrary::GetPackageReferencers(
+	const FString& PackageName,
+	bool bHardOnly,
+	TArray<FString>& OutReferencerPackageNames)
+{
+	BridgeAssetOps::GatherPackageLinks(PackageName, bHardOnly, /*bReferencers=*/true, OutReferencerPackageNames);
+}
+
+void UUnrealBridgeAssetLibrary::GetAssetTagValuesBatch(
+	const TArray<FString>& AssetPaths,
+	const FString& TagName,
+	TArray<FString>& OutValues)
+{
+	OutValues.Reset();
+	OutValues.SetNum(AssetPaths.Num());
+	if (AssetPaths.Num() == 0 || TagName.IsEmpty()) return;
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	const FName TagFName(*TagName);
+
+	for (int32 Idx = 0; Idx < AssetPaths.Num(); ++Idx)
+	{
+		const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPaths[Idx]);
+		if (Soft.IsNull()) continue;
+
+		const FAssetData Data = AR.GetAssetByObjectPath(Soft);
+		if (!Data.IsValid()) continue;
+
+		FString Value;
+		if (Data.GetTagValue(TagFName, Value))
+		{
+			OutValues[Idx] = MoveTemp(Value);
+		}
+	}
+}
+
+void UUnrealBridgeAssetLibrary::GetAssetDiskSizesBatch(
+	const TArray<FString>& AssetPaths,
+	TArray<int64>& OutSizes)
+{
+	OutSizes.Reset();
+	OutSizes.Init(-1, AssetPaths.Num());
+	if (AssetPaths.Num() == 0) return;
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	for (int32 Idx = 0; Idx < AssetPaths.Num(); ++Idx)
+	{
+		const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPaths[Idx]);
+		if (Soft.IsNull()) continue;
+
+		const FAssetData Data = AR.GetAssetByObjectPath(Soft);
+		if (!Data.IsValid()) continue;
+
+		FString Filename;
+		if (FPackageName::DoesPackageExist(Data.PackageName.ToString(), &Filename))
+		{
+			const int64 Size = IFileManager::Get().FileSize(*Filename);
+			if (Size > 0) OutSizes[Idx] = Size;
+		}
+	}
+}
