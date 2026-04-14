@@ -40,6 +40,7 @@ public class UnrealBridge : ModuleRules
 			"MainFrame",
 			"NavigationSystem",
 			"Navmesh",
+			"EnhancedInput",
 		});
 	}
 }

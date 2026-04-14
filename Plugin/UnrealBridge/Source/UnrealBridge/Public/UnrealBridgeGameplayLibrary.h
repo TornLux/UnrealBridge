@@ -52,6 +52,38 @@ struct FAgentObservation
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
 	bool bOnGround = true;
 
+	/** Short class name of the player pawn (e.g. "BP_UnitPlayerCharacter_C"). Empty if no pawn. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
+	FString PawnClassName;
+
+	/** Short class name of the pawn's movement component, if any (e.g.
+	 *  "CharacterMovementComponent"). Empty for raw APawn without a movement comp. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
+	FString MovementComponentClassName;
+
+	/** UCharacterMovementComponent::MovementMode as integer (see EMovementMode). 0 for non-Character pawns. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
+	int32 MovementMode = 0;
+
+	/** True if APawn::IsInputBlocked() or the controller is suppressing input. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
+	bool bInputBlocked = false;
+
+	/** APawn::GetLastMovementInputVector() — the last per-tick input
+	 *  accumulator that was consumed. Lets callers verify their input
+	 *  actually reached the pawn (zero here means the request never
+	 *  arrived or was cleared). */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
+	FVector LastControlInputVector = FVector::ZeroVector;
+
+	/** UCharacterMovementComponent::GetCurrentAcceleration() — the
+	 *  acceleration the movement comp computed from input last tick.
+	 *  Non-zero means input got through and movement is reacting; zero
+	 *  here despite a non-zero LastControlInputVector points at a
+	 *  root-motion / custom-locomotion override. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
+	FVector CurrentAcceleration = FVector::ZeroVector;
+
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
 	FVector CameraLocation = FVector::ZeroVector;
 
@@ -129,4 +161,97 @@ public:
 		const FVector& EndLocation,
 		TArray<FVector>& OutWaypoints,
 		float& OutPathLength);
+
+	// ─── Actuators ────────────────────────────────────────────────────
+	//
+	// All actuators target the PIE world's first player pawn/controller.
+	// They return false when PIE is not running or no pawn exists.
+	//
+	// Input is per-frame accumulative (UE's standard APawn pattern):
+	// AddMovementInput is consumed by the movement component once per
+	// tick and then cleared. A Python agent running at e.g. 30 Hz should
+	// call ApplyMovementInput once per tick for continuous motion — if
+	// the agent pauses, the pawn stops naturally on the next frame.
+
+	/**
+	 * Feed one frame's worth of movement input to the pawn.
+	 * Wraps APawn::AddMovementInput.
+	 *
+	 * @param WorldDirection  World-space direction; magnitude is ignored,
+	 *                        the vector is normalised internally.
+	 * @param ScaleValue      [-1, 1]; sign flips the direction, magnitude
+	 *                        scales the resulting input axis.
+	 * @param bForce          Applied even if the pawn is currently ignoring
+	 *                        input (debug / cutscene override).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool ApplyMovementInput(const FVector& WorldDirection, float ScaleValue = 1.0f, bool bForce = false);
+
+	/**
+	 * Feed one frame's worth of look input to the controller.
+	 * Wraps APlayerController::AddYawInput / AddPitchInput. Values are in
+	 * "input units" — the same units the input mapping context would
+	 * deliver from mouse delta. Typical gameplay mapping is ~1 unit per
+	 * degree but project-dependent.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool ApplyLookInput(float YawDelta, float PitchDelta);
+
+	/**
+	 * Instantly set the player controller's rotation, bypassing input
+	 * smoothing. Useful for test teleports / facing a specific actor in
+	 * one call. Does not touch the pawn — the pawn's visual rotation
+	 * follows the controller on the next tick via bUseControllerRotation*.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SetControlRotation(const FRotator& NewRotation);
+
+	/** Start a jump if the pawn is a Character. Mirror of ACharacter::Jump. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool Jump();
+
+	/** Release the jump latch; mirror of ACharacter::StopJumping. Call this
+	 *  to end a variable-height jump, or after a single tick for a tap jump. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool StopJumping();
+
+	/**
+	 * Inject a single-tick value into an EnhancedInput InputAction for
+	 * the PIE player. Good for discrete "press" actions (IA_Jump,
+	 * IA_Interact) — one call fires the "Pressed"/"Triggered" phase
+	 * for that frame.
+	 *
+	 * For continuously-held axes (IA_Move, IA_Look), use
+	 * SetStickyInput / ClearStickyInput instead — a single injection
+	 * lasts one tick, and the Python bridge can't reliably call every
+	 * UE frame. Sticky inject repeats in-process on the GameThread.
+	 *
+	 * Value type is auto-coerced to the IA's declared EInputActionValueType
+	 * so Axis3D callers work with Bool/Axis1D/Axis2D IAs.
+	 *
+	 * @param InputActionPath  Asset path, e.g. "/LocomotionDriver/Input/IA_Move".
+	 * @param AxisValue        FVector; components beyond the IA's type are ignored.
+	 * @return true if the IA asset loaded and the input was queued.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool InjectEnhancedInputAxis(const FString& InputActionPath, const FVector& AxisValue);
+
+	/**
+	 * Set a "sticky" EnhancedInput value: re-injected every GameThread
+	 * tick until cleared or overwritten. The caller sets it once and
+	 * movement/look input persists at UE frame rate without Python
+	 * needing to keep up. Multiple IAs can be sticky at the same time
+	 * (e.g. hold forward + look yaw continuously).
+	 *
+	 * Calling SetStickyInput with the same InputActionPath overwrites
+	 * the previous value (not additive). Passing a zero vector does
+	 * NOT clear it — call ClearStickyInput for that so the caller can
+	 * explicitly pause input without losing the binding.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SetStickyInput(const FString& InputActionPath, const FVector& AxisValue);
+
+	/** Remove a single sticky entry. Pass empty string to clear all. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool ClearStickyInput(const FString& InputActionPath = TEXT(""));
 };

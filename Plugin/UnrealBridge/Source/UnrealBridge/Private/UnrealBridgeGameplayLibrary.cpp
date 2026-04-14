@@ -7,13 +7,54 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "GameFramework/PawnMovementComponent.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
+#include "InputAction.h"
+#include "InputActionValue.h"
+#include "EnhancedInputSubsystems.h"
+#include "EnhancedInputComponent.h"
+#include "Containers/Ticker.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridgeAgent, Log, All);
 
 namespace BridgeAgentImpl
 {
+	// ─── Sticky EnhancedInput state ────────────────────────────────────
+	// Persists across bridge exec calls. The GameThread ticker re-injects
+	// every registered entry once per frame so continuous input axes
+	// (IA_Move, IA_Look) behave as if the key were held, without Python
+	// needing to match UE frame rate.
+	struct FStickyEntry
+	{
+		TWeakObjectPtr<UInputAction> Action;
+		FVector Value = FVector::ZeroVector;
+	};
+
+	static TMap<FString, FStickyEntry> GStickyInputs;
+	static FTSTicker::FDelegateHandle GStickyTicker;
+
+	static bool StickyTick(float /*Dt*/);
+
+	static void EnsureStickyTickerRunning()
+	{
+		if (GStickyTicker.IsValid())
+		{
+			return;
+		}
+		GStickyTicker = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateStatic(&StickyTick), 0.0f);
+	}
+
+	static void StopStickyTickerIfIdle()
+	{
+		if (GStickyInputs.Num() == 0 && GStickyTicker.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(GStickyTicker);
+			GStickyTicker.Reset();
+		}
+	}
+
 	/** Return the active PIE world, or nullptr if not playing. */
 	UWorld* GetPIEWorld()
 	{
@@ -71,12 +112,22 @@ bool UUnrealBridgeGameplayLibrary::GetAgentObservation(
 	OutObservation.PawnLocation = Pawn->GetActorLocation();
 	OutObservation.PawnRotation = Pawn->GetActorRotation();
 	OutObservation.PawnVelocity = Pawn->GetVelocity();
+	OutObservation.PawnClassName = Pawn->GetClass()->GetName();
+	OutObservation.bInputBlocked = false; // PC-level check below
+	OutObservation.LastControlInputVector = Pawn->GetLastMovementInputVector();
 	if (const ACharacter* Char = Cast<ACharacter>(Pawn))
 	{
 		if (const UCharacterMovementComponent* Move = Char->GetCharacterMovement())
 		{
 			OutObservation.bOnGround = !Move->IsFalling();
+			OutObservation.MovementComponentClassName = Move->GetClass()->GetName();
+			OutObservation.MovementMode = (int32)Move->MovementMode;
+			OutObservation.CurrentAcceleration = Move->GetCurrentAcceleration();
 		}
+	}
+	else if (const UPawnMovementComponent* Move = Pawn->GetMovementComponent())
+	{
+		OutObservation.MovementComponentClassName = Move->GetClass()->GetName();
 	}
 
 	// Camera --------------------------------------------------------------
@@ -196,4 +247,208 @@ bool UUnrealBridgeGameplayLibrary::FindNavPath(
 	OutWaypoints = Path->PathPoints;
 	OutPathLength = Path->GetPathLength();
 	return true;
+}
+
+// ─── Actuators ─────────────────────────────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::ApplyMovementInput(const FVector& WorldDirection, float ScaleValue, bool bForce)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn)
+	{
+		return false;
+	}
+	Pawn->AddMovementInput(WorldDirection, ScaleValue, bForce);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::ApplyLookInput(float YawDelta, float PitchDelta)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC)
+	{
+		return false;
+	}
+	if (!FMath::IsNearlyZero(YawDelta))
+	{
+		PC->AddYawInput(YawDelta);
+	}
+	if (!FMath::IsNearlyZero(PitchDelta))
+	{
+		PC->AddPitchInput(PitchDelta);
+	}
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::SetControlRotation(const FRotator& NewRotation)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC)
+	{
+		return false;
+	}
+	PC->SetControlRotation(NewRotation);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::Jump()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	ACharacter* Char = Cast<ACharacter>(Pawn);
+	if (!Char)
+	{
+		return false;
+	}
+	Char->Jump();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::StopJumping()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	ACharacter* Char = Cast<ACharacter>(Pawn);
+	if (!Char)
+	{
+		return false;
+	}
+	Char->StopJumping();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::InjectEnhancedInputAxis(const FString& InputActionPath, const FVector& AxisValue)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning, TEXT("InjectEnhancedInputAxis: no PIE world"));
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC || !PC->GetLocalPlayer())
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning, TEXT("InjectEnhancedInputAxis: no local player"));
+		return false;
+	}
+
+	UEnhancedInputLocalPlayerSubsystem* Subsystem =
+		PC->GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	if (!Subsystem)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("InjectEnhancedInputAxis: project has no EnhancedInputLocalPlayerSubsystem"));
+		return false;
+	}
+
+	UInputAction* Action = LoadObject<UInputAction>(nullptr, *InputActionPath);
+	if (!Action)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("InjectEnhancedInputAxis: failed to load IA '%s'"), *InputActionPath);
+		return false;
+	}
+
+	// FInputActionValue rejects type-mismatched raw values silently — e.g.
+	// passing Axis3D to a Bool/Axis2D IA drops the inject. Construct the
+	// value with the IA's declared type so inputs always land.
+	const EInputActionValueType IaType = Action->ValueType;
+	FInputActionValue Value(IaType, AxisValue);
+	Subsystem->InjectInputForAction(Action, Value, {}, {});
+	UE_LOG(LogUnrealBridgeAgent, VeryVerbose,
+		TEXT("InjectEnhancedInputAxis: %s type=%d raw=(%.2f,%.2f,%.2f)"),
+		*Action->GetName(), (int32)IaType, AxisValue.X, AxisValue.Y, AxisValue.Z);
+	return true;
+}
+
+// ─── Sticky inject tick ────────────────────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	bool StickyTick(float /*Dt*/)
+	{
+		if (GStickyInputs.Num() == 0)
+		{
+			return true; // nothing to do — but keep ticker alive, caller may add more
+		}
+
+		UWorld* World = GetPIEWorld();
+		if (!World)
+		{
+			// PIE not running: drop all sticky entries, leaving a fresh
+			// slate for the next PIE session.
+			GStickyInputs.Reset();
+			return true;
+		}
+		APlayerController* PC = World->GetFirstPlayerController();
+		if (!PC || !PC->GetLocalPlayer())
+		{
+			return true;
+		}
+		UEnhancedInputLocalPlayerSubsystem* Subsystem =
+			PC->GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+		if (!Subsystem)
+		{
+			return true;
+		}
+
+		for (TMap<FString, FStickyEntry>::TIterator It(GStickyInputs); It; ++It)
+		{
+			UInputAction* Action = It->Value.Action.Get();
+			if (!Action)
+			{
+				It.RemoveCurrent();
+				continue;
+			}
+			const EInputActionValueType IaType = Action->ValueType;
+			FInputActionValue Value(IaType, It->Value.Value);
+			Subsystem->InjectInputForAction(Action, Value, {}, {});
+		}
+		return true;
+	}
+}
+
+bool UUnrealBridgeGameplayLibrary::SetStickyInput(const FString& InputActionPath, const FVector& AxisValue)
+{
+	UInputAction* Action = LoadObject<UInputAction>(nullptr, *InputActionPath);
+	if (!Action)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("SetStickyInput: failed to load IA '%s'"), *InputActionPath);
+		return false;
+	}
+	BridgeAgentImpl::FStickyEntry Entry;
+	Entry.Action = Action;
+	Entry.Value = AxisValue;
+	BridgeAgentImpl::GStickyInputs.Add(InputActionPath, Entry);
+	BridgeAgentImpl::EnsureStickyTickerRunning();
+	UE_LOG(LogUnrealBridgeAgent, Log, TEXT("SetStickyInput: %s = (%.2f, %.2f, %.2f)"),
+		*InputActionPath, AxisValue.X, AxisValue.Y, AxisValue.Z);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::ClearStickyInput(const FString& InputActionPath)
+{
+	if (InputActionPath.IsEmpty())
+	{
+		const int32 N = BridgeAgentImpl::GStickyInputs.Num();
+		BridgeAgentImpl::GStickyInputs.Reset();
+		UE_LOG(LogUnrealBridgeAgent, Log, TEXT("ClearStickyInput: removed all %d entries"), N);
+		BridgeAgentImpl::StopStickyTickerIfIdle();
+		return N > 0;
+	}
+	const int32 Removed = BridgeAgentImpl::GStickyInputs.Remove(InputActionPath);
+	BridgeAgentImpl::StopStickyTickerIfIdle();
+	return Removed > 0;
 }

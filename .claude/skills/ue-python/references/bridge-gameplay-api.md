@@ -86,3 +86,132 @@ print(f'path ok={ok} length={length:.0f}cm points={len(waypoints)}')
 - Path planning requires a built RecastNavMesh. If the level has no navmesh actor or it hasn't been built, this returns `(False, [], 0.0)`.
 - Points far outside the navmesh are snapped to the nearest navmesh region by the query — the returned `waypoints[-1]` may not equal `end_location` exactly.
 - Partial paths (end not reachable) currently return False. If you need partial routing, call `NavSys::FindPathToLocationSynchronously` directly.
+
+---
+
+## Actuators
+
+All actuators target the PIE world's first player pawn/controller and
+return `bool` (maps to `True`/`False` in Python — there are no out-params
+so the return is a plain bool, not a struct-or-None tuple).
+
+Input is accumulated per-frame by UE: each `apply_*_input` call contributes
+to the current tick's input and is then consumed by the movement component.
+A Python agent should call these once per tick for continuous behaviour. If
+the agent stops calling them, the pawn decelerates on the next frame.
+
+### apply_movement_input(world_direction, scale_value=1.0, b_force=False) -> bool
+
+Wraps `APawn::AddMovementInput`. Direction is world-space; magnitude is
+ignored (UE normalises). Scale in `[-1, 1]` flips and scales the input.
+
+```python
+import unreal
+# Walk forward along the pawn's current facing.
+obs = unreal.UnrealBridgeGameplayLibrary.get_agent_observation()
+forward = obs.pawn_rotation.rotate_vector(unreal.Vector(1, 0, 0))
+unreal.UnrealBridgeGameplayLibrary.apply_movement_input(forward, 1.0)
+```
+
+### apply_look_input(yaw_delta, pitch_delta) -> bool
+
+Wraps `APlayerController::AddYawInput` / `AddPitchInput`. Values are in
+"input units" — the same units the mouse delta would deliver through the
+input mapping context, typically ~1 unit per degree.
+
+### set_control_rotation(new_rotation) -> bool
+
+Instantly snaps the controller's rotation; skips input smoothing. Useful
+for "face this actor" commands or test teleports where continuous look
+input would add unwanted visual ramp-up.
+
+### jump() -> bool  /  stop_jumping() -> bool
+
+Mirror of `ACharacter::Jump` / `StopJumping`. Returns False if the pawn
+isn't a Character. For a tap jump, call `jump()` one tick and
+`stop_jumping()` the next; for a variable-height jump hold `jump()`
+across N ticks then release.
+
+### Pitfalls
+
+- `apply_movement_input` is a one-shot per tick. If the Python loop
+  pauses longer than ~33 ms (one frame at 30 FPS), the pawn visibly
+  stutters to a stop. Run the agent loop at or above the UE tick rate.
+- `apply_look_input`'s scale depends on the project's mapping; for an
+  unconfigured controller it may feel rotated by 0 degrees (no input
+  binding). Prefer `set_control_rotation` for deterministic aiming.
+- Actions/fire/interact (EnhancedInput IA triggers) are a separate
+  actuator batch and not covered here yet.
+
+---
+
+## EnhancedInput injection (for projects that bypass AddMovementInput)
+
+Many gameplay projects route WASD → `UInputAction` → GAS ability instead
+of the classic `APawn::AddMovementInput` path. For those, the direct
+actuators above look like no-ops because the game never reads the pawn's
+input vector. Two injection flavours:
+
+### inject_enhanced_input_axis(input_action_path, axis_value) -> bool
+
+One-tick injection. Good for discrete press actions (`IA_Jump`,
+`IA_Interact`) — single call fires the IA's `Pressed` / `Triggered`
+phase for the frame.
+
+**Not suitable for held axes.** A continuously-held axis like `IA_Move`
+or `IA_Look` needs a value every UE frame; the Python bridge can't
+reliably match 60 FPS, so use sticky inject instead.
+
+**Value coercion**: the FVector you pass is automatically converted to
+the IA's declared `EInputActionValueType` (Bool/Axis1D/Axis2D/Axis3D).
+Pass `(1, 0, 0)` for a bool "pressed"; for Axis2D WASD pass `(x, y, 0)`.
+
+### set_sticky_input(input_action_path, axis_value) -> bool  /  clear_sticky_input(input_action_path="") -> bool
+
+Register a sticky injection: a server-side FTSTicker re-injects the
+registered IA/value **every GameThread frame** until cleared. Set once
+from Python, input persists at engine frame rate.
+
+- `set_sticky_input(path, value)` — register or overwrite one entry.
+- `clear_sticky_input(path)` — remove one entry by path.
+- `clear_sticky_input("")` — clear all entries.
+
+Multiple IAs can be sticky at the same time (e.g. move + look + sprint
+all held). Passing a zero vector does NOT clear — it injects zero
+every frame (useful to keep the binding alive while temporarily
+suspending input without losing the subscription).
+
+Sticky entries are auto-dropped when PIE ends, so each fresh PIE
+session starts with no sticky input. The server-side ticker stops
+running when the registry is empty.
+
+**Example — walk forward for 2s:**
+```python
+import unreal, time
+IA = '/LocomotionDriver/Input/IA_Move'
+unreal.UnrealBridgeGameplayLibrary.set_sticky_input(IA, unreal.Vector(1, 0, 0))
+time.sleep(2.0)
+unreal.UnrealBridgeGameplayLibrary.clear_sticky_input(IA)
+```
+
+Observed behaviour in a GAS/Mover-style project (GameplayLocomotion):
+pawn reaches ~300 cm/s within one frame, stays at walk speed for
+the sticky duration, decelerates on clear.
+
+### Debug fields on FAgentObservation
+
+Added to the existing observation struct to help diagnose "why isn't
+my input doing anything":
+
+- `pawn_class_name`, `movement_component_class_name`, `movement_mode`
+  (see `EMovementMode`: 0=None, 1=Walking, 3=Falling, ...) — identify
+  whether the pawn even has a standard `CharacterMovementComponent`.
+- `last_control_input_vector` — `APawn::GetLastMovementInputVector`.
+  Zero despite calling `apply_movement_input` means the input never
+  reached the pawn's accumulator (probably because the project uses
+  EnhancedInput-only input routing).
+- `current_acceleration` — `UCharacterMovementComponent::GetCurrentAcceleration`.
+  Non-zero means input got through and the movement comp is reacting;
+  zero despite a non-zero `last_control_input_vector` points at a
+  root-motion / custom locomotion override.
+
