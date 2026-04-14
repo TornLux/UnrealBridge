@@ -408,6 +408,54 @@ struct FBridgeSocketInfo
 	FVector RelativeScale = FVector::OneVector;
 };
 
+// ─── Sync Marker struct ─────────────────────────────────────
+
+USTRUCT(BlueprintType)
+struct FBridgeAnimSyncMarker
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString MarkerName;
+
+	UPROPERTY(BlueprintReadOnly)
+	float Time = 0.f;
+
+	/** Editor-only notify track index (-1 when no editor data). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 TrackIndex = -1;
+};
+
+// ─── Blend Profile structs ──────────────────────────────────
+
+USTRUCT(BlueprintType)
+struct FBridgeBlendProfileInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	/** "TimeFactor", "WeightFactor", or "BlendMask". */
+	UPROPERTY(BlueprintReadOnly)
+	FString Mode;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumEntries = 0;
+};
+
+USTRUCT(BlueprintType)
+struct FBridgeBlendProfileEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString BoneName;
+
+	UPROPERTY(BlueprintReadOnly)
+	float BlendScale = 0.f;
+};
+
 // ─── Library class ──────────────────────────────────────────
 
 UCLASS()
@@ -528,4 +576,24 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static TArray<FString> ListAssetsForSkeleton(const FString& SkeletonPath, const FString& AssetType, int32 MaxResults);
+
+	/** Remove a named socket from a skeleton. Returns true when a socket was removed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool RemoveSkeletonSocket(const FString& SkeletonPath, const FString& SocketName);
+
+	/** Get authored sync markers on an AnimSequence (sorted by time). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FBridgeAnimSyncMarker> GetAnimSyncMarkers(const FString& SequencePath);
+
+	/** Get all blend profiles defined on a skeleton (name, mode, entry count). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FBridgeBlendProfileInfo> GetSkeletonBlendProfiles(const FString& SkeletonPath);
+
+	/** Get the per-bone entries of a specific blend profile on a skeleton. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FBridgeBlendProfileEntry> GetBlendProfileEntries(const FString& SkeletonPath, const FString& ProfileName);
+
+	/** Move an existing montage composite section to a new start time. Sections are re-sorted on success. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetMontageSectionStartTime(const FString& MontagePath, const FString& SectionName, float StartTime);
 };

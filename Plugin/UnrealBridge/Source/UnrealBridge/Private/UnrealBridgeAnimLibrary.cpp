@@ -25,6 +25,8 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Internationalization/Text.h"
+#include "Animation/BlendProfile.h"
+#include "Animation/AnimTypes.h"
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -948,4 +950,161 @@ TArray<FString> UUnrealBridgeAnimLibrary::ListAssetsForSkeleton(
 		}
 	}
 	return Results;
+}
+
+// ─── RemoveSkeletonSocket ──────────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::RemoveSkeletonSocket(const FString& SkeletonPath, const FString& SocketName)
+{
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel) return false;
+
+	const FName Target(*SocketName);
+	int32 FoundIndex = INDEX_NONE;
+	for (int32 i = 0; i < Skel->Sockets.Num(); ++i)
+	{
+		if (Skel->Sockets[i] && Skel->Sockets[i]->SocketName == Target)
+		{
+			FoundIndex = i;
+			break;
+		}
+	}
+	if (FoundIndex == INDEX_NONE) return false;
+
+	Skel->Modify();
+	Skel->Sockets.RemoveAt(FoundIndex);
+	Skel->PostEditChange();
+	Skel->MarkPackageDirty();
+	return true;
+}
+
+// ─── GetAnimSyncMarkers ────────────────────────────────────
+
+TArray<FBridgeAnimSyncMarker> UUnrealBridgeAnimLibrary::GetAnimSyncMarkers(const FString& SequencePath)
+{
+	TArray<FBridgeAnimSyncMarker> Result;
+
+	UAnimSequence* Seq = LoadObject<UAnimSequence>(nullptr, *SequencePath);
+	if (!Seq) return Result;
+
+	for (const FAnimSyncMarker& M : Seq->AuthoredSyncMarkers)
+	{
+		FBridgeAnimSyncMarker Info;
+		Info.MarkerName = M.MarkerName.ToString();
+		Info.Time = M.Time;
+#if WITH_EDITORONLY_DATA
+		Info.TrackIndex = M.TrackIndex;
+#else
+		Info.TrackIndex = -1;
+#endif
+		Result.Add(Info);
+	}
+	Result.Sort([](const FBridgeAnimSyncMarker& A, const FBridgeAnimSyncMarker& B) {
+		return A.Time < B.Time;
+	});
+	return Result;
+}
+
+// ─── GetSkeletonBlendProfiles ──────────────────────────────
+
+namespace BridgeAnimImpl
+{
+	static FString BlendProfileModeToString(EBlendProfileMode Mode)
+	{
+		switch (Mode)
+		{
+		case EBlendProfileMode::TimeFactor:   return TEXT("TimeFactor");
+		case EBlendProfileMode::WeightFactor: return TEXT("WeightFactor");
+		case EBlendProfileMode::BlendMask:    return TEXT("BlendMask");
+		default:                              return TEXT("Unknown");
+		}
+	}
+}
+
+TArray<FBridgeBlendProfileInfo> UUnrealBridgeAnimLibrary::GetSkeletonBlendProfiles(const FString& SkeletonPath)
+{
+	TArray<FBridgeBlendProfileInfo> Result;
+
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel) return Result;
+
+	for (const TObjectPtr<UBlendProfile>& BP : Skel->BlendProfiles)
+	{
+		if (!BP) continue;
+		FBridgeBlendProfileInfo Info;
+		Info.Name = BP->GetName();
+		Info.Mode = BridgeAnimImpl::BlendProfileModeToString(BP->GetMode());
+		Info.NumEntries = BP->GetNumBlendEntries();
+		Result.Add(Info);
+	}
+	return Result;
+}
+
+// ─── GetBlendProfileEntries ────────────────────────────────
+
+TArray<FBridgeBlendProfileEntry> UUnrealBridgeAnimLibrary::GetBlendProfileEntries(
+	const FString& SkeletonPath, const FString& ProfileName)
+{
+	TArray<FBridgeBlendProfileEntry> Result;
+
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel) return Result;
+
+	UBlendProfile* Profile = Skel->GetBlendProfile(FName(*ProfileName));
+	if (!Profile) return Result;
+
+	const FReferenceSkeleton& RefSkel = Skel->GetReferenceSkeleton();
+	const int32 NumEntries = Profile->GetNumBlendEntries();
+	for (int32 i = 0; i < NumEntries; ++i)
+	{
+		FBridgeBlendProfileEntry Entry;
+		Entry.BlendScale = Profile->GetEntryBlendScale(i);
+
+		// Map entry -> bone by scanning reference skeleton for the first bone whose
+		// blend scale matches via GetBoneBlendScale(boneIndex). This is robust against
+		// FBlendProfileBoneEntry internals changing and avoids touching private fields.
+		Entry.BoneName = FString();
+		Result.Add(Entry);
+	}
+
+	// Walk the skeleton in order, assigning bone names to any entries we can look up.
+	// Cheaper and more reliable: iterate bones and pull each one's blend scale directly.
+	Result.Reset();
+	for (int32 BoneIdx = 0; BoneIdx < RefSkel.GetNum(); ++BoneIdx)
+	{
+		const FName BoneName = RefSkel.GetBoneName(BoneIdx);
+		if (Profile->GetEntryIndex(BoneName) == INDEX_NONE) continue;
+		FBridgeBlendProfileEntry Entry;
+		Entry.BoneName = BoneName.ToString();
+		Entry.BlendScale = Profile->GetBoneBlendScale(BoneName);
+		Result.Add(Entry);
+	}
+	return Result;
+}
+
+// ─── SetMontageSectionStartTime ────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::SetMontageSectionStartTime(
+	const FString& MontagePath, const FString& SectionName, float StartTime)
+{
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+	if (!Montage) return false;
+	if (StartTime < 0.f || StartTime > Montage->GetPlayLength()) return false;
+
+	const FName Target(*SectionName);
+	int32 FoundIndex = INDEX_NONE;
+	for (int32 i = 0; i < Montage->CompositeSections.Num(); ++i)
+	{
+		if (Montage->CompositeSections[i].SectionName == Target) { FoundIndex = i; break; }
+	}
+	if (FoundIndex == INDEX_NONE) return false;
+
+	Montage->Modify();
+	Montage->CompositeSections[FoundIndex].SetTime(StartTime);
+	Montage->CompositeSections.Sort([](const FCompositeSection& A, const FCompositeSection& B) {
+		return A.GetTime() < B.GetTime();
+	});
+	Montage->PostEditChange();
+	Montage->MarkPackageDirty();
+	return true;
 }

@@ -402,3 +402,98 @@ Find anim assets bound to a skeleton via `FAssetData` `Skeleton` tag. `asset_typ
 montages = unreal.UnrealBridgeAnimLibrary.list_assets_for_skeleton(
     '/Game/Characters/Hero/SK_Hero_Skeleton.SK_Hero_Skeleton', 'Montage', 100)
 ```
+
+### remove_skeleton_socket(skeleton_path, socket_name) -> bool
+
+Remove a named `USkeletalMeshSocket` from a skeleton. Returns `False` when the skeleton fails to load or no socket with that name exists. Marks the package dirty on success — save the skeleton to persist.
+
+> Token cost: LOW. One round-trip, bool return.
+
+```python
+ok = unreal.UnrealBridgeAnimLibrary.remove_skeleton_socket(
+    '/Game/Skel/SK_Hero_Skeleton', 'weapon_r_socket')
+if ok:
+    unreal.EditorAssetLibrary.save_asset('/Game/Skel/SK_Hero_Skeleton')
+```
+
+---
+
+## Anim Sync Markers
+
+### get_anim_sync_markers(sequence_path) -> list[FBridgeAnimSyncMarker]
+
+Get the authored sync markers (`UAnimSequence::AuthoredSyncMarkers`) on a sequence, sorted by time. Sync markers drive synchronized playback across different-length loops (e.g. matching foot-plant phases between walk and run cycles in a BlendSpace). Returns `[]` for non-`UAnimSequence` assets (montages, composites) or sequences with no markers.
+
+> Token cost: LOW. Typical locomotion cycles carry 2–8 markers. Three scalar fields per entry.
+
+```python
+marks = unreal.UnrealBridgeAnimLibrary.get_anim_sync_markers('/Game/Anim/Run_Fwd')
+for m in marks:
+    print(f'{m.marker_name} @ {m.time:.3f}s (track {m.track_index})')
+```
+
+### FBridgeAnimSyncMarker fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `marker_name` | str | Marker name (e.g. `"LeftFoot"`, `"RightFoot"`) |
+| `time` | float | Trigger time in seconds |
+| `track_index` | int | Editor notify-track index; `-1` in non-editor builds |
+
+---
+
+## Skeleton Blend Profiles
+
+Blend profiles scale per-bone blending for smoother state-machine transitions (e.g. upper body blends slower than legs). A skeleton can own multiple profiles; each has one of three modes — `TimeFactor`, `WeightFactor`, `BlendMask`.
+
+### get_skeleton_blend_profiles(skeleton_path) -> list[FBridgeBlendProfileInfo]
+
+List blend profiles by name + mode + entry count. Use this to discover profile names before calling `get_blend_profile_entries`.
+
+> Token cost: LOW. Most rigs carry 0–5 blend profiles.
+
+```python
+profiles = unreal.UnrealBridgeAnimLibrary.get_skeleton_blend_profiles(
+    '/Game/Skel/SK_Hero_Skeleton')
+for p in profiles:
+    print(f'{p.name}  mode={p.mode}  entries={p.num_entries}')
+```
+
+### FBridgeBlendProfileInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Profile object name |
+| `mode` | str | `"TimeFactor"`, `"WeightFactor"`, or `"BlendMask"` |
+| `num_entries` | int | Number of bone entries in the profile |
+
+### get_blend_profile_entries(skeleton_path, profile_name) -> list[FBridgeBlendProfileEntry]
+
+Get the per-bone blend-scale entries for a specific profile. Only bones whose blend scale is authored in the profile are returned (bones without entries use the profile's default scale at runtime). Returns `[]` when the profile does not exist.
+
+> Token cost: LOW–MEDIUM. Typical upper-body/lower-body profiles have 10–40 entries. Large face-mask profiles can reach ~100.
+
+```python
+entries = unreal.UnrealBridgeAnimLibrary.get_blend_profile_entries(
+    '/Game/Skel/SK_Hero_Skeleton', 'UpperBody')
+for e in entries:
+    print(f'{e.bone_name}  scale={e.blend_scale}')
+```
+
+### FBridgeBlendProfileEntry fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `bone_name` | str | Bone name |
+| `blend_scale` | float | Authored blend scale for that bone |
+
+---
+
+### set_montage_section_start_time(montage_path, section_name, start_time) -> bool
+
+Move an existing composite section to a new `start_time` (in seconds, `[0, play_length]`). Sections are re-sorted on success so iteration order stays time-ascending. Returns `False` when the section does not exist or the time is out of range.
+
+```python
+unreal.UnrealBridgeAnimLibrary.set_montage_section_start_time(
+    '/Game/Anim/AM_Combo', 'Swing2', 0.60)
+```
