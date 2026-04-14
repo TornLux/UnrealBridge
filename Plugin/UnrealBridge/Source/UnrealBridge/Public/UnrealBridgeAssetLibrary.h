@@ -237,4 +237,54 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
 	static FString ResolveRedirector(const FString& AssetPath);
+
+	// ── Cheap scalar / batch registry queries ──────────────────
+
+	/**
+	 * Just the class path of an asset (no tags, no disk size). Cheap lookup when you
+	 * only need to know "what kind of asset is this?". Returns "" if the asset is unknown.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static FString GetAssetClassPath(const FString& AssetPath);
+
+	/**
+	 * Read a single AssetRegistry tag value for an asset. No load. Returns "" when the
+	 * asset is unknown or the tag does not exist on it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static FString GetAssetTagValue(const FString& AssetPath, const FString& TagName);
+
+	/**
+	 * Batch list every asset under any of the given content folder paths in a single
+	 * registry sweep. Optional ClassFilter is a TopLevelAssetPath ("" = all classes).
+	 * `bRecursive` controls subfolder descent for the path filter, and also enables
+	 * recursive class matching when ClassFilter is non-empty.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetAssetsByPackagePaths(
+		const TArray<FString>& FolderPaths,
+		const FString& ClassFilter,
+		bool bRecursive,
+		TArray<FSoftObjectPath>& OutSoftPaths);
+
+	/**
+	 * One registry pass returning every asset whose class matches any entry in
+	 * `ClassPaths` (TopLevelAssetPath strings). Use instead of N separate
+	 * `GetAssetsByClass` calls when you need multiple types at once.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetAssetsOfClasses(
+		const TArray<FString>& ClassPaths,
+		bool bSearchSubClasses,
+		TArray<FSoftObjectPath>& OutSoftPaths);
+
+	/**
+	 * Find every UObjectRedirector under a content folder. Pair with
+	 * `unreal.UnrealBridgeEditorLibrary.fixup_redirectors` for batch cleanup.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void FindRedirectorsUnderPath(
+		const FString& FolderPath,
+		bool bRecursive,
+		TArray<FSoftObjectPath>& OutSoftPaths);
 };

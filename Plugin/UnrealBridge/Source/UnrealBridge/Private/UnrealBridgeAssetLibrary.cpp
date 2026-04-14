@@ -743,6 +743,135 @@ void UUnrealBridgeAssetLibrary::GetAssetsByTagValue(
 	}
 }
 
+// ─── Cheap scalar / batch registry queries ──────────────────
+
+FString UUnrealBridgeAssetLibrary::GetAssetClassPath(const FString& AssetPath)
+{
+	const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPath);
+	if (Soft.IsNull()) return FString();
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	const FAssetData Data = AR.GetAssetByObjectPath(Soft);
+	if (!Data.IsValid()) return FString();
+
+	return Data.AssetClassPath.ToString();
+}
+
+FString UUnrealBridgeAssetLibrary::GetAssetTagValue(const FString& AssetPath, const FString& TagName)
+{
+	if (TagName.IsEmpty()) return FString();
+
+	const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPath);
+	if (Soft.IsNull()) return FString();
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	const FAssetData Data = AR.GetAssetByObjectPath(Soft);
+	if (!Data.IsValid()) return FString();
+
+	FString Value;
+	if (Data.GetTagValue(FName(*TagName), Value))
+	{
+		return Value;
+	}
+	return FString();
+}
+
+void UUnrealBridgeAssetLibrary::GetAssetsByPackagePaths(
+	const TArray<FString>& FolderPaths,
+	const FString& ClassFilter,
+	bool bRecursive,
+	TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+	if (FolderPaths.Num() == 0) return;
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = bRecursive;
+
+	for (const FString& Raw : FolderPaths)
+	{
+		FString Path = Raw.TrimStartAndEnd();
+		if (Path.IsEmpty()) continue;
+		BridgeAssetOps::NormalizeContentRoot(Path);
+		Filter.PackagePaths.Add(FName(*Path));
+	}
+	if (Filter.PackagePaths.Num() == 0) return;
+
+	FTopLevelAssetPath ClassTop;
+	if (BridgeAssetOps::TryParseTopLevelPath(ClassFilter, ClassTop))
+	{
+		Filter.ClassPaths.Add(ClassTop);
+		Filter.bRecursiveClasses = bRecursive;
+	}
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Datas;
+	AR.GetAssets(Filter, Datas);
+
+	OutSoftPaths.Reserve(Datas.Num());
+	for (const FAssetData& D : Datas)
+	{
+		OutSoftPaths.Add(D.GetSoftObjectPath());
+	}
+}
+
+void UUnrealBridgeAssetLibrary::GetAssetsOfClasses(
+	const TArray<FString>& ClassPaths,
+	bool bSearchSubClasses,
+	TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+	if (ClassPaths.Num() == 0) return;
+
+	FARFilter Filter;
+	Filter.bRecursiveClasses = bSearchSubClasses;
+	for (const FString& CP : ClassPaths)
+	{
+		FTopLevelAssetPath Top;
+		if (BridgeAssetOps::TryParseTopLevelPath(CP, Top))
+		{
+			Filter.ClassPaths.Add(Top);
+		}
+	}
+	if (Filter.ClassPaths.Num() == 0) return;
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Datas;
+	AR.GetAssets(Filter, Datas);
+
+	OutSoftPaths.Reserve(Datas.Num());
+	for (const FAssetData& D : Datas)
+	{
+		OutSoftPaths.Add(D.GetSoftObjectPath());
+	}
+}
+
+void UUnrealBridgeAssetLibrary::FindRedirectorsUnderPath(
+	const FString& FolderPath,
+	bool bRecursive,
+	TArray<FSoftObjectPath>& OutSoftPaths)
+{
+	OutSoftPaths.Reset();
+	FString BasePath = FolderPath.TrimStartAndEnd();
+	if (BasePath.IsEmpty()) return;
+	BridgeAssetOps::NormalizeContentRoot(BasePath);
+
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(*BasePath));
+	Filter.bRecursivePaths = bRecursive;
+	Filter.ClassPaths.Add(UObjectRedirector::StaticClass()->GetClassPathName());
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Datas;
+	AR.GetAssets(Filter, Datas);
+
+	OutSoftPaths.Reserve(Datas.Num());
+	for (const FAssetData& D : Datas)
+	{
+		OutSoftPaths.Add(D.GetSoftObjectPath());
+	}
+}
+
 FString UUnrealBridgeAssetLibrary::ResolveRedirector(const FString& AssetPath)
 {
 	const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPath);

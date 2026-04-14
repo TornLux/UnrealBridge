@@ -226,4 +226,76 @@ if target:
     print('Redirects to:', target)
 ```
 
-For batch redirector cleanup, pair this with `get_assets_by_class('/Script/CoreUObject.ObjectRedirector', False)` and `unreal.UnrealBridgeEditorLibrary.fixup_redirectors(...)`.
+For batch redirector cleanup, prefer `find_redirectors_under_path(folder, recursive)` (below) plus `unreal.UnrealBridgeEditorLibrary.fixup_redirectors(...)`.
+
+---
+
+## Cheap scalar / batch registry queries
+
+Focused helpers for callers processing many assets. All are registry-only (no load).
+
+### get_asset_class_path(asset_path) -> str
+
+Just the class path of an asset. Cheaper than `get_asset_info` when you only need "what kind of asset is this?". Returns `""` when the registry doesn't know the asset.
+
+> Token footprint: ~1 line/call, ~40 chars. One TCP round-trip per call — batch via `get_assets_by_class` or `get_assets_of_classes` if you're classifying many assets.
+
+```python
+unreal.UnrealBridgeAssetLibrary.get_asset_class_path('/Game/BP/BP_MyActor')
+# '/Script/Engine.Blueprint'
+```
+
+### get_asset_tag_value(asset_path, tag_name) -> str
+
+Read one AssetRegistry tag value from one asset, no load. Returns `""` when the asset is unknown or the tag is absent. Much cheaper than `get_asset_info` when you only want a single tag (e.g. `ParentClass`, `NativeParentClass`, `BlueprintType`).
+
+> Token footprint: ~1 short string. One round-trip per call.
+
+```python
+parent = unreal.UnrealBridgeAssetLibrary.get_asset_tag_value(
+    '/Game/BP/BP_MyActor', 'ParentClass')
+# "/Script/CoreUObject.Class'/Script/Engine.Actor'"
+```
+
+### get_assets_by_package_paths(folder_paths, class_filter, recursive) -> list[SoftObjectPath]
+
+Batch list every asset under any of the given content folder paths in a **single** registry sweep. Pass `class_filter=''` for any class, otherwise a TopLevelAssetPath string. `recursive` controls both subfolder descent and recursive class matching.
+
+> Token footprint: HIGH on broad folders. 1 soft path per asset (~60 chars). Prefer this over multiple `list_assets_under_path` calls when you need to OR several disjoint folders — one round-trip instead of N.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+
+# All Blueprints under two disjoint folders:
+out = AL.get_assets_by_package_paths(
+    ['/Game/Characters', '/Game/Weapons'],
+    '/Script/Engine.Blueprint',
+    True)
+```
+
+### get_assets_of_classes(class_paths, search_sub_classes) -> list[SoftObjectPath]
+
+One registry pass returning every asset whose class matches **any** entry in `class_paths`. Replaces N separate `get_assets_by_class` calls when you need multiple types together.
+
+> Token footprint: HIGH for broad bases like `Actor` / `Object`. Narrow the class list aggressively.
+
+```python
+# Textures OR Materials in one pass
+tex_and_mat = unreal.UnrealBridgeAssetLibrary.get_assets_of_classes(
+    ['/Script/Engine.Texture2D', '/Script/Engine.Material'], False)
+```
+
+### find_redirectors_under_path(folder_path, recursive) -> list[SoftObjectPath]
+
+Find every `UObjectRedirector` under a folder. Pair with `unreal.UnrealBridgeEditorLibrary.fixup_redirectors(...)` for batch cleanup.
+
+> Token footprint: proportional to redirector count — usually small on healthy projects, can spike after large moves/renames.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+redirectors = AL.find_redirectors_under_path('/Game', True)
+print(f'{len(redirectors)} redirectors to fix up')
+# package-level string paths for fixup_redirectors:
+pkg_paths = [str(r).split('.')[0] for r in
+             [r.export_text() for r in redirectors]]
+```
