@@ -4,6 +4,15 @@ This document lists the concrete changes needed to make `FUnrealBridgeServer` ro
 
 Scope: `Plugin/UnrealBridge/Source/UnrealBridge/Private/UnrealBridgeServer.cpp` and its header. The Python client (`bridge.py`) is out of scope unless a fix requires a protocol bump.
 
+Known bug coverage:
+- **Concurrent-exec editor crash** (Python reentrancy inside `ExecPythonCommandEx`) — addressed by #1.
+- **Dangling-reference / event-pool reuse in `ExecutePython`** — addressed by #1.
+- **Intermittent `WinError 10053 (WSAECONNABORTED)` on client calls** — addressed by #7 (listener poll interval + `SO_REUSEADDR`).
+- **Editor crash on malformed JSON / missing fields** — addressed by #3.
+- **OOM on oversized payloads** — addressed by #4.
+- **Background-task pool starvation from unbounded clients** — addressed by #5.
+- **Hangs on plugin reload / editor shutdown** — addressed by #6 + #12.
+
 ---
 
 ## 1. Serialize Python exec through a single ticker-consumed queue (CORE REFACTOR)
@@ -230,17 +239,43 @@ void Stop() {
 
 ---
 
-## 7. Listener reusable address
+## 7. Listener tuning — poll interval + reusable address (fixes WSAECONNABORTED 10053)
 
 ### Problem
-`MakeUnique<FTcpListener>(Endpoint, 1s, false /* bInReusable */)`. On editor crash/quick-restart the socket stays in `TIME_WAIT` for up to 2 minutes; `Start()` then fails with "address in use" and the bridge is dead until the socket decays.
+
+`MakeUnique<FTcpListener>(Endpoint, FTimespan::FromSeconds(1.0), false /* bInReusable */)` has **two independent defects** that together produce the intermittent `WinError 10053 (WSAECONNABORTED)` clients observe:
+
+**Poll interval = 1.0 s is the dominant cause.** `FTcpListener` is an `FRunnable` that wakes on the given `InSleepTime` to call `Accept()`. A new client's `connect()` + `sendall()` completes at kernel level in milliseconds, but the data then sits in the server's kernel backlog **for up to 1 second** until the listener thread happens to wake. During that window two races produce 10053:
+
+- The previous worker thread is in `HandleClient`'s 5 s idle `RecvAll`; as it exits and calls `DestroySocket`, the new (not-yet-accepted) socket's accept is delayed by the same poll tick — the Windows TCP stack occasionally judges the pending connection as aborted.
+- Under GameThread pressure (GC, shader compile spikes), the listener's `FRunnable` can be scheduled late, stretching 1 s to 2 s+ and giving the client's stack enough time to give up with 10053.
+
+**`bInReusable = false` is the secondary cause.** Rapid connect/close cycles (e.g. CI scripts, the library-iteration loop) accumulate `TIME_WAIT`/`CLOSE_WAIT` entries on `(127.0.0.1, 9876)`. Some of the follow-up connects land on a 4-tuple Windows still considers reserved, and the stack aborts with 10053.
 
 ### Solution
+
+Single two-line fix addresses both:
+
 ```cpp
-Listener = MakeUnique<FTcpListener>(Endpoint, FTimespan::FromSeconds(1.0), true /* bInReusable */);
+Listener = MakeUnique<FTcpListener>(
+    Endpoint,
+    FTimespan::FromMilliseconds(100),   // 10× faster poll — shrinks both race windows
+    true                                 // bInReusable — reclaim TIME_WAIT sockets
+);
 ```
 
-Windows `SO_REUSEADDR` semantics differ from Linux but still let us reclaim a `TIME_WAIT` socket for the same `(addr, port)` — which is exactly what we need here.
+- **100 ms** is small enough that accept latency becomes unnoticeable (bridge call overhead is already dominated by subprocess start-up and JSON/socket round-trip), and large enough that the `FRunnable` doesn't burn meaningful CPU spinning.
+- On Windows, `SO_REUSEADDR` (what UE 5.7's `FTcpListener` sets when `bInReusable=true`) permits binding to a port currently in `TIME_WAIT`, which is precisely what we need after a crash/restart and during quick reconnect bursts.
+
+### Validation
+
+After landing:
+1. Fire the `concurrent_fire.py` stress test from commit `48bb8c6`'s verification session (10 parallel exec-file) five times in a row — expect 50/50 success rate (previously intermittent).
+2. Kill + relaunch the editor within 10 s; confirm the bridge comes back up without an "address in use" error (previously could take up to 120 s for `TIME_WAIT` to expire).
+
+### Why this belongs as its own commit
+
+It's a single self-contained listener-config change, independent of the queue refactor (#1) and the payload/protocol work (#2–#5). Landing it alone makes the 10053 reduction measurable and gives us a clean bisect point if any regression shows up.
 
 ---
 
@@ -396,11 +431,12 @@ This makes plugin reload (Live Coding, project switch, editor quit) hang-free an
 
 ## Implementation order
 
-1. **Land #1 first** in isolation — it's the foundation. Verify with a stress script (parallel `bridge.py` invocations that mix fast pings with slow execs) that reentrancy is gone.
-2. **#2, #3, #4** — small self-contained fixes, any order.
-3. **#7, #8** — trivial, batch together.
-4. **#5, #6, #9, #10** — medium, each is a short commit.
-5. **#11, #12** — depend on the new structure from #1. Last.
+1. **#1** — done in `48bb8c6`. Foundation for everything else.
+2. **#7** next — smallest diff, biggest user-visible win (10053 intermittent failures disappear). Independent of all other items, no risk of regressing #1.
+3. **#2, #3, #4** — small self-contained fixes, any order.
+4. **#8** — trivial atomic conversion; batch with #3 or #4 commit.
+5. **#5, #6, #9, #10** — medium, each is a short commit.
+6. **#11, #12** — depend on the new structure from #1. Last.
 
 Each change should land as its own commit with the `Server:` prefix in the message (distinct from the library-tick `Editor:`/`Level:`/etc. prefixes), so `git log --grep "^Server:"` surfaces the refactor trail.
 
