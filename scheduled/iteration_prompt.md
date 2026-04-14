@@ -57,6 +57,12 @@ Follow CLAUDE.md's pipeline with this retry policy:
 
 ## Step 5 — Commit
 
+**Before staging anything, clean up `temp/`.** Mandatory on every tick that reaches commit:
+
+1. Delete every file inside `temp/` that you created this tick (verification scripts, probe `.py` files, captured logs, intermediate dumps). Leave the `temp/` directory itself in place — don't remove it. Do not touch scratch files outside `temp/`.
+2. Run `git status --porcelain` and confirm the pending changes are the intended deliverable (C++ sources, the matching `bridge-<name>-api.md`, and `scheduled/state.json`). Untracked files not from this tick are fine — leave them.
+3. Stage only the deliverable paths by name — never `git add -A` / `git add .`.
+
 - Branch must be `main`. Commit directly.
 - Only commit when build is green (or for reference-only changes).
 - Message: `<LIBRARY>: <one-line summary>`
