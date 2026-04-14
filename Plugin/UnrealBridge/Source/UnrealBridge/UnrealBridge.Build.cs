@@ -38,6 +38,8 @@ public class UnrealBridge : ModuleRules
 			"GameplayTags",
 			"GameplayTasks",
 			"MainFrame",
+			"NavigationSystem",
+			"Navmesh",
 		});
 	}
 }
