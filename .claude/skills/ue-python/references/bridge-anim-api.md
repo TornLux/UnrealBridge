@@ -258,6 +258,59 @@ for s in sockets:
 
 ---
 
+## Skeleton Virtual Bones
+
+### get_skeleton_virtual_bones(skeleton_path) -> list[FBridgeVirtualBoneInfo]
+
+Get virtual bones on a skeleton — synthetic bones that are defined as `Source -> Target` pairs (typically used for IK end-effectors like `VB ik_foot_l`). Returns `[]` for skeletons without virtual bones.
+
+> Token cost: LOW. Production rigs have a handful of virtual bones (usually < 10). Returns three string fields per entry.
+
+```python
+vbs = unreal.UnrealBridgeAnimLibrary.get_skeleton_virtual_bones('/Game/Skel/SK_Hero_Skeleton')
+for v in vbs:
+    print(f'{v.virtual_bone_name}: {v.source_bone_name} -> {v.target_bone_name}')
+```
+
+### FBridgeVirtualBoneInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `virtual_bone_name` | str | Virtual bone name, already includes `"VB "` prefix |
+| `source_bone_name` | str | Source (parent) bone |
+| `target_bone_name` | str | Target bone whose transform drives the VB |
+
+---
+
+## Montage Slot Segments
+
+### get_montage_slot_segments(montage_path) -> list[FBridgeMontageSlotSegment]
+
+List the anim segments laid out on each of a montage's slot tracks. One entry per `FAnimSegment` in every `FSlotAnimationTrack`. Use this to discover which `AnimSequence` (or `AnimComposite`) a montage actually plays, its sub-clip window, play rate, and looping. Results are returned in layout order (per slot).
+
+> Token cost: LOW–MEDIUM. Typical single-slot melee/locomotion montages return 1–3 segments. Multi-slot montages (e.g. additive upper-body over locomotion) may return 5–10. Segment paths are full `/Game/...` soft object paths — trim them client-side if you only need asset names.
+
+```python
+segs = unreal.UnrealBridgeAnimLibrary.get_montage_slot_segments('/Game/Anim/AM_Combo')
+for s in segs:
+    print(f'{s.slot_name}  +{s.start_pos:.2f}s  {s.anim_reference_path}  '
+          f'clip=[{s.anim_start_time:.2f}..{s.anim_end_time:.2f}]  x{s.anim_play_rate}  loop={s.looping_count}')
+```
+
+### FBridgeMontageSlotSegment fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `slot_name` | str | Owning slot name |
+| `anim_reference_path` | str | Soft path to the referenced anim (empty if unset) |
+| `start_pos` | float | Montage-local start in seconds |
+| `anim_start_time` | float | Sub-clip start inside the referenced anim |
+| `anim_end_time` | float | Sub-clip end inside the referenced anim |
+| `anim_play_rate` | float | Segment play rate multiplier |
+| `looping_count` | int | Times the sub-clip loops inside the segment |
+
+---
+
 ## Write Ops
 
 All writes mark the package dirty in memory. The caller is responsible for `unreal.EditorAssetLibrary.save_asset(path)` to persist. Crashing / killing the editor before save discards the changes.
@@ -296,6 +349,48 @@ unreal.UnrealBridgeAnimLibrary.add_montage_section('/Game/Anim/AM_Combo', 'Swing
 ### set_montage_section_next(montage_path, section_name, next_section_name) -> bool
 
 Wire `section_name -> next_section_name` for auto-advance. Pass `""` for `next_section_name` to clear the link. Returns false when either section is missing.
+
+### remove_montage_section(montage_path, section_name) -> bool
+
+Remove a composite section by name. Also clears any other section's `next_section_name` that pointed at the removed one (so you never end up with a dangling link). Returns `False` when the section does not exist.
+
+```python
+unreal.UnrealBridgeAnimLibrary.remove_montage_section('/Game/Anim/AM_Combo', 'Swing2')
+```
+
+### set_montage_blend_times(montage_path, blend_in_time, blend_out_time, blend_out_trigger_time, enable_auto_blend_out) -> bool
+
+Write montage blend settings in one call.
+
+- `blend_in_time` / `blend_out_time`: pass `>= 0` to set the corresponding `FAlphaBlend`, or `< 0` to leave unchanged.
+- `blend_out_trigger_time`: pass `-1` for "blend out at end"; any other non-negative value sets an explicit trigger time (`PlayLength - BlendOutTriggerTime`). Always written.
+- `enable_auto_blend_out`: always written.
+
+Returns `False` only when the montage fails to load.
+
+```python
+# Shorten blend-in only, keep the rest.
+unreal.UnrealBridgeAnimLibrary.set_montage_blend_times('/Game/Anim/AM_Attack', 0.1, -1.0, -1.0, True)
+```
+
+### add_skeleton_socket(skeleton_path, socket_name, parent_bone_name, relative_location, relative_rotation, relative_scale) -> bool
+
+Add a new `USkeletalMeshSocket` to a skeleton. Fails when:
+- The skeleton fails to load.
+- `parent_bone_name` is not present in the skeleton's reference skeleton.
+- A socket with the same name already exists (use `get_skeleton_sockets` first to check).
+
+The socket is appended to `USkeleton::Sockets` and the package is marked dirty; caller must save the skeleton to persist.
+
+```python
+ok = unreal.UnrealBridgeAnimLibrary.add_skeleton_socket(
+    '/Game/Skel/SK_Hero_Skeleton',
+    'weapon_r_socket',
+    'hand_r',
+    unreal.Vector(5.0, 0.0, 0.0),
+    unreal.Rotator(0.0, 90.0, 0.0),
+    unreal.Vector(1.0, 1.0, 1.0))
+```
 
 ### list_assets_for_skeleton(skeleton_path, asset_type, max_results) -> list[str]
 

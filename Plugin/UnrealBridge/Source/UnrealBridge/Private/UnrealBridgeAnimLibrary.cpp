@@ -744,6 +744,151 @@ bool UUnrealBridgeAnimLibrary::SetMontageSectionNext(
 	return false;
 }
 
+// ─── GetMontageSlotSegments ────────────────────────────────
+
+TArray<FBridgeMontageSlotSegment> UUnrealBridgeAnimLibrary::GetMontageSlotSegments(const FString& MontagePath)
+{
+	TArray<FBridgeMontageSlotSegment> Result;
+
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+	if (!Montage) return Result;
+
+	for (const FSlotAnimationTrack& Slot : Montage->SlotAnimTracks)
+	{
+		const FString SlotNameStr = Slot.SlotName.ToString();
+		for (const FAnimSegment& Seg : Slot.AnimTrack.AnimSegments)
+		{
+			FBridgeMontageSlotSegment S;
+			S.SlotName = SlotNameStr;
+			if (UAnimSequenceBase* Ref = Seg.GetAnimReference())
+			{
+				S.AnimReferencePath = FSoftObjectPath(Ref).ToString();
+			}
+			S.StartPos = Seg.StartPos;
+			S.AnimStartTime = Seg.AnimStartTime;
+			S.AnimEndTime = Seg.AnimEndTime;
+			S.AnimPlayRate = Seg.AnimPlayRate;
+			S.LoopingCount = Seg.LoopingCount;
+			Result.Add(S);
+		}
+	}
+	return Result;
+}
+
+// ─── RemoveMontageSection ──────────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::RemoveMontageSection(const FString& MontagePath, const FString& SectionName)
+{
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+	if (!Montage) return false;
+
+	const FName Target(*SectionName);
+	int32 FoundIndex = INDEX_NONE;
+	for (int32 i = 0; i < Montage->CompositeSections.Num(); ++i)
+	{
+		if (Montage->CompositeSections[i].SectionName == Target) { FoundIndex = i; break; }
+	}
+	if (FoundIndex == INDEX_NONE) return false;
+
+	Montage->Modify();
+	Montage->CompositeSections.RemoveAt(FoundIndex);
+
+	// Clear any `NextSectionName` that referenced the removed section.
+	for (FCompositeSection& S : Montage->CompositeSections)
+	{
+		if (S.NextSectionName == Target)
+		{
+			S.NextSectionName = NAME_None;
+		}
+	}
+
+	Montage->PostEditChange();
+	Montage->MarkPackageDirty();
+	return true;
+}
+
+// ─── SetMontageBlendTimes ──────────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::SetMontageBlendTimes(const FString& MontagePath,
+	float BlendInTime, float BlendOutTime, float BlendOutTriggerTime, bool bEnableAutoBlendOut)
+{
+	UAnimMontage* Montage = LoadObject<UAnimMontage>(nullptr, *MontagePath);
+	if (!Montage) return false;
+
+	Montage->Modify();
+	if (BlendInTime >= 0.f)
+	{
+		Montage->BlendIn.SetBlendTime(BlendInTime);
+	}
+	if (BlendOutTime >= 0.f)
+	{
+		Montage->BlendOut.SetBlendTime(BlendOutTime);
+	}
+	Montage->BlendOutTriggerTime = BlendOutTriggerTime;
+	Montage->bEnableAutoBlendOut = bEnableAutoBlendOut;
+	Montage->PostEditChange();
+	Montage->MarkPackageDirty();
+	return true;
+}
+
+// ─── GetSkeletonVirtualBones ───────────────────────────────
+
+TArray<FBridgeVirtualBoneInfo> UUnrealBridgeAnimLibrary::GetSkeletonVirtualBones(const FString& SkeletonPath)
+{
+	TArray<FBridgeVirtualBoneInfo> Result;
+
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel) return Result;
+
+	for (const FVirtualBone& VB : Skel->GetVirtualBones())
+	{
+		FBridgeVirtualBoneInfo Info;
+		Info.VirtualBoneName = VB.VirtualBoneName.ToString();
+		Info.SourceBoneName = VB.SourceBoneName.ToString();
+		Info.TargetBoneName = VB.TargetBoneName.ToString();
+		Result.Add(Info);
+	}
+	return Result;
+}
+
+// ─── AddSkeletonSocket ─────────────────────────────────────
+
+bool UUnrealBridgeAnimLibrary::AddSkeletonSocket(const FString& SkeletonPath,
+	const FString& SocketName, const FString& ParentBoneName,
+	FVector RelativeLocation, FRotator RelativeRotation, FVector RelativeScale)
+{
+	USkeleton* Skel = LoadObject<USkeleton>(nullptr, *SkeletonPath);
+	if (!Skel) return false;
+
+	const FName SocketFName(*SocketName);
+	const FName BoneFName(*ParentBoneName);
+
+	// Reject duplicate.
+	if (Skel->FindSocket(SocketFName) != nullptr)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddSkeletonSocket '%s' already exists"), *SocketName);
+		return false;
+	}
+	// Verify bone exists.
+	if (Skel->GetReferenceSkeleton().FindBoneIndex(BoneFName) == INDEX_NONE)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddSkeletonSocket bone '%s' not found"), *ParentBoneName);
+		return false;
+	}
+
+	Skel->Modify();
+	USkeletalMeshSocket* NewSocket = NewObject<USkeletalMeshSocket>(Skel);
+	NewSocket->SocketName = SocketFName;
+	NewSocket->BoneName = BoneFName;
+	NewSocket->RelativeLocation = RelativeLocation;
+	NewSocket->RelativeRotation = RelativeRotation;
+	NewSocket->RelativeScale = RelativeScale;
+	Skel->Sockets.Add(NewSocket);
+	Skel->PostEditChange();
+	Skel->MarkPackageDirty();
+	return true;
+}
+
 // ─── Cross-asset query ─────────────────────────────────────
 
 TArray<FString> UUnrealBridgeAnimLibrary::ListAssetsForSkeleton(

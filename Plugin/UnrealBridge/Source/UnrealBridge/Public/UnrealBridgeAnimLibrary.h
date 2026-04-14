@@ -332,6 +332,58 @@ struct FBridgeBoneInfo
 	FString ParentName;
 };
 
+// ─── Virtual Bone struct ────────────────────────────────────
+
+USTRUCT(BlueprintType)
+struct FBridgeVirtualBoneInfo
+{
+	GENERATED_BODY()
+
+	/** Virtual bone name (already includes the "VB " prefix as stored on the skeleton). */
+	UPROPERTY(BlueprintReadOnly)
+	FString VirtualBoneName;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString SourceBoneName;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString TargetBoneName;
+};
+
+// ─── Montage Slot Segment struct ────────────────────────────
+
+USTRUCT(BlueprintType)
+struct FBridgeMontageSlotSegment
+{
+	GENERATED_BODY()
+
+	/** Slot name that owns this segment. */
+	UPROPERTY(BlueprintReadOnly)
+	FString SlotName;
+
+	/** Referenced anim asset path (empty if the segment has no anim). */
+	UPROPERTY(BlueprintReadOnly)
+	FString AnimReferencePath;
+
+	/** Montage-local start position in seconds. */
+	UPROPERTY(BlueprintReadOnly)
+	float StartPos = 0.f;
+
+	/** Sub-clip start time inside the referenced anim. */
+	UPROPERTY(BlueprintReadOnly)
+	float AnimStartTime = 0.f;
+
+	/** Sub-clip end time inside the referenced anim. */
+	UPROPERTY(BlueprintReadOnly)
+	float AnimEndTime = 0.f;
+
+	UPROPERTY(BlueprintReadOnly)
+	float AnimPlayRate = 1.f;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 LoopingCount = 1;
+};
+
 // ─── Socket struct ──────────────────────────────────────────
 
 USTRUCT(BlueprintType)
@@ -434,6 +486,40 @@ public:
 	/** Wire SectionName -> NextSectionName on a montage; pass empty NextSectionName to clear the link. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static bool SetMontageSectionNext(const FString& MontagePath, const FString& SectionName, const FString& NextSectionName);
+
+	/** Get the anim segments laid out on each montage slot track (order = layout in the slot). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FBridgeMontageSlotSegment> GetMontageSlotSegments(const FString& MontagePath);
+
+	/** Remove a composite section from a montage by name. Returns true when removed; also clears any `NextSectionName` references to it. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool RemoveMontageSection(const FString& MontagePath, const FString& SectionName);
+
+	/**
+	 * Set montage blend settings.
+	 * Negative values leave the corresponding field unchanged (sentinel).
+	 * @param BlendInTime       >= 0 to set; < 0 to skip.
+	 * @param BlendOutTime      >= 0 to set; < 0 to skip.
+	 * @param BlendOutTriggerTime  pass `-1` for "blend out at end"; any other value explicitly overrides the trigger time.
+	 * @param bEnableAutoBlendOut  always written.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetMontageBlendTimes(const FString& MontagePath, float BlendInTime, float BlendOutTime, float BlendOutTriggerTime, bool bEnableAutoBlendOut);
+
+	/** Get all virtual bones defined on a skeleton (synthetic bones mapping source->target for animation constraints). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FBridgeVirtualBoneInfo> GetSkeletonVirtualBones(const FString& SkeletonPath);
+
+	/**
+	 * Add a new socket to a skeleton parented to ParentBoneName.
+	 * Fails if the bone does not exist or a socket with the same name is already present.
+	 * @param RelativeLocation  offset from parent bone in parent-bone space.
+	 * @param RelativeRotation  rotation in parent-bone space.
+	 * @param RelativeScale     scale relative to parent (use 1,1,1 for identity).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool AddSkeletonSocket(const FString& SkeletonPath, const FString& SocketName, const FString& ParentBoneName,
+		FVector RelativeLocation, FRotator RelativeRotation, FVector RelativeScale);
 
 	/**
 	 * List anim assets (AnimSequence / AnimMontage / BlendSpace) bound to a given skeleton via the AssetRegistry.
