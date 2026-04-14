@@ -44,10 +44,14 @@ bool FUnrealBridgeServer::Start(int32 Port)
 
 	FIPv4Endpoint Endpoint(FIPv4Address(127, 0, 0, 1), ListenPort);
 
+	// 100ms poll (vs default 1s) collapses the accept-race window that produced
+	// intermittent WSAECONNABORTED 10053 on clients. bInReusable=true lets Start()
+	// reclaim a TIME_WAIT socket after a crash/quick-restart instead of failing
+	// with "address in use". See docs/server-stability-plan.md #7.
 	Listener = MakeUnique<FTcpListener>(
 		Endpoint,
-		FTimespan::FromSeconds(1.0),
-		false /* bInReusable */
+		FTimespan::FromMilliseconds(100),
+		true /* bInReusable */
 	);
 
 	if (!Listener.IsValid() || !Listener->IsActive())
