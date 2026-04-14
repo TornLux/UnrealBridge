@@ -1000,6 +1000,55 @@ lib.set_timeline_properties(bp, 'Fade',
 
 ---
 
+## P2 — Node utilities
+
+Low-cost (~1 call each, small response). None auto-compile — call `compile_blueprints([bp])` after your batch.
+
+### set_node_comment(blueprint_path, graph_name, node_guid, comment, comment_bubble_visible) -> bool
+
+Set the inline "Node Comment" text shown above a graph node. Pass empty `comment` to clear. When `comment_bubble_visible` is `True` the bubble is also pinned open; when `False` the bubble auto-collapses regardless of content. Returns `False` only when the node is missing.
+
+```python
+lib.set_node_comment(bp, 'EventGraph', guid, 'TODO: rework', True)
+```
+
+### duplicate_graph_node(blueprint_path, graph_name, node_guid, x, y) -> str
+
+Clone an existing node in the same graph at `(x, y)`. The duplicate gets a fresh GUID; all pin links are broken on the copy (rewire via `connect_graph_pins`). Useful for templating boilerplate patterns (e.g. repeated PrintString or math nodes). Returns new GUID, or `""` on failure.
+
+```python
+clone = lib.duplicate_graph_node(bp, g, call_guid, src_x + 320, src_y)
+```
+
+### disconnect_graph_pin(blueprint_path, graph_name, node_guid, pin_name) -> bool
+
+Break every link on a single named pin. Returns `True` if the pin was found *and* had at least one link broken; `False` if the pin is missing, the node is missing, or the pin was already unlinked. Cheaper and more surgical than removing/re-adding the node when you only need to clear one connection.
+
+```python
+lib.disconnect_graph_pin(bp, g, branch_guid, 'execute')
+```
+
+### add_make_array_node(blueprint_path, graph_name, x, y) -> str
+
+Insert a `Make Array` node. Element type is wildcard until the first pin is connected (UE infers the type from the connection). Use `connect_graph_pins` with pin names `"[0]"`, `"[1]"`, ... for inputs and `"Array"` for the output. Returns node GUID.
+
+```python
+arr = lib.add_make_array_node(bp, g, 400, 200)
+lib.connect_graph_pins(bp, g, get_a, 'A', arr, '[0]')
+lib.connect_graph_pins(bp, g, get_b, 'B', arr, '[1]')
+```
+
+### add_enum_literal_node(blueprint_path, graph_name, enum_path, value_name, x, y) -> str
+
+Insert a `Literal <Enum>` node for the given `UEnum`. `enum_path` is a native class path (`/Script/Engine.EComponentMobility`) or user-defined enum asset path. `value_name` is the short entry name (e.g. `"Static"`); pass `""` to use the first entry. Returns `""` if the enum can't be loaded or the value isn't one of its entries.
+
+```python
+lit = lib.add_enum_literal_node(bp, g,
+    '/Script/Engine.EComponentMobility', 'Movable', 200, 300)
+```
+
+---
+
 ### End-to-end example — one node-graph build, one compile
 
 ```python

@@ -43,6 +43,8 @@
 #include "K2Node_SpawnActorFromClass.h"
 #include "K2Node_MakeStruct.h"
 #include "K2Node_BreakStruct.h"
+#include "K2Node_MakeArray.h"
+#include "K2Node_EnumLiteral.h"
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -3340,4 +3342,149 @@ TArray<FBridgeBreakpointInfo> UUnrealBridgeBlueprintLibrary::GetBreakpoints(cons
 		Out.Add(Info);
 	});
 	return Out;
+}
+
+// ─── Batch F: Node utilities ───────────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::SetNodeComment(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& Comment, bool bCommentBubbleVisible)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+
+	Node->Modify();
+	Node->NodeComment = Comment;
+	Node->bCommentBubbleVisible = bCommentBubbleVisible && !Comment.IsEmpty();
+	Node->bCommentBubblePinned = bCommentBubbleVisible && !Comment.IsEmpty();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+FString UUnrealBridgeBlueprintLibrary::DuplicateGraphNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+	UEdGraphNode* Src = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Src) return FString();
+
+	Graph->Modify();
+	BP->Modify();
+
+	UEdGraphNode* Dup = DuplicateObject<UEdGraphNode>(Src, Graph);
+	if (!Dup) return FString();
+	Dup->CreateNewGuid();
+	Dup->NodePosX = NodePosX;
+	Dup->NodePosY = NodePosY;
+	// Break any links that the duplicate inherited from Src.
+	for (UEdGraphPin* Pin : Dup->Pins)
+	{
+		if (Pin)
+		{
+			Pin->BreakAllPinLinks();
+		}
+	}
+	Graph->AddNode(Dup, /*bFromUI*/false, /*bSelectNewNode*/false);
+	Dup->PostPlacedNewNode();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Dup->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+bool UUnrealBridgeBlueprintLibrary::DisconnectGraphPin(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& PinName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+	UEdGraphPin* Pin = Node->FindPin(PinName);
+	if (!Pin) return false;
+	if (Pin->LinkedTo.Num() == 0) return false;
+
+	Graph->Modify();
+	BP->Modify();
+	Pin->BreakAllPinLinks();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddMakeArrayNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+
+	Graph->Modify();
+	BP->Modify();
+
+	UK2Node_MakeArray* Node = NewObject<UK2Node_MakeArray>(Graph);
+	Node->CreateNewGuid();
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, false, false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddEnumLiteralNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& EnumPath, const FString& ValueName, int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+
+	UEnum* EnumObj = FindObject<UEnum>(nullptr, *EnumPath);
+	if (!EnumObj) EnumObj = LoadObject<UEnum>(nullptr, *EnumPath);
+	if (!EnumObj) return FString();
+
+	// Resolve the chosen entry. Enum entries are stored as "EnumName::EntryName" — match on short name.
+	FString ResolvedEntry;
+	const int32 NumEntries = EnumObj->NumEnums();
+	if (NumEntries <= 1) return FString(); // only the hidden _MAX sentinel
+	if (ValueName.IsEmpty())
+	{
+		ResolvedEntry = EnumObj->GetNameStringByIndex(0);
+	}
+	else
+	{
+		for (int32 i = 0; i < NumEntries; ++i)
+		{
+			const FString ShortName = EnumObj->GetNameStringByIndex(i);
+			if (ShortName == ValueName || EnumObj->GetNameByIndex(i).ToString() == ValueName)
+			{
+				ResolvedEntry = ShortName;
+				break;
+			}
+		}
+	}
+	if (ResolvedEntry.IsEmpty()) return FString();
+
+	Graph->Modify();
+	BP->Modify();
+
+	UK2Node_EnumLiteral* Node = NewObject<UK2Node_EnumLiteral>(Graph);
+	Node->Enum = EnumObj;
+	Node->CreateNewGuid();
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, false, false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+
+	// Default the Enum input pin to the chosen entry.
+	if (UEdGraphPin* EnumPin = Node->FindPin(UK2Node_EnumLiteral::GetEnumInputPinName()))
+	{
+		EnumPin->DefaultValue = ResolvedEntry;
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
 }

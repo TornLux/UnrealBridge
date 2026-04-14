@@ -1108,4 +1108,47 @@ public:
 	/** Enumerate all breakpoints on the Blueprint — graph name, node GUID, node title, enabled state. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgeBreakpointInfo> GetBreakpoints(const FString& BlueprintPath);
+
+	// ═══ P2 — Node utilities ════════════════════════════════════════
+
+	/**
+	 * Set the inline comment text shown above a graph node (the "Node Comment" in Details).
+	 * Pass empty string to clear. bCommentBubbleVisible controls whether the bubble is pinned open.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetNodeComment(const FString& BlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, const FString& Comment, bool bCommentBubbleVisible);
+
+	/**
+	 * Duplicate a node in the same graph at (X, Y). The new node gets a fresh GUID and no pin
+	 * connections (caller rewires via ConnectGraphPins). Returns new node GUID or "" on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString DuplicateGraphNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Break every link on a single pin (by node GUID + pin name). Returns true if the pin was
+	 * found and any links were broken (false if pin missing or already unlinked).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool DisconnectGraphPin(const FString& BlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, const FString& PinName);
+
+	/**
+	 * Insert a Make Array node (K2Node_MakeArray) — wildcard element type until a pin is connected.
+	 * Returns node GUID on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddMakeArrayNode(const FString& BlueprintPath, const FString& GraphName,
+		int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Insert a Literal Enum node (K2Node_EnumLiteral) for the given UEnum asset/native path.
+	 * EnumPath: e.g. "/Script/Engine.EComponentMobility" or a user-defined enum path.
+	 * ValueName: the short enum entry name (e.g. "Static"). Leave empty to use the first entry.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddEnumLiteralNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& EnumPath, const FString& ValueName, int32 NodePosX, int32 NodePosY);
 };
