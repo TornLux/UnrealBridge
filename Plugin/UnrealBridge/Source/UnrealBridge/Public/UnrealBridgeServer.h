@@ -46,7 +46,7 @@ private:
 	bool OnConnectionAccepted(FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint);
 
 	/** Process a single client connection (runs on a worker thread). */
-	void HandleClient(FSocket* ClientSocket);
+	void HandleClient(FSocket* ClientSocket, const FString& EndpointStr);
 
 	/** Read exactly NumBytes from the socket. Returns false on failure. */
 	bool RecvAll(FSocket* Socket, uint8* Buffer, int32 NumBytes, float TimeoutSeconds);
@@ -94,4 +94,9 @@ private:
 	TQueue<TSharedPtr<FPendingExec, ESPMode::ThreadSafe>, EQueueMode::Mpsc> ExecQueue;
 	FTSTicker::FDelegateHandle TickHandle;
 	bool bExecInFlight = false; // GameThread-only, no atomic needed
+
+	// Connection limit (item #5). Atomic because we increment/decrement from
+	// the listener thread (accept path) and the AsyncTask worker (completion).
+	FThreadSafeCounter ActiveClients;
+	static constexpr int32 MaxConcurrentClients = 16;
 };

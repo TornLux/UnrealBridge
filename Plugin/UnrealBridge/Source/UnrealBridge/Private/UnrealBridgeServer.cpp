@@ -126,23 +126,41 @@ bool FUnrealBridgeServer::IsEditorReady() const
 
 bool FUnrealBridgeServer::OnConnectionAccepted(FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint)
 {
-	UE_LOG(LogUnrealBridge, Verbose, TEXT("Client connected from %s"), *ClientEndpoint.ToString());
+	const FString EndpointStr = ClientEndpoint.ToString();
 
-	AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this, ClientSocket]()
+	// Bound concurrent clients so a runaway caller can't saturate the
+	// AsyncTask background pool and starve other editor work. When we're
+	// over capacity we return false so FTcpListener destroys the accepted
+	// socket itself — the client sees a clean connection reset rather than
+	// a silent hang.
+	const int32 Active = ActiveClients.Increment();
+	if (Active > MaxConcurrentClients)
 	{
-		HandleClient(ClientSocket);
+		ActiveClients.Decrement();
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("[conn] rejecting %s — at concurrency limit (%d/%d)"),
+			*EndpointStr, Active - 1, MaxConcurrentClients);
+		return false;
+	}
+
+	UE_LOG(LogUnrealBridge, Verbose, TEXT("[conn] accepted %s (active=%d)"), *EndpointStr, Active);
+
+	AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this, ClientSocket, EndpointStr]()
+	{
+		HandleClient(ClientSocket, EndpointStr);
 
 		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 		if (SocketSubsystem)
 		{
 			SocketSubsystem->DestroySocket(ClientSocket);
 		}
+		ActiveClients.Decrement();
 	});
 
 	return true;
 }
 
-void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
+void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& EndpointStr)
 {
 	// One request-response per connection. bridge.py opens a fresh socket
 	// per call; keep-alive would tie worker threads up in idle waits and
@@ -151,12 +169,16 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 	{
 		return;
 	}
+	const double T0 = FPlatformTime::Seconds();
 
 	// 1. Read 4-byte length prefix (big-endian)
 	uint8 LenBuf[4];
 	if (!RecvAll(ClientSocket, LenBuf, 4, 5.0f))
 	{
-		return; // Client gave up or disconnected before sending header.
+		UE_LOG(LogUnrealBridge, Verbose,
+			TEXT("[%s] recv header failed (client gave up or idle timeout)"),
+			*EndpointStr);
+		return;
 	}
 
 	const uint32 PayloadLen = (uint32(LenBuf[0]) << 24)
@@ -166,8 +188,9 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 
 	if (PayloadLen == 0 || PayloadLen > (uint32)UnrealBridgeLimits::MaxRequestBytes)
 	{
-		UE_LOG(LogUnrealBridge, Warning, TEXT("Invalid payload length: %u (max %d)"),
-			PayloadLen, UnrealBridgeLimits::MaxRequestBytes);
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("[%s] invalid payload length %u (max %d) — closing"),
+			*EndpointStr, PayloadLen, UnrealBridgeLimits::MaxRequestBytes);
 		return;
 	}
 
@@ -177,13 +200,17 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 	PayloadBuf.Reserve((int32)PayloadLen);
 	if (PayloadBuf.Max() < (int32)PayloadLen)
 	{
-		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to allocate %u bytes for payload"), PayloadLen);
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("[%s] failed to allocate %u bytes for payload"),
+			*EndpointStr, PayloadLen);
 		return;
 	}
 	PayloadBuf.SetNumUninitialized((int32)PayloadLen);
 	if (!RecvAll(ClientSocket, PayloadBuf.GetData(), (int32)PayloadLen, 30.0f))
 	{
-		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to read payload (len=%u)"), PayloadLen);
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("[%s] recv payload failed (expected %u bytes)"),
+			*EndpointStr, PayloadLen);
 		return;
 	}
 
@@ -195,7 +222,9 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonStr);
 	if (!FJsonSerializer::Deserialize(Reader, Request) || !Request.IsValid())
 	{
-		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to parse JSON request"));
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("[%s] JSON parse failed (payload=%u bytes)"),
+			*EndpointStr, PayloadLen);
 		return;
 	}
 
@@ -211,6 +240,10 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 
 	FString Command;
 	Request->TryGetStringField(TEXT("command"), Command); // optional
+
+	UE_LOG(LogUnrealBridge, Verbose,
+		TEXT("[%s] request id=%s cmd=%s payload=%u"),
+		*EndpointStr, *RequestId, Command.IsEmpty() ? TEXT("(exec)") : *Command, PayloadLen);
 
 	if (Command == TEXT("ping"))
 	{
@@ -246,7 +279,15 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 			Request->TryGetNumberField(TEXT("timeout"), TimeoutNum);
 			const float Timeout = FMath::Clamp((float)TimeoutNum, 0.1f, 300.0f);
 
+			const double ExecT0 = FPlatformTime::Seconds();
 			FExecResult Result = EnqueueAndWaitForExec(Script, Timeout, RequestId);
+			const double ExecMs = (FPlatformTime::Seconds() - ExecT0) * 1000.0;
+
+			UE_LOG(LogUnrealBridge, Log,
+				TEXT("[%s] exec id=%s ok=%s out=%dB err=%dB took=%.1fms"),
+				*EndpointStr, *RequestId,
+				Result.bSuccess ? TEXT("true") : TEXT("false"),
+				Result.Output.Len(), Result.Error.Len(), ExecMs);
 
 			Response->SetBoolField(TEXT("success"), Result.bSuccess);
 			Response->SetStringField(TEXT("output"), Result.Output);
@@ -271,14 +312,22 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 
 	if (!SendAll(ClientSocket, RespLenBuf, 4))
 	{
-		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to send response header (cmd=%s)"), *Command);
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("[%s] send response header failed (id=%s cmd=%s)"),
+			*EndpointStr, *RequestId, *Command);
 		return;
 	}
 	if (!SendAll(ClientSocket, (const uint8*)Utf8Response.Get(), ResponseLen))
 	{
-		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to send response body (cmd=%s len=%d)"), *Command, ResponseLen);
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("[%s] send response body failed (id=%s cmd=%s len=%d)"),
+			*EndpointStr, *RequestId, *Command, ResponseLen);
 		return;
 	}
+
+	UE_LOG(LogUnrealBridge, Verbose,
+		TEXT("[%s] done id=%s total=%.1fms"),
+		*EndpointStr, *RequestId, (FPlatformTime::Seconds() - T0) * 1000.0);
 }
 
 // ─────────────────────────────────────────────────────────────
