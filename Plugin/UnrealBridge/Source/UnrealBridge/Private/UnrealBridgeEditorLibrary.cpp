@@ -33,6 +33,9 @@
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 #include "HighResScreenshot.h"
+#include "ShowFlags.h"
+#include "Engine/EngineBaseTypes.h"
+#include "Editor/UnrealEdTypes.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -765,6 +768,193 @@ bool UUnrealBridgeEditorLibrary::TakeHighResScreenshot(float ResolutionMultiplie
 		1.f);
 	VC->Viewport->TakeHighResScreenShot();
 	return true;
+}
+
+// ─── Viewport render / display ─────────────────────────────
+
+namespace BridgeEditorImpl
+{
+	EViewModeIndex ParseViewMode(const FString& Mode)
+	{
+		const FString M = Mode.TrimStartAndEnd();
+		if (M.Equals(TEXT("Lit"), ESearchCase::IgnoreCase)) return VMI_Lit;
+		if (M.Equals(TEXT("Unlit"), ESearchCase::IgnoreCase)) return VMI_Unlit;
+		if (M.Equals(TEXT("Wireframe"), ESearchCase::IgnoreCase)) return VMI_BrushWireframe;
+		if (M.Equals(TEXT("BrushWireframe"), ESearchCase::IgnoreCase)) return VMI_BrushWireframe;
+		if (M.Equals(TEXT("CSGWireframe"), ESearchCase::IgnoreCase)) return VMI_Wireframe;
+		if (M.Equals(TEXT("DetailLighting"), ESearchCase::IgnoreCase)) return VMI_Lit_DetailLighting;
+		if (M.Equals(TEXT("LightingOnly"), ESearchCase::IgnoreCase)) return VMI_LightingOnly;
+		if (M.Equals(TEXT("LightComplexity"), ESearchCase::IgnoreCase)) return VMI_LightComplexity;
+		if (M.Equals(TEXT("ShaderComplexity"), ESearchCase::IgnoreCase)) return VMI_ShaderComplexity;
+		if (M.Equals(TEXT("LightmapDensity"), ESearchCase::IgnoreCase)) return VMI_LightmapDensity;
+		if (M.Equals(TEXT("ReflectionOverride"), ESearchCase::IgnoreCase)) return VMI_ReflectionOverride;
+		if (M.Equals(TEXT("CollisionPawn"), ESearchCase::IgnoreCase)) return VMI_CollisionPawn;
+		if (M.Equals(TEXT("CollisionVisibility"), ESearchCase::IgnoreCase)) return VMI_CollisionVisibility;
+		if (M.Equals(TEXT("LODColoration"), ESearchCase::IgnoreCase)) return VMI_LODColoration;
+		if (M.Equals(TEXT("QuadOverdraw"), ESearchCase::IgnoreCase)) return VMI_QuadOverdraw;
+		return VMI_Unknown;
+	}
+
+	FString ViewModeToString(EViewModeIndex Mode)
+	{
+		switch (Mode)
+		{
+		case VMI_Lit: return TEXT("Lit");
+		case VMI_Unlit: return TEXT("Unlit");
+		case VMI_BrushWireframe: return TEXT("Wireframe");
+		case VMI_Wireframe: return TEXT("CSGWireframe");
+		case VMI_Lit_DetailLighting: return TEXT("DetailLighting");
+		case VMI_LightingOnly: return TEXT("LightingOnly");
+		case VMI_LightComplexity: return TEXT("LightComplexity");
+		case VMI_ShaderComplexity: return TEXT("ShaderComplexity");
+		case VMI_LightmapDensity: return TEXT("LightmapDensity");
+		case VMI_ReflectionOverride: return TEXT("ReflectionOverride");
+		case VMI_CollisionPawn: return TEXT("CollisionPawn");
+		case VMI_CollisionVisibility: return TEXT("CollisionVisibility");
+		case VMI_LODColoration: return TEXT("LODColoration");
+		case VMI_QuadOverdraw: return TEXT("QuadOverdraw");
+		default: return FString::Printf(TEXT("VMI_%d"), (int32)Mode);
+		}
+	}
+
+	bool ParseViewportType(const FString& Type, ELevelViewportType& Out)
+	{
+		const FString T = Type.TrimStartAndEnd();
+		if (T.Equals(TEXT("Perspective"), ESearchCase::IgnoreCase)) { Out = LVT_Perspective; return true; }
+		if (T.Equals(TEXT("Top"), ESearchCase::IgnoreCase) || T.Equals(TEXT("OrthoXY"), ESearchCase::IgnoreCase)) { Out = LVT_OrthoXY; return true; }
+		if (T.Equals(TEXT("Front"), ESearchCase::IgnoreCase) || T.Equals(TEXT("OrthoXZ"), ESearchCase::IgnoreCase)) { Out = LVT_OrthoXZ; return true; }
+		if (T.Equals(TEXT("Side"), ESearchCase::IgnoreCase) || T.Equals(TEXT("OrthoYZ"), ESearchCase::IgnoreCase)) { Out = LVT_OrthoYZ; return true; }
+		if (T.Equals(TEXT("OrthoFreelook"), ESearchCase::IgnoreCase)) { Out = LVT_OrthoFreelook; return true; }
+		return false;
+	}
+
+	FString ViewportTypeToString(ELevelViewportType Type)
+	{
+		switch (Type)
+		{
+		case LVT_Perspective: return TEXT("Perspective");
+		case LVT_OrthoXY: return TEXT("Top");
+		case LVT_OrthoXZ: return TEXT("Front");
+		case LVT_OrthoYZ: return TEXT("Side");
+		case LVT_OrthoFreelook: return TEXT("OrthoFreelook");
+		default: return TEXT("Unknown");
+		}
+	}
+}
+
+bool UUnrealBridgeEditorLibrary::SetViewportRealtime(bool bRealtime)
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC)
+	{
+		return false;
+	}
+	VC->SetRealtime(bRealtime);
+	VC->Invalidate();
+	return true;
+}
+
+bool UUnrealBridgeEditorLibrary::IsViewportRealtime()
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	return VC && VC->IsRealtime();
+}
+
+FVector2D UUnrealBridgeEditorLibrary::GetViewportSize()
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC || !VC->Viewport)
+	{
+		return FVector2D::ZeroVector;
+	}
+	const FIntPoint S = VC->Viewport->GetSizeXY();
+	return FVector2D(S.X, S.Y);
+}
+
+bool UUnrealBridgeEditorLibrary::SetViewportViewMode(const FString& Mode)
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC)
+	{
+		return false;
+	}
+	const EViewModeIndex Parsed = BridgeEditorImpl::ParseViewMode(Mode);
+	if (Parsed == VMI_Unknown)
+	{
+		return false;
+	}
+	VC->SetViewMode(Parsed);
+	VC->Invalidate();
+	return true;
+}
+
+FString UUnrealBridgeEditorLibrary::GetViewportViewMode()
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC)
+	{
+		return FString();
+	}
+	return BridgeEditorImpl::ViewModeToString(VC->GetViewMode());
+}
+
+bool UUnrealBridgeEditorLibrary::SetViewportShowFlag(const FString& FlagName, bool bEnabled)
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC)
+	{
+		return false;
+	}
+	const int32 Index = FEngineShowFlags::FindIndexByName(*FlagName);
+	if (Index == INDEX_NONE)
+	{
+		return false;
+	}
+	VC->EngineShowFlags.SetSingleFlag((uint32)Index, bEnabled);
+	VC->Invalidate();
+	return true;
+}
+
+bool UUnrealBridgeEditorLibrary::GetViewportShowFlag(const FString& FlagName)
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC)
+	{
+		return false;
+	}
+	const int32 Index = FEngineShowFlags::FindIndexByName(*FlagName);
+	if (Index == INDEX_NONE)
+	{
+		return false;
+	}
+	return VC->EngineShowFlags.GetSingleFlag((uint32)Index);
+}
+
+bool UUnrealBridgeEditorLibrary::SetViewportType(const FString& ViewportType)
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC)
+	{
+		return false;
+	}
+	ELevelViewportType Parsed;
+	if (!BridgeEditorImpl::ParseViewportType(ViewportType, Parsed))
+	{
+		return false;
+	}
+	VC->SetViewportType(Parsed);
+	VC->Invalidate();
+	return true;
+}
+
+FString UUnrealBridgeEditorLibrary::GetViewportType()
+{
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC)
+	{
+		return FString();
+	}
+	return BridgeEditorImpl::ViewportTypeToString(VC->GetViewportType());
 }
 
 #undef LOCTEXT_NAMESPACE

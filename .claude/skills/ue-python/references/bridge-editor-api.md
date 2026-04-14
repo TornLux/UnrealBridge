@@ -110,6 +110,73 @@ Queue a high-res screenshot of the active level viewport. `resolution_multiplier
 unreal.UnrealBridgeEditorLibrary.take_high_res_screenshot(2.0)  # 2x native
 ```
 
+### set_viewport_realtime(realtime) -> bool
+
+Toggle realtime rendering for the active level viewport. Returns False if no viewport.
+
+Note: the editor can stack temporary *realtime overrides* (e.g. during PIE,
+Sequencer playback, or while a modal tool runs) that win over the value set
+here. If `is_viewport_realtime()` disagrees with what you just set, an
+override is active — see `FEditorViewportClient::AddRealtimeOverride`.
+
+### is_viewport_realtime() -> bool
+
+### get_viewport_size() -> Vector2D
+
+Pixel size of the active viewport (`x` = width, `y` = height). `(0,0)` if no viewport.
+
+### set_viewport_view_mode(mode) -> bool
+
+Set the active viewport's view mode by name. Accepted values (case-insensitive):
+`Lit`, `Unlit`, `Wireframe` (alias for `BrushWireframe`), `CSGWireframe`,
+`DetailLighting`, `LightingOnly`, `LightComplexity`, `ShaderComplexity`,
+`LightmapDensity`, `ReflectionOverride`, `CollisionPawn`, `CollisionVisibility`,
+`LODColoration`, `QuadOverdraw`. Returns False on unknown name.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_viewport_view_mode('Unlit')
+```
+
+### get_viewport_view_mode() -> str
+
+Current view mode name (e.g. `"Lit"`). Empty if no viewport. Unknown numeric
+modes return `"VMI_<n>"`.
+
+### set_viewport_show_flag(flag_name, enabled) -> bool
+
+Toggle a named engine show flag on the active viewport. `flag_name` matches
+`FEngineShowFlags::FindIndexByName` — common names: `Grid`, `Bounds`,
+`Collision`, `Navigation`, `Landscape`, `StaticMeshes`, `SkeletalMeshes`,
+`Particles`, `Fog`, `PostProcessing`, `Lighting`. Returns False on unknown flag.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_viewport_show_flag('Grid', False)
+```
+
+### get_viewport_show_flag(flag_name) -> bool
+
+Read a named show flag. Returns False if the flag name is unknown (ambiguous
+with a legitimate off state — prefer checking via `set_viewport_show_flag`'s
+return before trusting `False`).
+
+### set_viewport_type(viewport_type) -> bool
+
+Set the active viewport's projection. Accepted (case-insensitive):
+`Perspective`, `Top` (alias `OrthoXY`), `Front` (alias `OrthoXZ`),
+`Side` (alias `OrthoYZ`), `OrthoFreelook`. Returns False on unknown name.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_viewport_type('Top')
+```
+
+### get_viewport_type() -> str
+
+Returns `"Perspective"`, `"Top"`, `"Front"`, `"Side"`, or `"OrthoFreelook"`.
+
+**Call cost & token footprint** — viewport render/display calls are all
+synchronous single-value returns; each round-trip is `~150B` of JSON. Prefer
+batching via `exec-file` if toggling many flags.
+
 ---
 
 ## Asset Control

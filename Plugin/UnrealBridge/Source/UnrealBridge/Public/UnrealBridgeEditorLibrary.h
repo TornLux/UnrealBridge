@@ -266,4 +266,55 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool TakeHighResScreenshot(float ResolutionMultiplier);
+
+	// ─── Viewport render / display ───────────────────────
+
+	/** Toggle realtime rendering for the active level viewport. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetViewportRealtime(bool bRealtime);
+
+	/** Query realtime state of the active level viewport. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsViewportRealtime();
+
+	/** Pixel size of the active level viewport (X = width, Y = height). Zero if no viewport. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FVector2D GetViewportSize();
+
+	/**
+	 * Set the active viewport's view mode by name.
+	 * Accepted: "Lit", "Unlit", "Wireframe", "BrushWireframe", "DetailLighting",
+	 * "LightingOnly", "LightComplexity", "ShaderComplexity", "LightmapDensity",
+	 * "ReflectionOverride", "CollisionPawn", "CollisionVisibility", "LODColoration".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetViewportViewMode(const FString& Mode);
+
+	/** Current view mode name of the active viewport (e.g. "Lit"). Empty if no viewport. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetViewportViewMode();
+
+	/**
+	 * Toggle a named engine show flag on the active viewport (e.g. "Grid",
+	 * "Bounds", "Collision", "Navigation", "Landscape"). Name matches
+	 * `FEngineShowFlags::FindIndexByName`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetViewportShowFlag(const FString& FlagName, bool bEnabled);
+
+	/** Read a named engine show flag on the active viewport. False if flag name unknown. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool GetViewportShowFlag(const FString& FlagName);
+
+	/**
+	 * Set the active viewport's projection type.
+	 * Accepted: "Perspective", "Top" / "OrthoXY", "Front" / "OrthoXZ",
+	 * "Side" / "OrthoYZ", "OrthoFreelook".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetViewportType(const FString& ViewportType);
+
+	/** Current viewport projection type name ("Perspective", "Top", "Front", "Side", "OrthoFreelook"). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetViewportType();
 };
