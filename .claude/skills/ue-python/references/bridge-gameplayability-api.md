@@ -264,6 +264,115 @@ subtree = unreal.UnrealBridgeGameplayAbilityLibrary.find_child_tags('Ability.Com
 
 ---
 
+## Tag Parents
+
+### get_tag_parents(tag_string) -> list[str]
+
+Return the ancestor chain of a gameplay tag (root first, **excluding** the tag itself). Invalid tag → empty list.
+
+> Token cost: LOW. Output is bounded by tag depth (typically 1–4 entries).
+
+```python
+# "A.B.C" -> ["A", "A.B"]
+print(unreal.UnrealBridgeGameplayAbilityLibrary.get_tag_parents('Mover.IsOnGround'))
+# -> ['Mover']
+```
+
+Pair with `find_child_tags` to walk the hierarchy in both directions.
+
+---
+
+## Actor Tag Query
+
+### actor_has_gameplay_tag(actor_name, tag_string, exact_match) -> int | None
+
+Test whether an actor's ASC currently owns a gameplay tag.
+
+> ⚠️ **Python binding quirk.** Because this UFUNCTION returns `bool` with an `int32& OutTagCount` out-param, the Python wrapper collapses it to **`int` (the count) when true, `None` when false**. Do **not** try to unpack a tuple.
+
+- `exact_match=True` — requires the exact tag (`GetTagCount(Tag) > 0`)
+- `exact_match=False` — parent-matches too via `HasMatchingGameplayTag` (child tags satisfy parent queries)
+
+Returns `None` on: invalid tag, actor not found, actor has no ASC, tag not owned.
+
+```python
+r = unreal.UnrealBridgeGameplayAbilityLibrary.actor_has_gameplay_tag(
+    'BP_Hero_C_1', 'State.Stunned', False)
+if r is not None:
+    print(f'stunned, stacks={r}')
+else:
+    print('not stunned (or no ASC)')
+```
+
+---
+
+## Ability Cooldown
+
+### get_ability_cooldown_info(actor_name, ability_blueprint_path) -> FBridgeAbilityCooldownInfo
+
+Query the cooldown state of a specific ability on an actor's ASC. Uses `UGameplayAbility::GetCooldownTimeRemainingAndDuration` with `ASC->AbilityActorInfo`, so the ability must currently be granted to the actor for `found=True`.
+
+`cooldown_tags` is populated from the ability CDO regardless of whether the actor has an ASC (useful for pure metadata lookups — pass a bogus `actor_name` to just read the tags).
+
+```python
+info = unreal.UnrealBridgeGameplayAbilityLibrary.get_ability_cooldown_info(
+    'BP_Hero_C_1', '/Game/Abilities/GA_Dash')
+if info.found:
+    status = 'ready' if not info.on_cooldown else f'{info.time_remaining:.1f}/{info.cooldown_duration:.1f}s'
+    print(f'{info.ability_class_name}: {status}')
+    print('cooldown tags:', list(info.cooldown_tags))
+```
+
+### FBridgeAbilityCooldownInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `ability_class_name` | str | Ability class name (populated even when the spec wasn't found on the ASC) |
+| `found` | bool | `True` when the ability spec was located on the ASC |
+| `on_cooldown` | bool | `True` when `time_remaining > 0` |
+| `time_remaining` | float | Seconds left (0 when off cooldown) |
+| `cooldown_duration` | float | Total duration for the current application (0 when off cooldown) |
+| `cooldown_tags` | list[str] | Tags that trigger cooldown for the ability (from CDO) |
+
+---
+
+## Find Active Effects by Tag
+
+### find_active_effects_by_tag(actor_name, tag_query, max_results) -> list[FBridgeActiveEffectInfo]
+
+Like `get_actor_active_effects`, but filtered to specs whose asset tags, granted tags (combined design-time), or `DynamicGrantedTags` contain the query tag (exact `HasTag` match — no parent walk).
+
+> Token cost: LOW–MEDIUM. Scales with matching count only. Cheaper than `get_actor_active_effects` + client-side filtering because the scan happens in C++.
+
+Invalid `tag_query` / missing actor / missing ASC → empty list (silent). Returns the same `FBridgeActiveEffectInfo` struct as `get_actor_active_effects`.
+
+```python
+dots = unreal.UnrealBridgeGameplayAbilityLibrary.find_active_effects_by_tag(
+    'BP_Hero_C_1', 'Effect.Damage.OverTime', 0)
+for e in dots:
+    print(e.effect_class_name, e.time_remaining, e.stack_count)
+```
+
+---
+
+## List Ability Blueprints
+
+### list_ability_blueprints(filter, max_results) -> list[str]
+
+Scan the AssetRegistry for **every** `UGameplayAbility` Blueprint asset path, optionally filtered by case-insensitive path substring. Empty filter + `max_results=0` is **refused** (returns `[]`) to prevent full-registry dumps.
+
+Unlike `list_abilities_by_tag`, this does **not** require registered tags — it's the right starting point when you don't yet know what tags a project uses.
+
+> ⚠️ **Token cost: MEDIUM–HIGH on large projects.** Walks every Blueprint asset and loads each to test the class hierarchy. Use a narrow filter (e.g. folder name) or small `max_results`.
+
+```python
+all_abilities = unreal.UnrealBridgeGameplayAbilityLibrary.list_ability_blueprints('/Game/Abilities', 100)
+for p in all_abilities:
+    print(p)
+```
+
+---
+
 ## Gameplay Tag Registry
 
 ### list_gameplay_tags(filter, max_results) -> list[str]

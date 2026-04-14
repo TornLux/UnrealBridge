@@ -174,6 +174,36 @@ struct FBridgeAttributeValue
 	float BaseValue = 0.f;
 };
 
+/** Cooldown metadata for a specific ability on an actor's ASC. */
+USTRUCT(BlueprintType)
+struct FBridgeAbilityCooldownInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString AbilityClassName;
+
+	/** True when the ability spec was located on the ASC. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	/** True when the ability is currently on cooldown. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bOnCooldown = false;
+
+	/** Seconds remaining on the active cooldown (0 when off cooldown). */
+	UPROPERTY(BlueprintReadOnly)
+	float TimeRemaining = 0.f;
+
+	/** Total cooldown duration for the current application (0 when off cooldown). */
+	UPROPERTY(BlueprintReadOnly)
+	float CooldownDuration = 0.f;
+
+	/** Tag strings that put this ability into cooldown (from the ability CDO). */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> CooldownTags;
+};
+
 /** One active GameplayEffect entry on an ASC. */
 USTRUCT(BlueprintType)
 struct FBridgeActiveEffectInfo
@@ -348,4 +378,54 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
 	static TArray<FString> FindChildTags(const FString& ParentTag, bool bRecursive);
+
+	/**
+	 * Return the ancestor chain of a gameplay tag (excluding the tag itself, root first).
+	 * Example: "A.B.C" -> ["A", "A.B"]. Invalid tag returns empty.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> GetTagParents(const FString& TagString);
+
+	/**
+	 * Query whether an actor's ASC currently owns a gameplay tag.
+	 * @param ActorName      Actor label or FName in the editor world.
+	 * @param TagString      Tag to test (must be registered).
+	 * @param bExactMatch    When true, requires an exact tag match; when false, matches parents too (child tags satisfy parent queries).
+	 * @param OutTagCount    Current stack count for the tag on the ASC (0 when not owned).
+	 * @return True when the ASC owns the tag under the selected match mode.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool ActorHasGameplayTag(
+		const FString& ActorName,
+		const FString& TagString,
+		bool bExactMatch,
+		int32& OutTagCount);
+
+	/**
+	 * Query cooldown state for a specific ability on an actor's ASC.
+	 * @param ActorName              Actor label or FName in the editor world.
+	 * @param AbilityBlueprintPath   Path to a UGameplayAbility Blueprint.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static FBridgeAbilityCooldownInfo GetAbilityCooldownInfo(
+		const FString& ActorName,
+		const FString& AbilityBlueprintPath);
+
+	/**
+	 * Filter active effects on an actor's ASC whose spec's asset tags or granted tags match TagQuery.
+	 * Matches the design-time tags from the GE class (asset tags + component granted tags) and dynamic granted tags.
+	 * @param MaxResults   0 = unlimited.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FBridgeActiveEffectInfo> FindActiveEffectsByTag(
+		const FString& ActorName,
+		const FString& TagQuery,
+		int32 MaxResults);
+
+	/**
+	 * List all UGameplayAbility Blueprint asset paths in the AssetRegistry, with optional case-insensitive
+	 * path substring filter. Empty filter + MaxResults=0 is refused to prevent accidental full dumps.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> ListAbilityBlueprints(const FString& Filter, int32 MaxResults);
 };

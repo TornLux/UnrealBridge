@@ -863,6 +863,285 @@ TArray<FBridgeActiveEffectInfo> UUnrealBridgeGameplayAbilityLibrary::GetActorAct
 	return Results;
 }
 
+// ─── Tag parents ────────────────────────────────────────────
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::GetTagParents(const FString& TagString)
+{
+	TArray<FString> Results;
+
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
+	if (!Tag.IsValid())
+	{
+		return Results;
+	}
+
+	const FGameplayTagContainer Parents =
+		UGameplayTagsManager::Get().RequestGameplayTagParents(Tag);
+
+	// Parents container includes the tag itself — filter it, emit root-first.
+	const FString Self = Tag.ToString();
+	TArray<FString> Tmp;
+	for (const FGameplayTag& P : Parents)
+	{
+		const FString S = P.ToString();
+		if (S != Self)
+		{
+			Tmp.Add(S);
+		}
+	}
+	Tmp.Sort([](const FString& A, const FString& B)
+	{
+		return A.Len() < B.Len();
+	});
+	Results = MoveTemp(Tmp);
+	return Results;
+}
+
+// ─── Actor tag query ────────────────────────────────────────
+
+bool UUnrealBridgeGameplayAbilityLibrary::ActorHasGameplayTag(
+	const FString& ActorName,
+	const FString& TagString,
+	bool bExactMatch,
+	int32& OutTagCount)
+{
+	OutTagCount = 0;
+
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
+	if (!Tag.IsValid())
+	{
+		return false;
+	}
+
+	AActor* Actor = BridgeGameplayAbilityImpl::FindEditorActor(ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+
+	UAbilitySystemComponent* ASC = nullptr;
+	if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Actor))
+	{
+		ASC = ASI->GetAbilitySystemComponent();
+	}
+	if (!ASC)
+	{
+		ASC = Actor->FindComponentByClass<UAbilitySystemComponent>();
+	}
+	if (!ASC)
+	{
+		return false;
+	}
+
+	OutTagCount = ASC->GetTagCount(Tag);
+	if (bExactMatch)
+	{
+		return OutTagCount > 0;
+	}
+	return ASC->HasMatchingGameplayTag(Tag);
+}
+
+// ─── Ability cooldown query ─────────────────────────────────
+
+FBridgeAbilityCooldownInfo UUnrealBridgeGameplayAbilityLibrary::GetAbilityCooldownInfo(
+	const FString& ActorName,
+	const FString& AbilityBlueprintPath)
+{
+	FBridgeAbilityCooldownInfo Result;
+
+	UClass* AbilityClass =
+		BridgeGameplayAbilityImpl::LoadGeneratedClassFromBlueprint(AbilityBlueprintPath);
+	if (!AbilityClass || !AbilityClass->IsChildOf(UGameplayAbility::StaticClass()))
+	{
+		return Result;
+	}
+	Result.AbilityClassName = AbilityClass->GetName();
+
+	// Populate cooldown tags from the CDO regardless of ASC presence — useful metadata.
+	if (UGameplayAbility* CDO = AbilityClass->GetDefaultObject<UGameplayAbility>())
+	{
+		if (const FGameplayTagContainer* CT = CDO->GetCooldownTags())
+		{
+			BridgeGameplayAbilityImpl::TagContainerToStrings(*CT, Result.CooldownTags);
+		}
+	}
+
+	AActor* Actor = BridgeGameplayAbilityImpl::FindEditorActor(ActorName);
+	if (!Actor)
+	{
+		return Result;
+	}
+
+	UAbilitySystemComponent* ASC = nullptr;
+	if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Actor))
+	{
+		ASC = ASI->GetAbilitySystemComponent();
+	}
+	if (!ASC)
+	{
+		ASC = Actor->FindComponentByClass<UAbilitySystemComponent>();
+	}
+	if (!ASC)
+	{
+		return Result;
+	}
+
+	FGameplayAbilitySpec* Spec =
+		ASC->FindAbilitySpecFromClass(TSubclassOf<UGameplayAbility>(AbilityClass));
+	if (!Spec || !Spec->Ability)
+	{
+		return Result;
+	}
+	Result.bFound = true;
+
+	float TimeRemaining = 0.f;
+	float CooldownDuration = 0.f;
+	Spec->Ability->GetCooldownTimeRemainingAndDuration(
+		Spec->Handle, ASC->AbilityActorInfo.Get(), TimeRemaining, CooldownDuration);
+
+	Result.TimeRemaining = TimeRemaining;
+	Result.CooldownDuration = CooldownDuration;
+	Result.bOnCooldown = TimeRemaining > 0.f;
+	return Result;
+}
+
+// ─── Filter active effects by tag ───────────────────────────
+
+TArray<FBridgeActiveEffectInfo> UUnrealBridgeGameplayAbilityLibrary::FindActiveEffectsByTag(
+	const FString& ActorName,
+	const FString& TagQuery,
+	int32 MaxResults)
+{
+	TArray<FBridgeActiveEffectInfo> Results;
+
+	const FGameplayTag Query = FGameplayTag::RequestGameplayTag(FName(*TagQuery), false);
+	if (!Query.IsValid())
+	{
+		return Results;
+	}
+
+	AActor* Actor = BridgeGameplayAbilityImpl::FindEditorActor(ActorName);
+	if (!Actor)
+	{
+		return Results;
+	}
+
+	UAbilitySystemComponent* ASC = nullptr;
+	if (IAbilitySystemInterface* ASI = Cast<IAbilitySystemInterface>(Actor))
+	{
+		ASC = ASI->GetAbilitySystemComponent();
+	}
+	if (!ASC)
+	{
+		ASC = Actor->FindComponentByClass<UAbilitySystemComponent>();
+	}
+	if (!ASC)
+	{
+		return Results;
+	}
+
+	const UWorld* World = Actor->GetWorld();
+	const float Now = World ? World->GetTimeSeconds() : 0.f;
+
+	FGameplayEffectQuery EmptyQuery;
+	TArray<FActiveGameplayEffectHandle> Handles = ASC->GetActiveEffects(EmptyQuery);
+
+	for (const FActiveGameplayEffectHandle& H : Handles)
+	{
+		const FActiveGameplayEffect* AE = ASC->GetActiveGameplayEffect(H);
+		if (!AE)
+		{
+			continue;
+		}
+
+		FGameplayTagContainer AssetTags;
+		AE->Spec.GetAllAssetTags(AssetTags);
+		FGameplayTagContainer GrantedTags;
+		AE->Spec.GetAllGrantedTags(GrantedTags);
+
+		const bool bMatches =
+			AssetTags.HasTag(Query) ||
+			GrantedTags.HasTag(Query) ||
+			AE->Spec.DynamicGrantedTags.HasTag(Query);
+		if (!bMatches)
+		{
+			continue;
+		}
+
+		FBridgeActiveEffectInfo Info;
+		if (AE->Spec.Def)
+		{
+			Info.EffectClassName = AE->Spec.Def->GetClass()->GetName();
+		}
+		const float Duration = AE->GetDuration();
+		Info.Duration = Duration;
+		Info.TimeRemaining = (Duration <= 0.f) ? -1.f : FMath::Max(0.f, AE->GetEndTime() - Now);
+		Info.PeriodSeconds = AE->Spec.GetPeriod();
+		Info.StackCount = AE->Spec.GetStackCount();
+		for (const FGameplayTag& T : AE->Spec.DynamicGrantedTags)
+		{
+			Info.DynamicGrantedTags.Add(T.ToString());
+		}
+		Results.Add(Info);
+		if (MaxResults > 0 && Results.Num() >= MaxResults)
+		{
+			break;
+		}
+	}
+	return Results;
+}
+
+// ─── List ability Blueprints ────────────────────────────────
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAbilityBlueprints(
+	const FString& Filter, int32 MaxResults)
+{
+	TArray<FString> Results;
+
+	if (Filter.IsEmpty() && MaxResults <= 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: ListAbilityBlueprints refuses empty filter with MaxResults=0."));
+		return Results;
+	}
+
+	FAssetRegistryModule& ARM =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+	IAssetRegistry& AR = ARM.Get();
+
+	FARFilter ARFilter;
+	ARFilter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	ARFilter.bRecursiveClasses = true;
+
+	TArray<FAssetData> Assets;
+	AR.GetAssets(ARFilter, Assets);
+
+	const bool bHasFilter = !Filter.IsEmpty();
+	for (const FAssetData& AD : Assets)
+	{
+		UBlueprint* BP = Cast<UBlueprint>(AD.GetAsset());
+		if (!BP || !BP->GeneratedClass)
+		{
+			continue;
+		}
+		if (!BP->GeneratedClass->IsChildOf(UGameplayAbility::StaticClass()))
+		{
+			continue;
+		}
+		const FString Path = AD.GetSoftObjectPath().ToString();
+		if (bHasFilter && !Path.Contains(Filter))
+		{
+			continue;
+		}
+		Results.Add(Path);
+		if (MaxResults > 0 && Results.Num() >= MaxResults)
+		{
+			break;
+		}
+	}
+	return Results;
+}
+
 // ─── Tag hierarchy browse ───────────────────────────────────
 
 TArray<FString> UUnrealBridgeGameplayAbilityLibrary::FindChildTags(
