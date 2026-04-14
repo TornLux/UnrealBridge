@@ -71,10 +71,24 @@ bool FUnrealBridgeServer::Start(int32 Port)
 		0.0f /* tick every frame */
 	);
 
-	// PIE transition guard (item #11). Refuse exec across BeginPIE/EndPIE
-	// because the editor subsystems get torn down and rebuilt — running
-	// Python during that window reliably crashes.
+	// PIE transition guard (item #11). The transition *window* is:
+	//   BeginPIE  ─────────→  PostPIEStarted   (editor subsystems torn
+	//       [unsafe to exec]                   down and rebuilt here)
+	//   PrePIEEnded  ──────→  EndPIE           (shutdown sequence —
+	//       [unsafe again]                     same teardown/rebuild)
+	// Between PostPIEStarted and PrePIEEnded PIE is running stably and
+	// execs are safe. An earlier version used only BeginPIE/EndPIE which
+	// kept the flag True for the entire PIE session and blocked agent
+	// observation calls.
 	PieBeginHandle = FEditorDelegates::BeginPIE.AddLambda([this](const bool /*bIsSimulating*/)
+	{
+		bPieTransitionActive = true;
+	});
+	PiePostStartedHandle = FEditorDelegates::PostPIEStarted.AddLambda([this](const bool /*bIsSimulating*/)
+	{
+		bPieTransitionActive = false;
+	});
+	PiePreEndedHandle = FEditorDelegates::PrePIEEnded.AddLambda([this](const bool /*bIsSimulating*/)
 	{
 		bPieTransitionActive = true;
 	});
@@ -112,6 +126,16 @@ void FUnrealBridgeServer::Stop()
 	{
 		FEditorDelegates::BeginPIE.Remove(PieBeginHandle);
 		PieBeginHandle.Reset();
+	}
+	if (PiePostStartedHandle.IsValid())
+	{
+		FEditorDelegates::PostPIEStarted.Remove(PiePostStartedHandle);
+		PiePostStartedHandle.Reset();
+	}
+	if (PiePreEndedHandle.IsValid())
+	{
+		FEditorDelegates::PrePIEEnded.Remove(PiePreEndedHandle);
+		PiePreEndedHandle.Reset();
 	}
 	if (PieEndHandle.IsValid())
 	{

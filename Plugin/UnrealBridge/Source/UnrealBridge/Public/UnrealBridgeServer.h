@@ -109,11 +109,14 @@ private:
 	FCriticalSection ActiveSocketsLock;
 	TSet<FSocket*> ActiveSockets;
 
-	// PIE transition guard (item #11). Exec requests are rejected during
-	// BeginPIE/EndPIE because the editor subsystem state is torn down and
-	// reconstructed across the transition — dispatching Python onto that
-	// window reliably crashes.
+	// PIE transition guard (item #11). Flag is True during the unsafe
+	// startup (BeginPIE → PostPIEStarted) and shutdown (PrePIEEnded →
+	// EndPIE) windows; False while PIE is stably running. Exec requests
+	// are rejected while True because the editor subsystem state is
+	// being torn down and rebuilt.
 	FThreadSafeBool bPieTransitionActive = false;
 	FDelegateHandle PieBeginHandle;
+	FDelegateHandle PiePostStartedHandle;
+	FDelegateHandle PiePreEndedHandle;
 	FDelegateHandle PieEndHandle;
 };
