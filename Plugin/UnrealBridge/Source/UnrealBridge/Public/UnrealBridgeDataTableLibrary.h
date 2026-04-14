@@ -268,4 +268,58 @@ public:
 		const FString& DestDataTablePath,
 		const TArray<FString>& RowNames,
 		bool bOverwrite);
+
+	// ─── Extras (struct metadata / batch / diff / defaults) ──
+
+	/**
+	 * Return the content path of the row struct asset (e.g. `/Game/Data/F_WeaponStats`).
+	 * Empty string for built-in/native structs or on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static FString GetDataTableRowStructPath(const FString& DataTablePath);
+
+	/**
+	 * Find rows whose `FieldName` column equals `Value` (exact match on exported text).
+	 * @param bCaseSensitive  Case-sensitive compare if true; defaults to false.
+	 * Cheaper and more precise than SearchDataTableRows for exact lookups.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static TArray<FString> FindDataTableRowsByFieldValue(
+		const FString& DataTablePath,
+		const FString& FieldName,
+		const FString& Value,
+		bool bCaseSensitive);
+
+	/**
+	 * Return a compact JSON array string of row objects for the filtered view.
+	 * Each object: `{"Name": <row>, <field>: <exported_text>, ...}`.
+	 * @param RowFilter     If non-empty, only include these rows.
+	 * @param ColumnFilter  If non-empty, only include these columns per row.
+	 * Returned text is exported-text per field (string-escaped). Empty `[]` on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static FString GetDataTableRowsAsJSONArray(
+		const FString& DataTablePath,
+		const TArray<FString>& RowFilter,
+		const TArray<FString>& ColumnFilter);
+
+	/**
+	 * Compare two rows field-by-field using exported text.
+	 * Both tables must share the same row struct.
+	 * @return Field names whose values differ. Empty if identical or inputs invalid.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static TArray<FString> DiffDataTableRows(
+		const FString& DataTablePathA,
+		const FString& RowNameA,
+		const FString& DataTablePathB,
+		const FString& RowNameB);
+
+	/**
+	 * Default values for the row struct as a `FieldName -> exported_text` map.
+	 * Uses a freshly-initialized instance of the row struct (honors struct `InitializeStruct` defaults).
+	 * Useful to know what `AddDataTableRow` will fill for unspecified fields.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static TMap<FString, FString> GetDataTableRowDefaults(const FString& DataTablePath);
 };

@@ -779,4 +779,162 @@ int32 UUnrealBridgeDataTableLibrary::CopyDataTableRows(
 	return NumCopied;
 }
 
+// ─── GetDataTableRowStructPath ──────────────────────────────
+
+FString UUnrealBridgeDataTableLibrary::GetDataTableRowStructPath(const FString& DataTablePath)
+{
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return FString();
+	const UScriptStruct* RS = DT->GetRowStruct();
+	if (!RS) return FString();
+	// Only user-defined structs live under /Game — native structs will yield a /Script/... path.
+	return RS->GetPathName();
+}
+
+// ─── FindDataTableRowsByFieldValue ──────────────────────────
+
+TArray<FString> UUnrealBridgeDataTableLibrary::FindDataTableRowsByFieldValue(
+	const FString& DataTablePath,
+	const FString& FieldName,
+	const FString& Value,
+	bool bCaseSensitive)
+{
+	TArray<FString> Result;
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return Result;
+
+	const UScriptStruct* RowStruct = DT->GetRowStruct();
+	if (!RowStruct) return Result;
+
+	FProperty* Prop = BridgeDataTableImpl::FindProperty(RowStruct, FieldName);
+	if (!Prop)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Field '%s' not found on '%s'"), *FieldName, *DataTablePath);
+		return Result;
+	}
+
+	const ESearchCase::Type Case = bCaseSensitive ? ESearchCase::CaseSensitive : ESearchCase::IgnoreCase;
+	for (const auto& Pair : DT->GetRowMap())
+	{
+		const FString V = BridgeDataTableImpl::ExportFieldValue(Prop, Pair.Value);
+		if (V.Equals(Value, Case))
+			Result.Add(Pair.Key.ToString());
+	}
+	return Result;
+}
+
+// ─── GetDataTableRowsAsJSONArray ────────────────────────────
+
+FString UUnrealBridgeDataTableLibrary::GetDataTableRowsAsJSONArray(
+	const FString& DataTablePath,
+	const TArray<FString>& RowFilter,
+	const TArray<FString>& ColumnFilter)
+{
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return TEXT("[]");
+
+	const UScriptStruct* RowStruct = DT->GetRowStruct();
+	if (!RowStruct) return TEXT("[]");
+
+	TSet<FName> RowAllow;
+	for (const FString& R : RowFilter) RowAllow.Add(FName(*R));
+	TSet<FString> ColAllow;
+	for (const FString& C : ColumnFilter) ColAllow.Add(C);
+
+	auto EscapeJson = [](FString S)
+	{
+		S.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+		S.ReplaceInline(TEXT("\""), TEXT("\\\""));
+		S.ReplaceInline(TEXT("\r"), TEXT("\\r"));
+		S.ReplaceInline(TEXT("\n"), TEXT("\\n"));
+		S.ReplaceInline(TEXT("\t"), TEXT("\\t"));
+		return S;
+	};
+
+	FString Out = TEXT("[");
+	bool bFirstRow = true;
+	for (const auto& Pair : DT->GetRowMap())
+	{
+		if (RowAllow.Num() > 0 && !RowAllow.Contains(Pair.Key)) continue;
+		if (!bFirstRow) Out += TEXT(",");
+		bFirstRow = false;
+		Out += FString::Printf(TEXT("{\"Name\":\"%s\""), *EscapeJson(Pair.Key.ToString()));
+		for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+		{
+			FProperty* Prop = *It;
+			const FString PropName = Prop->GetName();
+			if (ColAllow.Num() > 0 && !ColAllow.Contains(PropName)) continue;
+			const FString V = BridgeDataTableImpl::ExportFieldValue(Prop, Pair.Value);
+			Out += FString::Printf(TEXT(",\"%s\":\"%s\""), *EscapeJson(PropName), *EscapeJson(V));
+		}
+		Out += TEXT("}");
+	}
+	Out += TEXT("]");
+	return Out;
+}
+
+// ─── DiffDataTableRows ──────────────────────────────────────
+
+TArray<FString> UUnrealBridgeDataTableLibrary::DiffDataTableRows(
+	const FString& DataTablePathA,
+	const FString& RowNameA,
+	const FString& DataTablePathB,
+	const FString& RowNameB)
+{
+	TArray<FString> Result;
+	UDataTable* A = BridgeDataTableImpl::LoadDT(DataTablePathA);
+	UDataTable* B = BridgeDataTableImpl::LoadDT(DataTablePathB);
+	if (!A || !B) return Result;
+
+	const UScriptStruct* SA = A->GetRowStruct();
+	const UScriptStruct* SB = B->GetRowStruct();
+	if (!SA || SA != SB)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: DiffDataTableRows requires matching row structs"));
+		return Result;
+	}
+
+	uint8* const* PA = A->GetRowMap().Find(FName(*RowNameA));
+	uint8* const* PB = B->GetRowMap().Find(FName(*RowNameB));
+	if (!PA || !PB) return Result;
+
+	for (TFieldIterator<FProperty> It(SA); It; ++It)
+	{
+		FProperty* Prop = *It;
+		const FString VA = BridgeDataTableImpl::ExportFieldValue(Prop, *PA);
+		const FString VB = BridgeDataTableImpl::ExportFieldValue(Prop, *PB);
+		if (!VA.Equals(VB, ESearchCase::CaseSensitive))
+			Result.Add(Prop->GetName());
+	}
+	return Result;
+}
+
+// ─── GetDataTableRowDefaults ────────────────────────────────
+
+TMap<FString, FString> UUnrealBridgeDataTableLibrary::GetDataTableRowDefaults(const FString& DataTablePath)
+{
+	TMap<FString, FString> Result;
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return Result;
+
+	UScriptStruct* RowStruct = const_cast<UScriptStruct*>(DT->GetRowStruct());
+	if (!RowStruct) return Result;
+
+	const int32 Size = RowStruct->GetStructureSize();
+	if (Size <= 0) return Result;
+
+	TArray<uint8> Buffer;
+	Buffer.SetNumZeroed(Size);
+	RowStruct->InitializeStruct(Buffer.GetData());
+
+	for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+	{
+		FProperty* Prop = *It;
+		Result.Add(Prop->GetName(), BridgeDataTableImpl::ExportFieldValue(Prop, Buffer.GetData()));
+	}
+
+	RowStruct->DestroyStruct(Buffer.GetData());
+	return Result;
+}
+
 #undef LOCTEXT_NAMESPACE

@@ -248,3 +248,75 @@ n = unreal.UnrealBridgeDataTableLibrary.copy_data_table_rows(
     False,
 )
 ```
+
+---
+
+## Extras (struct metadata / batch / diff / defaults)
+
+### get_data_table_row_struct_path(data_table_path) -> str
+
+Return the full path of the row struct (e.g. `/Game/Data/F_WeaponStats.F_WeaponStats` for a user struct, or `/Script/<Module>.<Name>` for native). Empty on failure. Useful when you need to load the struct directly, or to test whether two DataTables share a row struct.
+
+Token cost: trivial (single string).
+
+```python
+p = unreal.UnrealBridgeDataTableLibrary.get_data_table_row_struct_path('/Game/Data/DT_Weapons')
+```
+
+### find_data_table_rows_by_field_value(data_table_path, field_name, value, case_sensitive) -> list[str]
+
+Exact-match lookup on a single column (compares exported text). Faster and more precise than `search_data_table_rows` when you know the exact value.
+
+Token cost: O(matches) — returns only row names.
+
+```python
+hits = unreal.UnrealBridgeDataTableLibrary.find_data_table_rows_by_field_value(
+    '/Game/Data/DT_Weapons', 'Kind', 'EWeaponKind::Sword', False
+)
+```
+
+Compare-as-exported-text gotchas:
+- String properties export **quoted** (`"Hello"`), so pass `'"Hello"'` not `'Hello'`.
+- Enums export as `EEnum::Value`.
+- Use `get_data_table_row_field(path, rowName, field)` once to see the exact exported form.
+
+### get_data_table_rows_as_json_array(data_table_path, row_filter, column_filter) -> str
+
+Filtered batch read as a compact JSON array of `{"Name": ..., field: value, ...}` objects. Parse with `json.loads`. Each field value is the exported-text form (escaped for JSON).
+
+Prefer this when you need several rows at once with a specific column set — it collapses what would be N `get_data_table_row_as_map` calls into one round-trip.
+
+Token cost: O(rows × selected columns). With empty filters this equals the full table — **always** pass at least one filter unless you really want everything.
+
+```python
+import json
+raw = unreal.UnrealBridgeDataTableLibrary.get_data_table_rows_as_json_array(
+    '/Game/Data/DT_Weapons', ['Sword_01','Sword_02'], ['Damage','Range']
+)
+rows = json.loads(raw)
+# [{"Name":"Sword_01","Damage":"25.0","Range":"120.0"}, ...]
+```
+
+### diff_data_table_rows(path_a, row_a, path_b, row_b) -> list[str]
+
+Return the names of fields whose exported-text values differ between two rows. Both tables must share the same row struct. Same-table diffs are fine (pass the same path twice).
+
+Token cost: O(differing fields).
+
+```python
+changed = unreal.UnrealBridgeDataTableLibrary.diff_data_table_rows(
+    '/Game/Data/DT_Weapons',        'Sword_01',
+    '/Game/Data/DT_WeaponsBackup',  'Sword_01',
+)
+```
+
+### get_data_table_row_defaults(data_table_path) -> dict[str, str]
+
+Default values the row struct fills in for a freshly-initialized instance (what `add_data_table_row` will use for unspecified fields). Returned as `{FieldName: exported_text}`.
+
+Token cost: O(columns).
+
+```python
+defaults = unreal.UnrealBridgeDataTableLibrary.get_data_table_row_defaults('/Game/Data/DT_Weapons')
+# {'Damage': '0.000000', 'Name': '', 'Kind': 'EWeaponKind::None', ...}
+```
