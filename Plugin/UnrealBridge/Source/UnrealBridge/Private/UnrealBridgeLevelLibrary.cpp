@@ -16,6 +16,8 @@
 #include "ScopedTransaction.h"
 #include "Subsystems/EditorActorSubsystem.h"
 #include "UObject/UnrealType.h"
+#include "Components/MeshComponent.h"
+#include "Materials/MaterialInterface.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeLevel"
 
@@ -1028,6 +1030,117 @@ bool UUnrealBridgeLevelLibrary::IsActorSelected(const FString& ActorName)
 	}
 	AActor* A = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
 	return A && GEditor->GetSelectedActors()->IsSelected(A);
+}
+
+bool UUnrealBridgeLevelLibrary::SetActorHiddenInEditor(const FString& ActorName, bool bHidden)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetActorHiddenInEditor", "Set Actor Hidden In Editor"));
+	Actor->Modify();
+	Actor->SetIsTemporarilyHiddenInEditor(bHidden);
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::AddActorTag(const FString& ActorName, const FName Tag)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor || Tag.IsNone())
+	{
+		return false;
+	}
+	if (Actor->Tags.Contains(Tag))
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("AddActorTag", "Add Actor Tag"));
+	Actor->Modify();
+	Actor->Tags.Add(Tag);
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::RemoveActorTag(const FString& ActorName, const FName Tag)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor || Tag.IsNone())
+	{
+		return false;
+	}
+	if (!Actor->Tags.Contains(Tag))
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("RemoveActorTag", "Remove Actor Tag"));
+	Actor->Modify();
+	const int32 Removed = Actor->Tags.Remove(Tag);
+	return Removed > 0;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorClassHistogram()
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	TMap<FString, int32> Counts;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A || !A->GetClass())
+		{
+			continue;
+		}
+		const FString ClassName = A->GetClass()->GetName();
+		Counts.FindOrAdd(ClassName)++;
+	}
+	Counts.ValueSort([](int32 L, int32 R) { return L > R; });
+	Out.Reserve(Counts.Num());
+	for (const TPair<FString, int32>& P : Counts)
+	{
+		Out.Add(FString::Printf(TEXT("%d\t%s"), P.Value, *P.Key));
+	}
+	return Out;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorMaterials(const FString& ActorName)
+{
+	TArray<FString> Out;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return Out;
+	}
+	TArray<UMeshComponent*> MeshComps;
+	Actor->GetComponents<UMeshComponent>(MeshComps);
+	TSet<FString> Seen;
+	for (UMeshComponent* MC : MeshComps)
+	{
+		if (!MC)
+		{
+			continue;
+		}
+		const int32 Num = MC->GetNumMaterials();
+		for (int32 i = 0; i < Num; ++i)
+		{
+			UMaterialInterface* Mat = MC->GetMaterial(i);
+			if (!Mat)
+			{
+				continue;
+			}
+			const FString Path = Mat->GetPathName();
+			if (!Seen.Contains(Path))
+			{
+				Seen.Add(Path);
+				Out.Add(Path);
+			}
+		}
+	}
+	return Out;
 }
 
 #undef LOCTEXT_NAMESPACE

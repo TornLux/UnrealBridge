@@ -276,3 +276,38 @@ Distance between two actors' world locations in cm. Returns `-1.0` if either act
 ### is_actor_selected(actor_name) -> bool
 
 `True` if `actor_name` is currently selected in the editor viewport.
+
+
+### set_actor_hidden_in_editor(actor_name, hidden) -> bool
+
+Toggle editor viewport visibility (SetIsTemporarilyHiddenInEditor). Transaction-wrapped. Cost: O(1) plus lookup.
+
+### add_actor_tag(actor_name, tag) -> bool
+
+Add an FName tag to Actor.Tags. Returns False if already present or actor missing. Transaction-wrapped.
+
+```python
+unreal.UnrealBridgeLevelLibrary.add_actor_tag('BP_Cube_1', 'interactable')
+```
+
+### remove_actor_tag(actor_name, tag) -> bool
+
+Remove an FName tag from Actor.Tags. Returns True only if a tag was removed. Transaction-wrapped.
+
+### get_actor_class_histogram() -> list[str]
+
+Per-class counts across all actors in the editor world, sorted descending. Each line is "Count	ClassName". Cost: O(N) over all actors; small output (one line per distinct class).
+
+```python
+for line in unreal.UnrealBridgeLevelLibrary.get_actor_class_histogram()[:10]:
+    print(line)
+```
+
+### get_actor_materials(actor_name) -> list[str]
+
+Deduplicated material asset paths from the actor's `UMeshComponent`-derived components (static + skeletal + instanced). Empty list if no mesh components. Cost: O(components * material slots); small output. Note: `Landscape` actors have no `UMeshComponent` and return `[]` — use material queries against the landscape component separately if needed.
+
+```python
+unreal.UnrealBridgeLevelLibrary.get_actor_materials('BP_Cube_1')
+# ['/Game/Materials/M_Base.M_Base', ...]
+```

@@ -297,6 +297,32 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool SetActorHiddenInGame(const FString& ActorName, bool bHidden);
 
+	/** Set actor hidden in the editor viewport (bHiddenEd). Distinct from SetActorHiddenInGame. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorHiddenInEditor(const FString& ActorName, bool bHidden);
+
+	/** Add a tag to the actor if not already present. Returns true if added, false if duplicate/missing actor. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool AddActorTag(const FString& ActorName, const FName Tag);
+
+	/** Remove a tag from the actor. Returns true if a tag was removed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool RemoveActorTag(const FString& ActorName, const FName Tag);
+
+	/**
+	 * Histogram of actor class short names → count, sorted descending by count.
+	 * Lines are formatted "Count\tClassName". Small output — one line per distinct class.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorClassHistogram();
+
+	/**
+	 * Return asset paths of materials used by the actor's mesh components (static + skeletal).
+	 * Deduplicated. Empty list if the actor has no mesh components or is missing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorMaterials(const FString& ActorName);
+
 	// ─── Deep queries ─────────────────────────────────────
 
 	/**
