@@ -373,3 +373,66 @@ hit = unreal.UnrealBridgeLevelLibrary.line_trace_first_actor(
 )
 print(hit)  # e.g. "Landscape"
 ```
+
+### multi_line_trace_actors(start, end) -> list[str]
+
+Cast a multi-hit line-trace (visibility channel, complex collision) and return deduplicated actor labels ordered near → far.
+
+> Cost: O(world-trace + hits). Small output. Prefer over looping `line_trace_first_actor` with temporary occluders — this returns the whole penetration set in one call.
+
+```python
+pierced = unreal.UnrealBridgeLevelLibrary.multi_line_trace_actors(
+    unreal.Vector(0, 0, 10000),
+    unreal.Vector(0, 0, -10000),
+)
+# e.g. ['Ceiling', 'Platform_2', 'Landscape']
+```
+
+---
+
+## Components / Sockets
+
+### get_actor_sockets(actor_name) -> list[str]
+
+Enumerate sockets on every `USceneComponent` of the actor. Each line is `"ComponentName:SocketName"`.
+
+> Cost: O(components × sockets). Small output on typical actors. Use to discover valid `socket_name` arguments for `attach_actor` or `get_socket_world_transform`.
+
+```python
+for entry in unreal.UnrealBridgeLevelLibrary.get_actor_sockets('BP_Weapon_1'):
+    print(entry)  # e.g. "Mesh:Muzzle"
+```
+
+### get_socket_world_transform(actor_name, component_name, socket_name) -> FBridgeTransform
+
+World transform of `socket_name` on `component_name`. Returns an identity transform if the actor, component, or socket is missing.
+
+```python
+t = unreal.UnrealBridgeLevelLibrary.get_socket_world_transform(
+    'BP_Character_1', 'Mesh', 'hand_r')
+print(t.location, t.rotation)
+```
+
+### get_component_world_transform(actor_name, component_name) -> FBridgeTransform
+
+World transform of a scene component by name. Returns identity if the component is missing or non-scene. Cost: O(1) plus component lookup.
+
+### set_component_visibility(actor_name, component_name, visible, propagate_to_children) -> bool
+
+Toggle visibility of a scene component. If `propagate_to_children=True`, the change cascades down the attachment tree. Transaction-wrapped. Returns `False` if the component is missing or not a scene component.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_component_visibility(
+    'BP_Hero_1', 'Cape', False, True)
+```
+
+### set_component_mobility(actor_name, component_name, mobility) -> bool
+
+Set a scene component's mobility. `mobility` must be one of `"Static"`, `"Stationary"`, or `"Movable"` (case-insensitive). Transaction-wrapped. Returns `False` if the component is missing, non-scene, or the mobility string is invalid.
+
+> ⚠️ Movable → Static demotions may invalidate baked lighting. Callers should typically re-bake / rebuild lighting after changing lots of actors.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_component_mobility(
+    'BP_Prop_1', 'StaticMeshComponent', 'Movable')
+```

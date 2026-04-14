@@ -411,4 +411,44 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static FString LineTraceFirstActor(FVector Start, FVector End);
+
+	/**
+	 * Multi-hit line trace against the editor world (visibility channel, complex collision).
+	 * Returns deduplicated actor labels along the ray, ordered from nearest to farthest.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> MultiLineTraceActors(FVector Start, FVector End);
+
+	// ─── Components / sockets ────────────────────────────
+
+	/**
+	 * Return socket names on the actor's scene components, formatted "ComponentName:SocketName".
+	 * Useful for discovering valid SocketName arguments for AttachActor or GetSocketWorldTransform.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorSockets(const FString& ActorName);
+
+	/** World transform of a socket on a named scene component. Returns identity if not found. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeTransform GetSocketWorldTransform(const FString& ActorName, const FString& ComponentName, const FName SocketName);
+
+	/** World transform of a scene component by name. Returns identity if not found. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeTransform GetComponentWorldTransform(const FString& ActorName, const FString& ComponentName);
+
+	/**
+	 * Toggle visibility of a scene component on the actor.
+	 * @param bPropagateToChildren  Cascade to attached child components.
+	 * Returns false if the component is missing or not a USceneComponent.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetComponentVisibility(const FString& ActorName, const FString& ComponentName, bool bVisible, bool bPropagateToChildren);
+
+	/**
+	 * Set a scene component's mobility.
+	 * @param Mobility  "Static", "Stationary", or "Movable" (case-insensitive).
+	 * Returns false if the component is missing, not scene, or mobility string is invalid.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetComponentMobility(const FString& ActorName, const FString& ComponentName, const FString& Mobility);
 };

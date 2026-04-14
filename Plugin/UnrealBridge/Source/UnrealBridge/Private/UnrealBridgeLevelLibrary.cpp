@@ -132,6 +132,24 @@ namespace BridgeLevelImpl
 		}
 		return GEditor->GetSelectedActors()->IsSelected(Actor);
 	}
+
+	UActorComponent* FindComponent(AActor* Actor, const FString& ComponentName)
+	{
+		if (!Actor || ComponentName.IsEmpty())
+		{
+			return nullptr;
+		}
+		TArray<UActorComponent*> Comps;
+		Actor->GetComponents(Comps);
+		for (UActorComponent* C : Comps)
+		{
+			if (C && C->GetName() == ComponentName)
+			{
+				return C;
+			}
+		}
+		return nullptr;
+	}
 }
 
 // ─── Read ───────────────────────────────────────────────────
@@ -1260,6 +1278,150 @@ FString UUnrealBridgeLevelLibrary::LineTraceFirstActor(FVector Start, FVector En
 	}
 	AActor* A = Hit.GetActor();
 	return A ? A->GetActorLabel() : FString();
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::MultiLineTraceActors(FVector Start, FVector End)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	TArray<FHitResult> Hits;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeMultiLineTrace), /*bTraceComplex*/ true);
+	World->LineTraceMultiByChannel(Hits, Start, End, ECC_Visibility, Params);
+	TSet<AActor*> Seen;
+	for (const FHitResult& H : Hits)
+	{
+		AActor* A = H.GetActor();
+		if (A && !Seen.Contains(A))
+		{
+			Seen.Add(A);
+			Out.Add(A->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+// ─── Components / sockets ───────────────────────────────────
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorSockets(const FString& ActorName)
+{
+	TArray<FString> Out;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return Out;
+	}
+	TArray<USceneComponent*> SceneComps;
+	Actor->GetComponents<USceneComponent>(SceneComps);
+	for (USceneComponent* SC : SceneComps)
+	{
+		if (!SC)
+		{
+			continue;
+		}
+		TArray<FName> SocketNames = SC->GetAllSocketNames();
+		for (const FName& SN : SocketNames)
+		{
+			Out.Add(FString::Printf(TEXT("%s:%s"), *SC->GetName(), *SN.ToString()));
+		}
+	}
+	return Out;
+}
+
+FBridgeTransform UUnrealBridgeLevelLibrary::GetSocketWorldTransform(const FString& ActorName, const FString& ComponentName, const FName SocketName)
+{
+	FBridgeTransform Out;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return Out;
+	}
+	USceneComponent* SC = Cast<USceneComponent>(BridgeLevelImpl::FindComponent(Actor, ComponentName));
+	if (!SC)
+	{
+		return Out;
+	}
+	if (!SocketName.IsNone() && !SC->DoesSocketExist(SocketName))
+	{
+		return Out;
+	}
+	const FTransform T = SC->GetSocketTransform(SocketName, RTS_World);
+	return BridgeLevelImpl::ToBridgeTransform(T);
+}
+
+FBridgeTransform UUnrealBridgeLevelLibrary::GetComponentWorldTransform(const FString& ActorName, const FString& ComponentName)
+{
+	FBridgeTransform Out;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return Out;
+	}
+	USceneComponent* SC = Cast<USceneComponent>(BridgeLevelImpl::FindComponent(Actor, ComponentName));
+	if (!SC)
+	{
+		return Out;
+	}
+	return BridgeLevelImpl::ToBridgeTransform(SC->GetComponentTransform());
+}
+
+bool UUnrealBridgeLevelLibrary::SetComponentVisibility(const FString& ActorName, const FString& ComponentName, bool bVisible, bool bPropagateToChildren)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	USceneComponent* SC = Cast<USceneComponent>(BridgeLevelImpl::FindComponent(Actor, ComponentName));
+	if (!SC)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetComponentVisibility", "Set Component Visibility"));
+	Actor->Modify();
+	SC->Modify();
+	SC->SetVisibility(bVisible, bPropagateToChildren);
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::SetComponentMobility(const FString& ActorName, const FString& ComponentName, const FString& Mobility)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	USceneComponent* SC = Cast<USceneComponent>(BridgeLevelImpl::FindComponent(Actor, ComponentName));
+	if (!SC)
+	{
+		return false;
+	}
+	EComponentMobility::Type NewMobility;
+	if (Mobility.Equals(TEXT("Static"), ESearchCase::IgnoreCase))
+	{
+		NewMobility = EComponentMobility::Static;
+	}
+	else if (Mobility.Equals(TEXT("Stationary"), ESearchCase::IgnoreCase))
+	{
+		NewMobility = EComponentMobility::Stationary;
+	}
+	else if (Mobility.Equals(TEXT("Movable"), ESearchCase::IgnoreCase))
+	{
+		NewMobility = EComponentMobility::Movable;
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Invalid Mobility '%s' (expected Static/Stationary/Movable)"), *Mobility);
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetComponentMobility", "Set Component Mobility"));
+	Actor->Modify();
+	SC->Modify();
+	SC->SetMobility(NewMobility);
+	return true;
 }
 
 #undef LOCTEXT_NAMESPACE
