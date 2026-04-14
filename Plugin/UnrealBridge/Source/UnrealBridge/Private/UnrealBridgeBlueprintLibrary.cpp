@@ -3238,3 +3238,106 @@ FString UUnrealBridgeBlueprintLibrary::AddTimelineNode(
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);
 }
+
+bool UUnrealBridgeBlueprintLibrary::SetTimelineProperties(
+	const FString& BlueprintPath, const FString& TimelineName,
+	float Length, bool bAutoPlay, bool bLoop, bool bReplicated, bool bIgnoreTimeDilation)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	if (TimelineName.IsEmpty()) return false;
+	const FName TLName(*TimelineName);
+	const int32 Idx = FBlueprintEditorUtils::FindTimelineIndex(BP, TLName);
+	if (Idx == INDEX_NONE) return false;
+	UTimelineTemplate* Template = BP->Timelines[Idx];
+	if (!Template) return false;
+
+	BP->Modify();
+	Template->Modify();
+	if (Length >= 0.0f)
+	{
+		Template->TimelineLength = Length;
+	}
+	Template->bAutoPlay = bAutoPlay;
+	Template->bLoop = bLoop;
+	Template->bReplicated = bReplicated;
+	Template->bIgnoreTimeDilation = bIgnoreTimeDilation;
+
+	// Mirror into the K2Node_Timeline instance so the graph node reflects the new settings.
+	if (UK2Node_Timeline* TLNode = FBlueprintEditorUtils::FindNodeForTimeline(BP, Template))
+	{
+		TLNode->Modify();
+		TLNode->bAutoPlay = bAutoPlay;
+		TLNode->bLoop = bLoop;
+		TLNode->bReplicated = bReplicated;
+		TLNode->bIgnoreTimeDilation = bIgnoreTimeDilation;
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+// ─── Batch E: Macro / Debug management ─────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::RemoveMacroGraph(
+	const FString& BlueprintPath, const FString& MacroName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	const FName MName(*MacroName);
+	if (MName.IsNone()) return false;
+	UEdGraph* Target = nullptr;
+	for (UEdGraph* G : BP->MacroGraphs)
+	{
+		if (G && G->GetFName() == MName) { Target = G; break; }
+	}
+	if (!Target) return false;
+	BP->Modify();
+	FBlueprintEditorUtils::RemoveGraph(BP, Target, EGraphRemoveFlags::Recompile);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::RemoveBreakpoint(
+	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+	if (!FKismetDebugUtilities::FindBreakpointForNode(Node, BP)) return false;
+	FKismetDebugUtilities::RemoveBreakpointFromNode(Node, BP);
+	return true;
+}
+
+int32 UUnrealBridgeBlueprintLibrary::ClearAllBreakpoints(const FString& BlueprintPath)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return 0;
+	int32 Count = 0;
+	FKismetDebugUtilities::ForeachBreakpoint(BP, [&Count](FBlueprintBreakpoint&) { ++Count; });
+	if (Count > 0)
+	{
+		FKismetDebugUtilities::ClearBreakpoints(BP);
+	}
+	return Count;
+}
+
+TArray<FBridgeBreakpointInfo> UUnrealBridgeBlueprintLibrary::GetBreakpoints(const FString& BlueprintPath)
+{
+	TArray<FBridgeBreakpointInfo> Out;
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return Out;
+	FKismetDebugUtilities::ForeachBreakpoint(BP, [&Out](FBlueprintBreakpoint& BP_BP)
+	{
+		FBridgeBreakpointInfo Info;
+		UEdGraphNode* Node = BP_BP.GetLocation();
+		if (Node)
+		{
+			Info.NodeGuid = Node->NodeGuid.ToString(EGuidFormats::Digits);
+			Info.NodeTitle = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+			if (UEdGraph* OwningGraph = Node->GetGraph())
+			{
+				Info.GraphName = OwningGraph->GetName();
+			}
+		}
+		Info.bEnabled = BP_BP.IsEnabledByUser();
+		Out.Add(Info);
+	});
+	return Out;
+}

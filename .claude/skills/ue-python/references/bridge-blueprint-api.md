@@ -915,10 +915,18 @@ lib.add_break_struct_node(bp, 'EventGraph', '/Script/CoreUObject.Vector', 400, 2
 
 ### create_macro_graph(blueprint_path, macro_name) -> bool
 
-Create a new user-defined macro graph on the Blueprint. Returns `False` if a macro with that name already exists. There is currently no `remove_macro_graph` — use a unique name per call if you need to re-create.
+Create a new user-defined macro graph on the Blueprint. Returns `False` if a macro with that name already exists.
 
 ```python
 lib.create_macro_graph(bp, 'IsTargetVisible')
+```
+
+### remove_macro_graph(blueprint_path, macro_name) -> bool
+
+Remove a user-defined macro graph by name. Returns `False` if no macro with that name exists. Triggers a Blueprint recompile (via `EGraphRemoveFlags::Recompile`), so pair with an intentional batch rather than calling in a tight loop.
+
+```python
+lib.remove_macro_graph(bp, 'IsTargetVisible')
 ```
 
 ### add_breakpoint(blueprint_path, graph_name, node_guid, enabled) -> bool
@@ -929,6 +937,42 @@ Create or toggle a debug breakpoint on a node. If a breakpoint already exists th
 node = lib.add_branch_node(bp, 'EventGraph', 0, 0)
 lib.add_breakpoint(bp, 'EventGraph', node, True)
 ```
+
+### remove_breakpoint(blueprint_path, graph_name, node_guid) -> bool
+
+Remove a breakpoint previously set on a node. Returns `True` only if a breakpoint was actually found and removed; `False` is a no-op (not an error).
+
+```python
+lib.remove_breakpoint(bp, 'EventGraph', node)
+```
+
+### clear_all_breakpoints(blueprint_path) -> int
+
+Remove every breakpoint on the Blueprint. Returns the count that were cleared. Use before generating a fresh debug layout or when bulk-cleaning after a scripted debug session.
+
+```python
+n = lib.clear_all_breakpoints(bp)
+print(f'cleared {n} breakpoints')
+```
+
+### get_breakpoints(blueprint_path) -> list[FBridgeBreakpointInfo]
+
+Enumerate all breakpoints on the Blueprint. Token footprint: **LOW** — four fields per breakpoint (graph name, node GUID, node title, enabled). Typical debug sessions have <20 breakpoints.
+
+```python
+for bp_info in lib.get_breakpoints(bp):
+    flag = 'ON ' if bp_info.enabled else 'off'
+    print(f'{flag} {bp_info.graph_name}/{bp_info.node_title} ({bp_info.node_guid})')
+```
+
+#### FBridgeBreakpointInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `graph_name` | str | Name of the graph the breakpoint's node lives in (`EventGraph`, or a function/macro name). Empty if the node was deleted but the breakpoint record lingers. |
+| `node_guid` | str | NodeGuid in digits format, matches what `add_branch_node`/etc. return. |
+| `node_title` | str | User-facing node title (best effort; can be empty for detached nodes). |
+| `enabled` | bool | `True` if enabled by the user. Transient single-step state is filtered out. |
 
 ---
 
@@ -942,6 +986,16 @@ The returned node has no tracks yet. The current bridge has no track-edit API; p
 
 ```python
 tl = lib.add_timeline_node(bp, 'EventGraph', 'Fade', 200, 600)
+```
+
+### set_timeline_properties(blueprint_path, timeline_name, length, auto_play, loop, replicated, ignore_time_dilation) -> bool
+
+Update a timeline's template-level settings. Pass `length = -1.0` to leave the existing length unchanged; bool flags are always applied. The call syncs the change into the owning `K2Node_Timeline` graph node (if any) so the in-graph display matches. Returns `False` only when no timeline template with that name is found.
+
+```python
+lib.set_timeline_properties(bp, 'Fade',
+    length=2.5, auto_play=True, loop=True,
+    replicated=False, ignore_time_dilation=False)
 ```
 
 ---

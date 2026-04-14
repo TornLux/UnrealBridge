@@ -512,6 +512,28 @@ struct FBridgeCompileMessage
 	FString NodeGuid;
 };
 
+USTRUCT(BlueprintType)
+struct FBridgeBreakpointInfo
+{
+	GENERATED_BODY()
+
+	/** Graph name the node lives in (e.g. "EventGraph", "MyFunction"). Empty if graph unresolved. */
+	UPROPERTY(BlueprintReadOnly)
+	FString GraphName;
+
+	/** NodeGuid (digits) of the node the breakpoint is attached to. */
+	UPROPERTY(BlueprintReadOnly)
+	FString NodeGuid;
+
+	/** User-facing node title — best-effort, may be empty if the node was deleted. */
+	UPROPERTY(BlueprintReadOnly)
+	FString NodeTitle;
+
+	/** True if the breakpoint is enabled (as requested by the user — ignores single-step transient state). */
+	UPROPERTY(BlueprintReadOnly)
+	bool bEnabled = false;
+};
+
 // ─── Function Library ────────────────────────────────────────
 
 UCLASS()
@@ -1059,4 +1081,31 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static FString AddTimelineNode(const FString& BlueprintPath, const FString& GraphName,
 		const FString& TimelineTemplateName, int32 X, int32 Y);
+
+	/**
+	 * Update a timeline's template-level settings (length, auto-play, loop, replicated, ignore-time-dilation).
+	 * Pass -1.0 for Length to leave unchanged. Syncs to any existing K2Node_Timeline instance that references this template.
+	 * Returns false if the timeline template cannot be found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetTimelineProperties(const FString& BlueprintPath, const FString& TimelineName,
+		float Length, bool bAutoPlay, bool bLoop, bool bReplicated, bool bIgnoreTimeDilation);
+
+	// ═══ P2 — Macro / Debug management ══════════════════════════════
+
+	/** Remove a user-defined macro graph by name. Returns false if not found. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveMacroGraph(const FString& BlueprintPath, const FString& MacroName);
+
+	/** Remove a breakpoint previously set on a node (by GUID). Returns true if a breakpoint was removed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveBreakpoint(const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid);
+
+	/** Remove every breakpoint on the Blueprint. Returns the number of breakpoints cleared. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static int32 ClearAllBreakpoints(const FString& BlueprintPath);
+
+	/** Enumerate all breakpoints on the Blueprint — graph name, node GUID, node title, enabled state. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeBreakpointInfo> GetBreakpoints(const FString& BlueprintPath);
 };
