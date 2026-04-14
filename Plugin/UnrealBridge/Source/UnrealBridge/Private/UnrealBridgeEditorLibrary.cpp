@@ -28,6 +28,9 @@
 #include "LevelEditorViewport.h"
 #include "IAssetViewport.h"
 #include "AssetRegistry/AssetData.h"
+#include "Misc/PackageName.h"
+#include "UObject/UObjectHash.h"
+#include "UObject/Package.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
 #include "UObject/Package.h"
@@ -195,17 +198,62 @@ FBridgeViewportCamera UUnrealBridgeEditorLibrary::GetEditorViewportCamera()
 
 namespace BridgeEditorImpl
 {
+	UObject* ResolveInnerAssetIfPackage(UObject* Obj)
+	{
+		UPackage* Pkg = Cast<UPackage>(Obj);
+		if (!Pkg)
+		{
+			return Obj;
+		}
+		const FString LeafName = FPackageName::GetShortName(Pkg->GetFName());
+		UObject* Match = nullptr;
+		UObject* Fallback = nullptr;
+		ForEachObjectWithOuter(Pkg, [&](UObject* Inner)
+		{
+			if (Match || !Inner || Inner->HasAnyFlags(RF_Transient))
+			{
+				return;
+			}
+			if (Inner->GetName() == LeafName)
+			{
+				Match = Inner;
+			}
+			else if (!Fallback && Inner->IsAsset())
+			{
+				Fallback = Inner;
+			}
+		}, false);
+		if (Match)
+		{
+			return Match;
+		}
+		return Fallback ? Fallback : Obj;
+	}
+
 	UObject* LoadAssetFromPath(const FString& AssetPath)
 	{
 		if (AssetPath.IsEmpty())
 		{
 			return nullptr;
 		}
-		if (UObject* Found = FindObject<UObject>(nullptr, *AssetPath))
+		// Normalize "/Foo/Bar" → "/Foo/Bar.Bar" so we load the inner asset, not the UPackage wrapper.
+		FString Normalized = AssetPath;
+		int32 DotIdx;
+		if (!Normalized.FindChar(TEXT('.'), DotIdx))
 		{
-			return Found;
+			int32 SlashIdx;
+			if (Normalized.FindLastChar(TEXT('/'), SlashIdx) && SlashIdx + 1 < Normalized.Len())
+			{
+				const FString Leaf = Normalized.Mid(SlashIdx + 1);
+				Normalized = Normalized + TEXT(".") + Leaf;
+			}
 		}
-		return LoadObject<UObject>(nullptr, *AssetPath);
+		UObject* Result = FindObject<UObject>(nullptr, *Normalized);
+		if (!Result)
+		{
+			Result = LoadObject<UObject>(nullptr, *Normalized);
+		}
+		return ResolveInnerAssetIfPackage(Result);
 	}
 }
 

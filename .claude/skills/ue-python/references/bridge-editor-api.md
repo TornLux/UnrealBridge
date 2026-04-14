@@ -183,7 +183,17 @@ batching via `exec-file` if toggling many flags.
 
 ### open_asset(asset_path) -> bool
 
-Open the appropriate asset editor. Accepts object path or package path.
+Open the appropriate asset editor. Accepts either a full object path (`/Game/Foo/Bar.Bar`) or a bare package path (`/Game/Foo/Bar`).
+
+Path handling: bare package paths are auto-normalized to `<path>.<leaf>` before `LoadObject`, so the inner asset is loaded instead of the `UPackage` wrapper. If a `UPackage` is still returned (edge cases), the library scans its inner objects and returns the one whose name matches the package leaf, else the first `IsAsset()` child.
+
+> **Historical bug (fixed):** prior to the normalization pass, passing a bare package path (e.g. `/Game/Foo/Bar`) loaded the `UPackage` itself, and the Asset Editor Subsystem opened the Generic "Package" editor instead of the asset's dedicated editor (Curve Editor, BP Editor, etc.). Now both forms open the correct editor.
+
+Applies to every `BridgeEditorImpl::LoadAssetFromPath` caller (`open_asset`, `save_asset`, `reload_asset`, `sync_content_browser_to_assets`, etc.).
+
+Cost: single `FindObject`/`LoadObject` + at most one `ForEachObjectWithOuter` scan of the package (typically 1–5 inners). GameThread.
+
+Output footprint: tiny — single bool.
 
 ### close_all_asset_editors() -> bool
 
