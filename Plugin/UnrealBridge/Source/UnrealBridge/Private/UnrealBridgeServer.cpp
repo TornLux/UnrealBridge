@@ -130,7 +130,6 @@ bool FUnrealBridgeServer::OnConnectionAccepted(FSocket* ClientSocket, const FIPv
 {
 	UE_LOG(LogUnrealBridge, Verbose, TEXT("Client connected from %s"), *ClientEndpoint.ToString());
 
-	// Handle each client on a background thread
 	AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this, ClientSocket]()
 	{
 		HandleClient(ClientSocket);
@@ -147,111 +146,118 @@ bool FUnrealBridgeServer::OnConnectionAccepted(FSocket* ClientSocket, const FIPv
 
 void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 {
-	while (bIsRunning)
+	// One request-response per connection. bridge.py opens a fresh socket
+	// per call; keep-alive would tie worker threads up in idle waits and
+	// saturate the AsyncTask pool under high request rates.
+	if (!bIsRunning)
 	{
-		// 1. Read 4-byte length prefix (big-endian)
-		uint8 LenBuf[4];
-		if (!RecvAll(ClientSocket, LenBuf, 4, 5.0f))
-		{
-			break; // Client disconnected or timeout
-		}
+		return;
+	}
 
-		uint32 PayloadLen = (uint32(LenBuf[0]) << 24)
-						  | (uint32(LenBuf[1]) << 16)
-						  | (uint32(LenBuf[2]) << 8)
-						  | (uint32(LenBuf[3]));
+	// 1. Read 4-byte length prefix (big-endian)
+	uint8 LenBuf[4];
+	if (!RecvAll(ClientSocket, LenBuf, 4, 5.0f))
+	{
+		return; // Client gave up or disconnected before sending header.
+	}
 
-		if (PayloadLen == 0 || PayloadLen > 10 * 1024 * 1024) // 10 MB max
-		{
-			UE_LOG(LogUnrealBridge, Warning, TEXT("Invalid payload length: %u"), PayloadLen);
-			break;
-		}
+	const uint32 PayloadLen = (uint32(LenBuf[0]) << 24)
+							| (uint32(LenBuf[1]) << 16)
+							| (uint32(LenBuf[2]) << 8)
+							| (uint32(LenBuf[3]));
 
-		// 2. Read JSON payload
-		TArray<uint8> PayloadBuf;
-		PayloadBuf.SetNumUninitialized(PayloadLen);
-		if (!RecvAll(ClientSocket, PayloadBuf.GetData(), PayloadLen, 30.0f))
-		{
-			break;
-		}
+	if (PayloadLen == 0 || PayloadLen > 10 * 1024 * 1024) // 10 MB max
+	{
+		UE_LOG(LogUnrealBridge, Warning, TEXT("Invalid payload length: %u"), PayloadLen);
+		return;
+	}
 
-		FUTF8ToTCHAR Converter((const ANSICHAR*)PayloadBuf.GetData(), PayloadLen);
-		FString JsonStr(Converter.Length(), Converter.Get());
+	// 2. Read JSON payload
+	TArray<uint8> PayloadBuf;
+	PayloadBuf.SetNumUninitialized(PayloadLen);
+	if (!RecvAll(ClientSocket, PayloadBuf.GetData(), PayloadLen, 30.0f))
+	{
+		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to read payload (len=%u)"), PayloadLen);
+		return;
+	}
 
-		// 3. Parse JSON
-		TSharedPtr<FJsonObject> Request;
-		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonStr);
-		if (!FJsonSerializer::Deserialize(Reader, Request) || !Request.IsValid())
-		{
-			UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to parse JSON request"));
-			break;
-		}
+	FUTF8ToTCHAR Converter((const ANSICHAR*)PayloadBuf.GetData(), PayloadLen);
+	FString JsonStr(Converter.Length(), Converter.Get());
 
-		FString RequestId = Request->GetStringField(TEXT("id"));
+	// 3. Parse JSON
+	TSharedPtr<FJsonObject> Request;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonStr);
+	if (!FJsonSerializer::Deserialize(Reader, Request) || !Request.IsValid())
+	{
+		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to parse JSON request"));
+		return;
+	}
 
-		// 4. Build response
-		TSharedRef<FJsonObject> Response = MakeShared<FJsonObject>();
-		Response->SetStringField(TEXT("id"), RequestId);
+	FString RequestId = Request->GetStringField(TEXT("id"));
 
-		// Check for ping command
-		FString Command = Request->HasField(TEXT("command"))
-			? Request->GetStringField(TEXT("command"))
-			: FString();
-		if (Command == TEXT("ping"))
-		{
-			Response->SetBoolField(TEXT("success"), true);
-			Response->SetStringField(TEXT("output"), TEXT("pong"));
-			Response->SetStringField(TEXT("error"), TEXT(""));
-			Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
-		}
-		else if (!bEditorReady)
-		{
-			// Reject Python exec while the editor is still initializing.
-			// Dispatching to the GameThread during SlateRHIRenderer::CreateViewport's
-			// render-fence can crash the editor, so fail fast with a clear signal.
-			Response->SetBoolField(TEXT("success"), false);
-			Response->SetStringField(TEXT("output"), TEXT(""));
-			Response->SetStringField(TEXT("error"), TEXT("editor not ready — main frame not yet created"));
-			Response->SetBoolField(TEXT("ready"), false);
-		}
-		else
-		{
-			// Execute Python script — serialized through the GameThread ticker queue.
-			FString Script = Request->GetStringField(TEXT("script"));
-			float Timeout = Request->HasField(TEXT("timeout"))
-				? (float)Request->GetNumberField(TEXT("timeout"))
-				: 30.0f;
+	// 4. Build response
+	TSharedRef<FJsonObject> Response = MakeShared<FJsonObject>();
+	Response->SetStringField(TEXT("id"), RequestId);
 
-			FExecResult Result = EnqueueAndWaitForExec(Script, Timeout, RequestId);
+	FString Command = Request->HasField(TEXT("command"))
+		? Request->GetStringField(TEXT("command"))
+		: FString();
+	if (Command == TEXT("ping"))
+	{
+		Response->SetBoolField(TEXT("success"), true);
+		Response->SetStringField(TEXT("output"), TEXT("pong"));
+		Response->SetStringField(TEXT("error"), TEXT(""));
+		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+	}
+	else if (!bEditorReady)
+	{
+		// Reject Python exec while the editor is still initializing.
+		// Dispatching to the GameThread during SlateRHIRenderer::CreateViewport's
+		// render-fence can crash the editor, so fail fast with a clear signal.
+		Response->SetBoolField(TEXT("success"), false);
+		Response->SetStringField(TEXT("output"), TEXT(""));
+		Response->SetStringField(TEXT("error"), TEXT("editor not ready — main frame not yet created"));
+		Response->SetBoolField(TEXT("ready"), false);
+	}
+	else
+	{
+		// Execute Python script — serialized through the GameThread ticker queue.
+		FString Script = Request->GetStringField(TEXT("script"));
+		float Timeout = Request->HasField(TEXT("timeout"))
+			? (float)Request->GetNumberField(TEXT("timeout"))
+			: 30.0f;
 
-			Response->SetBoolField(TEXT("success"), Result.bSuccess);
-			Response->SetStringField(TEXT("output"), Result.Output);
-			Response->SetStringField(TEXT("error"), Result.Error);
-			Response->SetBoolField(TEXT("ready"), true);
-		}
+		FExecResult Result = EnqueueAndWaitForExec(Script, Timeout, RequestId);
 
-		// 5. Serialize and send response
-		FString ResponseStr;
-		TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResponseStr);
-		FJsonSerializer::Serialize(Response, Writer);
+		Response->SetBoolField(TEXT("success"), Result.bSuccess);
+		Response->SetStringField(TEXT("output"), Result.Output);
+		Response->SetStringField(TEXT("error"), Result.Error);
+		Response->SetBoolField(TEXT("ready"), true);
+	}
 
-		FTCHARToUTF8 Utf8Response(*ResponseStr);
-		int32 ResponseLen = Utf8Response.Length();
+	// 5. Serialize and send response
+	FString ResponseStr;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&ResponseStr);
+	FJsonSerializer::Serialize(Response, Writer);
 
-		uint8 RespLenBuf[4];
-		RespLenBuf[0] = (ResponseLen >> 24) & 0xFF;
-		RespLenBuf[1] = (ResponseLen >> 16) & 0xFF;
-		RespLenBuf[2] = (ResponseLen >> 8) & 0xFF;
-		RespLenBuf[3] = ResponseLen & 0xFF;
+	FTCHARToUTF8 Utf8Response(*ResponseStr);
+	int32 ResponseLen = Utf8Response.Length();
 
-		if (!SendAll(ClientSocket, RespLenBuf, 4))
-		{
-			break;
-		}
-		if (!SendAll(ClientSocket, (const uint8*)Utf8Response.Get(), ResponseLen))
-		{
-			break;
-		}
+	uint8 RespLenBuf[4];
+	RespLenBuf[0] = (ResponseLen >> 24) & 0xFF;
+	RespLenBuf[1] = (ResponseLen >> 16) & 0xFF;
+	RespLenBuf[2] = (ResponseLen >> 8) & 0xFF;
+	RespLenBuf[3] = ResponseLen & 0xFF;
+
+	if (!SendAll(ClientSocket, RespLenBuf, 4))
+	{
+		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to send response header (cmd=%s)"), *Command);
+		return;
+	}
+	if (!SendAll(ClientSocket, (const uint8*)Utf8Response.Get(), ResponseLen))
+	{
+		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to send response body (cmd=%s len=%d)"), *Command, ResponseLen);
+		return;
 	}
 }
 
@@ -393,7 +399,8 @@ FUnrealBridgeServer::FExecResult FUnrealBridgeServer::DoPythonExec(const FString
 bool FUnrealBridgeServer::RecvAll(FSocket* Socket, uint8* Buffer, int32 NumBytes, float TimeoutSeconds)
 {
 	int32 BytesRead = 0;
-	double StartTime = FPlatformTime::Seconds();
+	const double StartTime = FPlatformTime::Seconds();
+	int32 ZeroReadTries = 0;
 
 	while (BytesRead < NumBytes)
 	{
@@ -402,21 +409,52 @@ bool FUnrealBridgeServer::RecvAll(FSocket* Socket, uint8* Buffer, int32 NumBytes
 			return false;
 		}
 
+		// Select-level readiness probe. Without this, UE's FSocket::Recv on
+		// a just-accepted FTcpListener socket can return Read=0 before the
+		// kernel has delivered any data, which we'd mis-interpret as a FIN
+		// and close the connection — producing WSAECONNABORTED 10053 on
+		// the client mid-recv. Wait() reports readable only once real data
+		// (or a real FIN) is present.
+		const bool bReadable = Socket->Wait(
+			ESocketWaitConditions::WaitForRead,
+			FTimespan::FromMilliseconds(50));
+		if (!bReadable)
+		{
+			continue; // Keep checking until TimeoutSeconds elapses.
+		}
+
+		uint32 PendingBytes = 0;
+		const bool bHasPending = Socket->HasPendingData(PendingBytes);
+
 		int32 Read = 0;
-		if (Socket->Recv(Buffer + BytesRead, NumBytes - BytesRead, Read))
+		const bool bRecvOk = Socket->Recv(Buffer + BytesRead, NumBytes - BytesRead, Read);
+		if (bRecvOk)
 		{
 			if (Read == 0)
 			{
-				// Connection closed
+				// Confirm genuine FIN: no pending kernel data AND a small retry budget
+				// exhausted. Spurious zero-reads (UE socket edge case) are rare but
+				// documented above.
+				if (bHasPending && PendingBytes > 0)
+				{
+					++ZeroReadTries;
+					FPlatformProcess::Sleep(0.001f);
+					continue;
+				}
+				if (Socket->GetConnectionState() == SCS_Connected && ZeroReadTries < 5)
+				{
+					++ZeroReadTries;
+					FPlatformProcess::Sleep(0.002f);
+					continue;
+				}
 				return false;
 			}
 			BytesRead += Read;
+			ZeroReadTries = 0;
 		}
 		else
 		{
-			// Check if socket is still connected
-			ESocketConnectionState State = Socket->GetConnectionState();
-			if (State != SCS_Connected)
+			if (Socket->GetConnectionState() != SCS_Connected)
 			{
 				return false;
 			}
