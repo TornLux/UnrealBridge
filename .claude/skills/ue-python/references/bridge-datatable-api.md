@@ -180,3 +180,71 @@ Export to a JSON file (absolute filesystem path).
 ### import_data_table_from_json(data_table_path, json_file_path) -> bool
 
 Import rows from a JSON file (absolute path). **Replaces** existing rows. Returns `False` if the file is unreadable or the importer reports errors.
+
+---
+
+## Schema introspection / bulk ops
+
+### get_data_table_column_types(data_table_path) -> list[FBridgeDataTableColumn]
+
+Column names + property type names for the row struct. Cheap — no row data.
+
+```python
+cols = unreal.UnrealBridgeDataTableLibrary.get_data_table_column_types('/Game/Data/DT_Weapons')
+for c in cols:
+    print(f'{c.name}: {c.type_name} ({c.inner_type_name})')
+# Damage: FloatProperty ()
+# Name:   StrProperty ()
+# Kind:   ByteProperty (EWeaponKind)
+# Mesh:   ObjectProperty (StaticMesh)
+# Stats:  StructProperty (WeaponStats)
+```
+
+Token cost: O(columns). Token-cheap even for wide structs since only schema is returned.
+
+FBridgeDataTableColumn fields: `name`, `type_name` (e.g. `FloatProperty`, `StructProperty`), `inner_type_name` (for struct/object/enum/array properties; empty otherwise).
+
+### get_data_table_row_as_map(data_table_path, row_name) -> dict[str, str]
+
+Single row as a `{FieldName: exported_text}` dict. More ergonomic than the flat `FBridgeDataTableRow.fields` list. Empty dict if the row is missing.
+
+```python
+row = unreal.UnrealBridgeDataTableLibrary.get_data_table_row_as_map('/Game/Data/DT_Weapons', 'Sword_01')
+damage = float(row.get('Damage', '0'))
+```
+
+### get_data_table_row_as_json_string(data_table_path, row_name) -> str
+
+Single row as a compact JSON object string with `"Name"` plus every field as exported text. Empty string if the row is missing.
+
+```python
+import json
+s = unreal.UnrealBridgeDataTableLibrary.get_data_table_row_as_json_string('/Game/Data/DT_Weapons', 'Sword_01')
+row = json.loads(s)
+```
+
+### clear_data_table(data_table_path) -> int
+
+Remove every row (undoable). Returns the number of rows that were removed.
+
+```python
+n = unreal.UnrealBridgeDataTableLibrary.clear_data_table('/Game/Data/DT_Scratch')
+```
+
+### copy_data_table_rows(source, dest, row_names, overwrite) -> int
+
+Copy rows between two DataTables that share the same row struct. Returns the number of rows added/overwritten.
+
+- `row_names=[]` copies **all** rows from source
+- `overwrite=False` skips rows that already exist on the destination
+- If the row structs differ, logs a warning and returns 0
+
+```python
+# Copy two specific rows, skipping any that already exist on the destination
+n = unreal.UnrealBridgeDataTableLibrary.copy_data_table_rows(
+    '/Game/Data/DT_WeaponsLive',
+    '/Game/Data/DT_WeaponsBackup',
+    ['Sword_01', 'Sword_02'],
+    False,
+)
+```

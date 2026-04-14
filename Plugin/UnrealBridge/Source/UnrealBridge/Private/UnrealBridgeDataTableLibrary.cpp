@@ -612,4 +612,171 @@ bool UUnrealBridgeDataTableLibrary::ImportDataTableFromJSON(
 	return Errors.Num() == 0;
 }
 
+// ─── GetDataTableColumnTypes ────────────────────────────────
+
+TArray<FBridgeDataTableColumn> UUnrealBridgeDataTableLibrary::GetDataTableColumnTypes(const FString& DataTablePath)
+{
+	TArray<FBridgeDataTableColumn> Result;
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return Result;
+
+	const UScriptStruct* RowStruct = DT->GetRowStruct();
+	if (!RowStruct) return Result;
+
+	for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+	{
+		FProperty* Prop = *It;
+		FBridgeDataTableColumn Col;
+		Col.Name = Prop->GetName();
+		Col.TypeName = Prop->GetClass()->GetName();
+
+		if (const FStructProperty* SP = CastField<FStructProperty>(Prop))
+		{
+			Col.InnerTypeName = SP->Struct ? SP->Struct->GetName() : FString();
+		}
+		else if (const FObjectPropertyBase* OP = CastField<FObjectPropertyBase>(Prop))
+		{
+			Col.InnerTypeName = OP->PropertyClass ? OP->PropertyClass->GetName() : FString();
+		}
+		else if (const FEnumProperty* EP = CastField<FEnumProperty>(Prop))
+		{
+			Col.InnerTypeName = EP->GetEnum() ? EP->GetEnum()->GetName() : FString();
+		}
+		else if (const FByteProperty* BP = CastField<FByteProperty>(Prop))
+		{
+			if (BP->Enum) Col.InnerTypeName = BP->Enum->GetName();
+		}
+		else if (const FArrayProperty* AP = CastField<FArrayProperty>(Prop))
+		{
+			Col.InnerTypeName = AP->Inner ? AP->Inner->GetClass()->GetName() : FString();
+		}
+
+		Result.Add(Col);
+	}
+	return Result;
+}
+
+// ─── GetDataTableRowAsMap ───────────────────────────────────
+
+TMap<FString, FString> UUnrealBridgeDataTableLibrary::GetDataTableRowAsMap(
+	const FString& DataTablePath, const FString& RowName)
+{
+	TMap<FString, FString> Result;
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return Result;
+
+	const UScriptStruct* RowStruct = DT->GetRowStruct();
+	if (!RowStruct) return Result;
+
+	uint8* const* RowPtr = DT->GetRowMap().Find(FName(*RowName));
+	if (!RowPtr) return Result;
+
+	for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+	{
+		FProperty* Prop = *It;
+		Result.Add(Prop->GetName(), BridgeDataTableImpl::ExportFieldValue(Prop, *RowPtr));
+	}
+	return Result;
+}
+
+// ─── GetDataTableRowAsJSONString ────────────────────────────
+
+FString UUnrealBridgeDataTableLibrary::GetDataTableRowAsJSONString(
+	const FString& DataTablePath, const FString& RowName)
+{
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return FString();
+
+	const UScriptStruct* RowStruct = DT->GetRowStruct();
+	if (!RowStruct) return FString();
+
+	uint8* const* RowPtr = DT->GetRowMap().Find(FName(*RowName));
+	if (!RowPtr) return FString();
+
+	FString Out = TEXT("{");
+	bool bFirst = true;
+	Out += FString::Printf(TEXT("\"Name\":\"%s\""), *RowName);
+	bFirst = false;
+	for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+	{
+		FProperty* Prop = *It;
+		FString Value = BridgeDataTableImpl::ExportFieldValue(Prop, *RowPtr);
+		// Escape backslashes and quotes for JSON
+		Value.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
+		Value.ReplaceInline(TEXT("\""), TEXT("\\\""));
+		Out += FString::Printf(TEXT(",\"%s\":\"%s\""), *Prop->GetName(), *Value);
+	}
+	Out += TEXT("}");
+	return Out;
+}
+
+// ─── ClearDataTable ─────────────────────────────────────────
+
+int32 UUnrealBridgeDataTableLibrary::ClearDataTable(const FString& DataTablePath)
+{
+	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
+	if (!DT) return 0;
+
+	FScopedTransaction Transaction(LOCTEXT("ClearDataTable", "Clear DataTable"));
+	DT->Modify();
+	FDataTableEditorUtils::BroadcastPreChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
+
+	TArray<FName> Keys;
+	DT->GetRowMap().GetKeys(Keys);
+	const int32 Count = Keys.Num();
+
+	DT->EmptyTable();
+
+	FDataTableEditorUtils::BroadcastPostChange(DT, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
+	DT->MarkPackageDirty();
+	return Count;
+}
+
+// ─── CopyDataTableRows ──────────────────────────────────────
+
+int32 UUnrealBridgeDataTableLibrary::CopyDataTableRows(
+	const FString& SourceDataTablePath,
+	const FString& DestDataTablePath,
+	const TArray<FString>& RowNames,
+	bool bOverwrite)
+{
+	UDataTable* Src = BridgeDataTableImpl::LoadDT(SourceDataTablePath);
+	UDataTable* Dst = BridgeDataTableImpl::LoadDT(DestDataTablePath);
+	if (!Src || !Dst) return 0;
+
+	const UScriptStruct* RowStruct = Src->GetRowStruct();
+	if (!RowStruct || Dst->GetRowStruct() != RowStruct)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: CopyDataTableRows requires matching row structs"));
+		return 0;
+	}
+
+	TSet<FName> Filter;
+	for (const FString& N : RowNames) Filter.Add(FName(*N));
+
+	FScopedTransaction Transaction(LOCTEXT("CopyDataTableRows", "Copy DataTable Rows"));
+	Dst->Modify();
+	FDataTableEditorUtils::BroadcastPreChange(Dst, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
+
+	int32 NumCopied = 0;
+	for (const auto& Pair : Src->GetRowMap())
+	{
+		if (Filter.Num() > 0 && !Filter.Contains(Pair.Key)) continue;
+
+		const bool bExists = Dst->GetRowMap().Contains(Pair.Key);
+		if (bExists)
+		{
+			if (!bOverwrite) continue;
+			Dst->RemoveRow(Pair.Key);
+		}
+		// AddRow allocates + copies into a fresh row buffer.
+		Dst->AddRow(Pair.Key, Pair.Value, RowStruct);
+		++NumCopied;
+	}
+
+	FDataTableEditorUtils::BroadcastPostChange(Dst, FDataTableEditorUtils::EDataTableChangeInfo::RowList);
+	Dst->MarkPackageDirty();
+	return NumCopied;
+}
+
 #undef LOCTEXT_NAMESPACE

@@ -18,6 +18,24 @@ struct FBridgeDataTableRow
 	TArray<FString> Fields;
 };
 
+/** Name + type of one column on a DataTable row struct. */
+USTRUCT(BlueprintType)
+struct FBridgeDataTableColumn
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	/** Property type name (e.g. "FloatProperty", "StructProperty", "NameProperty"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString TypeName;
+
+	/** For struct/object/enum properties: inner type name. Empty otherwise. */
+	UPROPERTY(BlueprintReadOnly)
+	FString InnerTypeName;
+};
+
 /** Overview of a DataTable. */
 USTRUCT(BlueprintType)
 struct FBridgeDataTableInfo
@@ -213,4 +231,41 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
 	static bool ImportDataTableFromJSON(const FString& DataTablePath, const FString& JsonFilePath);
+
+	// ─── Schema introspection / bulk ops ──────────────────────
+
+	/**
+	 * Return column names + property type names for the row struct. Cheap — no row data.
+	 * Useful to know how to format exported-text values for writes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static TArray<FBridgeDataTableColumn> GetDataTableColumnTypes(const FString& DataTablePath);
+
+	/**
+	 * Return a single row as a FieldName -> exported-text map.
+	 * More convenient for programmatic use than FBridgeDataTableRow's flat "name = value" list.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static TMap<FString, FString> GetDataTableRowAsMap(const FString& DataTablePath, const FString& RowName);
+
+	/** Return a single row as a compact JSON object string. Empty string if not found. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static FString GetDataTableRowAsJSONString(const FString& DataTablePath, const FString& RowName);
+
+	/** Remove every row from the DataTable (undoable). Returns number of rows removed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static int32 ClearDataTable(const FString& DataTablePath);
+
+	/**
+	 * Copy rows from SourceTable into DestTable. Both tables must share the same row struct.
+	 * @param RowNames   If non-empty, only copy these rows; otherwise copy all rows from source.
+	 * @param bOverwrite If true, overwrite rows that already exist on the destination.
+	 * @return Number of rows successfully added/overwritten on the destination.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|DataTable")
+	static int32 CopyDataTableRows(
+		const FString& SourceDataTablePath,
+		const FString& DestDataTablePath,
+		const TArray<FString>& RowNames,
+		bool bOverwrite);
 };
