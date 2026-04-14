@@ -3,6 +3,9 @@
 #include "CoreMinimal.h"
 #include "Common/TcpListener.h"
 #include "Sockets.h"
+#include "Containers/Queue.h"
+#include "Containers/Ticker.h"
+#include "Async/Future.h"
 
 /**
  * TCP server that listens for incoming connections and executes Python scripts
@@ -51,17 +54,44 @@ private:
 	/** Send all bytes to the socket. Returns false on failure. */
 	bool SendAll(FSocket* Socket, const uint8* Buffer, int32 NumBytes);
 
-	/** Execute a Python script on the Game Thread and capture output. */
+	/** Result of a Python exec request. */
 	struct FExecResult
 	{
 		bool bSuccess = false;
 		FString Output;
 		FString Error;
 	};
-	FExecResult ExecutePython(const FString& Script, float TimeoutSeconds);
+
+	/**
+	 * A queued exec request. Heap-allocated and shared between the worker
+	 * thread (which waits on Promise's future) and the GameThread ticker
+	 * consumer (which fulfills Promise). Shared ownership guarantees no
+	 * dangling references if the worker times out before the ticker runs.
+	 */
+	struct FPendingExec
+	{
+		FString Script;
+		float TimeoutSeconds = 30.0f;
+		FString RequestId;
+		TPromise<FExecResult> Promise;
+	};
+
+	/** Enqueue a script for GameThread execution and block on the future. */
+	FExecResult EnqueueAndWaitForExec(const FString& Script, float TimeoutSeconds, const FString& RequestId);
+
+	/** GameThread ticker callback: drains at most one pending exec per frame. */
+	bool TickConsumeQueue(float DeltaTime);
+
+	/** Actual Python exec (GameThread only, called by ticker). */
+	FExecResult DoPythonExec(const FString& Script);
 
 	TUniquePtr<FTcpListener> Listener;
 	int32 ListenPort = 9876;
 	FThreadSafeBool bIsRunning = false;
 	FThreadSafeBool bEditorReady = false;
+
+	// Exec pipeline (item #1 of server stability plan).
+	TQueue<TSharedPtr<FPendingExec, ESPMode::ThreadSafe>, EQueueMode::Mpsc> ExecQueue;
+	FTSTicker::FDelegateHandle TickHandle;
+	bool bExecInFlight = false; // GameThread-only, no atomic needed
 };

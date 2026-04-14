@@ -59,6 +59,15 @@ bool FUnrealBridgeServer::Start(int32 Port)
 
 	Listener->OnConnectionAccepted().BindRaw(this, &FUnrealBridgeServer::OnConnectionAccepted);
 
+	// Register the GameThread ticker that drains the exec queue.
+	// Using FTSTicker instead of AsyncTask(GameThread) prevents reentrancy:
+	// ticker callbacks fire only from FEngineLoop::Tick, not from TaskGraph
+	// pumps triggered inside user scripts (asset loads, blueprint compiles, etc.).
+	TickHandle = FTSTicker::GetCoreTicker().AddTicker(
+		FTickerDelegate::CreateRaw(this, &FUnrealBridgeServer::TickConsumeQueue),
+		0.0f /* tick every frame */
+	);
+
 	bIsRunning = true;
 	UE_LOG(LogUnrealBridge, Log, TEXT("Listening on 127.0.0.1:%d"), ListenPort);
 	return true;
@@ -68,9 +77,25 @@ void FUnrealBridgeServer::Stop()
 {
 	bIsRunning = false;
 
+	if (TickHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+		TickHandle.Reset();
+	}
+
 	if (Listener.IsValid())
 	{
 		Listener.Reset();
+	}
+
+	// Fulfill any queued execs with a shutdown error so worker threads unblock.
+	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending;
+	while (ExecQueue.Dequeue(Pending) && Pending.IsValid())
+	{
+		FExecResult R;
+		R.bSuccess = false;
+		R.Error = TEXT("server shutting down");
+		Pending->Promise.SetValue(MoveTemp(R));
 	}
 }
 
@@ -187,13 +212,13 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 		}
 		else
 		{
-			// Execute Python script
+			// Execute Python script — serialized through the GameThread ticker queue.
 			FString Script = Request->GetStringField(TEXT("script"));
 			float Timeout = Request->HasField(TEXT("timeout"))
 				? (float)Request->GetNumberField(TEXT("timeout"))
 				: 30.0f;
 
-			FExecResult Result = ExecutePython(Script, Timeout);
+			FExecResult Result = EnqueueAndWaitForExec(Script, Timeout, RequestId);
 
 			Response->SetBoolField(TEXT("success"), Result.bSuccess);
 			Response->SetStringField(TEXT("output"), Result.Output);
@@ -227,94 +252,133 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 }
 
 // ─────────────────────────────────────────────────────────────
-// Python execution
+// Python execution pipeline
+// ─────────────────────────────────────────────────────────────
+//
+// Worker threads enqueue heap-allocated FPendingExec and wait on the
+// associated TFuture. A single FTSTicker consumer on the GameThread drains
+// the queue one item per frame, guarded by bExecInFlight. This design:
+//   - Eliminates the reentrancy crash caused by AsyncTask(GameThread) being
+//     pulled off the task-graph queue during Python-triggered TaskGraph pumps.
+//   - Removes the dangling-reference / event-pool-reuse bug from the old
+//     per-request FEvent scheme: TSharedPtr<FPendingExec> keeps the promise
+//     alive until the ticker fulfills it, regardless of whether the worker
+//     has already returned a timeout to its client.
 // ─────────────────────────────────────────────────────────────
 
-FUnrealBridgeServer::FExecResult FUnrealBridgeServer::ExecutePython(const FString& Script, float TimeoutSeconds)
+FUnrealBridgeServer::FExecResult FUnrealBridgeServer::EnqueueAndWaitForExec(
+	const FString& Script, float TimeoutSeconds, const FString& RequestId)
+{
+	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending = MakeShared<FPendingExec, ESPMode::ThreadSafe>();
+	Pending->Script = Script;
+	Pending->TimeoutSeconds = TimeoutSeconds;
+	Pending->RequestId = RequestId;
+
+	TFuture<FExecResult> Future = Pending->Promise.GetFuture();
+	ExecQueue.Enqueue(Pending);
+
+	const bool bReady = Future.WaitFor(FTimespan::FromSeconds(TimeoutSeconds));
+	if (!bReady)
+	{
+		FExecResult R;
+		R.bSuccess = false;
+		R.Error = FString::Printf(TEXT("exec timeout after %.1fs"), TimeoutSeconds);
+		// Leave the promise alone — the ticker will still fulfill it later,
+		// but Pending's shared-ptr means that's safe and leaks nothing.
+		return R;
+	}
+	return Future.Get();
+}
+
+bool FUnrealBridgeServer::TickConsumeQueue(float /*DeltaTime*/)
+{
+	if (!bIsRunning)
+	{
+		return true; // still ticking; will be removed by Stop()
+	}
+	if (bExecInFlight)
+	{
+		return true; // belt-and-suspenders guard against ticker reentrancy
+	}
+
+	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending;
+	if (!ExecQueue.Dequeue(Pending) || !Pending.IsValid())
+	{
+		return true;
+	}
+
+	bExecInFlight = true;
+	FExecResult Result = DoPythonExec(Pending->Script);
+	Pending->Promise.SetValue(MoveTemp(Result));
+	bExecInFlight = false;
+	return true;
+}
+
+FUnrealBridgeServer::FExecResult FUnrealBridgeServer::DoPythonExec(const FString& Script)
 {
 	FExecResult Result;
 
-	// Python must execute on the Game Thread
-	FEvent* DoneEvent = FPlatformProcess::GetSynchEventFromPool(true);
-
-	AsyncTask(ENamedThreads::GameThread, [&Result, &Script, DoneEvent]()
+	IPythonScriptPlugin* PythonPlugin = IPythonScriptPlugin::Get();
+	if (!PythonPlugin)
 	{
-		IPythonScriptPlugin* PythonPlugin = IPythonScriptPlugin::Get();
-		if (!PythonPlugin)
-		{
-			Result.bSuccess = false;
-			Result.Error = TEXT("PythonScriptPlugin is not available");
-			DoneEvent->Trigger();
-			return;
-		}
+		Result.bSuccess = false;
+		Result.Error = TEXT("PythonScriptPlugin is not available");
+		return Result;
+	}
 
-		// Wrap user script to capture stdout/stderr in Python-land,
-		// then print the captured content so ExecPythonCommandEx can collect it via LogOutput.
-		FString WrappedScript = FString::Printf(TEXT(
-			"import sys, io as _io, traceback as _tb\n"
-			"_ub_out, _ub_err = _io.StringIO(), _io.StringIO()\n"
-			"_ub_old = sys.stdout, sys.stderr\n"
-			"sys.stdout, sys.stderr = _ub_out, _ub_err\n"
-			"try:\n"
-			"    exec(compile(%s, '<unrealbridge>', 'exec'))\n"
-			"except Exception:\n"
-			"    sys.stderr.write(_tb.format_exc())\n"
-			"finally:\n"
-			"    sys.stdout, sys.stderr = _ub_old\n"
-			"    _ub_o, _ub_e = _ub_out.getvalue(), _ub_err.getvalue()\n"
-			"    _ub_out.close(); _ub_err.close()\n"
-			"    if _ub_o: print(_ub_o, end='')\n"
-			"    if _ub_e: print('__UB_ERR__' + _ub_e, end='')\n"
-		), *QuotePythonString(Script));
+	// Wrap user script to capture stdout/stderr in Python-land,
+	// then print the captured content so ExecPythonCommandEx can collect it via LogOutput.
+	FString WrappedScript = FString::Printf(TEXT(
+		"import sys, io as _io, traceback as _tb\n"
+		"_ub_out, _ub_err = _io.StringIO(), _io.StringIO()\n"
+		"_ub_old = sys.stdout, sys.stderr\n"
+		"sys.stdout, sys.stderr = _ub_out, _ub_err\n"
+		"try:\n"
+		"    exec(compile(%s, '<unrealbridge>', 'exec'))\n"
+		"except Exception:\n"
+		"    sys.stderr.write(_tb.format_exc())\n"
+		"finally:\n"
+		"    sys.stdout, sys.stderr = _ub_old\n"
+		"    _ub_o, _ub_e = _ub_out.getvalue(), _ub_err.getvalue()\n"
+		"    _ub_out.close(); _ub_err.close()\n"
+		"    if _ub_o: print(_ub_o, end='')\n"
+		"    if _ub_e: print('__UB_ERR__' + _ub_e, end='')\n"
+	), *QuotePythonString(Script));
 
-		// ExecPythonCommandEx captures all Python output (print / unreal.log)
-		// into CommandEx.LogOutput and the combined text into CommandEx.CommandResult
-		FPythonCommandEx CommandEx;
-		CommandEx.Command = WrappedScript;
-		CommandEx.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
-		CommandEx.FileExecutionScope = EPythonFileExecutionScope::Public;
+	FPythonCommandEx CommandEx;
+	CommandEx.Command = WrappedScript;
+	CommandEx.ExecutionMode = EPythonCommandExecutionMode::ExecuteFile;
+	CommandEx.FileExecutionScope = EPythonFileExecutionScope::Public;
 
-		bool bExecSuccess = PythonPlugin->ExecPythonCommandEx(CommandEx);
+	bool bExecSuccess = PythonPlugin->ExecPythonCommandEx(CommandEx);
 
-		// Separate stdout from stderr using our __UB_ERR__ sentinel
-		FString FullOutput;
-		for (const FPythonLogOutputEntry& Entry : CommandEx.LogOutput)
-		{
-			FullOutput += Entry.Output + TEXT("\n");
-		}
+	FString FullOutput;
+	for (const FPythonLogOutputEntry& Entry : CommandEx.LogOutput)
+	{
+		FullOutput += Entry.Output + TEXT("\n");
+	}
+	if (FullOutput.IsEmpty() && !CommandEx.CommandResult.IsEmpty())
+	{
+		FullOutput = CommandEx.CommandResult;
+	}
 
-		// Also check CommandResult as a fallback
-		if (FullOutput.IsEmpty() && !CommandEx.CommandResult.IsEmpty())
-		{
-			FullOutput = CommandEx.CommandResult;
-		}
+	const FString ErrSentinel = TEXT("__UB_ERR__");
+	int32 ErrIdx = FullOutput.Find(ErrSentinel);
+	if (ErrIdx != INDEX_NONE)
+	{
+		Result.Output = FullOutput.Left(ErrIdx);
+		Result.Error = FullOutput.Mid(ErrIdx + ErrSentinel.Len());
+		Result.bSuccess = false;
+	}
+	else
+	{
+		Result.Output = FullOutput;
+		Result.Error = FString();
+		Result.bSuccess = bExecSuccess;
+	}
 
-		// Split on our sentinel
-		const FString ErrSentinel = TEXT("__UB_ERR__");
-		int32 ErrIdx = FullOutput.Find(ErrSentinel);
-		if (ErrIdx != INDEX_NONE)
-		{
-			Result.Output = FullOutput.Left(ErrIdx);
-			Result.Error = FullOutput.Mid(ErrIdx + ErrSentinel.Len());
-			Result.bSuccess = false;
-		}
-		else
-		{
-			Result.Output = FullOutput;
-			Result.Error = FString();
-			Result.bSuccess = bExecSuccess;
-		}
-
-		// Trim trailing newline from output
-		Result.Output.TrimEndInline();
-		Result.Error.TrimEndInline();
-
-		DoneEvent->Trigger();
-	});
-
-	DoneEvent->Wait(FTimespan::FromSeconds(TimeoutSeconds));
-	FPlatformProcess::ReturnSynchEventToPool(DoneEvent);
-
+	Result.Output.TrimEndInline();
+	Result.Error.TrimEndInline();
 	return Result;
 }
 
