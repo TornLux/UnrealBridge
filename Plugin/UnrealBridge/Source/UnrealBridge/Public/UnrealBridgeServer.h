@@ -6,6 +6,8 @@
 #include "Containers/Queue.h"
 #include "Containers/Ticker.h"
 #include "Async/Future.h"
+#include "Containers/Set.h"
+#include "Misc/ScopeLock.h"
 
 /**
  * TCP server that listens for incoming connections and executes Python scripts
@@ -99,4 +101,19 @@ private:
 	// the listener thread (accept path) and the AsyncTask worker (completion).
 	FThreadSafeCounter ActiveClients;
 	static constexpr int32 MaxConcurrentClients = 16;
+
+	// Tracks in-flight client sockets so Stop() can force-close them (item #6).
+	// Without this, each active HandleClient worker would sit in the 5 s idle
+	// RecvAll on shutdown, stretching ShutdownModule by up to that long per
+	// client.
+	FCriticalSection ActiveSocketsLock;
+	TSet<FSocket*> ActiveSockets;
+
+	// PIE transition guard (item #11). Exec requests are rejected during
+	// BeginPIE/EndPIE because the editor subsystem state is torn down and
+	// reconstructed across the transition — dispatching Python onto that
+	// window reliably crashes.
+	FThreadSafeBool bPieTransitionActive = false;
+	FDelegateHandle PieBeginHandle;
+	FDelegateHandle PieEndHandle;
 };

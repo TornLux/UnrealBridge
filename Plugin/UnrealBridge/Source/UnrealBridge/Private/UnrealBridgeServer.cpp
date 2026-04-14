@@ -7,6 +7,7 @@
 #include "Async/Async.h"
 #include "SocketSubsystem.h"
 #include "Misc/Base64.h"
+#include "Editor.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridge, Log, All);
 
@@ -70,6 +71,18 @@ bool FUnrealBridgeServer::Start(int32 Port)
 		0.0f /* tick every frame */
 	);
 
+	// PIE transition guard (item #11). Refuse exec across BeginPIE/EndPIE
+	// because the editor subsystems get torn down and rebuilt — running
+	// Python during that window reliably crashes.
+	PieBeginHandle = FEditorDelegates::BeginPIE.AddLambda([this](const bool /*bIsSimulating*/)
+	{
+		bPieTransitionActive = true;
+	});
+	PieEndHandle = FEditorDelegates::EndPIE.AddLambda([this](const bool /*bIsSimulating*/)
+	{
+		bPieTransitionActive = false;
+	});
+
 	bIsRunning = true;
 	UE_LOG(LogUnrealBridge, Log, TEXT("Listening on 127.0.0.1:%d"), ListenPort);
 	return true;
@@ -77,20 +90,37 @@ bool FUnrealBridgeServer::Start(int32 Port)
 
 void FUnrealBridgeServer::Stop()
 {
+	if (!bIsRunning)
+	{
+		return;
+	}
 	bIsRunning = false;
 
-	if (TickHandle.IsValid())
-	{
-		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
-		TickHandle.Reset();
-	}
-
+	// 1. Stop accepting new connections.
 	if (Listener.IsValid())
 	{
 		Listener.Reset();
 	}
 
-	// Fulfill any queued execs with a shutdown error so worker threads unblock.
+	// 2. Unregister GameThread ticker and editor delegates (items #11 #12).
+	if (TickHandle.IsValid())
+	{
+		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+		TickHandle.Reset();
+	}
+	if (PieBeginHandle.IsValid())
+	{
+		FEditorDelegates::BeginPIE.Remove(PieBeginHandle);
+		PieBeginHandle.Reset();
+	}
+	if (PieEndHandle.IsValid())
+	{
+		FEditorDelegates::EndPIE.Remove(PieEndHandle);
+		PieEndHandle.Reset();
+	}
+
+	// 3. Fulfill any queued execs with a shutdown error so worker threads
+	// waiting on TFuture wake up immediately.
 	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending;
 	while (ExecQueue.Dequeue(Pending) && Pending.IsValid())
 	{
@@ -98,6 +128,40 @@ void FUnrealBridgeServer::Stop()
 		R.bSuccess = false;
 		R.Error = TEXT("server shutting down");
 		Pending->Promise.SetValue(MoveTemp(R));
+	}
+
+	// 4. Force-close active client sockets so HandleClient's RecvAll
+	// unblocks immediately instead of waiting for its 5 s idle timeout.
+	{
+		FScopeLock Lock(&ActiveSocketsLock);
+		for (FSocket* S : ActiveSockets)
+		{
+			if (S)
+			{
+				S->Close();
+			}
+		}
+	}
+
+	// 5. Bounded wait for AsyncTask workers to drain (item #12). Beyond
+	// the deadline we log and proceed — the workers will still finish
+	// their cleanup (DestroySocket, ActiveClients.Decrement) but
+	// ShutdownModule isn't held hostage to a stuck Python exec.
+	const double Deadline = FPlatformTime::Seconds() + 3.0;
+	while (ActiveClients.GetValue() > 0 && FPlatformTime::Seconds() < Deadline)
+	{
+		FPlatformProcess::Sleep(0.01f);
+	}
+	const int32 Stragglers = ActiveClients.GetValue();
+	if (Stragglers > 0)
+	{
+		UE_LOG(LogUnrealBridge, Warning,
+			TEXT("Stop(): %d client worker(s) still active after 3s drain timeout"),
+			Stragglers);
+	}
+	else
+	{
+		UE_LOG(LogUnrealBridge, Log, TEXT("Stop(): all client workers drained cleanly"));
 	}
 }
 
@@ -147,7 +211,18 @@ bool FUnrealBridgeServer::OnConnectionAccepted(FSocket* ClientSocket, const FIPv
 
 	AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this, ClientSocket, EndpointStr]()
 	{
+		// Register socket so Stop() can force-close us (item #6).
+		{
+			FScopeLock Lock(&ActiveSocketsLock);
+			ActiveSockets.Add(ClientSocket);
+		}
+
 		HandleClient(ClientSocket, EndpointStr);
+
+		{
+			FScopeLock Lock(&ActiveSocketsLock);
+			ActiveSockets.Remove(ClientSocket);
+		}
 
 		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
 		if (SocketSubsystem)
@@ -261,6 +336,16 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		Response->SetStringField(TEXT("output"), TEXT(""));
 		Response->SetStringField(TEXT("error"), TEXT("editor not ready — main frame not yet created"));
 		Response->SetBoolField(TEXT("ready"), false);
+	}
+	else if (bPieTransitionActive)
+	{
+		// Reject exec during Begin/EndPIE because editor subsystems (world,
+		// GAS, anim) are torn down and rebuilt — Python running in that
+		// window reliably crashes (item #11).
+		Response->SetBoolField(TEXT("success"), false);
+		Response->SetStringField(TEXT("output"), TEXT(""));
+		Response->SetStringField(TEXT("error"), TEXT("editor in PIE transition — retry in a moment"));
+		Response->SetBoolField(TEXT("ready"), true);
 	}
 	else
 	{
