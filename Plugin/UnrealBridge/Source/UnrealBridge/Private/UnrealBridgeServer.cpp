@@ -6,18 +6,16 @@
 #include "Serialization/JsonWriter.h"
 #include "Async/Async.h"
 #include "SocketSubsystem.h"
+#include "Misc/Base64.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridge, Log, All);
 
-// ─────────────────────────────────────────────────────────────
-// Helper: Quote a Python string safely
-// ─────────────────────────────────────────────────────────────
-static FString QuotePythonString(const FString& Input)
+namespace UnrealBridgeLimits
 {
-	FString Escaped = Input;
-	Escaped.ReplaceInline(TEXT("\\"), TEXT("\\\\"));
-	Escaped.ReplaceInline(TEXT("\"\"\""), TEXT("\\\"\\\"\\\""));
-	return FString::Printf(TEXT("\"\"\"%s\"\"\""), *Escaped);
+	// Max request JSON payload. 10 MB is generous for human-authored scripts;
+	// the upper bound exists mainly to stop a malicious/buggy client from
+	// triggering an OOM in the editor via blind SetNumUninitialized.
+	constexpr int32 MaxRequestBytes = 10 * 1024 * 1024;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -166,16 +164,24 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 							| (uint32(LenBuf[2]) << 8)
 							| (uint32(LenBuf[3]));
 
-	if (PayloadLen == 0 || PayloadLen > 10 * 1024 * 1024) // 10 MB max
+	if (PayloadLen == 0 || PayloadLen > (uint32)UnrealBridgeLimits::MaxRequestBytes)
 	{
-		UE_LOG(LogUnrealBridge, Warning, TEXT("Invalid payload length: %u"), PayloadLen);
+		UE_LOG(LogUnrealBridge, Warning, TEXT("Invalid payload length: %u (max %d)"),
+			PayloadLen, UnrealBridgeLimits::MaxRequestBytes);
 		return;
 	}
 
-	// 2. Read JSON payload
+	// 2. Read JSON payload — Reserve first so an allocation failure is detected
+	// before we commit to a SetNumUninitialized of PayloadLen bytes.
 	TArray<uint8> PayloadBuf;
-	PayloadBuf.SetNumUninitialized(PayloadLen);
-	if (!RecvAll(ClientSocket, PayloadBuf.GetData(), PayloadLen, 30.0f))
+	PayloadBuf.Reserve((int32)PayloadLen);
+	if (PayloadBuf.Max() < (int32)PayloadLen)
+	{
+		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to allocate %u bytes for payload"), PayloadLen);
+		return;
+	}
+	PayloadBuf.SetNumUninitialized((int32)PayloadLen);
+	if (!RecvAll(ClientSocket, PayloadBuf.GetData(), (int32)PayloadLen, 30.0f))
 	{
 		UE_LOG(LogUnrealBridge, Warning, TEXT("Failed to read payload (len=%u)"), PayloadLen);
 		return;
@@ -193,15 +199,19 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 		return;
 	}
 
-	FString RequestId = Request->GetStringField(TEXT("id"));
+	FString RequestId;
+	if (!Request->TryGetStringField(TEXT("id"), RequestId))
+	{
+		RequestId = TEXT("<missing>");
+	}
 
 	// 4. Build response
 	TSharedRef<FJsonObject> Response = MakeShared<FJsonObject>();
 	Response->SetStringField(TEXT("id"), RequestId);
 
-	FString Command = Request->HasField(TEXT("command"))
-		? Request->GetStringField(TEXT("command"))
-		: FString();
+	FString Command;
+	Request->TryGetStringField(TEXT("command"), Command); // optional
+
 	if (Command == TEXT("ping"))
 	{
 		Response->SetBoolField(TEXT("success"), true);
@@ -222,17 +232,27 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket)
 	else
 	{
 		// Execute Python script — serialized through the GameThread ticker queue.
-		FString Script = Request->GetStringField(TEXT("script"));
-		float Timeout = Request->HasField(TEXT("timeout"))
-			? (float)Request->GetNumberField(TEXT("timeout"))
-			: 30.0f;
+		FString Script;
+		if (!Request->TryGetStringField(TEXT("script"), Script))
+		{
+			Response->SetBoolField(TEXT("success"), false);
+			Response->SetStringField(TEXT("output"), TEXT(""));
+			Response->SetStringField(TEXT("error"), TEXT("missing 'script' field"));
+			Response->SetBoolField(TEXT("ready"), true);
+		}
+		else
+		{
+			double TimeoutNum = 30.0;
+			Request->TryGetNumberField(TEXT("timeout"), TimeoutNum);
+			const float Timeout = FMath::Clamp((float)TimeoutNum, 0.1f, 300.0f);
 
-		FExecResult Result = EnqueueAndWaitForExec(Script, Timeout, RequestId);
+			FExecResult Result = EnqueueAndWaitForExec(Script, Timeout, RequestId);
 
-		Response->SetBoolField(TEXT("success"), Result.bSuccess);
-		Response->SetStringField(TEXT("output"), Result.Output);
-		Response->SetStringField(TEXT("error"), Result.Error);
-		Response->SetBoolField(TEXT("ready"), true);
+			Response->SetBoolField(TEXT("success"), Result.bSuccess);
+			Response->SetStringField(TEXT("output"), Result.Output);
+			Response->SetStringField(TEXT("error"), Result.Error);
+			Response->SetBoolField(TEXT("ready"), true);
+		}
 	}
 
 	// 5. Serialize and send response
@@ -338,13 +358,25 @@ FUnrealBridgeServer::FExecResult FUnrealBridgeServer::DoPythonExec(const FString
 
 	// Wrap user script to capture stdout/stderr in Python-land,
 	// then print the captured content so ExecPythonCommandEx can collect it via LogOutput.
+	//
+	// We base64-encode the user script instead of inlining it inside a
+	// Python triple-quoted string. Triple-quoted strings in Python don't
+	// honour backslash-escape for quotes, so any user script containing
+	// `"""` (docstrings, embedded SQL/markdown) would break the old
+	// escape scheme. Base64 sidesteps quoting entirely.
+	const FTCHARToUTF8 ScriptUtf8(*Script);
+	const FString ScriptB64 = FBase64::Encode(
+		reinterpret_cast<const uint8*>(ScriptUtf8.Get()),
+		ScriptUtf8.Length());
+
 	FString WrappedScript = FString::Printf(TEXT(
-		"import sys, io as _io, traceback as _tb\n"
+		"import base64 as _b64, sys, io as _io, traceback as _tb\n"
+		"_src = _b64.b64decode('%s').decode('utf-8')\n"
 		"_ub_out, _ub_err = _io.StringIO(), _io.StringIO()\n"
 		"_ub_old = sys.stdout, sys.stderr\n"
 		"sys.stdout, sys.stderr = _ub_out, _ub_err\n"
 		"try:\n"
-		"    exec(compile(%s, '<unrealbridge>', 'exec'))\n"
+		"    exec(compile(_src, '<unrealbridge>', 'exec'))\n"
 		"except Exception:\n"
 		"    sys.stderr.write(_tb.format_exc())\n"
 		"finally:\n"
@@ -353,7 +385,7 @@ FUnrealBridgeServer::FExecResult FUnrealBridgeServer::DoPythonExec(const FString
 		"    _ub_out.close(); _ub_err.close()\n"
 		"    if _ub_o: print(_ub_o, end='')\n"
 		"    if _ub_e: print('__UB_ERR__' + _ub_e, end='')\n"
-	), *QuotePythonString(Script));
+	), *ScriptB64);
 
 	FPythonCommandEx CommandEx;
 	CommandEx.Command = WrappedScript;
