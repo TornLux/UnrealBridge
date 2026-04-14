@@ -343,4 +343,58 @@ public:
 	static void GetAssetDiskSizesBatch(
 		const TArray<FString>& AssetPaths,
 		TArray<int64>& OutSizes);
+
+	// ── Structural / aggregate helpers ─────────────────────────
+
+	/**
+	 * List all mounted content roots visible to the AssetRegistry (e.g. "/Game/",
+	 * "/Engine/", plugin roots). Trailing slashes match UE's own convention — strip
+	 * before passing to registry APIs that expect no trailing slash.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetContentRoots(TArray<FString>& OutRoots);
+
+	/**
+	 * Cheap existence check for a content folder path. True when the AssetRegistry
+	 * has the path indexed (it holds at least one asset directly or recursively).
+	 * Accepts "/Game/Foo" with or without trailing slash.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static bool DoesFolderExist(const FString& FolderPath);
+
+	/**
+	 * Aggregate .uasset/.umap disk bytes under a content folder in a single registry
+	 * sweep. Optional ClassFilter narrows by TopLevelAssetPath ("" = any class).
+	 * Returns total size; OutAssetCount is filled with the number of assets summed.
+	 * Unresolvable files are skipped silently.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static int64 GetTotalDiskSizeUnderPath(
+		const FString& FolderPath,
+		const FString& ClassFilter,
+		bool bRecursive,
+		int32& OutAssetCount);
+
+	/**
+	 * Batch class-path lookup. OutClassPaths is aligned 1:1 with AssetPaths —
+	 * unknown assets yield "" at that index. One registry pass, no load. Use instead
+	 * of N GetAssetClassPath round-trips.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetAssetClassPathsBatch(
+		const TArray<FString>& AssetPaths,
+		TArray<FString>& OutClassPaths);
+
+	/**
+	 * Transitive package dependency closure, bounded by MaxDepth. The returned set
+	 * is the union of all packages reachable from PackageName via dependency edges,
+	 * excluding PackageName itself. When bHardOnly=true, only Hard+Game edges are
+	 * traversed (cooker-relevant closure). MaxDepth <= 0 is treated as unlimited.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static void GetPackageDependenciesRecursive(
+		const FString& PackageName,
+		bool bHardOnly,
+		int32 MaxDepth,
+		TArray<FString>& OutDependencyPackageNames);
 };

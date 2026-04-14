@@ -1030,3 +1030,137 @@ void UUnrealBridgeAssetLibrary::GetAssetDiskSizesBatch(
 		}
 	}
 }
+
+// ─── Structural / aggregate helpers ─────────────────────────
+
+void UUnrealBridgeAssetLibrary::GetContentRoots(TArray<FString>& OutRoots)
+{
+	OutRoots.Reset();
+	FPackageName::QueryRootContentPaths(OutRoots, /*bIncludeReadOnlyRoots=*/false, /*bWithoutLeadingSlashes=*/false, /*bWithoutTrailingSlashes=*/false);
+}
+
+bool UUnrealBridgeAssetLibrary::DoesFolderExist(const FString& FolderPath)
+{
+	FString BasePath = FolderPath.TrimStartAndEnd();
+	if (BasePath.IsEmpty()) return false;
+	BridgeAssetOps::NormalizeContentRoot(BasePath);
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	return AR.HasAssets(FName(*BasePath), /*bRecursive=*/true);
+}
+
+int64 UUnrealBridgeAssetLibrary::GetTotalDiskSizeUnderPath(
+	const FString& FolderPath,
+	const FString& ClassFilter,
+	bool bRecursive,
+	int32& OutAssetCount)
+{
+	OutAssetCount = 0;
+	FString BasePath = FolderPath.TrimStartAndEnd();
+	if (BasePath.IsEmpty()) return 0;
+	BridgeAssetOps::NormalizeContentRoot(BasePath);
+
+	FARFilter Filter;
+	Filter.PackagePaths.Add(FName(*BasePath));
+	Filter.bRecursivePaths = bRecursive;
+
+	FTopLevelAssetPath ClassTop;
+	if (BridgeAssetOps::TryParseTopLevelPath(ClassFilter, ClassTop))
+	{
+		Filter.ClassPaths.Add(ClassTop);
+		Filter.bRecursiveClasses = bRecursive;
+	}
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	TArray<FAssetData> Datas;
+	AR.GetAssets(Filter, Datas);
+
+	int64 Total = 0;
+	IFileManager& FM = IFileManager::Get();
+	for (const FAssetData& D : Datas)
+	{
+		FString Filename;
+		if (FPackageName::DoesPackageExist(D.PackageName.ToString(), &Filename))
+		{
+			const int64 Size = FM.FileSize(*Filename);
+			if (Size > 0)
+			{
+				Total += Size;
+				++OutAssetCount;
+			}
+		}
+	}
+	return Total;
+}
+
+void UUnrealBridgeAssetLibrary::GetAssetClassPathsBatch(
+	const TArray<FString>& AssetPaths,
+	TArray<FString>& OutClassPaths)
+{
+	OutClassPaths.Reset();
+	OutClassPaths.SetNum(AssetPaths.Num());
+	if (AssetPaths.Num() == 0) return;
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	for (int32 Idx = 0; Idx < AssetPaths.Num(); ++Idx)
+	{
+		const FSoftObjectPath Soft = BridgeAssetOps::MakeSoftPath(AssetPaths[Idx]);
+		if (Soft.IsNull()) continue;
+
+		const FAssetData Data = AR.GetAssetByObjectPath(Soft);
+		if (!Data.IsValid()) continue;
+
+		OutClassPaths[Idx] = Data.AssetClassPath.ToString();
+	}
+}
+
+void UUnrealBridgeAssetLibrary::GetPackageDependenciesRecursive(
+	const FString& PackageName,
+	bool bHardOnly,
+	int32 MaxDepth,
+	TArray<FString>& OutDependencyPackageNames)
+{
+	OutDependencyPackageNames.Reset();
+
+	FString Trimmed = PackageName.TrimStartAndEnd();
+	if (Trimmed.IsEmpty()) return;
+	int32 DotIdx;
+	if (Trimmed.FindChar(TEXT('.'), DotIdx))
+	{
+		Trimmed = Trimmed.Left(DotIdx);
+	}
+	if (!Trimmed.StartsWith(TEXT("/"))) Trimmed = TEXT("/") + Trimmed;
+
+	IAssetRegistry& AR = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	UE::AssetRegistry::FDependencyQuery Query;
+	if (bHardOnly)
+	{
+		Query.Required = UE::AssetRegistry::EDependencyProperty::Hard | UE::AssetRegistry::EDependencyProperty::Game;
+	}
+
+	TSet<FName> Visited;
+	TArray<TPair<FName, int32>> Stack;
+	Stack.Emplace(FName(*Trimmed), 0);
+	Visited.Add(FName(*Trimmed));
+
+	const bool bUnlimited = (MaxDepth <= 0);
+
+	while (Stack.Num() > 0)
+	{
+		const TPair<FName, int32> Current = Stack.Pop();
+		if (!bUnlimited && Current.Value >= MaxDepth) continue;
+
+		TArray<FName> Links;
+		AR.GetDependencies(Current.Key, Links, UE::AssetRegistry::EDependencyCategory::Package, Query);
+
+		for (const FName& L : Links)
+		{
+			if (Visited.Contains(L)) continue;
+			Visited.Add(L);
+			OutDependencyPackageNames.Add(L.ToString());
+			Stack.Emplace(L, Current.Value + 1);
+		}
+	}
+}

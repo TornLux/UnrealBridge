@@ -372,3 +372,80 @@ sizes = AL.get_asset_disk_sizes_batch(obj_paths)
 total = sum(s for s in sizes if s > 0)
 print('Total texture bytes:', total)
 ```
+
+---
+
+## Structural / aggregate helpers
+
+Cheap whole-project / whole-folder queries. Useful for scoping, sizing, and deciding whether a folder is worth listing in detail.
+
+### get_content_roots() -> list[str]
+
+Every mounted writable content root visible to the AssetRegistry — `/Game/`, `/Engine/`, and every plugin root. Trailing slashes preserved (UE convention).
+
+> Token footprint: ~1 short string per root. ~94 roots on a typical project with engine plugins.
+
+```python
+roots = unreal.UnrealBridgeAssetLibrary.get_content_roots()
+project_roots = [r for r in roots if not r.startswith('/Engine')]
+```
+
+### does_folder_exist(folder_path) -> bool
+
+True when the AssetRegistry knows the path and it indexes at least one asset (recursively). Cheap pre-flight before listing or sweeping. Accepts trailing slash or not.
+
+> Token footprint: 1 boolean. 1 round-trip.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+if AL.does_folder_exist('/Game/Characters'):
+    paths = AL.list_assets_under_path_simple('/Game/Characters')
+```
+
+### get_total_disk_size_under_path(folder_path, class_filter, recursive) -> (int, int)
+
+Aggregate `.uasset`/`.umap` bytes under a folder in one registry sweep. Returns `(total_bytes, asset_count)`. `class_filter=''` sums any class; otherwise pass a TopLevelAssetPath. Filtering also applies `recursive` to subclass matching. Files that can't be sized are skipped silently.
+
+> Token footprint: 2 integers. 1 round-trip + N FileManager stats. Cheaper than `get_asset_disk_sizes_batch` when you only care about the total — no per-asset path traffic.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+total, count = AL.get_total_disk_size_under_path('/Game/UltraDynamicSky', '', True)
+print(f'{total/1e6:.1f} MB across {count} assets')
+
+# Just textures under /Game
+tex_total, tex_count = AL.get_total_disk_size_under_path(
+    '/Game', '/Script/Engine.Texture2D', True)
+```
+
+### get_asset_class_paths_batch(asset_paths) -> list[str]
+
+Batch class-path lookup, 1:1 with input. Unknown assets yield `""`. One registry pass — replaces N `get_asset_class_path` round-trips when classifying many assets.
+
+> Token footprint: 1 short string per asset (e.g. `"/Script/Engine.Blueprint"`). 1 round-trip.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+paths = AL.list_assets_under_path_simple('/Game/Mixed')
+obj_paths = [p.export_text() for p in paths]
+classes = AL.get_asset_class_paths_batch(obj_paths)
+
+from collections import Counter
+print(Counter(classes).most_common(10))
+```
+
+### get_package_dependencies_recursive(package_name, hard_only, max_depth) -> list[str]
+
+Transitive package-dependency closure, bounded by `max_depth` (use `0` for unlimited). Returns the union of all reachable packages excluding the seed. When `hard_only=True`, only `Hard|Game` edges are traversed (cooker-relevant closure).
+
+Use for impact analysis: "what would I have to ship to keep this asset working?" or "how deep does this content tree branch?".
+
+> Token footprint: 1 string per reachable package. **Can explode on broad seeds** — a hub asset with 800-deep transitive closure returns 800 strings. Start with `max_depth=2` or `3` to bound the blast radius before going unlimited.
+
+```python
+AL = unreal.UnrealBridgeAssetLibrary
+pkg = '/Game/UltraDynamicSky/Blueprints/Ultra_Dynamic_Sky'
+direct = AL.get_package_dependencies(pkg, False)        # 174
+d3     = AL.get_package_dependencies_recursive(pkg, False, 3)  # 439
+all_   = AL.get_package_dependencies_recursive(pkg, False, 0)  # 864 (full closure)
+```
