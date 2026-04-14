@@ -377,4 +377,38 @@ public:
 	/** True if the given actor is currently selected in the editor viewport. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool IsActorSelected(const FString& ActorName);
+
+	// ─── Folder organization ─────────────────────────────
+
+	/** Return the actor's World Outliner folder path ("" if at root or missing). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetActorFolder(const FString& ActorName);
+
+	/**
+	 * Set the actor's World Outliner folder path. Empty string moves it to the root.
+	 * Wrapped in a single undo transaction.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorFolder(const FString& ActorName, const FString& FolderPath);
+
+	/** Return the sorted set of distinct folder paths used by actors in the current level. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorFolders();
+
+	/**
+	 * Labels of actors whose folder path matches `FolderPath`.
+	 * If `bRecursive` is true, actors in sub-folders ("Foo/Bar" when querying "Foo") are included.
+	 * Pass "" to list actors at the outliner root.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorsInFolder(const FString& FolderPath, bool bRecursive);
+
+	// ─── Spatial — trace ─────────────────────────────────
+
+	/**
+	 * Line-trace against the editor world (complex collision, visibility channel).
+	 * Returns the label of the first actor hit, or empty string if nothing was hit.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString LineTraceFirstActor(FVector Start, FVector End);
 };

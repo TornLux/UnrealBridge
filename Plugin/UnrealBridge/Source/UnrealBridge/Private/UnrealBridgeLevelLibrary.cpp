@@ -18,6 +18,8 @@
 #include "UObject/UnrealType.h"
 #include "Components/MeshComponent.h"
 #include "Materials/MaterialInterface.h"
+#include "CollisionQueryParams.h"
+#include "Engine/HitResult.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeLevel"
 
@@ -1141,6 +1143,123 @@ TArray<FString> UUnrealBridgeLevelLibrary::GetActorMaterials(const FString& Acto
 		}
 	}
 	return Out;
+}
+
+// ─── Folder organization ────────────────────────────────────
+
+FString UUnrealBridgeLevelLibrary::GetActorFolder(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return FString();
+	}
+	const FName F = Actor->GetFolderPath();
+	return F.IsNone() ? FString() : F.ToString();
+}
+
+bool UUnrealBridgeLevelLibrary::SetActorFolder(const FString& ActorName, const FString& FolderPath)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetActorFolder", "Set Actor Folder"));
+	Actor->Modify();
+	Actor->SetFolderPath(FolderPath.IsEmpty() ? FName() : FName(*FolderPath));
+	return true;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorFolders()
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	TSet<FString> Seen;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A)
+		{
+			continue;
+		}
+		const FName F = A->GetFolderPath();
+		if (F.IsNone())
+		{
+			continue;
+		}
+		const FString S = F.ToString();
+		if (!Seen.Contains(S))
+		{
+			Seen.Add(S);
+			Out.Add(S);
+		}
+	}
+	Out.Sort();
+	return Out;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorsInFolder(const FString& FolderPath, bool bRecursive)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	const FString Prefix = FolderPath + TEXT("/");
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A)
+		{
+			continue;
+		}
+		const FString ActorFolder = A->GetFolderPath().ToString();
+		bool bMatch = false;
+		if (ActorFolder == FolderPath)
+		{
+			bMatch = true;
+		}
+		else if (bRecursive && !FolderPath.IsEmpty() && ActorFolder.StartsWith(Prefix))
+		{
+			bMatch = true;
+		}
+		else if (bRecursive && FolderPath.IsEmpty() && !ActorFolder.IsEmpty())
+		{
+			// Recursive from root = every actor with any folder
+			bMatch = true;
+		}
+		if (bMatch)
+		{
+			Out.Add(A->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+// ─── Spatial — trace ────────────────────────────────────────
+
+FString UUnrealBridgeLevelLibrary::LineTraceFirstActor(FVector Start, FVector End)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return FString();
+	}
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeLineTrace), /*bTraceComplex*/ true);
+	const bool bHit = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
+	if (!bHit)
+	{
+		return FString();
+	}
+	AActor* A = Hit.GetActor();
+	return A ? A->GetActorLabel() : FString();
 }
 
 #undef LOCTEXT_NAMESPACE

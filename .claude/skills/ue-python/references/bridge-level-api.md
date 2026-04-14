@@ -311,3 +311,65 @@ Deduplicated material asset paths from the actor's `UMeshComponent`-derived comp
 unreal.UnrealBridgeLevelLibrary.get_actor_materials('BP_Cube_1')
 # ['/Game/Materials/M_Base.M_Base', ...]
 ```
+
+---
+
+## Folder Organization
+
+World Outliner folder paths use `/` as a separator (e.g. `"Enemies/Boss"`). The root is represented as the empty string `""`.
+
+### get_actor_folder(actor_name) -> str
+
+Return the actor's World Outliner folder path, or `""` if the actor is at root (or missing). Cost: O(1) plus lookup.
+
+```python
+unreal.UnrealBridgeLevelLibrary.get_actor_folder('BP_Hero_1')  # "Heroes/Main"
+```
+
+### set_actor_folder(actor_name, folder_path) -> bool
+
+Move an actor to `folder_path`. Pass `""` to move it to the outliner root. Transaction-wrapped (Ctrl+Z undoable). Returns `False` if the actor is missing.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_folder('BP_Cube_1', 'Props/Crates')
+```
+
+### get_actor_folders() -> list[str]
+
+Sorted distinct folder paths used by any actor in the current level. Actors at root (unfoldered) do not contribute a `""` entry. Cost: O(N) over all actors; small output (one line per distinct folder).
+
+> Token cost: LOW — one short string per folder; typical levels have fewer than ~30 folders.
+
+### get_actors_in_folder(folder_path, recursive) -> list[str]
+
+Labels of actors whose folder equals `folder_path`.
+
+- `recursive=False` — exact match only.
+- `recursive=True` — also include actors in sub-folders (`"Foo/Bar"` when querying `"Foo"`).
+- Pass `folder_path=""` for root-level actors; with `recursive=True` and an empty path, every foldered actor is returned (useful for "everything that has been organized").
+
+> Token cost: MEDIUM on large folders. No result cap. Combine with class/name filters via `get_actor_names` then filter in Python if you need finer slicing.
+
+```python
+# Re-parent all actors under "Old/Legacy" to "Archive"
+for label in unreal.UnrealBridgeLevelLibrary.get_actors_in_folder('Old/Legacy', True):
+    unreal.UnrealBridgeLevelLibrary.set_actor_folder(label, 'Archive')
+```
+
+---
+
+## Spatial — Line Trace
+
+### line_trace_first_actor(start, end) -> str
+
+Cast a single line-trace through the editor world against the **Visibility** collision channel (complex collision). Returns the label of the first actor hit, or `""` if nothing was hit or the world is unavailable.
+
+> Cost: O(world-trace). Small output (single string). Useful for picking an actor beneath the viewport camera or probing what an actor would "see" along a vector.
+
+```python
+hit = unreal.UnrealBridgeLevelLibrary.line_trace_first_actor(
+    unreal.Vector(0, 0, 100000),
+    unreal.Vector(0, 0, -100000),
+)
+print(hit)  # e.g. "Landscape"
+```
