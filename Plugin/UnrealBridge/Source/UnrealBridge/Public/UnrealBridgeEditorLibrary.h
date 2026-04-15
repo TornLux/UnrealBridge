@@ -632,4 +632,29 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool SetCoordSystem(const FString& System);
+
+	// ─── Viewport grid / snap ────────────────────────────────
+
+	/**
+	 * Current location-grid snap size in cm (entry in `PosGridSizes`
+	 * at the active `CurrentPosGridSize` index). Returns 0 when the
+	 * settings aren't available.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static float GetLocationGridSize();
+
+	/**
+	 * Current rotation-grid snap size in degrees (pitch axis of the
+	 * active `RotGridSizes` entry). Returns 0 when unavailable.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static float GetRotationGridSize();
+
+	/** True if viewport grid-snap is currently enabled. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsGridSnapEnabled();
+
+	/** Toggle grid-snap on/off. Persists to editor config. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetGridSnapEnabled(bool bEnabled);
 };

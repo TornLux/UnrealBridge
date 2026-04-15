@@ -501,6 +501,34 @@ unreal.UnrealBridgeEditorLibrary.set_coord_system('Local')
 unreal.UnrealBridgeEditorLibrary.set_widget_mode(prev_mode)
 ```
 
+### get_location_grid_size() -> float
+
+Active location-grid snap size in cm. Sourced from
+`ULevelEditorViewportSettings` — reads `Pow2GridSizes` when "use
+power-of-two snap size" is on, else `DecimalGridSizes`, indexed by
+`CurrentPosGridSize`.
+
+### get_rotation_grid_size() -> float
+
+Active rotation-grid snap size in degrees. Reads from
+`CommonRotGridSizes` (default) or `DivisionsOf360RotGridSizes`
+depending on the current grid mode.
+
+### is_grid_snap_enabled() -> bool
+
+True when viewport location-grid snapping is enabled. Mirrors the
+grid-snap toggle in the viewport toolbar.
+
+### set_grid_snap_enabled(enabled) -> bool
+
+Toggle location-grid snapping. Persists to editor config via
+`SaveConfig`. Returns True on success.
+
+**Pitfall:** setters are provided only for the enable toggle — the
+active grid size is index-based and changing it requires matching a
+stored preset. For custom sizes, edit the `*GridSizes` arrays directly
+via UE Python (`unreal.get_mutable_default_object(...)`).
+
 ---
 
 ## Asset Control

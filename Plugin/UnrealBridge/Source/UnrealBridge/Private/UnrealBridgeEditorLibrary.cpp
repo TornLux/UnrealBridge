@@ -53,6 +53,7 @@
 #include "AssetCompilingManager.h"
 #include "EditorModeManager.h"
 #include "UnrealWidget.h"
+#include "Settings/LevelEditorViewportSettings.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1604,6 +1605,53 @@ bool UUnrealBridgeEditorLibrary::SetCoordSystem(const FString& System)
 		return true;
 	}
 	return false;
+}
+
+// ─── Viewport grid / snap ──────────────────────────────────────────────
+
+float UUnrealBridgeEditorLibrary::GetLocationGridSize()
+{
+	const ULevelEditorViewportSettings* S = GetDefault<ULevelEditorViewportSettings>();
+	if (!S) return 0.0f;
+	const TArray<float>& Sizes = S->bUsePowerOf2SnapSize ? S->Pow2GridSizes : S->DecimalGridSizes;
+	if (!Sizes.IsValidIndex(S->CurrentPosGridSize))
+	{
+		return 0.0f;
+	}
+	return Sizes[S->CurrentPosGridSize];
+}
+
+float UUnrealBridgeEditorLibrary::GetRotationGridSize()
+{
+	const ULevelEditorViewportSettings* S = GetDefault<ULevelEditorViewportSettings>();
+	if (!S)
+	{
+		return 0.0f;
+	}
+	const TArray<float>& Sizes = (S->CurrentRotGridMode == GridMode_DivisionsOf360)
+		? S->DivisionsOf360RotGridSizes
+		: S->CommonRotGridSizes;
+	if (!Sizes.IsValidIndex(S->CurrentRotGridSize))
+	{
+		return 0.0f;
+	}
+	return Sizes[S->CurrentRotGridSize];
+}
+
+bool UUnrealBridgeEditorLibrary::IsGridSnapEnabled()
+{
+	const ULevelEditorViewportSettings* S = GetDefault<ULevelEditorViewportSettings>();
+	return S && S->GridEnabled;
+}
+
+bool UUnrealBridgeEditorLibrary::SetGridSnapEnabled(bool bEnabled)
+{
+	ULevelEditorViewportSettings* S = GetMutableDefault<ULevelEditorViewportSettings>();
+	if (!S) return false;
+	S->GridEnabled = bEnabled;
+	S->PostEditChange();
+	S->SaveConfig();
+	return true;
 }
 
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
