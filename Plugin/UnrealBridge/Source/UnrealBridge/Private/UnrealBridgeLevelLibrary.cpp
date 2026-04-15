@@ -1790,7 +1790,18 @@ namespace BridgeLevelImpl
 
 		FImage Img;
 		Img.Init(PixelWidth, PixelHeight, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
-		FMemory::Memcpy(Img.RawData.GetData(), Pixels.GetData(), Pixels.Num() * sizeof(FColor));
+		// Flip vertically on copy: SceneCapture2D readback lands rows bottom-
+		// up in ReadPixels (GPU viewport origin convention), but PNG expects
+		// rows top-down. Without this perspective shots render upside-down.
+		FColor* Dst = reinterpret_cast<FColor*>(Img.RawData.GetData());
+		const FColor* Src = Pixels.GetData();
+		for (int32 Y = 0; Y < PixelHeight; ++Y)
+		{
+			FMemory::Memcpy(
+				Dst + Y * PixelWidth,
+				Src + (PixelHeight - 1 - Y) * PixelWidth,
+				PixelWidth * sizeof(FColor));
+		}
 
 		const bool bSaved = SaveImageToPng(Img, OutPngPath);
 		CaptureActor->Destroy();
