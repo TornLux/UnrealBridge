@@ -194,6 +194,37 @@ for a in unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', 
 what the GPU actually renders at runtime (which depends on distance,
 scalability, and Nanite). Treat as a worst-case budget reference.
 
+### get_all_actor_tags_in_level() -> list[str]
+
+Sorted unique set of every `FName` tag used by any actor in the
+current editor level. Useful to discover available filters before
+calling `find_actors_by_tag` / `count_actors_by_tag`.
+
+### count_actors_by_tag(tag) -> int
+
+Count of actors carrying the given tag. `Name("None")` / empty tag
+returns 0.
+
+### select_actors_by_tag(tag, add_to_selection=False) -> int
+
+Select every actor carrying the tag in the editor viewport. Returns
+the count added. Pass `add_to_selection=True` to keep the current
+selection.
+
+### remove_tag_from_all_actors(tag) -> int
+
+Bulk-remove a tag from every actor in the level that carries it.
+Wrapped in a single undo transaction. Returns the count of actors
+modified.
+
+```python
+# Find-and-delete pattern: tag candidates, inspect, then clean up
+unreal.UnrealBridgeLevelLibrary.add_actor_tag('Cube', unreal.Name('probe'))
+n = unreal.UnrealBridgeLevelLibrary.count_actors_by_tag(unreal.Name('probe'))
+# ...do work...
+unreal.UnrealBridgeLevelLibrary.remove_tag_from_all_actors(unreal.Name('probe'))
+```
+
 ---
 
 ## Read — Actor Queries

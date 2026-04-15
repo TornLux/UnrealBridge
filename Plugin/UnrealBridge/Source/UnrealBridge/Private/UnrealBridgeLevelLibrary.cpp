@@ -2276,6 +2276,85 @@ int32 UUnrealBridgeLevelLibrary::GetActorLODCount(const FString& ActorName)
 	return MaxLODs;
 }
 
+// ─── Tag bulk ops ──────────────────────────────────────────────────────
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetAllActorTagsInLevel()
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return Out;
+	TSet<FName> Unique;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (AActor* A = *It)
+		{
+			for (const FName& T : A->Tags) Unique.Add(T);
+		}
+	}
+	Out.Reserve(Unique.Num());
+	for (const FName& T : Unique) Out.Add(T.ToString());
+	Out.Sort();
+	return Out;
+}
+
+int32 UUnrealBridgeLevelLibrary::CountActorsByTag(const FName Tag)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World || Tag.IsNone()) return 0;
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (AActor* A = *It)
+		{
+			if (A->Tags.Contains(Tag)) ++Count;
+		}
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::SelectActorsByTag(const FName Tag, bool bAddToSelection)
+{
+	if (!GEditor || Tag.IsNone()) return 0;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	if (!bAddToSelection)
+	{
+		GEditor->SelectNone(false, true, false);
+	}
+	int32 Added = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && A->Tags.Contains(Tag))
+		{
+			GEditor->SelectActor(A, true, true, true, false);
+			++Added;
+		}
+	}
+	GEditor->NoteSelectionChange();
+	return Added;
+}
+
+int32 UUnrealBridgeLevelLibrary::RemoveTagFromAllActors(const FName Tag)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World || Tag.IsNone()) return 0;
+	FScopedTransaction Tr(LOCTEXT("RemoveTagFromAllActors", "Remove Tag From All Actors"));
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A) continue;
+		const int32 Removed = A->Tags.Remove(Tag);
+		if (Removed > 0)
+		{
+			A->Modify();
+			++Count;
+		}
+	}
+	return Count;
+}
+
 bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
 	const FString& ActorName,
 	const FString& ComponentName,

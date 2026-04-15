@@ -846,4 +846,30 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 GetActorLODCount(const FString& ActorName);
+
+	// ─── Tag bulk ops ────────────────────────────────────────
+
+	/** Sorted unique set of every Tag FName used by any actor in the level. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetAllActorTagsInLevel();
+
+	/** Count of actors carrying the given Tag. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 CountActorsByTag(const FName Tag);
+
+	/**
+	 * Select every actor carrying the given Tag in the editor viewport.
+	 * @param bAddToSelection  false clears the existing selection first.
+	 * @return Count of actors added to selection.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 SelectActorsByTag(const FName Tag, bool bAddToSelection = false);
+
+	/**
+	 * Remove a Tag from every actor in the level that carries it.
+	 * Wrapped in a single undo transaction.
+	 * @return Count of actors modified.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 RemoveTagFromAllActors(const FName Tag);
 };
