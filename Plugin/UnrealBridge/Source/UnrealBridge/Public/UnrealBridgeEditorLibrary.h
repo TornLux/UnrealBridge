@@ -569,4 +569,39 @@ public:
 	/** Clear the log ring buffer. Returns the number of lines dropped. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static int32 ClearLogBuffer();
+
+	// ─── Engine module introspection ─────────────────────────
+
+	/**
+	 * True if a module of the given name is currently loaded in the editor
+	 * process. Complements `is_plugin_enabled` — plugins own modules but
+	 * a module can also exist without a plugin wrapper (engine built-ins).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsModuleLoaded(const FString& ModuleName);
+
+	/**
+	 * Names of every module currently registered with the module manager
+	 * (loaded or unloaded). Sorted alphabetically. Typical editor count:
+	 * 500-1000.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static TArray<FString> GetRegisteredModuleNames();
+
+	/**
+	 * Force-load a module if it isn't already loaded. Returns true if the
+	 * module is loaded after the call, false if the name doesn't match a
+	 * registered module. WARNING: loading game modules mid-session may
+	 * introduce UObjects that affect GC. Editor-only tooling is safer.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool LoadModule(const FString& ModuleName);
+
+	/**
+	 * Filesystem path of a loaded module's compiled binary (e.g. the DLL
+	 * on Windows). Empty string if the module isn't loaded or has no
+	 * backing file (script-only modules).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetModuleBinaryPath(const FString& ModuleName);
 };

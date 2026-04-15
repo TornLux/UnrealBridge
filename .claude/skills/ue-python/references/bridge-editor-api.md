@@ -439,6 +439,37 @@ stays registered — subsequent log output continues to accumulate.
   `clear_log_buffer()` right before the operation to make sure its
   output fits.
 
+### is_module_loaded(module_name) -> bool
+
+True when an engine module is currently loaded. Complements
+`is_plugin_enabled` — plugins own modules, but modules can also exist
+standalone as engine built-ins.
+
+### get_registered_module_names() -> list[str]
+
+Alphabetically-sorted names of every module the `FModuleManager`
+knows about (loaded or not). Typical editor count: 900–1100. Large
+list — filter client-side.
+
+### load_module(module_name) -> bool
+
+Force-load a module if it isn't already loaded. Returns True only if
+the module is loaded after the call.
+
+**Pitfall:** loading game-side modules mid-session introduces new
+UObjects and can complicate GC / asset-registry snapshots. Prefer for
+editor-only tooling modules; cold-loading gameplay modules is risky.
+
+### get_module_binary_path(module_name) -> str
+
+Filesystem path to a loaded module's compiled binary. Empty string if
+the module isn't loaded or has no backing file (script-only modules).
+
+```python
+p = unreal.UnrealBridgeEditorLibrary.get_module_binary_path('UnrealBridge')
+# p → ".../Plugins/UnrealBridge/Binaries/Win64/UnrealEditor-UnrealBridge.dll"
+```
+
 ---
 
 ## Asset Control

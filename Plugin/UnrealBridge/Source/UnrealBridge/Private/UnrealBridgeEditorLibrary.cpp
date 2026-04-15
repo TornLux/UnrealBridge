@@ -1504,6 +1504,51 @@ int32 UUnrealBridgeEditorLibrary::ClearLogBuffer()
 	return BridgeLogImpl::EnsureDevice().Clear();
 }
 
+// ─── Engine module introspection ───────────────────────────────────────
+
+bool UUnrealBridgeEditorLibrary::IsModuleLoaded(const FString& ModuleName)
+{
+	if (ModuleName.IsEmpty()) return false;
+	return FModuleManager::Get().IsModuleLoaded(FName(*ModuleName));
+}
+
+TArray<FString> UUnrealBridgeEditorLibrary::GetRegisteredModuleNames()
+{
+	TArray<FName> NameNames;
+	FModuleManager::Get().FindModules(TEXT("*"), NameNames);
+	TArray<FString> Out;
+	Out.Reserve(NameNames.Num());
+	for (const FName& N : NameNames)
+	{
+		Out.Add(N.ToString());
+	}
+	Out.Sort();
+	return Out;
+}
+
+bool UUnrealBridgeEditorLibrary::LoadModule(const FString& ModuleName)
+{
+	if (ModuleName.IsEmpty()) return false;
+	const FName N(*ModuleName);
+	if (!FModuleManager::Get().ModuleExists(*ModuleName))
+	{
+		return false;
+	}
+	FModuleManager::Get().LoadModule(N);
+	return FModuleManager::Get().IsModuleLoaded(N);
+}
+
+FString UUnrealBridgeEditorLibrary::GetModuleBinaryPath(const FString& ModuleName)
+{
+	if (ModuleName.IsEmpty()) return FString();
+	const FName N(*ModuleName);
+	if (!FModuleManager::Get().IsModuleLoaded(N))
+	{
+		return FString();
+	}
+	return FModuleManager::Get().GetModuleFilename(N);
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))
