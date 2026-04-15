@@ -1751,6 +1751,28 @@ FString UUnrealBridgeEditorLibrary::GetAssetLastModifiedTime(const FString& Asse
 	return Ts.ToIso8601();
 }
 
+// ─── Session identity + timestamp ──────────────────────────────────────
+
+FString UUnrealBridgeEditorLibrary::GetOSUserName()
+{
+	return FPlatformProcess::UserName();
+}
+
+FString UUnrealBridgeEditorLibrary::GetMachineName()
+{
+	return FPlatformProcess::ComputerName();
+}
+
+FString UUnrealBridgeEditorLibrary::GetNowUTC()
+{
+	return FDateTime::UtcNow().ToIso8601();
+}
+
+int32 UUnrealBridgeEditorLibrary::GetEditorProcessID()
+{
+	return static_cast<int32>(FPlatformProcess::GetCurrentProcessId());
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))

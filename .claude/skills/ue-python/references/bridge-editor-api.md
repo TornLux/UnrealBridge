@@ -588,6 +588,24 @@ if mtime:
         print(f'{p} modified within last hour')
 ```
 
+### get_os_user_name() -> str
+
+Logged-in OS user name via `FPlatformProcess::UserName`.
+
+### get_machine_name() -> str
+
+Host computer name via `FPlatformProcess::ComputerName`.
+
+### get_now_utc() -> str
+
+ISO-8601 UTC timestamp for "now" (e.g. `"2026-04-15T12:25:18.723Z"`).
+Useful as a timestamp prefix for automation logs.
+
+### get_editor_process_id() -> int
+
+OS process ID of the running editor. Handy for external tooling that
+wants to attach a debugger or killswitch against this session.
+
 ---
 
 ## Asset Control

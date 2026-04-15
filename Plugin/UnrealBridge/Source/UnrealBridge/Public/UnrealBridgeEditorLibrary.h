@@ -717,4 +717,22 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetAssetLastModifiedTime(const FString& AssetPath);
+
+	// ─── Session identity + timestamp ────────────────────────
+
+	/** OS user name running the editor (FPlatformProcess::UserName). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetOSUserName();
+
+	/** Host machine name (FPlatformProcess::ComputerName). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetMachineName();
+
+	/** ISO-8601 UTC timestamp for "now", e.g. `"2026-04-15T09:12:33Z"`. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetNowUTC();
+
+	/** Process ID of the running editor. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetEditorProcessID();
 };
