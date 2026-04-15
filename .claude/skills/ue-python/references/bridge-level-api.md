@@ -305,6 +305,26 @@ unreal.UnrealBridgeLevelLibrary.move_actors_to_folder(probes, 'Probes')
 unreal.UnrealBridgeLevelLibrary.dissolve_folder('Probes')
 ```
 
+### get_actors_in_sublevel(package_name) -> list[str]
+
+Labels of actors living in the named sublevel. `package_name` is the
+level's package (e.g. `"/Game/Maps/Sub_Foo"` or the persistent level
+path). Empty list when the sublevel isn't loaded.
+
+### count_actors_in_sublevel(package_name) -> int
+
+Cheaper than `len(get_actors_in_sublevel(...))` — skips label
+allocation.
+
+### get_actor_level_package_name(actor_name) -> str
+
+Package name of the level that owns the actor. Useful for scoping
+an op to actors in the persistent level only.
+
+### get_persistent_level_actor_count() -> int
+
+Number of actors in the persistent level (excludes sublevels).
+
 ---
 
 ## Read — Actor Queries

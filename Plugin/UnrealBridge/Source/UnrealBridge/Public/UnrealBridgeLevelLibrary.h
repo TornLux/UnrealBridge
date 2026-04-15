@@ -970,4 +970,29 @@ public:
 	/** True if no actor is currently assigned to `FolderPath` (exact match). */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool IsFolderEmpty(const FString& FolderPath);
+
+	// ─── Sublevel-scoped actor queries ───────────────────────
+
+	/**
+	 * Labels of actors living in a specific sublevel by package name
+	 * (e.g. `"/Game/Maps/Sub_Foo"` or the persistent level's package).
+	 * Empty when the sublevel isn't loaded or no match is found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorsInSublevel(const FString& PackageName);
+
+	/** Count of actors in the given sublevel. Cheaper than listing + len(). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 CountActorsInSublevel(const FString& PackageName);
+
+	/**
+	 * Package name of the level an actor lives in
+	 * (e.g. `"/Game/Maps/MyLevel"`). Empty on missing actor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetActorLevelPackageName(const FString& ActorName);
+
+	/** Number of actors in the persistent level only (excludes sublevels). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetPersistentLevelActorCount();
 };

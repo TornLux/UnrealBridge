@@ -2530,6 +2530,76 @@ bool UUnrealBridgeLevelLibrary::IsFolderEmpty(const FString& FolderPath)
 	return true;
 }
 
+// ─── Sublevel-scoped actor queries ─────────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	static ULevel* FindLevelByPackage(UWorld* World, const FString& PackageName)
+	{
+		if (!World || PackageName.IsEmpty()) return nullptr;
+		for (ULevel* L : World->GetLevels())
+		{
+			if (!L) continue;
+			UPackage* Pkg = L->GetOutermost();
+			if (Pkg && Pkg->GetName() == PackageName)
+			{
+				return L;
+			}
+		}
+		return nullptr;
+	}
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorsInSublevel(const FString& PackageName)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	ULevel* Level = BridgeLevelImpl::FindLevelByPackage(World, PackageName);
+	if (!Level) return Out;
+	for (AActor* A : Level->Actors)
+	{
+		if (A)
+		{
+			Out.Add(A->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+int32 UUnrealBridgeLevelLibrary::CountActorsInSublevel(const FString& PackageName)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	ULevel* Level = BridgeLevelImpl::FindLevelByPackage(World, PackageName);
+	if (!Level) return 0;
+	int32 Count = 0;
+	for (AActor* A : Level->Actors)
+	{
+		if (A) ++Count;
+	}
+	return Count;
+}
+
+FString UUnrealBridgeLevelLibrary::GetActorLevelPackageName(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return FString();
+	ULevel* Level = Actor->GetLevel();
+	UPackage* Pkg = Level ? Level->GetOutermost() : nullptr;
+	return Pkg ? Pkg->GetName() : FString();
+}
+
+int32 UUnrealBridgeLevelLibrary::GetPersistentLevelActorCount()
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World || !World->PersistentLevel) return 0;
+	int32 Count = 0;
+	for (AActor* A : World->PersistentLevel->Actors)
+	{
+		if (A) ++Count;
+	}
+	return Count;
+}
+
 int32 UUnrealBridgeLevelLibrary::MirrorActors(const TArray<FString>& ActorNames, const FString& Axis)
 {
 	const FString L = Axis.ToLower();
