@@ -872,4 +872,36 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 RemoveTagFromAllActors(const FName Tag);
+
+	// ─── Actor class introspection ───────────────────────────
+
+	/**
+	 * True if the actor is an instance of `ClassPath` or any subclass.
+	 * Matches `AActor::IsA` via `ClassPath` (full class path or short
+	 * name — uses the same resolver as MatchesClassFilter).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool IsActorOfClass(const FString& ActorName, const FString& ClassPath);
+
+	/**
+	 * Immediate superclass of the actor's class (e.g. `"StaticMeshActor"`'s
+	 * parent is `"Actor"`). Empty string on missing actor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetActorParentClass(const FString& ActorName);
+
+	/**
+	 * Full class-ancestor chain from the actor's class up to `UObject`,
+	 * e.g. `["BP_Foo_C", "Foo", "Actor", "Object"]`. Empty on missing actor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorClassHierarchy(const FString& ActorName);
+
+	/**
+	 * Labels of actors whose class matches `ClassFilter` AND whose Tags
+	 * contain `Tag`. Combines the existing class / tag filters with an
+	 * AND relation, avoiding a double round-trip.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> FindActorsByClassAndTag(const FString& ClassFilter, const FName Tag);
 };

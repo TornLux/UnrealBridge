@@ -225,6 +225,32 @@ n = unreal.UnrealBridgeLevelLibrary.count_actors_by_tag(unreal.Name('probe'))
 unreal.UnrealBridgeLevelLibrary.remove_tag_from_all_actors(unreal.Name('probe'))
 ```
 
+### is_actor_of_class(actor_name, class_path) -> bool
+
+True when the actor's class is `class_path` or a subclass. Uses the
+same resolver as `find_actors_by_class` — accepts full paths
+(`/Script/Engine.StaticMeshActor`) or short names (`StaticMeshActor`).
+
+### get_actor_parent_class(actor_name) -> str
+
+Immediate superclass name (e.g. `"StaticMeshActor"`'s parent is
+`"Actor"`). Empty string on missing actor.
+
+### get_actor_class_hierarchy(actor_name) -> list[str]
+
+Full ancestor chain from the actor's class up to `UObject`. Handy for
+deciding which query helper to use without hardcoding class names.
+
+```python
+hier = unreal.UnrealBridgeLevelLibrary.get_actor_class_hierarchy('Cube')
+# ['StaticMeshActor', 'Actor', 'Object']
+```
+
+### find_actors_by_class_and_tag(class_filter, tag) -> list[str]
+
+Labels of actors whose class matches AND whose tags contain `tag`.
+Avoids a double round-trip for class + tag queries.
+
 ---
 
 ## Read — Actor Queries

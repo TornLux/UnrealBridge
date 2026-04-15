@@ -2355,6 +2355,55 @@ int32 UUnrealBridgeLevelLibrary::RemoveTagFromAllActors(const FName Tag)
 	return Count;
 }
 
+// ─── Actor class introspection ─────────────────────────────────────────
+
+bool UUnrealBridgeLevelLibrary::IsActorOfClass(const FString& ActorName, const FString& ClassPath)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return false;
+	return BridgeLevelImpl::MatchesClassFilter(Actor->GetClass(), ClassPath);
+}
+
+FString UUnrealBridgeLevelLibrary::GetActorParentClass(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor || !Actor->GetClass() || !Actor->GetClass()->GetSuperClass())
+	{
+		return FString();
+	}
+	return Actor->GetClass()->GetSuperClass()->GetName();
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorClassHierarchy(const FString& ActorName)
+{
+	TArray<FString> Out;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return Out;
+	UClass* Cls = Actor->GetClass();
+	while (Cls)
+	{
+		Out.Add(Cls->GetName());
+		Cls = Cls->GetSuperClass();
+	}
+	return Out;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::FindActorsByClassAndTag(const FString& ClassFilter, const FName Tag)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World || Tag.IsNone()) return Out;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A) continue;
+		if (!BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter)) continue;
+		if (!A->Tags.Contains(Tag)) continue;
+		Out.Add(A->GetActorLabel());
+	}
+	return Out;
+}
+
 bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
 	const FString& ActorName,
 	const FString& ComponentName,
