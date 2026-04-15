@@ -376,4 +376,32 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetEditorBuildConfig();
+
+	// ─── Log + paths + window focus ──────────────────────────
+
+	/**
+	 * Emit a message to GLog under a dedicated "UnrealBridgePy" category.
+	 * Lets Python scripts route into the standard UE log stream so their
+	 * output is captured by UE's log file and the Output Log window.
+	 *
+	 * @param Severity  "Verbose" | "Log" | "Warning" | "Error"
+	 *                  (case-insensitive). Unknown values default to Log.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool WriteLogMessage(const FString& Message, const FString& Severity = TEXT("Log"));
+
+	/** Absolute path to the current editor log file (`.../Saved/Logs/<Project>.log`). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetLogFilePath();
+
+	/** Absolute path to the project's screenshot directory (`.../Saved/Screenshots`). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetScreenshotDirectory();
+
+	/**
+	 * Raise and activate the editor's main window. Useful after long-running
+	 * background automation when the user switched to another app.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool BringEditorToFront();
 };

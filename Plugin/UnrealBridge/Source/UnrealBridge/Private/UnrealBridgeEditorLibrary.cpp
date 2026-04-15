@@ -42,6 +42,10 @@
 #include "Interfaces/IPluginManager.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
+#include "HAL/FileManager.h"
+#include "HAL/PlatformOutputDevices.h"
+#include "Misc/Paths.h"
+#include "Framework/Application/SlateApplication.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1124,6 +1128,73 @@ FString UUnrealBridgeEditorLibrary::GetEditorBuildConfig()
 	case EBuildConfiguration::Test:        return TEXT("Test");
 	default:                               return TEXT("Unknown");
 	}
+}
+
+DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridgePy, Log, All);
+
+bool UUnrealBridgeEditorLibrary::WriteLogMessage(const FString& Message, const FString& Severity)
+{
+	if (Message.IsEmpty())
+	{
+		return false;
+	}
+	const FString SevLower = Severity.ToLower();
+	if (SevLower == TEXT("verbose"))
+	{
+		UE_LOG(LogUnrealBridgePy, Verbose, TEXT("%s"), *Message);
+	}
+	else if (SevLower == TEXT("warning"))
+	{
+		UE_LOG(LogUnrealBridgePy, Warning, TEXT("%s"), *Message);
+	}
+	else if (SevLower == TEXT("error"))
+	{
+		UE_LOG(LogUnrealBridgePy, Error, TEXT("%s"), *Message);
+	}
+	else
+	{
+		UE_LOG(LogUnrealBridgePy, Log, TEXT("%s"), *Message);
+	}
+	return true;
+}
+
+FString UUnrealBridgeEditorLibrary::GetLogFilePath()
+{
+	return FPaths::ConvertRelativePathToFull(FPlatformOutputDevices::GetAbsoluteLogFilename());
+}
+
+FString UUnrealBridgeEditorLibrary::GetScreenshotDirectory()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::ScreenShotDir());
+}
+
+bool UUnrealBridgeEditorLibrary::BringEditorToFront()
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+	TSharedPtr<SWindow> Active = FSlateApplication::Get().GetActiveTopLevelWindow();
+	if (!Active.IsValid())
+	{
+		// Fall back to any visible top-level window.
+		TArray<TSharedRef<SWindow>> Windows = FSlateApplication::Get().GetTopLevelWindows();
+		for (const TSharedRef<SWindow>& W : Windows)
+		{
+			if (W->IsVisible())
+			{
+				Active = W;
+				break;
+			}
+		}
+	}
+	if (!Active.IsValid())
+	{
+		return false;
+	}
+	Active->BringToFront(/*bForce=*/ true);
+	Active->HACK_ForceToFront();
+	return true;
 }
 
 #undef LOCTEXT_NAMESPACE

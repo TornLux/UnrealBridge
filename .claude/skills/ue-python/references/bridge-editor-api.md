@@ -220,6 +220,43 @@ Build configuration the running editor was compiled in:
 `"Debug"` | `"DebugGame"` | `"Development"` | `"Shipping"` | `"Test"` |
 `"Unknown"`. Use to gate expensive debug-only automation.
 
+### write_log_message(message, severity="Log") -> bool
+
+Emit a message to `GLog` under the dedicated `LogUnrealBridgePy`
+category. Lands in the editor's Output Log and the project's `.log`
+file so Python automation output is captured alongside native UE logs.
+
+`severity` is case-insensitive, one of: `"Verbose"`, `"Log"` (default),
+`"Warning"`, `"Error"`. Unknown values fall back to `Log`.
+
+```python
+unreal.UnrealBridgeEditorLibrary.write_log_message('import finished', 'Log')
+unreal.UnrealBridgeEditorLibrary.write_log_message('asset missing', 'Warning')
+```
+
+Returns False only when `message` is empty.
+
+### get_log_file_path() -> str
+
+Absolute path to the current editor log file (typically
+`<Project>/Saved/Logs/<Project>.log`). Useful after long operations to
+`tail` the log from Python without guessing the path.
+
+### get_screenshot_directory() -> str
+
+Absolute path to `<Project>/Saved/Screenshots/<Platform>Editor/`. Pair
+with `take_high_res_screenshot` — UE picks the filename automatically,
+so scan this directory afterwards to find the newly-written file.
+
+### bring_editor_to_front() -> bool
+
+Raise and activate the editor's top-level window. Good at the end of a
+long background task that toasted a notification — without raising, the
+toast is hidden when the user alt-tabbed to another app.
+
+Returns False when no Slate application / no visible top-level window
+(e.g. commandlet / headless editor run).
+
 ---
 
 ## Asset Control
