@@ -435,6 +435,47 @@ for name in unreal.UnrealBridgeGameplayLibrary.get_all_pawns():
 
 ---
 
+## On-screen debug + debug drawing
+
+Visualise agent state in the PIE viewport. All four require PIE and
+no-op otherwise. Durations are capped per-call and auto-clear when
+they expire.
+
+### add_on_screen_debug_message(message, duration_seconds=4.0, r=1.0, g=1.0, b=1.0) -> bool
+
+Print a line on the viewport via `GEngine->AddOnScreenDebugMessage`.
+`duration_seconds` clamped to `[0.1, 60]`. RGB channels in `[0, 1]`.
+
+```python
+unreal.UnrealBridgeGameplayLibrary.add_on_screen_debug_message(
+    f'path len={len(waypoints)}', 3.0, 0.2, 1.0, 0.2)
+```
+
+### clear_on_screen_debug_messages() -> bool
+
+Remove every on-screen debug line currently visible.
+
+### draw_debug_line(start, end, thickness=1.0, duration_seconds=5.0) -> bool
+
+Draw a yellow line segment in the PIE world. Use `duration_seconds=0`
+for single-frame draws (next tick erases). Color is yellow by design
+— cycle through locations / colours yourself if you need per-line
+tinting.
+
+### draw_debug_sphere_at(center, radius=50.0, thickness=1.0, duration_seconds=5.0) -> bool
+
+Draw a yellow wireframe sphere (16 segments).
+
+```python
+# Visualise a nav path
+path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(
+    obs.pawn_location, goal)
+for i in range(len(path) - 1):
+    unreal.UnrealBridgeGameplayLibrary.draw_debug_line(path[i], path[i+1], 2.0, 5.0)
+```
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and

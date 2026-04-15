@@ -646,4 +646,34 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool IsActorAIControlled(const FString& ActorName);
+
+	// ─── On-screen debug + debug drawing ─────────────────────────────
+	//
+	// Visualise agent state in the PIE viewport. All four target the PIE
+	// world and no-op outside PIE.
+
+	/**
+	 * Print a message on the viewport via `GEngine->AddOnScreenDebugMessage`.
+	 *
+	 * @param Message          Text to display.
+	 * @param DurationSeconds  How long the message stays visible. Clamped to [0.1, 60].
+	 * @param R, G, B          Color channels in [0, 1].
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool AddOnScreenDebugMessage(const FString& Message, float DurationSeconds = 4.0f, float R = 1.0f, float G = 1.0f, float B = 1.0f);
+
+	/** Remove all on-screen debug messages currently visible. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool ClearOnScreenDebugMessages();
+
+	/**
+	 * Draw a debug line segment in the PIE viewport for `DurationSeconds`.
+	 * Pass 0 for a single-frame draw (next tick erases it).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool DrawDebugLine(const FVector& Start, const FVector& End, float Thickness = 1.0f, float DurationSeconds = 5.0f);
+
+	/** Draw a debug wireframe sphere in the PIE viewport. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool DrawDebugSphereAt(const FVector& Center, float Radius = 50.0f, float Thickness = 1.0f, float DurationSeconds = 5.0f);
 };

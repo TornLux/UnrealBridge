@@ -13,6 +13,8 @@
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/DamageType.h"
 #include "Sound/SoundBase.h"
+#include "Engine/Engine.h"
+#include "DrawDebugHelpers.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
 #include "InputAction.h"
@@ -1213,6 +1215,59 @@ bool UUnrealBridgeGameplayLibrary::IsActorAIControlled(const FString& ActorName)
 {
 	const FString ClassName = GetActorController(ActorName);
 	return !ClassName.IsEmpty() && ClassName.Contains(TEXT("AIController"));
+}
+
+// ─── On-screen debug + debug drawing ───────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::AddOnScreenDebugMessage(const FString& Message, float DurationSeconds, float R, float G, float B)
+{
+	if (!GEngine || Message.IsEmpty())
+	{
+		return false;
+	}
+	const float Dur = FMath::Clamp(DurationSeconds, 0.1f, 60.0f);
+	const FColor Color = FLinearColor(
+		FMath::Clamp(R, 0.0f, 1.0f),
+		FMath::Clamp(G, 0.0f, 1.0f),
+		FMath::Clamp(B, 0.0f, 1.0f)).ToFColor(/*sRGB=*/ true);
+	GEngine->AddOnScreenDebugMessage(/*Key=*/ INDEX_NONE, Dur, Color, Message);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::ClearOnScreenDebugMessages()
+{
+	if (!GEngine)
+	{
+		return false;
+	}
+	GEngine->ClearOnScreenDebugMessages();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::DrawDebugLine(const FVector& Start, const FVector& End, float Thickness, float DurationSeconds)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	::DrawDebugLine(World, Start, End, FColor::Yellow,
+		/*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds,
+		/*DepthPriority=*/ 0, FMath::Max(Thickness, 0.0f));
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::DrawDebugSphereAt(const FVector& Center, float Radius, float Thickness, float DurationSeconds)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	::DrawDebugSphere(World, Center, FMath::Max(Radius, 0.0f), /*Segments=*/ 16, FColor::Yellow,
+		/*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds,
+		/*DepthPriority=*/ 0, FMath::Max(Thickness, 0.0f));
+	return true;
 }
 
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
