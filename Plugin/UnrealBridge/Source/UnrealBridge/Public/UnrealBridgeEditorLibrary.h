@@ -783,4 +783,25 @@ public:
 	/** Absolute path to the project's `Plugins/` directory. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetProjectPluginsDirectory();
+
+	// ─── Editor world state ──────────────────────────────────
+
+	/** Short name of the current editor world (e.g. `"DefaultMap"`). Empty when no world. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetEditorWorldName();
+
+	/**
+	 * True if the persistent level's package has unsaved changes.
+	 * Convenience for "should I prompt to save?" checks.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsEditorWorldDirty();
+
+	/** Count of levels currently loaded (persistent + loaded sublevels). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetLoadedLevelCount();
+
+	/** Total actor count across all loaded levels in the current world. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetCurrentWorldActorCount();
 };

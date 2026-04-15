@@ -652,6 +652,26 @@ Absolute path to the project's `Plugins/` directory. Engine-side
 plugins (e.g. those bundled with UE) live under
 `get_engine_directory() + 'Plugins/'`, not here.
 
+### get_editor_world_name() -> str
+
+Short name of the current editor world (e.g. `"DefaultMap"`). Empty
+when no world is open. Cheaper than `get_current_level_path()` when
+you only need the leaf.
+
+### is_editor_world_dirty() -> bool
+
+True when the persistent level's package has unsaved changes.
+
+### get_loaded_level_count() -> int
+
+Count of levels currently loaded — persistent level plus any loaded
+sublevels. On World Partition maps this does NOT include WP cells.
+
+### get_current_world_actor_count() -> int
+
+Total actor count across every loaded level. Complements
+`get_persistent_level_actor_count` (which excludes sublevels).
+
 ---
 
 ## Asset Control

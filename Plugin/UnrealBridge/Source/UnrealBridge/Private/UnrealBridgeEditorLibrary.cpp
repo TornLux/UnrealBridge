@@ -1845,6 +1845,48 @@ FString UUnrealBridgeEditorLibrary::GetProjectPluginsDirectory()
 	return FPaths::ConvertRelativePathToFull(FPaths::ProjectPluginsDir());
 }
 
+// ─── Editor world state ────────────────────────────────────────────────
+
+FString UUnrealBridgeEditorLibrary::GetEditorWorldName()
+{
+	if (!GEditor) return FString();
+	UWorld* World = GEditor->GetEditorWorldContext(false).World();
+	return World ? World->GetMapName() : FString();
+}
+
+bool UUnrealBridgeEditorLibrary::IsEditorWorldDirty()
+{
+	if (!GEditor) return false;
+	UWorld* World = GEditor->GetEditorWorldContext(false).World();
+	if (!World) return false;
+	UPackage* Pkg = World->GetOutermost();
+	return Pkg && Pkg->IsDirty();
+}
+
+int32 UUnrealBridgeEditorLibrary::GetLoadedLevelCount()
+{
+	if (!GEditor) return 0;
+	UWorld* World = GEditor->GetEditorWorldContext(false).World();
+	return World ? World->GetLevels().Num() : 0;
+}
+
+int32 UUnrealBridgeEditorLibrary::GetCurrentWorldActorCount()
+{
+	if (!GEditor) return 0;
+	UWorld* World = GEditor->GetEditorWorldContext(false).World();
+	if (!World) return 0;
+	int32 Count = 0;
+	for (ULevel* L : World->GetLevels())
+	{
+		if (!L) continue;
+		for (AActor* A : L->Actors)
+		{
+			if (A) ++Count;
+		}
+	}
+	return Count;
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))
