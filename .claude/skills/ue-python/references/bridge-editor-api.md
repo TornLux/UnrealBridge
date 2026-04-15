@@ -529,6 +529,33 @@ active grid size is index-based and changing it requires matching a
 stored preset. For custom sizes, edit the `*GridSizes` arrays directly
 via UE Python (`unreal.get_mutable_default_object(...)`).
 
+### is_auto_save_enabled() -> bool
+
+True if the editor autosave timer is enabled (matches the Editor
+Preferences → Loading & Saving → Auto Save checkbox).
+
+### set_auto_save_enabled(enabled) -> bool
+
+Toggle autosave. Persists to editor config.
+
+### get_auto_save_interval_minutes() -> int
+
+Autosave interval in minutes. Default `10`. Returns `-1` if the
+settings object is unavailable.
+
+### set_auto_save_interval_minutes(minutes) -> bool
+
+Set the interval. Accepts `1..120`; values outside that range are
+rejected. Persists to editor config.
+
+```python
+# Silence autosave while running a long scripted capture.
+prev = unreal.UnrealBridgeEditorLibrary.is_auto_save_enabled()
+unreal.UnrealBridgeEditorLibrary.set_auto_save_enabled(False)
+run_capture()
+unreal.UnrealBridgeEditorLibrary.set_auto_save_enabled(prev)
+```
+
 ---
 
 ## Asset Control

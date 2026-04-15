@@ -54,6 +54,7 @@
 #include "EditorModeManager.h"
 #include "UnrealWidget.h"
 #include "Settings/LevelEditorViewportSettings.h"
+#include "Settings/EditorLoadingSavingSettings.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1649,6 +1650,41 @@ bool UUnrealBridgeEditorLibrary::SetGridSnapEnabled(bool bEnabled)
 	ULevelEditorViewportSettings* S = GetMutableDefault<ULevelEditorViewportSettings>();
 	if (!S) return false;
 	S->GridEnabled = bEnabled;
+	S->PostEditChange();
+	S->SaveConfig();
+	return true;
+}
+
+// ─── Autosave settings ─────────────────────────────────────────────────
+
+bool UUnrealBridgeEditorLibrary::IsAutoSaveEnabled()
+{
+	const UEditorLoadingSavingSettings* S = GetDefault<UEditorLoadingSavingSettings>();
+	return S && S->bAutoSaveEnable;
+}
+
+bool UUnrealBridgeEditorLibrary::SetAutoSaveEnabled(bool bEnabled)
+{
+	UEditorLoadingSavingSettings* S = GetMutableDefault<UEditorLoadingSavingSettings>();
+	if (!S) return false;
+	S->bAutoSaveEnable = bEnabled;
+	S->PostEditChange();
+	S->SaveConfig();
+	return true;
+}
+
+int32 UUnrealBridgeEditorLibrary::GetAutoSaveIntervalMinutes()
+{
+	const UEditorLoadingSavingSettings* S = GetDefault<UEditorLoadingSavingSettings>();
+	return S ? S->AutoSaveTimeMinutes : -1;
+}
+
+bool UUnrealBridgeEditorLibrary::SetAutoSaveIntervalMinutes(int32 Minutes)
+{
+	if (Minutes < 1 || Minutes > 120) return false;
+	UEditorLoadingSavingSettings* S = GetMutableDefault<UEditorLoadingSavingSettings>();
+	if (!S) return false;
+	S->AutoSaveTimeMinutes = Minutes;
 	S->PostEditChange();
 	S->SaveConfig();
 	return true;

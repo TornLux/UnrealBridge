@@ -657,4 +657,31 @@ public:
 	/** Toggle grid-snap on/off. Persists to editor config. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool SetGridSnapEnabled(bool bEnabled);
+
+	// ─── Autosave settings ───────────────────────────────────
+
+	/** True if the editor autosave timer is currently enabled. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsAutoSaveEnabled();
+
+	/**
+	 * Toggle editor autosave. Persists to editor config.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetAutoSaveEnabled(bool bEnabled);
+
+	/**
+	 * Autosave interval in minutes (mirrors the value in Editor
+	 * Preferences → Loading & Saving → Auto Save). Returns -1 when the
+	 * settings object is unavailable.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetAutoSaveIntervalMinutes();
+
+	/**
+	 * Set the autosave interval. Accepts 1..120 minutes. Values outside
+	 * that range are rejected.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetAutoSaveIntervalMinutes(int32 Minutes);
 };
