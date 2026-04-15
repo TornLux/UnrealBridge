@@ -2054,6 +2054,76 @@ bool UUnrealBridgeLevelLibrary::SetKillZ(float NewKillZ)
 	return true;
 }
 
+// ─── Ground / downward trace helpers ───────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	static bool DownwardTrace(UWorld* World, float X, float Y, float StartHeight, FHitResult& OutHit, AActor* IgnoreActor = nullptr)
+	{
+		if (!World)
+		{
+			return false;
+		}
+		const FVector Start(X, Y, StartHeight);
+		const FVector End(X, Y, -StartHeight);
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeGroundTrace), /*bTraceComplex=*/ false);
+		if (IgnoreActor) Params.AddIgnoredActor(IgnoreActor);
+		return World->LineTraceSingleByChannel(OutHit, Start, End, ECC_Visibility, Params);
+	}
+}
+
+float UUnrealBridgeLevelLibrary::GetGroundHeightAt(float X, float Y, float StartHeight)
+{
+	FHitResult Hit;
+	if (!BridgeLevelImpl::DownwardTrace(BridgeLevelImpl::GetEditorWorld(), X, Y, StartHeight, Hit))
+	{
+		return -1.0e6f;
+	}
+	return Hit.ImpactPoint.Z;
+}
+
+bool UUnrealBridgeLevelLibrary::GetGroundNormalAt(float X, float Y, FVector& OutNormal, float StartHeight)
+{
+	OutNormal = FVector::ZAxisVector;
+	FHitResult Hit;
+	if (!BridgeLevelImpl::DownwardTrace(BridgeLevelImpl::GetEditorWorld(), X, Y, StartHeight, Hit))
+	{
+		return false;
+	}
+	OutNormal = Hit.ImpactNormal;
+	return true;
+}
+
+FString UUnrealBridgeLevelLibrary::GetGroundHitActor(float X, float Y, float StartHeight)
+{
+	FHitResult Hit;
+	if (!BridgeLevelImpl::DownwardTrace(BridgeLevelImpl::GetEditorWorld(), X, Y, StartHeight, Hit))
+	{
+		return FString();
+	}
+	AActor* A = Hit.GetActor();
+	return A ? A->GetActorLabel() : FString();
+}
+
+float UUnrealBridgeLevelLibrary::GetActorGroundClearance(const FString& ActorName, float MaxDistance)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AActor* Actor = BridgeLevelImpl::FindActor(World, ActorName);
+	if (!Actor)
+	{
+		return -1.0f;
+	}
+	const FVector Start = Actor->GetActorLocation();
+	const FVector End = Start - FVector(0, 0, FMath::Max(MaxDistance, 0.0f));
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeActorGround), /*bTraceComplex=*/ false, Actor);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+	{
+		return -1.0f;
+	}
+	return (Start - Hit.ImpactPoint).Size();
+}
+
 bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
 	const FString& ActorName,
 	const FString& ComponentName,

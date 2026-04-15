@@ -97,6 +97,40 @@ unreal.UnrealBridgeLevelLibrary.set_kill_z(-500.0)   # tighter pit
 unreal.UnrealBridgeLevelLibrary.set_world_gravity(-200.0, True)  # low-g scenario
 ```
 
+### get_ground_height_at(x, y, start_height=100000.0) -> float
+
+Downward line-trace (visibility channel) from `(x, y, start_height)`.
+Returns the Z of the first hit in cm, or `-1e6` on miss / no editor
+world. For landscape-based maps this is effectively the terrain
+height at the XY point.
+
+### get_ground_normal_at(x, y, start_height=100000.0) -> Vector or None
+
+Surface normal at the first hit. UE Python bool-plus-outparam: returns
+the `Vector` on success, `None` on miss.
+
+### get_ground_hit_actor(x, y, start_height=100000.0) -> str
+
+Label of the actor under the downward trace. Empty string on miss.
+Use to detect which landscape / static mesh floor an XY is over.
+
+### get_actor_ground_clearance(actor_name, max_distance=10000.0) -> float
+
+Distance in cm from an actor's pivot to the first surface below it
+(the actor is auto-ignored from the trace). Returns `-1.0` on miss or
+missing actor. Editor-world variant of the gameplay-side
+`get_pawn_ground_height`.
+
+```python
+clearance = unreal.UnrealBridgeLevelLibrary.get_actor_ground_clearance('Cube')
+if clearance > 200:
+    unreal.UnrealBridgeLevelLibrary.snap_actor_to_floor('Cube')
+```
+
+**Pitfall:** traces use `ECC_Visibility`. Actors with `NoCollision` or
+non-visibility collision profiles don't register — WorldPartition
+cells that haven't been loaded also return misses.
+
 ---
 
 ## Read — Actor Queries

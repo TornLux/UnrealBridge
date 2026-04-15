@@ -746,4 +746,39 @@ public:
 	/** Set the world's kill Z. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool SetKillZ(float NewKillZ);
+
+	// ─── Ground / downward trace helpers ─────────────────────
+	//
+	// Shoots a line trace straight down from a very high Z to find the
+	// first visibility-channel hit below an XY point. Useful for
+	// placement heuristics and landscape sampling without pulling the
+	// Landscape module into the plugin's public API.
+
+	/**
+	 * First hit Z below (X, Y) along the downward ray. Returns the hit
+	 * point's Z (cm), or -1e6 on miss / no editor world.
+	 *
+	 * @param StartHeight  Ray origin Z in cm. Default 1e5 (1 km) is
+	 *                     enough for most worlds; raise for skyboxes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static float GetGroundHeightAt(float X, float Y, float StartHeight = 100000.0f);
+
+	/**
+	 * Surface normal at the first hit below (X, Y). Returns false on miss.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool GetGroundNormalAt(float X, float Y, FVector& OutNormal, float StartHeight = 100000.0f);
+
+	/** Label of the actor hit by the downward trace at (X, Y). Empty on miss. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetGroundHitActor(float X, float Y, float StartHeight = 100000.0f);
+
+	/**
+	 * Distance (cm) from the actor's pivot to the first surface below it.
+	 * The actor itself is ignored. Returns -1.0 on miss / missing actor.
+	 * Editor-world variant of `bridge-gameplay-api.get_pawn_ground_height`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static float GetActorGroundClearance(const FString& ActorName, float MaxDistance = 10000.0f);
 };
