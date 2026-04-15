@@ -465,6 +465,63 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static FString BoxTraceFirstActor(FVector Start, FVector End, FVector BoxHalfExtent);
 
+	// ─── 3D geometry sensing ─────────────────────────────────
+	//
+	// Vertical probes and height sampling — what the horizontal trace family
+	// cannot answer: "how tall is the wall in front of me", "is the floor
+	// ahead a cliff", "what's the ceiling clearance".
+
+	/**
+	 * Downward trace at arbitrary XY. Casts from (X, Y, ZStart) down to
+	 * (X, Y, ZEnd). Returns true on hit with `OutGroundZ` set to the Z of
+	 * the impact point and `OutActorLabel` set to whatever was hit.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool GetHeightAt(float X, float Y, float ZStart, float ZEnd,
+		FString& OutActorLabel, float& OutGroundZ);
+
+	/**
+	 * Sample ground height along a straight XY segment. Returns a parallel
+	 * array of ground Z values (one per sample, evenly spaced) and the
+	 * actor labels hit at each sample. Missed samples get Z = ZEnd and an
+	 * empty label. Classic "walkable?" check: feed the pawn's current path
+	 * and look at the delta between consecutive heights — big jumps mean
+	 * cliffs, steep rises mean unwalkable slopes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetHeightProfileAlong(const FVector& StartXY, const FVector& EndXY,
+		int32 SampleCount, float ZStart, float ZEnd,
+		TArray<float>& OutHeights, TArray<FString>& OutActorLabels);
+
+	/**
+	 * Upward trace from `Origin`. Returns the distance (cm) to whatever is
+	 * directly above, clamped to `MaxUp`. Returns MaxUp when nothing was
+	 * hit — i.e. open sky above. Use to check "can I stand up from crouch
+	 * here" (compare to CrouchedHalfHeight vs full CapsuleHalfHeight) or
+	 * "can I jump this high".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static float MeasureCeilingHeight(const FVector& Origin, float MaxUp);
+
+	/**
+	 * Fan out N rays in the XY plane from a single origin. Replaces the
+	 * "call line_trace_hit_info N times from Python" pattern — one bridge
+	 * round-trip instead of N.
+	 *
+	 * @param StartAngleDeg   First ray angle (0 = +X, 90 = +Y).
+	 * @param SpanDeg         Total arc swept; 360 = full circle.
+	 * @param NumRays         Ray count. Evenly distributed across SpanDeg.
+	 * @param MaxDistance     Ray length.
+	 * @param OutDistances    Hit distance per ray (or MaxDistance if clear).
+	 * @param OutActorLabels  First-hit actor label (or "" if clear).
+	 * @return number of rays cast.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 ProbeFanXY(const FVector& Origin,
+		int32 NumRays, float MaxDistance,
+		float StartAngleDeg, float SpanDeg,
+		TArray<float>& OutDistances, TArray<FString>& OutActorLabels);
+
 	/**
 	 * Physics-overlap query: actors whose collision primitives intersect
 	 * a sphere at `Center` with `Radius` cm. Distinct from

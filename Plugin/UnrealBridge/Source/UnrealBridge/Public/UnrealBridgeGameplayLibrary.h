@@ -496,6 +496,56 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static float GetPawnSpeed();
 
+	/**
+	 * Read the pawn's traversal capabilities out of
+	 * CharacterMovementComponent + CapsuleComponent — the numbers an agent
+	 * needs to reason about "can I fit / jump / step up there". All values
+	 * returned via out-params:
+	 *
+	 *   JumpZVelocity        cm/s — vertical launch speed from Jump().
+	 *   MaxWalkSpeed         cm/s — current walking cap (post any runtime edit).
+	 *   MaxStepHeight        cm   — height the movement comp will auto-step.
+	 *   WalkableFloorAngleDeg deg — slopes shallower than this count as floor.
+	 *   CapsuleRadius        cm   — half-width of the collision capsule.
+	 *   CapsuleHalfHeight    cm   — half-height standing up.
+	 *   CrouchedHalfHeight   cm   — half-height while crouched.
+	 *   bCanCrouch           bool — whether MovementMode allows crouch.
+	 *   bCanJump             bool — NavAgentProps.bCanJump.
+	 *
+	 * Returns false with zero-initialised out-params when there's no PIE
+	 * pawn or the pawn isn't a Character.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPawnCapabilities(
+		float& JumpZVelocity, float& MaxWalkSpeed,
+		float& MaxStepHeight, float& WalkableFloorAngleDeg,
+		float& CapsuleRadius, float& CapsuleHalfHeight, float& CrouchedHalfHeight,
+		bool& bCanCrouch, bool& bCanJump);
+
+	/**
+	 * Simulate a projectile arc from `StartLocation` with `InitialVelocity`,
+	 * stepping ballistics at `StepDt` until we hit something, run out of
+	 * `MaxTime`, or pass `MaxPathLength` in travelled distance.
+	 *
+	 * Uses the PIE world's gravity (pawn's GravityScale is NOT applied —
+	 * pass a scaled velocity if you need to mimic the pawn's jump from
+	 * inside a gravity-scaled area). Each step line-traces the segment so
+	 * we stop the moment the trajectory would collide.
+	 *
+	 * Useful for "if I jump with this velocity, where do I land?" queries
+	 * without actually commanding the pawn to jump.
+	 *
+	 * @return true when the arc hit something (floor or wall). OutLandLocation
+	 *         is the impact; OutLandActorLabel names the hit actor.
+	 *         Returns false when the arc timed out in midair — OutLandLocation
+	 *         is the final simulated position.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SimulateJumpArc(
+		const FVector& StartLocation, const FVector& InitialVelocity,
+		float MaxTime, float StepDt, float MaxPathLength,
+		FVector& OutLandLocation, FString& OutLandActorLabel);
+
 	// ─── PIE runtime spawn/destroy + query ────────────────────────────
 	//
 	// These operate on the active PIE world — distinct from the Level

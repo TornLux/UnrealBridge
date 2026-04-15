@@ -7,6 +7,7 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Components/CapsuleComponent.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "Camera/PlayerCameraManager.h"
 #include "Camera/CameraShakeBase.h"
@@ -1136,6 +1137,97 @@ float UUnrealBridgeGameplayLibrary::GetPawnSpeed()
 		return -1.0f;
 	}
 	return Pawn->GetVelocity().Size();
+}
+
+bool UUnrealBridgeGameplayLibrary::GetPawnCapabilities(
+	float& JumpZVelocity, float& MaxWalkSpeed,
+	float& MaxStepHeight, float& WalkableFloorAngleDeg,
+	float& CapsuleRadius, float& CapsuleHalfHeight, float& CrouchedHalfHeight,
+	bool& bCanCrouch, bool& bCanJump)
+{
+	JumpZVelocity = 0.0f;
+	MaxWalkSpeed = 0.0f;
+	MaxStepHeight = 0.0f;
+	WalkableFloorAngleDeg = 0.0f;
+	CapsuleRadius = 0.0f;
+	CapsuleHalfHeight = 0.0f;
+	CrouchedHalfHeight = 0.0f;
+	bCanCrouch = false;
+	bCanJump = false;
+
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	ACharacter* Char = Cast<ACharacter>(BridgeAgentImpl::GetPlayerPawn(World));
+	if (!Char)
+	{
+		return false;
+	}
+	if (UCharacterMovementComponent* Move = Char->GetCharacterMovement())
+	{
+		JumpZVelocity = Move->JumpZVelocity;
+		MaxWalkSpeed = Move->MaxWalkSpeed;
+		MaxStepHeight = Move->MaxStepHeight;
+		WalkableFloorAngleDeg = Move->GetWalkableFloorAngle();
+		CrouchedHalfHeight = Move->GetCrouchedHalfHeight();
+		bCanCrouch = Move->GetNavAgentPropertiesRef().bCanCrouch;
+		bCanJump = Move->GetNavAgentPropertiesRef().bCanJump;
+	}
+	if (UCapsuleComponent* Capsule = Char->GetCapsuleComponent())
+	{
+		CapsuleRadius = Capsule->GetScaledCapsuleRadius();
+		CapsuleHalfHeight = Capsule->GetScaledCapsuleHalfHeight();
+	}
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::SimulateJumpArc(
+	const FVector& StartLocation, const FVector& InitialVelocity,
+	float MaxTime, float StepDt, float MaxPathLength,
+	FVector& OutLandLocation, FString& OutLandActorLabel)
+{
+	OutLandLocation = StartLocation;
+	OutLandActorLabel.Reset();
+
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	const float Dt = FMath::Max(StepDt, 0.01f);
+	const float TimeBudget = FMath::Max(MaxTime, Dt);
+	const float PathBudget = FMath::Max(MaxPathLength, 0.0f);
+	const float Gravity = World->GetGravityZ();      // typically -980
+	FVector Pos = StartLocation;
+	FVector Vel = InitialVelocity;
+	float PathTravelled = 0.0f;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeJumpArc), /*bTraceComplex*/ true);
+	// Exclude the pawn itself so the trace doesn't immediately hit our capsule.
+	if (APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World))
+	{
+		Params.AddIgnoredActor(Pawn);
+	}
+	for (float T = 0.0f; T < TimeBudget; T += Dt)
+	{
+		const FVector NextPos = Pos + Vel * Dt + FVector(0, 0, 0.5f * Gravity * Dt * Dt);
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, Pos, NextPos, ECC_Visibility, Params))
+		{
+			OutLandLocation = Hit.ImpactPoint;
+			if (AActor* A = Hit.GetActor())
+			{
+				OutLandActorLabel = A->GetActorLabel();
+			}
+			return true;
+		}
+		Vel.Z += Gravity * Dt;
+		PathTravelled += (NextPos - Pos).Size();
+		Pos = NextPos;
+		if (PathBudget > 0.0f && PathTravelled >= PathBudget)
+		{
+			break;
+		}
+	}
+	OutLandLocation = Pos;
+	return false;
 }
 
 // ─── PIE runtime spawn/destroy + query ─────────────────────────────────

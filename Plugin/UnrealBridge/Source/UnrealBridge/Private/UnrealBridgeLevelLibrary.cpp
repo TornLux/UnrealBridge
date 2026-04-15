@@ -1305,6 +1305,138 @@ FString UUnrealBridgeLevelLibrary::LineTraceFirstActor(FVector Start, FVector En
 	return A ? A->GetActorLabel() : FString();
 }
 
+bool UUnrealBridgeLevelLibrary::GetHeightAt(
+	float X, float Y, float ZStart, float ZEnd,
+	FString& OutActorLabel, float& OutGroundZ)
+{
+	OutActorLabel.Reset();
+	OutGroundZ = ZEnd;
+
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
+	if (!World)
+	{
+		return false;
+	}
+	const FVector Start(X, Y, ZStart);
+	const FVector End(X, Y, ZEnd);
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeGetHeightAt), /*bTraceComplex*/ true);
+	if (!World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+	{
+		return false;
+	}
+	if (AActor* A = Hit.GetActor())
+	{
+		OutActorLabel = A->GetActorLabel();
+	}
+	OutGroundZ = Hit.ImpactPoint.Z;
+	return true;
+}
+
+int32 UUnrealBridgeLevelLibrary::GetHeightProfileAlong(
+	const FVector& StartXY, const FVector& EndXY,
+	int32 SampleCount, float ZStart, float ZEnd,
+	TArray<float>& OutHeights, TArray<FString>& OutActorLabels)
+{
+	OutHeights.Reset();
+	OutActorLabels.Reset();
+	if (SampleCount < 2)
+	{
+		return 0;
+	}
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
+	if (!World)
+	{
+		return 0;
+	}
+	OutHeights.Reserve(SampleCount);
+	OutActorLabels.Reserve(SampleCount);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeHeightProfile), /*bTraceComplex*/ true);
+	for (int32 i = 0; i < SampleCount; ++i)
+	{
+		const float T = static_cast<float>(i) / static_cast<float>(SampleCount - 1);
+		const float SX = FMath::Lerp(StartXY.X, EndXY.X, T);
+		const float SY = FMath::Lerp(StartXY.Y, EndXY.Y, T);
+		FHitResult Hit;
+		const bool bHit = World->LineTraceSingleByChannel(
+			Hit, FVector(SX, SY, ZStart), FVector(SX, SY, ZEnd), ECC_Visibility, Params);
+		if (bHit)
+		{
+			OutHeights.Add(Hit.ImpactPoint.Z);
+			OutActorLabels.Add(Hit.GetActor() ? Hit.GetActor()->GetActorLabel() : FString());
+		}
+		else
+		{
+			OutHeights.Add(ZEnd);
+			OutActorLabels.Add(FString());
+		}
+	}
+	return SampleCount;
+}
+
+float UUnrealBridgeLevelLibrary::MeasureCeilingHeight(const FVector& Origin, float MaxUp)
+{
+	const float SafeMax = FMath::Max(MaxUp, 0.0f);
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
+	if (!World)
+	{
+		return SafeMax;
+	}
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeMeasureCeiling), /*bTraceComplex*/ true);
+	const FVector End = Origin + FVector(0, 0, SafeMax);
+	if (!World->LineTraceSingleByChannel(Hit, Origin, End, ECC_Visibility, Params))
+	{
+		return SafeMax;
+	}
+	return Hit.Distance;
+}
+
+int32 UUnrealBridgeLevelLibrary::ProbeFanXY(const FVector& Origin,
+	int32 NumRays, float MaxDistance,
+	float StartAngleDeg, float SpanDeg,
+	TArray<float>& OutDistances, TArray<FString>& OutActorLabels)
+{
+	OutDistances.Reset();
+	OutActorLabels.Reset();
+	if (NumRays <= 0)
+	{
+		return 0;
+	}
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
+	if (!World)
+	{
+		return 0;
+	}
+	OutDistances.Reserve(NumRays);
+	OutActorLabels.Reserve(NumRays);
+	const float SafeDist = FMath::Max(MaxDistance, 1.0f);
+	// If SpanDeg is 360 we want evenly spaced rays without double-counting the
+	// last angle; otherwise we want both endpoints included.
+	const bool bFullCircle = FMath::IsNearlyEqual(FMath::Abs(SpanDeg), 360.0f);
+	const float Divisor = (bFullCircle || NumRays == 1) ? NumRays : (NumRays - 1);
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeProbeFan), /*bTraceComplex*/ true);
+	for (int32 i = 0; i < NumRays; ++i)
+	{
+		const float Deg = StartAngleDeg + (SpanDeg * i) / Divisor;
+		const float Rad = FMath::DegreesToRadians(Deg);
+		const FVector Dir(FMath::Cos(Rad), FMath::Sin(Rad), 0.0f);
+		const FVector End = Origin + Dir * SafeDist;
+		FHitResult Hit;
+		if (World->LineTraceSingleByChannel(Hit, Origin, End, ECC_Visibility, Params))
+		{
+			OutDistances.Add(Hit.Distance);
+			OutActorLabels.Add(Hit.GetActor() ? Hit.GetActor()->GetActorLabel() : FString());
+		}
+		else
+		{
+			OutDistances.Add(SafeDist);
+			OutActorLabels.Add(FString());
+		}
+	}
+	return NumRays;
+}
+
 bool UUnrealBridgeLevelLibrary::LineTraceHitInfo(
 	FVector Start, FVector End,
 	FString& OutActorLabel, float& OutDistance, FVector& OutImpactLocation)
