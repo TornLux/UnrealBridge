@@ -492,4 +492,22 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetMainWindowTitle();
+
+	// ─── Host system info ────────────────────────────────────
+
+	/** Platform OS version string (e.g. "Windows 10 (Build 19045)"). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetOSVersion();
+
+	/** CPU brand string (e.g. "13th Gen Intel(R) Core(TM) i7-13700K"). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetCPUBrand();
+
+	/** Number of logical CPU cores available to the editor process. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetCPUCoreCount();
+
+	/** Total physical RAM installed on the host machine, in MB. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static float GetTotalPhysicalMemoryMB();
 };

@@ -345,6 +345,26 @@ Title text of the editor's main frame window (e.g. `"MyProject -
 Unreal Editor"`). Empty string when the MainFrame module isn't
 loaded yet (very early boot).
 
+### get_os_version() -> str
+
+Human-readable OS version, e.g. `"Windows 10 (22H2) [10.0.19045.6466]"`.
+
+### get_cpu_brand() -> str
+
+CPU brand string from `FPlatformMisc::GetCPUBrand` (e.g. `"AMD Ryzen
+9 7950X 16-Core Processor"`). May include trailing spaces on some
+platforms — strip client-side if displaying.
+
+### get_cpu_core_count() -> int
+
+Logical core count (physical cores × hyperthreads) available to the
+editor process. Useful as a cap for parallel-work heuristics.
+
+### get_total_physical_memory_mb() -> float
+
+Total physical RAM on the host in MB. Pair with
+`get_memory_usage_mb()` to compute headroom ratios.
+
 ---
 
 ## Asset Control

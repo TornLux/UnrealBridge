@@ -1273,6 +1273,33 @@ bool UUnrealBridgeEditorLibrary::IsEditorTabOpen(const FString& TabName)
 	return FGlobalTabmanager::Get()->FindExistingLiveTab(FName(*TabName)).IsValid();
 }
 
+FString UUnrealBridgeEditorLibrary::GetOSVersion()
+{
+	FString Label, Sub;
+	FPlatformMisc::GetOSVersions(Label, Sub);
+	if (Sub.IsEmpty())
+	{
+		return Label;
+	}
+	return FString::Printf(TEXT("%s (%s)"), *Label, *Sub);
+}
+
+FString UUnrealBridgeEditorLibrary::GetCPUBrand()
+{
+	return FPlatformMisc::GetCPUBrand();
+}
+
+int32 UUnrealBridgeEditorLibrary::GetCPUCoreCount()
+{
+	return FPlatformMisc::NumberOfCoresIncludingHyperthreads();
+}
+
+float UUnrealBridgeEditorLibrary::GetTotalPhysicalMemoryMB()
+{
+	const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+	return static_cast<float>(Stats.TotalPhysical) / (1024.0f * 1024.0f);
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))
