@@ -2204,6 +2204,78 @@ int32 UUnrealBridgeLevelLibrary::GetAttachmentDepth(const FString& ActorName)
 	return Depth;
 }
 
+// ─── Static-mesh budget stats ──────────────────────────────────────────
+
+int32 UUnrealBridgeLevelLibrary::GetActorVertexCount(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return -1;
+	TArray<UStaticMeshComponent*> SMCs;
+	Actor->GetComponents<UStaticMeshComponent>(SMCs);
+	int32 Total = 0;
+	for (UStaticMeshComponent* SMC : SMCs)
+	{
+		UStaticMesh* Mesh = SMC ? SMC->GetStaticMesh() : nullptr;
+		if (!Mesh || !Mesh->GetRenderData()) continue;
+		const auto& LODs = Mesh->GetRenderData()->LODResources;
+		if (LODs.Num() > 0)
+		{
+			Total += LODs[0].GetNumVertices();
+		}
+	}
+	return Total;
+}
+
+int32 UUnrealBridgeLevelLibrary::GetActorTriangleCount(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return -1;
+	TArray<UStaticMeshComponent*> SMCs;
+	Actor->GetComponents<UStaticMeshComponent>(SMCs);
+	int32 Total = 0;
+	for (UStaticMeshComponent* SMC : SMCs)
+	{
+		UStaticMesh* Mesh = SMC ? SMC->GetStaticMesh() : nullptr;
+		if (!Mesh || !Mesh->GetRenderData()) continue;
+		const auto& LODs = Mesh->GetRenderData()->LODResources;
+		if (LODs.Num() > 0)
+		{
+			Total += LODs[0].GetNumTriangles();
+		}
+	}
+	return Total;
+}
+
+int32 UUnrealBridgeLevelLibrary::GetActorMaterialSlotCount(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return -1;
+	TArray<UMeshComponent*> MCs;
+	Actor->GetComponents<UMeshComponent>(MCs);
+	int32 Total = 0;
+	for (UMeshComponent* MC : MCs)
+	{
+		if (MC) Total += MC->GetNumMaterials();
+	}
+	return Total;
+}
+
+int32 UUnrealBridgeLevelLibrary::GetActorLODCount(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return -1;
+	TArray<UStaticMeshComponent*> SMCs;
+	Actor->GetComponents<UStaticMeshComponent>(SMCs);
+	int32 MaxLODs = 0;
+	for (UStaticMeshComponent* SMC : SMCs)
+	{
+		UStaticMesh* Mesh = SMC ? SMC->GetStaticMesh() : nullptr;
+		if (!Mesh || !Mesh->GetRenderData()) continue;
+		MaxLODs = FMath::Max(MaxLODs, Mesh->GetRenderData()->LODResources.Num());
+	}
+	return MaxLODs;
+}
+
 bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
 	const FString& ActorName,
 	const FString& ComponentName,

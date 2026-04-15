@@ -815,4 +815,35 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 GetAttachmentDepth(const FString& ActorName);
+
+	// ─── Static-mesh budget stats ────────────────────────────
+	//
+	// All four sum over every UStaticMeshComponent on the actor (static
+	// meshes only — skeletal and Niagara components are skipped). LOD 0
+	// is sampled; use the UE Python API for per-LOD detail. Returns -1
+	// for missing actor / 0 for actors with no static meshes.
+
+	/** LOD 0 vertex count summed over all StaticMeshComponents. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetActorVertexCount(const FString& ActorName);
+
+	/** LOD 0 triangle count summed over all StaticMeshComponents. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetActorTriangleCount(const FString& ActorName);
+
+	/**
+	 * Distinct material-slot count across every mesh component (static +
+	 * skeletal). Counts slots — not unique materials — so a component
+	 * with a 4-slot mesh contributes 4 even if all slots reference the
+	 * same material.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetActorMaterialSlotCount(const FString& ActorName);
+
+	/**
+	 * Max LOD count across all StaticMeshComponents on the actor (i.e.
+	 * the "best-authored" mesh's LOD depth). Returns 0 for non-SMC actors.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetActorLODCount(const FString& ActorName);
 };

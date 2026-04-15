@@ -160,6 +160,40 @@ for a in unreal.UnrealBridgeLevelLibrary.get_actor_names('', '', ''):
         print(f'{a}: deeply nested (depth {d})')
 ```
 
+### get_actor_vertex_count(actor_name) -> int
+
+LOD 0 vertex count summed over every `UStaticMeshComponent` on the
+actor. Skeletal / Niagara / procedural meshes are skipped — use the
+native UE Python API for those. Returns `-1` for missing actor, `0`
+for actors with no SMCs or empty mesh slots.
+
+### get_actor_triangle_count(actor_name) -> int
+
+LOD 0 triangle count summed over all StaticMeshComponents.
+
+### get_actor_material_slot_count(actor_name) -> int
+
+Total material-slot count across every `UMeshComponent` (static +
+skeletal). Counts slots, not unique materials — a 4-slot mesh with
+all slots pointing at one material contributes 4.
+
+### get_actor_lod_count(actor_name) -> int
+
+Max LOD count across all SMCs (i.e. deepest-authored mesh). Returns
+`0` for actors with no static-mesh data.
+
+```python
+# Flag over-budget actors.
+for a in unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', ''):
+    t = unreal.UnrealBridgeLevelLibrary.get_actor_triangle_count(a)
+    if t > 100_000:
+        print(f'{a}: {t:,} tris — consider LODs')
+```
+
+**Pitfall:** LOD 0 is the most expensive LOD; these numbers are *not*
+what the GPU actually renders at runtime (which depends on distance,
+scalability, and Nanite). Treat as a worst-case budget reference.
+
 ---
 
 ## Read — Actor Queries
