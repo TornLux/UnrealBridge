@@ -672,6 +672,29 @@ sublevels. On World Partition maps this does NOT include WP cells.
 Total actor count across every loaded level. Complements
 `get_persistent_level_actor_count` (which excludes sublevels).
 
+### get_editor_build_date() -> str
+
+Compile-time build date of the running editor binary
+(e.g. `"Nov 20 2025"`). Useful for bug reports — different engine
+installs may behave differently.
+
+### get_engine_changelist() -> int
+
+Perforce CL (or repo hash) the engine binary was built from. `0`
+when unknown (e.g. local source build without SCC metadata).
+
+### is_engine_installed() -> bool
+
+True when the engine was produced by Epic's installer / Launcher
+(detected via `Engine/Build/InstalledBuild.txt`). False for
+source-built engines.
+
+### is_unattended_mode() -> bool
+
+True when the editor was launched with `-Unattended` (automation
+/ CI), False for interactive sessions. Use to gate UI-producing
+helpers (toasts, modals) that should no-op in CI.
+
 ---
 
 ## Asset Control

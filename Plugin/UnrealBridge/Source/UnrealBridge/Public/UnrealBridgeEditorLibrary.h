@@ -804,4 +804,29 @@ public:
 	/** Total actor count across all loaded levels in the current world. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static int32 GetCurrentWorldActorCount();
+
+	// ─── Engine build info ───────────────────────────────────
+
+	/** Compile-time build date of the running engine binary. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetEditorBuildDate();
+
+	/**
+	 * Engine source changelist this binary was built from (Perforce CL
+	 * number or a repo-level hash when built from Git). Returns 0 when
+	 * unknown.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetEngineChangelist();
+
+	/**
+	 * True when the engine install was produced by Epic's installer /
+	 * Launcher (i.e. `Engine/Build/InstalledBuild.txt` exists).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsEngineInstalled();
+
+	/** True when the editor was launched with `-Unattended` (automation / CI). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsUnattendedMode();
 };

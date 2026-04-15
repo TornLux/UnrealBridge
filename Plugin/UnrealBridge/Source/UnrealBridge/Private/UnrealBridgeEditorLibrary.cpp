@@ -1887,6 +1887,28 @@ int32 UUnrealBridgeEditorLibrary::GetCurrentWorldActorCount()
 	return Count;
 }
 
+// ─── Engine build info ─────────────────────────────────────────────────
+
+FString UUnrealBridgeEditorLibrary::GetEditorBuildDate()
+{
+	return FApp::GetBuildDate();
+}
+
+int32 UUnrealBridgeEditorLibrary::GetEngineChangelist()
+{
+	return static_cast<int32>(FEngineVersion::Current().GetChangelist());
+}
+
+bool UUnrealBridgeEditorLibrary::IsEngineInstalled()
+{
+	return FApp::IsEngineInstalled();
+}
+
+bool UUnrealBridgeEditorLibrary::IsUnattendedMode()
+{
+	return FApp::IsUnattended();
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))
