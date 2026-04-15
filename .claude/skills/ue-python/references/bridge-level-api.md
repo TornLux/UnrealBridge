@@ -388,6 +388,59 @@ pierced = unreal.UnrealBridgeLevelLibrary.multi_line_trace_actors(
 # e.g. ['Ceiling', 'Platform_2', 'Landscape']
 ```
 
+### sphere_trace_first_actor(start, end, radius) -> str
+
+Sphere sweep (fat ray) against the editor world's visibility channel.
+Catches actors a thin line-trace would miss when they graze the ray —
+useful for cover / line-of-interest detection. Returns the first hit
+actor's label, or empty string.
+
+```python
+hit = unreal.UnrealBridgeLevelLibrary.sphere_trace_first_actor(
+    unreal.Vector(0, 0, 0), unreal.Vector(0, 0, -10000), 50.0)
+```
+
+### multi_sphere_trace_actors(start, end, radius) -> list[str]
+
+Multi-hit sphere sweep. Deduplicated labels ordered near → far.
+
+### box_trace_first_actor(start, end, box_half_extent) -> str
+
+Axis-aligned box sweep (`FQuat::Identity` orientation). `box_half_extent`
+is a `Vector` — the box's half-size on each axis. Returns the first hit
+actor's label, or empty string. For oriented-box sweeps drop to the UE
+Python API directly — this wrapper intentionally keeps the surface flat.
+
+```python
+hit = unreal.UnrealBridgeLevelLibrary.box_trace_first_actor(
+    unreal.Vector(0, 0, 0), unreal.Vector(0, 0, -10000),
+    unreal.Vector(50, 50, 50))
+```
+
+### overlap_sphere_actors(center, radius, class_filter) -> list[str]
+
+Physics-overlap: actors whose collision primitives intersect a sphere at
+`center` with `radius` cm. **Distinct from `find_actors_in_radius`**,
+which tests actor centroids only — overlap catches large actors that
+straddle the sphere even if their pivot is outside.
+
+Results are deduplicated; order follows the query's internal traversal
+(not distance-sorted). Pass `class_filter=""` for no filter.
+
+```python
+nearby = unreal.UnrealBridgeLevelLibrary.overlap_sphere_actors(
+    unreal.Vector(0, 0, 0), 500.0, 'StaticMeshActor')
+```
+
+**Pitfalls (all sweep/overlap queries)**
+
+- Use the *visibility* collision channel — actors with `NoCollision` or
+  non-visibility collision profiles won't be reported.
+- All four wrappers run `bTraceComplex=false` (primitive shapes, not
+  triangle-level). For per-triangle sweeps use the native UE API.
+- `radius` / `box_half_extent` are clamped to ≥ 0 internally; negative
+  values become 0 (degenerates to a line trace).
+
 ---
 
 ## Components / Sockets

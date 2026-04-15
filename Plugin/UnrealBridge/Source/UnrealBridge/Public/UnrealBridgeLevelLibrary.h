@@ -419,6 +419,44 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static TArray<FString> MultiLineTraceActors(FVector Start, FVector End);
 
+	/**
+	 * Sphere sweep (fat ray) against the editor world's visibility channel.
+	 * Catches actors a line trace would miss — useful for cover/interest
+	 * detection where partial overlap with the ray tube counts as a hit.
+	 * Returns the first hit actor's label, or empty string.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString SphereTraceFirstActor(FVector Start, FVector End, float Radius);
+
+	/**
+	 * Multi-hit sphere sweep. Returns deduplicated actor labels along the
+	 * swept volume, ordered nearest to farthest.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> MultiSphereTraceActors(FVector Start, FVector End, float Radius);
+
+	/**
+	 * Axis-aligned box sweep against the editor world. `BoxHalfExtent` is
+	 * the half-size on each axis. Returns the first hit actor's label, or
+	 * empty string. For oriented box sweeps call the UE API directly —
+	 * this wrapper keeps the Python surface simple.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString BoxTraceFirstActor(FVector Start, FVector End, FVector BoxHalfExtent);
+
+	/**
+	 * Physics-overlap query: actors whose collision primitives intersect
+	 * a sphere at `Center` with `Radius` cm. Distinct from
+	 * `FindActorsInRadius`, which tests actor centroids — overlap catches
+	 * large actors straddling the sphere even if their pivot is outside.
+	 * Results are deduplicated; order matches the query's internal order
+	 * (not distance-sorted).
+	 *
+	 * @param ClassFilter  Optional class short name / full path.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> OverlapSphereActors(FVector Center, float Radius, const FString& ClassFilter);
+
 	// ─── Components / sockets ────────────────────────────
 
 	/**

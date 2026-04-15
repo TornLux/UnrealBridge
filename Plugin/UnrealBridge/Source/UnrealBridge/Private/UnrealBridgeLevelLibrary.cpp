@@ -20,6 +20,7 @@
 #include "Materials/MaterialInterface.h"
 #include "CollisionQueryParams.h"
 #include "Engine/HitResult.h"
+#include "Engine/OverlapResult.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeLevel"
 
@@ -1300,6 +1301,107 @@ TArray<FString> UUnrealBridgeLevelLibrary::MultiLineTraceActors(FVector Start, F
 			Seen.Add(A);
 			Out.Add(A->GetActorLabel());
 		}
+	}
+	return Out;
+}
+
+FString UUnrealBridgeLevelLibrary::SphereTraceFirstActor(FVector Start, FVector End, float Radius)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return FString();
+	}
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeSphereTrace), /*bTraceComplex*/ false);
+	const bool bHit = World->SweepSingleByChannel(
+		Hit, Start, End, FQuat::Identity, ECC_Visibility,
+		FCollisionShape::MakeSphere(FMath::Max(Radius, 0.0f)), Params);
+	if (!bHit)
+	{
+		return FString();
+	}
+	AActor* A = Hit.GetActor();
+	return A ? A->GetActorLabel() : FString();
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::MultiSphereTraceActors(FVector Start, FVector End, float Radius)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	TArray<FHitResult> Hits;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeMultiSphereTrace), /*bTraceComplex*/ false);
+	World->SweepMultiByChannel(
+		Hits, Start, End, FQuat::Identity, ECC_Visibility,
+		FCollisionShape::MakeSphere(FMath::Max(Radius, 0.0f)), Params);
+	TSet<AActor*> Seen;
+	for (const FHitResult& H : Hits)
+	{
+		AActor* A = H.GetActor();
+		if (A && !Seen.Contains(A))
+		{
+			Seen.Add(A);
+			Out.Add(A->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+FString UUnrealBridgeLevelLibrary::BoxTraceFirstActor(FVector Start, FVector End, FVector BoxHalfExtent)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return FString();
+	}
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeBoxTrace), /*bTraceComplex*/ false);
+	const FVector SafeExtent(
+		FMath::Max(BoxHalfExtent.X, 0.0f),
+		FMath::Max(BoxHalfExtent.Y, 0.0f),
+		FMath::Max(BoxHalfExtent.Z, 0.0f));
+	const bool bHit = World->SweepSingleByChannel(
+		Hit, Start, End, FQuat::Identity, ECC_Visibility,
+		FCollisionShape::MakeBox(SafeExtent), Params);
+	if (!bHit)
+	{
+		return FString();
+	}
+	AActor* A = Hit.GetActor();
+	return A ? A->GetActorLabel() : FString();
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::OverlapSphereActors(FVector Center, float Radius, const FString& ClassFilter)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	TArray<FOverlapResult> Overlaps;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeOverlapSphere), /*bTraceComplex*/ false);
+	World->OverlapMultiByChannel(
+		Overlaps, Center, FQuat::Identity, ECC_Visibility,
+		FCollisionShape::MakeSphere(FMath::Max(Radius, 0.0f)), Params);
+	TSet<AActor*> Seen;
+	for (const FOverlapResult& O : Overlaps)
+	{
+		AActor* A = O.GetActor();
+		if (!A || Seen.Contains(A))
+		{
+			continue;
+		}
+		if (!BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter))
+		{
+			continue;
+		}
+		Seen.Add(A);
+		Out.Add(A->GetActorLabel());
 	}
 	return Out;
 }
