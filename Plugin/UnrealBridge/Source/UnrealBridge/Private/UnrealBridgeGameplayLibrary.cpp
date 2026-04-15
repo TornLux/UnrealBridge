@@ -452,3 +452,78 @@ bool UUnrealBridgeGameplayLibrary::ClearStickyInput(const FString& InputActionPa
 	BridgeAgentImpl::StopStickyTickerIfIdle();
 	return Removed > 0;
 }
+
+// ─── State inspection + reset ──────────────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::GetControlRotation(FRotator& OutRotation)
+{
+	OutRotation = FRotator::ZeroRotator;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC)
+	{
+		return false;
+	}
+	OutRotation = PC->GetControlRotation();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::TeleportPawn(
+	const FVector& NewLocation,
+	const FRotator& NewRotation,
+	bool bSnapController,
+	bool bStopVelocity)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn)
+	{
+		return false;
+	}
+
+	// Stop before teleport — moving a character while velocity is live can
+	// cause it to slide past the target on the next movement tick.
+	if (bStopVelocity)
+	{
+		if (UPawnMovementComponent* Move = Pawn->GetMovementComponent())
+		{
+			Move->StopMovementImmediately();
+		}
+	}
+
+	Pawn->SetActorLocationAndRotation(NewLocation, NewRotation, /*bSweep=*/ false,
+		/*OutSweepHitResult=*/ nullptr, ETeleportType::TeleportPhysics);
+
+	if (bSnapController)
+	{
+		if (APlayerController* PC = World->GetFirstPlayerController())
+		{
+			PC->SetControlRotation(NewRotation);
+		}
+	}
+	return true;
+}
+
+int32 UUnrealBridgeGameplayLibrary::GetStickyInputs(TArray<FString>& OutPaths, TArray<FVector>& OutValues)
+{
+	OutPaths.Reset();
+	OutValues.Reset();
+	OutPaths.Reserve(BridgeAgentImpl::GStickyInputs.Num());
+	OutValues.Reserve(BridgeAgentImpl::GStickyInputs.Num());
+	for (const TPair<FString, BridgeAgentImpl::FStickyEntry>& Pair : BridgeAgentImpl::GStickyInputs)
+	{
+		OutPaths.Add(Pair.Key);
+		OutValues.Add(Pair.Value.Value);
+	}
+	return OutPaths.Num();
+}
+
+bool UUnrealBridgeGameplayLibrary::IsInPIE()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	return World != nullptr && BridgeAgentImpl::GetPlayerPawn(World) != nullptr;
+}

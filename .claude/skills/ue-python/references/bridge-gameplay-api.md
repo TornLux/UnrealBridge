@@ -215,3 +215,87 @@ my input doing anything":
   zero despite a non-zero `last_control_input_vector` points at a
   root-motion / custom locomotion override.
 
+---
+
+## State inspection + reset
+
+Small surface for "is the agent loop even running?" and "put the pawn
+back to a known state" scenarios, without round-tripping a full
+observation.
+
+### is_in_pie() -> bool
+
+True when a PIE world is currently playing **and** a player pawn has
+spawned. Cheap gate for Python loops that should no-op outside PIE.
+
+```python
+import unreal
+if not unreal.UnrealBridgeGameplayLibrary.is_in_pie():
+    return  # agent loop waits for PIE to start
+```
+
+### get_control_rotation() -> FRotator or None
+
+Read the current `APlayerController::GetControlRotation`. Pairs with
+`set_control_rotation` — use this to remember the pre-teleport camera
+direction so you can restore it after a scenario ends.
+
+Returns `None` when PIE is not running (UE Python bool-plus-outparam
+convention). On success returns the `FRotator` directly.
+
+```python
+rot = unreal.UnrealBridgeGameplayLibrary.get_control_rotation()
+if rot is not None:
+    print(f'camera yaw={rot.yaw:.1f}')
+```
+
+### get_sticky_inputs() -> (count, paths, values)
+
+Enumerate active sticky EnhancedInput entries. Returned as a 3-tuple:
+- `count` (int): number of entries.
+- `paths` (array of str): each entry's asset path, e.g.
+  `/LocomotionDriver/Input/IA_Move`.
+- `values` (array of Vector): per-entry injected value, same index as `paths`.
+
+Useful for asserting "no input is being held" between scenarios, or
+inspecting a live input-replay script.
+
+```python
+count, paths, values = unreal.UnrealBridgeGameplayLibrary.get_sticky_inputs()
+for p, v in zip(paths, values):
+    print(f'  {p} = ({v.x}, {v.y}, {v.z})')
+```
+
+### teleport_pawn(new_location, new_rotation, b_snap_controller=True, b_stop_velocity=True) -> bool
+
+Hard-reset the pawn's pose for scenario setup. Wraps
+`SetActorLocationAndRotation(..., ETeleportType::TeleportPhysics)` and
+optionally stops movement + snaps the controller rotation to match.
+
+- `b_snap_controller=True` (default): also set the player controller's
+  rotation. Keeps `apply_movement_input(forward)` intuitive post-teleport.
+  Set False if the camera/controller should retain its existing aim.
+- `b_stop_velocity=True` (default): call `StopMovementImmediately` on
+  the movement component so the character doesn't slide past the target
+  on the next physics tick. Set False to preserve momentum (e.g. to
+  launch from a moving state into a new pose).
+
+```python
+import unreal
+ok = unreal.UnrealBridgeGameplayLibrary.teleport_pawn(
+    new_location=unreal.Vector(500, 0, 100),
+    new_rotation=unreal.Rotator(0, 0, 0),
+    b_snap_controller=True,
+    b_stop_velocity=True,
+)
+```
+
+**Pitfalls**
+- Returns False outside PIE (no pawn to teleport).
+- The pawn's collision shape is swept at `TeleportPhysics` — if the
+  target location is inside a wall, physics will still resolve it on the
+  next tick (may nudge the pawn out). For pure geometric test setups,
+  pick a location in clear space.
+- Non-Character pawns skip `StopMovementImmediately` gracefully (their
+  `UPawnMovementComponent::StopMovementImmediately` is a no-op).
+

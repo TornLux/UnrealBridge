@@ -254,4 +254,47 @@ public:
 	/** Remove a single sticky entry. Pass empty string to clear all. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool ClearStickyInput(const FString& InputActionPath = TEXT(""));
+
+	// ─── State inspection + reset ─────────────────────────────────────
+
+	/**
+	 * Read the current APlayerController control rotation. Pairs with
+	 * SetControlRotation — useful for "where is the camera facing right
+	 * now" queries without assembling a full FAgentObservation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetControlRotation(FRotator& OutRotation);
+
+	/**
+	 * Hard-reset the pawn's pose. Combines SetActorLocationAndRotation
+	 * with optional controller re-alignment and velocity clearing so a
+	 * Python agent can drop the pawn at a known state for scenario setup.
+	 *
+	 * @param NewLocation       Target world-space location.
+	 * @param NewRotation       Target pawn rotation. Also applied to the
+	 *                          controller when bSnapController=true.
+	 * @param bSnapController   If true, also set PlayerController->SetControlRotation.
+	 * @param bStopVelocity     If true, zero linear/angular velocity via
+	 *                          StopMovementImmediately on the movement comp.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool TeleportPawn(
+		const FVector& NewLocation,
+		const FRotator& NewRotation,
+		bool bSnapController = true,
+		bool bStopVelocity = true);
+
+	/**
+	 * Enumerate active sticky EnhancedInput entries. Paths and values are
+	 * returned in parallel arrays; index i in OutPaths corresponds to
+	 * index i in OutValues.
+	 *
+	 * @return Number of active sticky entries.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static int32 GetStickyInputs(TArray<FString>& OutPaths, TArray<FVector>& OutValues);
+
+	/** True when a PIE world is currently playing with a player pawn spawned. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool IsInPIE();
 };
