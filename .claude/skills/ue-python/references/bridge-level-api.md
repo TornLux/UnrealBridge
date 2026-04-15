@@ -502,6 +502,46 @@ print(f'center={b.origin} extent={b.box_extent} r={b.sphere_radius:.1f}')
 
 ---
 
+## Editor visibility grouping
+
+All four helpers toggle the **editor-only** `bHiddenEd` flag (via
+`AActor::SetIsTemporarilyHiddenInEditor`) — they do NOT affect
+`bHiddenInGame` and have zero runtime impact. Mirrors the `H` /
+`Alt+H` hotkeys in the viewport. Every write is one undo transaction.
+
+### isolate_actors(keep_visible) -> int
+
+Hide every level actor that's NOT in `keep_visible`. Returns the count
+of newly-hidden actors (already-hidden actors are skipped, so calling
+again is a no-op). Pair with `show_all_actors()` to restore.
+
+```python
+cubes = unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', 'Cube')
+unreal.UnrealBridgeLevelLibrary.isolate_actors(cubes[:1])
+```
+
+### show_all_actors() -> int
+
+Un-hide every currently-hidden actor, including actors that were
+already hidden before `isolate_actors`. Returns the count made visible.
+
+**Pitfall:** this un-hides *all* actors, not just those hidden by the
+most-recent isolate call — including default engine-side invisibles
+(`DefaultPhysicsVolume`, `AbstractNavData-Default`). Prefer an
+`undo()` if you need to restore the exact prior state.
+
+### get_hidden_actor_names() -> list[str]
+
+Labels of actors whose `bHiddenEd` flag is set. Includes engine-created
+background actors; filter those out client-side if needed.
+
+### toggle_actors_hidden(actor_names) -> int
+
+Flip `bHiddenEd` on each named actor. Returns the count successfully
+toggled (missing actor names are skipped silently).
+
+---
+
 ## Components / Sockets
 
 ### get_actor_sockets(actor_name) -> list[str]

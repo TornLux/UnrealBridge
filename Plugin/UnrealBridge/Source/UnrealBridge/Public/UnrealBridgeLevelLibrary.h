@@ -526,4 +526,37 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static FBridgeActorBounds GetLevelBounds();
+
+	// ─── Editor visibility grouping ──────────────────────────
+	//
+	// All helpers here manipulate the editor-only "bHiddenEd" flag via
+	// SetActorHiddenInEditor — they do NOT touch bHiddenInGame and have
+	// no runtime effect. Mirrors the "H / Alt+H" hotkey behaviour in the
+	// viewport. Every write is wrapped in a single undo transaction.
+
+	/**
+	 * Hide every actor in the current level that is NOT in `KeepVisible`.
+	 * Matches the viewport "Isolate Selection" gesture. Actors that were
+	 * already hidden stay hidden. Returns the count of actors newly hidden.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 IsolateActors(const TArray<FString>& KeepVisible);
+
+	/**
+	 * Un-hide every currently-hidden actor in the editor. Returns the count
+	 * of actors made visible. Pairs with IsolateActors to restore the scene.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 ShowAllActors();
+
+	/** Labels of actors whose `bHiddenEd` flag is currently set. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetHiddenActorNames();
+
+	/**
+	 * Flip each named actor's editor hidden state. Returns the count of
+	 * actors successfully toggled (missing names skipped).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 ToggleActorsHidden(const TArray<FString>& ActorNames);
 };

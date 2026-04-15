@@ -1627,4 +1627,99 @@ FBridgeActorBounds UUnrealBridgeLevelLibrary::GetLevelBounds()
 	return Out;
 }
 
+// ─── Editor visibility grouping ────────────────────────────────────────
+
+int32 UUnrealBridgeLevelLibrary::IsolateActors(const TArray<FString>& KeepVisible)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return 0;
+	}
+	TSet<AActor*> Keep;
+	for (const FString& Name : KeepVisible)
+	{
+		if (AActor* A = BridgeLevelImpl::FindActor(World, Name))
+		{
+			Keep.Add(A);
+		}
+	}
+	FScopedTransaction Tr(LOCTEXT("IsolateActors", "Isolate Actors"));
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A || Keep.Contains(A) || A->IsHiddenEd())
+		{
+			continue;
+		}
+		A->Modify();
+		A->SetIsTemporarilyHiddenInEditor(true);
+		++Count;
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::ShowAllActors()
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return 0;
+	}
+	FScopedTransaction Tr(LOCTEXT("ShowAllActors", "Show All Actors"));
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A || !A->IsHiddenEd())
+		{
+			continue;
+		}
+		A->Modify();
+		A->SetIsTemporarilyHiddenInEditor(false);
+		++Count;
+	}
+	return Count;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetHiddenActorNames()
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && A->IsHiddenEd())
+		{
+			Out.Add(A->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+int32 UUnrealBridgeLevelLibrary::ToggleActorsHidden(const TArray<FString>& ActorNames)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return 0;
+	}
+	FScopedTransaction Tr(LOCTEXT("ToggleActorsHidden", "Toggle Actors Hidden"));
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		A->SetIsTemporarilyHiddenInEditor(!A->IsHiddenEd());
+		++Count;
+	}
+	return Count;
+}
+
 #undef LOCTEXT_NAMESPACE
