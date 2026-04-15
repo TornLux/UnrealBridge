@@ -39,6 +39,9 @@
 #include "ShowFlags.h"
 #include "Engine/EngineBaseTypes.h"
 #include "Editor/UnrealEdTypes.h"
+#include "Interfaces/IPluginManager.h"
+#include "Framework/Notifications/NotificationManager.h"
+#include "Widgets/Notifications/SNotificationList.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1060,6 +1063,67 @@ FString UUnrealBridgeEditorLibrary::GetViewportType()
 		return FString();
 	}
 	return BridgeEditorImpl::ViewportTypeToString(VC->GetViewportType());
+}
+
+// ─── Editor UX + plugin introspection ──────────────────────────────────
+
+bool UUnrealBridgeEditorLibrary::ShowEditorNotification(const FString& Message, float DurationSeconds, bool bSuccess)
+{
+	if (Message.IsEmpty())
+	{
+		return false;
+	}
+	FNotificationInfo Info(FText::FromString(Message));
+	Info.ExpireDuration = FMath::Clamp(DurationSeconds, 1.0f, 60.0f);
+	Info.bUseSuccessFailIcons = true;
+	Info.bFireAndForget = true;
+	TSharedPtr<SNotificationItem> Item = FSlateNotificationManager::Get().AddNotification(Info);
+	if (Item.IsValid())
+	{
+		Item->SetCompletionState(bSuccess ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
+		return true;
+	}
+	return false;
+}
+
+TArray<FString> UUnrealBridgeEditorLibrary::GetEnabledPlugins()
+{
+	TArray<FString> Out;
+	for (const TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetEnabledPlugins())
+	{
+		Out.Add(Plugin->GetName());
+	}
+	Out.Sort();
+	return Out;
+}
+
+bool UUnrealBridgeEditorLibrary::IsPluginEnabled(const FString& PluginName)
+{
+	if (PluginName.IsEmpty())
+	{
+		return false;
+	}
+	for (const TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetEnabledPlugins())
+	{
+		if (Plugin->GetName().Equals(PluginName, ESearchCase::IgnoreCase))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+FString UUnrealBridgeEditorLibrary::GetEditorBuildConfig()
+{
+	switch (FApp::GetBuildConfiguration())
+	{
+	case EBuildConfiguration::Debug:       return TEXT("Debug");
+	case EBuildConfiguration::DebugGame:   return TEXT("DebugGame");
+	case EBuildConfiguration::Development: return TEXT("Development");
+	case EBuildConfiguration::Shipping:    return TEXT("Shipping");
+	case EBuildConfiguration::Test:        return TEXT("Test");
+	default:                               return TEXT("Unknown");
+	}
 }
 
 #undef LOCTEXT_NAMESPACE

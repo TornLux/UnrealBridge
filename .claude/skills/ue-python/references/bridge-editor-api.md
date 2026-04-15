@@ -179,6 +179,49 @@ batching via `exec-file` if toggling many flags.
 
 ---
 
+## Editor UX + plugin introspection
+
+### show_editor_notification(message, duration_seconds=4.0, b_success=True) -> bool
+
+Show a Slate toast (lower-right of the editor window) for long-running
+automation scripts. `duration_seconds` is clamped to `[1, 60]`. The
+`b_success` flag selects the icon — green checkmark when `True`, red X
+when `False`; use the failure style sparingly, it's loud.
+
+```python
+unreal.UnrealBridgeEditorLibrary.show_editor_notification(
+    'Import finished — 42 assets', 5.0, True)
+```
+
+Returns False only when `message` is empty or the Slate notification
+manager rejects the add (rare).
+
+### get_enabled_plugins() -> list[str]
+
+Alphabetically-sorted list of plugin names currently enabled for the
+project (e.g. `['UnrealBridge', 'EnhancedInput', 'GameplayAbilities', ...]`).
+Typical projects return 150–300 names — the list is small-ish but you
+probably want to filter client-side.
+
+### is_plugin_enabled(plugin_name) -> bool
+
+Case-insensitive match against the enabled-plugin set. Much cheaper
+than scanning the `get_enabled_plugins()` result when you only need a
+single boolean.
+
+```python
+if not unreal.UnrealBridgeEditorLibrary.is_plugin_enabled('PythonScriptPlugin'):
+    raise RuntimeError('PythonScriptPlugin disabled — bridge is broken')
+```
+
+### get_editor_build_config() -> str
+
+Build configuration the running editor was compiled in:
+`"Debug"` | `"DebugGame"` | `"Development"` | `"Shipping"` | `"Test"` |
+`"Unknown"`. Use to gate expensive debug-only automation.
+
+---
+
 ## Asset Control
 
 ### open_asset(asset_path) -> bool

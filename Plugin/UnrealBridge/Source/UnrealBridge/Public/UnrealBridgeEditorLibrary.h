@@ -346,4 +346,34 @@ public:
 	/** Current viewport projection type name ("Perspective", "Top", "Front", "Side", "OrthoFreelook"). */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetViewportType();
+
+	// ─── Editor UX + plugin introspection ────────────────────
+
+	/**
+	 * Show a Slate toast notification in the editor's lower-right corner.
+	 * Useful for long-running automation scripts to report progress.
+	 *
+	 * @param Message           Body text.
+	 * @param DurationSeconds   Fade-out delay; clamped to [1, 60]. Default 4s.
+	 * @param bSuccess          Style hint — green checkmark (true) or
+	 *                          red X (false). Neutral toasts pass true.
+	 * @return true if the notification was queued.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool ShowEditorNotification(const FString& Message, float DurationSeconds = 4.0f, bool bSuccess = true);
+
+	/** Names of all currently-enabled plugins (sorted alphabetically). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static TArray<FString> GetEnabledPlugins();
+
+	/** True if a plugin is known and currently enabled. Case-insensitive match on the plugin name. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsPluginEnabled(const FString& PluginName);
+
+	/**
+	 * Compiled build configuration of the running editor, one of:
+	 * "Debug", "DebugGame", "Development", "Shipping", "Test", or "Unknown".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetEditorBuildConfig();
 };

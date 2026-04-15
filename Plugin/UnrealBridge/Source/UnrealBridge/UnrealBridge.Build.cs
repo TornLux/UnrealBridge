@@ -41,6 +41,9 @@ public class UnrealBridge : ModuleRules
 			"NavigationSystem",
 			"Navmesh",
 			"EnhancedInput",
+			"Projects",
+			"Slate",
+			"SlateCore",
 		});
 	}
 }
