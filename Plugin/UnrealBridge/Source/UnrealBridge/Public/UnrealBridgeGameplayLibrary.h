@@ -570,4 +570,47 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool SetActorTimeDilation(const FString& ActorName, float Scale);
+
+	// ─── Audio + damage proxies ──────────────────────────────────────
+	//
+	// Thin wrappers around UGameplayStatics for common gameplay triggers.
+	// All target the PIE world and no-op outside PIE.
+
+	/**
+	 * Play a 2D (non-spatialized) sound. Returns false if PIE isn't
+	 * running or the asset fails to load.
+	 *
+	 * @param SoundAssetPath     Full path to a USoundBase asset.
+	 * @param VolumeMultiplier   Typical range 0..2.
+	 * @param PitchMultiplier    Typical range 0.5..2.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool PlaySound2D(const FString& SoundAssetPath, float VolumeMultiplier = 1.0f, float PitchMultiplier = 1.0f);
+
+	/**
+	 * Play a spatialized sound at a world location. Uses
+	 * `UGameplayStatics::PlaySoundAtLocation` — attenuation follows the
+	 * sound asset's default attenuation settings.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool PlaySoundAtLocation(const FString& SoundAssetPath, const FVector& Location, float VolumeMultiplier = 1.0f, float PitchMultiplier = 1.0f);
+
+	/**
+	 * Apply point damage to a PIE actor. Returns the damage value the
+	 * engine reports as actually applied (post-modifiers). Returns -1.0
+	 * for missing target / no PIE.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float ApplyDamageToActor(const FString& TargetActorName, float DamageAmount);
+
+	/**
+	 * Apply radial damage at a world point. Returns the count of actors
+	 * reached by the damage sphere (regardless of how much damage each
+	 * actually took — zero-damage hits still count).
+	 *
+	 * @param InnerRadius  Full-damage radius (cm).
+	 * @param OuterRadius  Zero-damage radius (cm); falloff is linear.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static int32 ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius);
 };

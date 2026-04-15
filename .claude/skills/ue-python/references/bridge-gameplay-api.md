@@ -360,6 +360,44 @@ unreal.UnrealBridgeGameplayLibrary.set_actor_time_dilation('Boss', 4.0)
 
 ---
 
+## Audio + damage proxies
+
+Thin wrappers around `UGameplayStatics` for common gameplay triggers.
+All target the PIE world and no-op outside PIE.
+
+### play_sound2d(sound_asset_path, volume_multiplier=1.0, pitch_multiplier=1.0) -> bool
+
+Play a 2D (non-spatialized) sound. Returns False if PIE isn't running
+or the asset fails to load.
+
+### play_sound_at_location(sound_asset_path, location, volume_multiplier=1.0, pitch_multiplier=1.0) -> bool
+
+Spatialized version — attenuation follows the sound asset's own
+attenuation settings.
+
+### apply_damage_to_actor(target_actor_name, damage_amount) -> float
+
+Point damage via `UGameplayStatics::ApplyDamage`. Returns the damage
+value actually applied (post-modifiers, per the target's `TakeDamage`).
+Returns `-1.0` for missing target / no PIE. Instigator is the player
+pawn / controller.
+
+### apply_radial_damage(origin, damage_amount, inner_radius, outer_radius) -> int
+
+Sphere-falloff damage via `UGameplayStatics::ApplyRadialDamageWithFalloff`.
+`inner_radius` = full damage, `outer_radius` = zero damage, linear falloff.
+Returns the count of actors within `outer_radius` at the time of the
+call (regardless of per-actor damage taken — zero-damage hits still
+count). Player pawn is excluded.
+
+```python
+hits = unreal.UnrealBridgeGameplayLibrary.apply_radial_damage(
+    unreal.Vector(0, 0, 0), 100.0, 500.0, 2000.0)
+print(f'{hits} actors within blast radius')
+```
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and

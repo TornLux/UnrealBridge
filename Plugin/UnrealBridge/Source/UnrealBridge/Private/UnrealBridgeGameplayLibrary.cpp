@@ -11,6 +11,8 @@
 #include "Camera/PlayerCameraManager.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/WorldSettings.h"
+#include "GameFramework/DamageType.h"
+#include "Sound/SoundBase.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
 #include "InputAction.h"
@@ -1100,6 +1102,83 @@ bool UUnrealBridgeGameplayLibrary::SetActorTimeDilation(const FString& ActorName
 	}
 	Target->CustomTimeDilation = FMath::Clamp(Scale, 0.0001f, 20.0f);
 	return true;
+}
+
+// ─── Audio + damage proxies ────────────────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::PlaySound2D(const FString& SoundAssetPath, float VolumeMultiplier, float PitchMultiplier)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	USoundBase* Sound = LoadObject<USoundBase>(nullptr, *SoundAssetPath);
+	if (!Sound)
+	{
+		return false;
+	}
+	UGameplayStatics::PlaySound2D(World, Sound, VolumeMultiplier, PitchMultiplier);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::PlaySoundAtLocation(const FString& SoundAssetPath, const FVector& Location, float VolumeMultiplier, float PitchMultiplier)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	USoundBase* Sound = LoadObject<USoundBase>(nullptr, *SoundAssetPath);
+	if (!Sound)
+	{
+		return false;
+	}
+	UGameplayStatics::PlaySoundAtLocation(World, Sound, Location, VolumeMultiplier, PitchMultiplier);
+	return true;
+}
+
+float UUnrealBridgeGameplayLibrary::ApplyDamageToActor(const FString& TargetActorName, float DamageAmount)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	AActor* Target = BridgeAgentImpl::FindPIEActor(World, TargetActorName);
+	if (!Target)
+	{
+		return -1.0f;
+	}
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	AController* Instigator = (Pawn ? Pawn->GetController() : nullptr);
+	return UGameplayStatics::ApplyDamage(
+		Target, DamageAmount, Instigator, Pawn, UDamageType::StaticClass());
+}
+
+int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return 0;
+	}
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	AController* Instigator = (Pawn ? Pawn->GetController() : nullptr);
+
+	// Collect actors within OuterRadius first so we can report the count.
+	TArray<AActor*> Affected;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A || A == Pawn) continue;
+		if (FVector::Dist(A->GetActorLocation(), Origin) <= FMath::Max(OuterRadius, 0.0f))
+		{
+			Affected.Add(A);
+		}
+	}
+	UGameplayStatics::ApplyRadialDamageWithFalloff(
+		World, DamageAmount, /*MinDamage=*/ 0.0f, Origin,
+		FMath::Max(InnerRadius, 0.0f), FMath::Max(OuterRadius, 0.0f),
+		/*DamageFalloff=*/ 1.0f, UDamageType::StaticClass(),
+		/*IgnoreActors=*/ {}, Pawn, Instigator);
+	return Affected.Num();
 }
 
 TArray<FString> UUnrealBridgeGameplayLibrary::FindPIEActorsByClass(const FString& ClassPath)
