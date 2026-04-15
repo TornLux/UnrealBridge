@@ -24,6 +24,7 @@
 #include "CollisionQueryParams.h"
 #include "Engine/HitResult.h"
 #include "Engine/OverlapResult.h"
+#include "GameFramework/WorldSettings.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeLevel"
 
@@ -2005,6 +2006,51 @@ bool UUnrealBridgeLevelLibrary::FlushLevelStreaming()
 		return false;
 	}
 	World->FlushLevelStreaming();
+	return true;
+}
+
+// ─── World settings: gravity + kill Z ──────────────────────────────────
+
+float UUnrealBridgeLevelLibrary::GetWorldGravity()
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AWorldSettings* WS = World ? World->GetWorldSettings() : nullptr;
+	return WS ? WS->GetGravityZ() : 0.0f;
+}
+
+bool UUnrealBridgeLevelLibrary::SetWorldGravity(float Gravity, bool bOverride)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AWorldSettings* WS = World ? World->GetWorldSettings() : nullptr;
+	if (!WS)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetWorldGravity", "Set World Gravity"));
+	WS->Modify();
+	WS->WorldGravityZ = Gravity;
+	WS->bWorldGravitySet = bOverride;
+	return true;
+}
+
+float UUnrealBridgeLevelLibrary::GetKillZ()
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AWorldSettings* WS = World ? World->GetWorldSettings() : nullptr;
+	return WS ? WS->KillZ : 0.0f;
+}
+
+bool UUnrealBridgeLevelLibrary::SetKillZ(float NewKillZ)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AWorldSettings* WS = World ? World->GetWorldSettings() : nullptr;
+	if (!WS)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetKillZ", "Set Kill Z"));
+	WS->Modify();
+	WS->KillZ = NewKillZ;
 	return true;
 }
 

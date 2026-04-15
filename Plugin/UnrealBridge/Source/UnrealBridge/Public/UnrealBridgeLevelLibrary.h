@@ -714,4 +714,36 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool FlushLevelStreaming();
+
+	// ─── World settings: gravity + kill Z ────────────────────
+	//
+	// All four target the current editor world's AWorldSettings. Writes
+	// use FScopedTransaction for undo.
+
+	/**
+	 * Effective vertical gravity in cm/s². Reads `AWorldSettings::GetGravityZ()`,
+	 * which returns the per-world override if set, otherwise the engine
+	 * default (`-980.0` on most projects).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static float GetWorldGravity();
+
+	/**
+	 * Set the per-world gravity override (WorldGravityZ + bWorldGravitySet).
+	 * Passing `bOverride=false` reverts to the engine default — the
+	 * `Gravity` value is still stored but not applied until overridden.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetWorldGravity(float Gravity, bool bOverride = true);
+
+	/**
+	 * World "kill Z" — any actor whose Z drops below this value is
+	 * destroyed (UE's built-in pit-detection). Typical default: -1e6.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static float GetKillZ();
+
+	/** Set the world's kill Z. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetKillZ(float NewKillZ);
 };

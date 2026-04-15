@@ -70,6 +70,33 @@ returns empty and every setter returns False. WorldPartition cells are
 NOT enumerated here — use the WorldPartition APIs in UE Python
 directly.
 
+### get_world_gravity() -> float
+
+Effective vertical gravity in cm/s² from `AWorldSettings::GetGravityZ()`.
+Returns the per-world override when set, otherwise the engine default
+(typically `-980.0`).
+
+### set_world_gravity(gravity, override=True) -> bool
+
+Set `WorldGravityZ` + `bWorldGravitySet`. Passing `override=False`
+stores the value but reverts to the engine default — useful to
+prepare a gravity override without activating it. Wrapped in an undo
+transaction.
+
+### get_kill_z() -> float
+
+World "kill Z" — any actor below this Z is destroyed (UE's pit
+safety). Default on most projects is `-1048575.0`.
+
+### set_kill_z(new_kill_z) -> bool
+
+Set the world kill Z. Undo-captured.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_kill_z(-500.0)   # tighter pit
+unreal.UnrealBridgeLevelLibrary.set_world_gravity(-200.0, True)  # low-g scenario
+```
+
 ---
 
 ## Read — Actor Queries
