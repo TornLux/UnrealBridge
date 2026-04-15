@@ -667,13 +667,24 @@ public:
 	static bool ClearOnScreenDebugMessages();
 
 	/**
-	 * Draw a debug line segment in the PIE viewport for `DurationSeconds`.
-	 * Pass 0 for a single-frame draw (next tick erases it).
+	 * Draw a debug line segment in the PIE viewport.
+	 *
+	 * Duration semantics:
+	 *   > 0 : line decays after that many seconds (most common case)
+	 *   = 0 : single-frame draw (next tick erases it)
+	 *   < 0 : persistent — stays until FlushPersistentDebugDraws() is called
+	 *
+	 * (This API used to invert the persistent flag so any positive duration
+	 * left the line on forever; fixed so the duration does what it says.)
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool DrawDebugLine(const FVector& Start, const FVector& End, float Thickness = 1.0f, float DurationSeconds = 5.0f);
 
-	/** Draw a debug wireframe sphere in the PIE viewport. */
+	/**
+	 * Draw a debug wireframe sphere in the PIE viewport.
+	 * Same Duration semantics as DrawDebugLine: > 0 decays, 0 one frame,
+	 * < 0 persistent until flush.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool DrawDebugSphereAt(const FVector& Center, float Radius = 50.0f, float Thickness = 1.0f, float DurationSeconds = 5.0f);
 
@@ -753,7 +764,10 @@ public:
 	// ─── Extended debug drawing ──────────────────────────────────────
 	//
 	// Companions to DrawDebugLine / DrawDebugSphereAt. All require PIE.
-	// `DurationSeconds = 0` keeps the shape alive only for one frame.
+	// Duration semantics (same across the whole family):
+	//   > 0 : decays after that many seconds
+	//   = 0 : single-frame draw
+	//   < 0 : persistent until FlushPersistentDebugDraws() is called
 
 	/** Draw an axis-aligned wireframe box in the PIE viewport. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")

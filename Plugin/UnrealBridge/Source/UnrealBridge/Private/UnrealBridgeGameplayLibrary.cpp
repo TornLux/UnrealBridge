@@ -1407,8 +1407,11 @@ bool UUnrealBridgeGameplayLibrary::DrawDebugLine(const FVector& Start, const FVe
 	{
 		return false;
 	}
+	// UE convention: bPersistent=true stays until FlushPersistentDebugLines
+	// (LifeTime ignored); bPersistent=false + LifeTime>0 decays after N sec.
+	// Treat negative DurationSeconds as the explicit "persistent" opt-in.
 	::DrawDebugLine(World, Start, End, FColor::Yellow,
-		/*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds,
+		/*bPersistent=*/ DurationSeconds < 0.0f, DurationSeconds,
 		/*DepthPriority=*/ 0, FMath::Max(Thickness, 0.0f));
 	return true;
 }
@@ -1421,7 +1424,7 @@ bool UUnrealBridgeGameplayLibrary::DrawDebugSphereAt(const FVector& Center, floa
 		return false;
 	}
 	::DrawDebugSphere(World, Center, FMath::Max(Radius, 0.0f), /*Segments=*/ 16, FColor::Yellow,
-		/*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds,
+		/*bPersistent=*/ DurationSeconds < 0.0f, DurationSeconds,
 		/*DepthPriority=*/ 0, FMath::Max(Thickness, 0.0f));
 	return true;
 }
@@ -1507,7 +1510,7 @@ bool UUnrealBridgeGameplayLibrary::DrawDebugBoxAt(const FVector& Center, const F
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();
 	if (!World) return false;
 	::DrawDebugBox(World, Center, Extent, FColor::Yellow,
-		/*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds,
+		/*bPersistent=*/ DurationSeconds < 0.0f, DurationSeconds,
 		/*DepthPriority=*/ 0, FMath::Max(Thickness, 0.0f));
 	return true;
 }
@@ -1517,7 +1520,7 @@ bool UUnrealBridgeGameplayLibrary::DrawDebugArrow(const FVector& Start, const FV
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();
 	if (!World) return false;
 	::DrawDebugDirectionalArrow(World, Start, End, FMath::Max(ArrowSize, 1.0f),
-		FColor::Yellow, /*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds);
+		FColor::Yellow, /*bPersistent=*/ DurationSeconds < 0.0f, DurationSeconds);
 	return true;
 }
 

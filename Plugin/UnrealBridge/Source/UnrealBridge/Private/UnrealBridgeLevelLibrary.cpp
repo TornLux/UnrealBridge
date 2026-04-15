@@ -41,6 +41,26 @@ namespace BridgeLevelImpl
 		return nullptr;
 	}
 
+	/** Pick the world most useful for runtime queries: prefer the live PIE
+	 *  world when Play-in-Editor is active, otherwise fall back to the
+	 *  editor world. Agents running inside PIE should hit dynamic objects
+	 *  (spawned actors, moving platforms, destructible walls) — all of which
+	 *  only exist in the PIE world — not the frozen editor copy. */
+	UWorld* GetRuntimeWorld()
+	{
+		if (GEditor)
+		{
+			for (const FWorldContext& Ctx : GEditor->GetWorldContexts())
+			{
+				if (Ctx.WorldType == EWorldType::PIE && Ctx.World() && Ctx.World()->HasBegunPlay())
+				{
+					return Ctx.World();
+				}
+			}
+		}
+		return GetEditorWorld();
+	}
+
 	AActor* FindActor(UWorld* World, const FString& NameOrLabel)
 	{
 		if (!World || NameOrLabel.IsEmpty())
@@ -1269,7 +1289,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::GetActorsInFolder(const FString& Fold
 
 FString UUnrealBridgeLevelLibrary::LineTraceFirstActor(FVector Start, FVector End)
 {
-	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
 	if (!World)
 	{
 		return FString();
@@ -1285,10 +1305,39 @@ FString UUnrealBridgeLevelLibrary::LineTraceFirstActor(FVector Start, FVector En
 	return A ? A->GetActorLabel() : FString();
 }
 
+bool UUnrealBridgeLevelLibrary::LineTraceHitInfo(
+	FVector Start, FVector End,
+	FString& OutActorLabel, float& OutDistance, FVector& OutImpactLocation)
+{
+	OutActorLabel.Reset();
+	OutDistance = static_cast<float>((End - Start).Size());
+	OutImpactLocation = End;
+
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
+	if (!World)
+	{
+		return false;
+	}
+	FHitResult Hit;
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeLineTraceHitInfo), /*bTraceComplex*/ true);
+	const bool bHit = World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params);
+	if (!bHit)
+	{
+		return false;
+	}
+	if (AActor* A = Hit.GetActor())
+	{
+		OutActorLabel = A->GetActorLabel();
+	}
+	OutDistance = Hit.Distance;
+	OutImpactLocation = Hit.ImpactPoint;
+	return true;
+}
+
 TArray<FString> UUnrealBridgeLevelLibrary::MultiLineTraceActors(FVector Start, FVector End)
 {
 	TArray<FString> Out;
-	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
 	if (!World)
 	{
 		return Out;
@@ -1311,7 +1360,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::MultiLineTraceActors(FVector Start, F
 
 FString UUnrealBridgeLevelLibrary::SphereTraceFirstActor(FVector Start, FVector End, float Radius)
 {
-	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
 	if (!World)
 	{
 		return FString();
@@ -1332,7 +1381,7 @@ FString UUnrealBridgeLevelLibrary::SphereTraceFirstActor(FVector Start, FVector 
 TArray<FString> UUnrealBridgeLevelLibrary::MultiSphereTraceActors(FVector Start, FVector End, float Radius)
 {
 	TArray<FString> Out;
-	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
 	if (!World)
 	{
 		return Out;
@@ -1357,7 +1406,7 @@ TArray<FString> UUnrealBridgeLevelLibrary::MultiSphereTraceActors(FVector Start,
 
 FString UUnrealBridgeLevelLibrary::BoxTraceFirstActor(FVector Start, FVector End, FVector BoxHalfExtent)
 {
-	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
 	if (!World)
 	{
 		return FString();
@@ -1382,7 +1431,7 @@ FString UUnrealBridgeLevelLibrary::BoxTraceFirstActor(FVector Start, FVector End
 TArray<FString> UUnrealBridgeLevelLibrary::OverlapSphereActors(FVector Center, float Radius, const FString& ClassFilter)
 {
 	TArray<FString> Out;
-	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
 	if (!World)
 	{
 		return Out;
@@ -2097,7 +2146,7 @@ bool UUnrealBridgeLevelLibrary::GetGroundNormalAt(float X, float Y, FVector& Out
 FString UUnrealBridgeLevelLibrary::GetGroundHitActor(float X, float Y, float StartHeight)
 {
 	FHitResult Hit;
-	if (!BridgeLevelImpl::DownwardTrace(BridgeLevelImpl::GetEditorWorld(), X, Y, StartHeight, Hit))
+	if (!BridgeLevelImpl::DownwardTrace(BridgeLevelImpl::GetRuntimeWorld(), X, Y, StartHeight, Hit))
 	{
 		return FString();
 	}

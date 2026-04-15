@@ -404,23 +404,44 @@ public:
 	static TArray<FString> GetActorsInFolder(const FString& FolderPath, bool bRecursive);
 
 	// ─── Spatial — trace ─────────────────────────────────
+	//
+	// All trace / overlap queries below run against the **runtime world** —
+	// the live PIE world while Play-in-Editor is active, otherwise the
+	// editor world as a fallback. Agents navigating inside PIE therefore
+	// see dynamic objects (spawned actors, moving platforms, destructible
+	// walls) that only exist in the PIE copy.
 
 	/**
-	 * Line-trace against the editor world (complex collision, visibility channel).
+	 * Line-trace against the runtime world (complex collision, visibility channel).
 	 * Returns the label of the first actor hit, or empty string if nothing was hit.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static FString LineTraceFirstActor(FVector Start, FVector End);
 
 	/**
-	 * Multi-hit line trace against the editor world (visibility channel, complex collision).
+	 * Line-trace that returns full hit detail: actor label, hit distance in
+	 * cm along the ray, and world-space impact location. `bHit` is false
+	 * when the ray reaches End without obstruction (in that case Distance
+	 * equals the ray length and ImpactLocation equals End).
+	 *
+	 * Far cheaper than probing at multiple distances to find "reach" — one
+	 * call tells you exactly how far the clear corridor extends in that
+	 * direction, which is the common agent-survey pattern.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool LineTraceHitInfo(
+		FVector Start, FVector End,
+		FString& OutActorLabel, float& OutDistance, FVector& OutImpactLocation);
+
+	/**
+	 * Multi-hit line trace against the runtime world (visibility channel, complex collision).
 	 * Returns deduplicated actor labels along the ray, ordered from nearest to farthest.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static TArray<FString> MultiLineTraceActors(FVector Start, FVector End);
 
 	/**
-	 * Sphere sweep (fat ray) against the editor world's visibility channel.
+	 * Sphere sweep (fat ray) against the runtime world's visibility channel.
 	 * Catches actors a line trace would miss — useful for cover/interest
 	 * detection where partial overlap with the ray tube counts as a hit.
 	 * Returns the first hit actor's label, or empty string.
@@ -436,7 +457,7 @@ public:
 	static TArray<FString> MultiSphereTraceActors(FVector Start, FVector End, float Radius);
 
 	/**
-	 * Axis-aligned box sweep against the editor world. `BoxHalfExtent` is
+	 * Axis-aligned box sweep against the runtime world. `BoxHalfExtent` is
 	 * the half-size on each axis. Returns the first hit actor's label, or
 	 * empty string. For oriented box sweeps call the UE API directly —
 	 * this wrapper keeps the Python surface simple.
