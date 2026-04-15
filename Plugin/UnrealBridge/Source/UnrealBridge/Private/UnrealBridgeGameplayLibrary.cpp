@@ -782,3 +782,109 @@ bool UUnrealBridgeGameplayLibrary::GetRandomReachablePointInRadius(const FVector
 	OutPoint = Result.Location;
 	return true;
 }
+
+// ─── Screen-space perception ───────────────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::GetPIEViewportSize(FVector2D& OutSize)
+{
+	OutSize = FVector2D::ZeroVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC)
+	{
+		return false;
+	}
+	int32 W = 0, H = 0;
+	PC->GetViewportSize(W, H);
+	if (W <= 0 || H <= 0)
+	{
+		return false;
+	}
+	OutSize.X = static_cast<double>(W);
+	OutSize.Y = static_cast<double>(H);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::DeprojectScreenToWorld(float NormalizedX, float NormalizedY, FVector& OutOrigin, FVector& OutDirection)
+{
+	OutOrigin = FVector::ZeroVector;
+	OutDirection = FVector::ForwardVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC)
+	{
+		return false;
+	}
+	int32 W = 0, H = 0;
+	PC->GetViewportSize(W, H);
+	if (W <= 0 || H <= 0)
+	{
+		return false;
+	}
+	const float PixelX = FMath::Clamp(NormalizedX, 0.0f, 1.0f) * W;
+	const float PixelY = FMath::Clamp(NormalizedY, 0.0f, 1.0f) * H;
+	return PC->DeprojectScreenPositionToWorld(PixelX, PixelY, OutOrigin, OutDirection);
+}
+
+bool UUnrealBridgeGameplayLibrary::ProjectWorldToScreen(const FVector& WorldLocation, FVector2D& OutNormalized)
+{
+	OutNormalized = FVector2D::ZeroVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC)
+	{
+		return false;
+	}
+	int32 W = 0, H = 0;
+	PC->GetViewportSize(W, H);
+	if (W <= 0 || H <= 0)
+	{
+		return false;
+	}
+	FVector2D Screen;
+	if (!PC->ProjectWorldLocationToScreen(WorldLocation, Screen, /*bPlayerViewportRelative=*/ false))
+	{
+		return false;
+	}
+	const float NX = Screen.X / W;
+	const float NY = Screen.Y / H;
+	OutNormalized.X = NX;
+	OutNormalized.Y = NY;
+	// Off-screen check — reject if outside [0,1] (already tells caller the
+	// point isn't currently rendered).
+	return NX >= 0.0f && NX <= 1.0f && NY >= 0.0f && NY <= 1.0f;
+}
+
+FString UUnrealBridgeGameplayLibrary::GetActorAtScreenPosition(float NormalizedX, float NormalizedY, float MaxDistance)
+{
+	FVector Origin, Direction;
+	if (!DeprojectScreenToWorld(NormalizedX, NormalizedY, Origin, Direction))
+	{
+		return FString();
+	}
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	const FVector End = Origin + Direction * FMath::Max(MaxDistance, 0.0f);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeScreenHit), /*bTraceComplex=*/ false);
+	if (Pawn) Params.AddIgnoredActor(Pawn);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, Origin, End, ECC_Visibility, Params))
+	{
+		return FString();
+	}
+	AActor* A = Hit.GetActor();
+	return A ? A->GetFName().ToString() : FString();
+}

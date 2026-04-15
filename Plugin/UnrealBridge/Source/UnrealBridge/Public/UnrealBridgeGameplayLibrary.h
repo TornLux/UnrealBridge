@@ -382,4 +382,45 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool GetRandomReachablePointInRadius(const FVector& Origin, float Radius, FVector& OutPoint);
+
+	// ─── Screen-space perception ──────────────────────────────────────
+
+	/**
+	 * PIE viewport pixel size (X = width, Y = height). Returns false when
+	 * PIE isn't running or no viewport exists. Use this to denormalize the
+	 * [0,1] coordinates that the project/deproject helpers accept.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPIEViewportSize(FVector2D& OutSize);
+
+	/**
+	 * Convert a normalized viewport position (`NormalizedX`, `NormalizedY`
+	 * both in [0,1]; origin top-left) to a world-space ray. Mirrors
+	 * `UGameplayStatics::DeprojectScreenToWorld` but accepts normalized
+	 * input so callers don't need the pixel size first.
+	 *
+	 * @param OutOrigin      Ray start in world-space (near plane).
+	 * @param OutDirection   Unit direction into the scene.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool DeprojectScreenToWorld(float NormalizedX, float NormalizedY, FVector& OutOrigin, FVector& OutDirection);
+
+	/**
+	 * Project a world-space point to the PIE viewport. Returns the
+	 * normalized [0,1] viewport coordinates in `OutNormalized` (origin
+	 * top-left). Return value is false when the point is behind the
+	 * camera or off-screen, or when PIE isn't running.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool ProjectWorldToScreen(const FVector& WorldLocation, FVector2D& OutNormalized);
+
+	/**
+	 * Convenience: deproject a normalized viewport position into a ray and
+	 * line-trace it up to `MaxDistance` cm (visibility channel, pawn
+	 * ignored). Returns the hit actor's FName as string, or empty string
+	 * on miss. Equivalent to `DeprojectScreenToWorld` + manual trace but
+	 * saves a round-trip when the caller just wants the actor name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetActorAtScreenPosition(float NormalizedX, float NormalizedY, float MaxDistance = 10000.0f);
 };

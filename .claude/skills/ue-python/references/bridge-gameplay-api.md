@@ -148,6 +148,59 @@ if obs.b_valid:
 
 ---
 
+## Screen-space perception
+
+All four helpers require PIE to be running with a valid player
+controller — outside PIE they return `None` / `False`. Normalized
+coordinates use `[0,1]` with origin at the top-left of the viewport.
+
+### get_pie_viewport_size() -> Vector2D or None
+
+PIE viewport pixel size (`x = width`, `y = height`). Use to denormalize
+the [0,1] coordinates that project/deproject accept, or to reason about
+aspect ratio.
+
+### deproject_screen_to_world(normalized_x, normalized_y) -> (Vector, Vector) or None
+
+Convert a normalized viewport position to a world-space ray. Returns a
+`(origin, direction)` tuple on success; `direction` is unit-length.
+
+```python
+origin, direction = unreal.UnrealBridgeGameplayLibrary.deproject_screen_to_world(0.5, 0.5)
+```
+
+### project_world_to_screen(world_location) -> Vector2D or None
+
+Project a world point to the PIE viewport. Returns `Vector2D` with
+normalized `[0,1]` coordinates when the point is on-screen, `None`
+otherwise (behind camera, or outside the viewport rectangle).
+
+```python
+ui_pos = unreal.UnrealBridgeGameplayLibrary.project_world_to_screen(
+    unreal.Vector(1000, 0, 0))
+```
+
+### get_actor_at_screen_position(normalized_x, normalized_y, max_distance=10000.0) -> str
+
+Convenience wrapper: deproject the screen position into a ray, line-trace
+it (visibility channel, pawn ignored), return the first hit actor's
+`FName` as string. Empty string on miss / no PIE.
+
+```python
+name = unreal.UnrealBridgeGameplayLibrary.get_actor_at_screen_position(0.5, 0.5)
+```
+
+**Pitfalls**
+
+- Results flicker during the first few PIE frames while the camera and
+  viewport are still resolving — always gate on `is_in_pie()`.
+- Off-screen points return `None` from `project_world_to_screen`, *not*
+  a clamped coordinate — callers that need the projected-but-clipped
+  pixel value should call `ProjectWorldLocationToScreen` in Python
+  directly.
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and
