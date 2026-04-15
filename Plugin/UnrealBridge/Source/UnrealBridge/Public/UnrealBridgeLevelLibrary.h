@@ -1023,4 +1023,34 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 SelectActorsInSphere(FVector Center, float Radius, bool bAddToSelection = false);
+
+	// ─── Selection aggregate queries ─────────────────────────
+
+	/**
+	 * Count of actors currently selected in the editor viewport.
+	 * Faster than `len(GetSelectedActors())` — skips label allocation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetSelectionCount();
+
+	/**
+	 * Union of bounds across every selected actor. Zero-bounds when the
+	 * selection is empty or no selected actor has renderable geometry.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeActorBounds GetSelectionBounds();
+
+	/**
+	 * Arithmetic mean of selected actors' pivot locations. Zero vector
+	 * when the selection is empty.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FVector GetSelectionCentroid();
+
+	/**
+	 * Sorted unique set of class short-names present in the selection
+	 * (e.g. `["StaticMeshActor", "PointLight"]`).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetSelectionClassSet();
 };

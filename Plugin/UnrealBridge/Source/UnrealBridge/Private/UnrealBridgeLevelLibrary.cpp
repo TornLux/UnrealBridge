@@ -2680,6 +2680,76 @@ int32 UUnrealBridgeLevelLibrary::SelectActorsInBox(FVector Min, FVector Max, boo
 	return Count;
 }
 
+int32 UUnrealBridgeLevelLibrary::GetSelectionCount()
+{
+	if (!GEditor) return 0;
+	USelection* Sel = GEditor->GetSelectedActors();
+	return Sel ? Sel->Num() : 0;
+}
+
+FBridgeActorBounds UUnrealBridgeLevelLibrary::GetSelectionBounds()
+{
+	FBridgeActorBounds Out;
+	if (!GEditor) return Out;
+	USelection* Sel = GEditor->GetSelectedActors();
+	if (!Sel) return Out;
+	FBox Total(ForceInit);
+	for (FSelectionIterator It(*Sel); It; ++It)
+	{
+		AActor* A = Cast<AActor>(*It);
+		if (!A) continue;
+		FVector Origin, Extent;
+		A->GetActorBounds(/*bOnlyColliding=*/ false, Origin, Extent, /*bIncludeChildren=*/ true);
+		if (!Extent.IsNearlyZero())
+		{
+			Total += FBox::BuildAABB(Origin, Extent);
+		}
+	}
+	if (!Total.IsValid) return Out;
+	Out.Origin = Total.GetCenter();
+	Out.BoxExtent = Total.GetExtent();
+	Out.SphereRadius = Out.BoxExtent.Size();
+	return Out;
+}
+
+FVector UUnrealBridgeLevelLibrary::GetSelectionCentroid()
+{
+	if (!GEditor) return FVector::ZeroVector;
+	USelection* Sel = GEditor->GetSelectedActors();
+	if (!Sel) return FVector::ZeroVector;
+	FVector Sum = FVector::ZeroVector;
+	int32 Count = 0;
+	for (FSelectionIterator It(*Sel); It; ++It)
+	{
+		if (AActor* A = Cast<AActor>(*It))
+		{
+			Sum += A->GetActorLocation();
+			++Count;
+		}
+	}
+	return Count > 0 ? (Sum / Count) : FVector::ZeroVector;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetSelectionClassSet()
+{
+	TArray<FString> Out;
+	if (!GEditor) return Out;
+	USelection* Sel = GEditor->GetSelectedActors();
+	if (!Sel) return Out;
+	TSet<FString> Unique;
+	for (FSelectionIterator It(*Sel); It; ++It)
+	{
+		if (AActor* A = Cast<AActor>(*It))
+		{
+			Unique.Add(A->GetClass()->GetName());
+		}
+	}
+	Out.Reserve(Unique.Num());
+	for (const FString& S : Unique) Out.Add(S);
+	Out.Sort();
+	return Out;
+}
+
 int32 UUnrealBridgeLevelLibrary::SelectActorsInSphere(FVector Center, float Radius, bool bAddToSelection)
 {
 	if (!GEditor) return 0;

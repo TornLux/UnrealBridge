@@ -351,6 +351,32 @@ selection = unreal.UnrealBridgeLevelLibrary.get_selected_actors()
 unreal.UnrealBridgeLevelLibrary.move_actors_to_folder(selection, 'NearOrigin')
 ```
 
+### get_selection_count() -> int
+
+Cheap count of currently-selected actors — faster than
+`len(get_selected_actors())` when you only need the count.
+
+### get_selection_bounds() -> FBridgeActorBounds
+
+Union of bounds across every selected actor. Zero-bounds when the
+selection is empty or nothing renderable is selected.
+
+### get_selection_centroid() -> Vector
+
+Arithmetic mean of selected actors' pivot locations. Zero vector
+when empty.
+
+### get_selection_class_set() -> list[str]
+
+Sorted unique class short-names present in the selection. Useful
+for auditing "did I accidentally grab a light?"-type questions
+before applying a bulk transform.
+
+```python
+if len(unreal.UnrealBridgeLevelLibrary.get_selection_class_set()) > 1:
+    print('mixed selection — use a filter before the bulk op')
+```
+
 ---
 
 ## Read — Actor Queries
