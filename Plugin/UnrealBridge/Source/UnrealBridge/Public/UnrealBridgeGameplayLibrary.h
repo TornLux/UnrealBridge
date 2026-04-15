@@ -859,4 +859,33 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool PlayWorldCameraShake(const FString& ShakeClassPath, const FVector& Epicenter, float InnerRadius, float OuterRadius, float ScaleMultiplier = 1.0f);
+
+	// ─── Player pawn / start / respawn ───────────────────────────────
+
+	/**
+	 * FName of the PIE player pawn. Use this when a Level or Gameplay
+	 * API wants an actor name for the possessed pawn. Empty outside PIE
+	 * / no pawn.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetPlayerPawnActorName();
+
+	/**
+	 * FName of the first `APlayerStart` actor in the PIE world (or the
+	 * editor world if no PIE). Empty when no PlayerStart exists.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetPlayerStartActorName();
+
+	/** World transform of the first PlayerStart; None when missing. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPlayerStartTransform(FVector& OutLocation, FRotator& OutRotation);
+
+	/**
+	 * Teleport the player pawn to the first PlayerStart, clearing
+	 * velocity and snapping the controller rotation to match.
+	 * Convenience over TeleportPawn + GetPlayerStartTransform.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool RespawnPlayerPawn();
 };

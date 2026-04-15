@@ -617,6 +617,39 @@ Radial-falloff shake — every camera within `outer_radius` of
 `epicenter` feels it, strength scales from full at `inner_radius` to
 zero at `outer_radius`. Useful for explosion or impact effects.
 
+---
+
+## Player pawn / start / respawn
+
+### get_player_pawn_actor_name() -> str
+
+FName of the first PIE player pawn. Empty outside PIE / no pawn.
+Use this when passing the player pawn to a Level / Gameplay API that
+takes an actor name.
+
+### get_player_start_actor_name() -> str
+
+FName of the first `APlayerStart` actor. Matches by class-name
+substring (`"PlayerStart"`), so custom PlayerStart subclasses are
+picked up. Empty when no PlayerStart exists. Falls back to the editor
+world when PIE isn't running.
+
+### get_player_start_transform() -> (Vector, Rotator) or None
+
+World transform of the first PlayerStart. Returns `None` when no
+PlayerStart is present.
+
+### respawn_player_pawn() -> bool
+
+Convenience: teleport the player pawn to the first PlayerStart with
+velocity zeroed and controller rotation snapped. Wraps `teleport_pawn`
+against the values from `get_player_start_transform`.
+
+```python
+# Reset scenario between agent-training episodes
+unreal.UnrealBridgeGameplayLibrary.respawn_player_pawn()
+```
+
 ```python
 # Visualise a nav path
 path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(

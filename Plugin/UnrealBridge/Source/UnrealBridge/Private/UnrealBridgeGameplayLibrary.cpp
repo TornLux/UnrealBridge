@@ -1587,6 +1587,68 @@ bool UUnrealBridgeGameplayLibrary::PlayWorldCameraShake(const FString& ShakeClas
 	return true;
 }
 
+// ─── Player pawn / start / respawn ─────────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	/** Find first APlayerStart in PIE world, falling back to editor world. */
+	static AActor* FindPlayerStart()
+	{
+		UWorld* World = GetPIEWorld();
+		if (!World)
+		{
+			World = GEditor ? GEditor->GetEditorWorldContext(false).World() : nullptr;
+		}
+		if (!World) return nullptr;
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* A = *It;
+			if (A && A->GetClass()->GetName().Contains(TEXT("PlayerStart")))
+			{
+				return A;
+			}
+		}
+		return nullptr;
+	}
+}
+
+FString UUnrealBridgeGameplayLibrary::GetPlayerPawnActorName()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	return Pawn ? Pawn->GetFName().ToString() : FString();
+}
+
+FString UUnrealBridgeGameplayLibrary::GetPlayerStartActorName()
+{
+	AActor* Start = BridgeAgentImpl::FindPlayerStart();
+	return Start ? Start->GetFName().ToString() : FString();
+}
+
+bool UUnrealBridgeGameplayLibrary::GetPlayerStartTransform(FVector& OutLocation, FRotator& OutRotation)
+{
+	OutLocation = FVector::ZeroVector;
+	OutRotation = FRotator::ZeroRotator;
+	AActor* Start = BridgeAgentImpl::FindPlayerStart();
+	if (!Start) return false;
+	OutLocation = Start->GetActorLocation();
+	OutRotation = Start->GetActorRotation();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::RespawnPlayerPawn()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn) return false;
+	AActor* Start = BridgeAgentImpl::FindPlayerStart();
+	if (!Start) return false;
+
+	// Reuse the public TeleportPawn path so physics / controller snap are consistent.
+	return TeleportPawn(Start->GetActorLocation(), Start->GetActorRotation(),
+		/*bSnapController=*/ true, /*bStopVelocity=*/ true);
+}
+
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
 {
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();
