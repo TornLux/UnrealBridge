@@ -976,6 +976,97 @@ float UUnrealBridgeGameplayLibrary::GetPawnSpeed()
 	return Pawn->GetVelocity().Size();
 }
 
+// ─── PIE runtime spawn/destroy + query ─────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	/** Resolve a class path, trying `_C` suffix for bare Blueprint paths. */
+	static UClass* LoadActorClass(const FString& ClassPath)
+	{
+		if (ClassPath.IsEmpty()) return nullptr;
+		if (UClass* Cls = LoadObject<UClass>(nullptr, *ClassPath))
+		{
+			return Cls;
+		}
+		// Blueprint classes are typically stored as `Pkg.BP_Foo_C` — if the
+		// caller passed the bare path, append `_C`.
+		if (!ClassPath.EndsWith(TEXT("_C")))
+		{
+			const FString WithC = ClassPath + TEXT("_C");
+			if (UClass* Cls = LoadObject<UClass>(nullptr, *WithC))
+			{
+				return Cls;
+			}
+		}
+		return nullptr;
+	}
+}
+
+FString UUnrealBridgeGameplayLibrary::SpawnActorInPIE(const FString& ClassPath, const FVector& Location, const FRotator& Rotation)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return FString();
+	}
+	UClass* Cls = BridgeAgentImpl::LoadActorClass(ClassPath);
+	if (!Cls || !Cls->IsChildOf(AActor::StaticClass()))
+	{
+		return FString();
+	}
+	FActorSpawnParameters Params;
+	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	AActor* NewActor = World->SpawnActor<AActor>(Cls, Location, Rotation, Params);
+	return NewActor ? NewActor->GetFName().ToString() : FString();
+}
+
+bool UUnrealBridgeGameplayLibrary::DestroyActorInPIE(const FString& ActorName)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	AActor* Target = BridgeAgentImpl::FindPIEActor(World, ActorName);
+	if (!Target)
+	{
+		return false;
+	}
+	return World->DestroyActor(Target);
+}
+
+bool UUnrealBridgeGameplayLibrary::GetPIEActorLocation(const FString& ActorName, FVector& OutLocation)
+{
+	OutLocation = FVector::ZeroVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	AActor* Target = BridgeAgentImpl::FindPIEActor(World, ActorName);
+	if (!Target)
+	{
+		return false;
+	}
+	OutLocation = Target->GetActorLocation();
+	return true;
+}
+
+TArray<FString> UUnrealBridgeGameplayLibrary::FindPIEActorsByClass(const FString& ClassPath)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	UClass* Cls = BridgeAgentImpl::LoadActorClass(ClassPath);
+	if (!Cls || !Cls->IsChildOf(AActor::StaticClass()))
+	{
+		return Out;
+	}
+	for (TActorIterator<AActor> It(World, Cls); It; ++It)
+	{
+		if (AActor* A = *It)
+		{
+			Out.Add(A->GetFName().ToString());
+		}
+	}
+	return Out;
+}
+
 bool UUnrealBridgeGameplayLibrary::GetCameraViewPoint(FVector& OutLocation, FRotator& OutRotation)
 {
 	OutLocation = FVector::ZeroVector;

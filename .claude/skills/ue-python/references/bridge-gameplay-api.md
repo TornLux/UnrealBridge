@@ -271,6 +271,55 @@ pawn / no PIE. Works for any pawn type — falls back to
 
 ---
 
+## PIE runtime spawn / destroy / query
+
+These operate on the active PIE world. They are DISTINCT from the
+`bridge-level-api` spawn/destroy pair, which target the editor world.
+Use these when an agent script needs to place or remove test targets
+mid-PIE without editing the saved level.
+
+### spawn_actor_in_pie(class_path, location, rotation) -> str
+
+Spawn an actor in the PIE world. `class_path` accepts both native
+classes (`/Script/Engine.StaticMeshActor`) and Blueprints — the `_C`
+suffix is auto-appended if the raw path fails to load. Uses
+`AlwaysSpawn` collision handling so overlapping spawns succeed.
+
+Returns the new actor's `FName` on success, empty string on failure.
+
+```python
+name = unreal.UnrealBridgeGameplayLibrary.spawn_actor_in_pie(
+    '/Script/Engine.StaticMeshActor',
+    unreal.Vector(500, 0, 100),
+    unreal.Rotator(0, 0, 0))
+```
+
+### destroy_actor_in_pie(actor_name) -> bool
+
+Destroy a PIE actor by `FName` or display label. Returns False if the
+actor is missing or PIE isn't running.
+
+### get_pie_actor_location(actor_name) -> Vector or None
+
+World location of a PIE actor. UE Python bool-plus-outparam convention
+— returns the `FVector` on success, `None` otherwise.
+
+### find_pie_actors_by_class(class_path) -> list[str]
+
+FName-as-string list of every PIE actor whose class derives from
+`class_path`. Pass `/Script/Engine.Actor` to enumerate everything.
+
+**Pitfalls**
+
+- PIE actors created via `spawn_actor_in_pie` vanish when PIE stops —
+  they are *not* persisted to the level. For persistent placement use
+  `bridge-level-api.spawn_actor` instead.
+- `find_pie_actors_by_class` returns FNames, which include runtime
+  suffixes (`BP_Foo_C_0`, `..._1`) that differ between PIE sessions.
+  Use class-based filtering rather than hard-coded names.
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and

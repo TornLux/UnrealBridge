@@ -495,4 +495,45 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static float GetPawnSpeed();
+
+	// ─── PIE runtime spawn/destroy + query ────────────────────────────
+	//
+	// These operate on the active PIE world — distinct from the Level
+	// library's spawn/destroy which target the editor world. Use these
+	// when an agent script needs to drop or remove test targets mid-PIE.
+
+	/**
+	 * Spawn an actor in the PIE world at the given transform.
+	 *
+	 * @param ClassPath   Full class path, e.g. `/Script/Engine.StaticMeshActor`
+	 *                    or a Blueprint class (`_C` suffix optional).
+	 * @param Location    World-space location (cm).
+	 * @param Rotation    World-space rotation.
+	 * @return            FName of the new actor, or empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString SpawnActorInPIE(const FString& ClassPath, const FVector& Location, const FRotator& Rotation);
+
+	/**
+	 * Destroy a PIE actor by FName or display label. Returns false when
+	 * the actor is missing or PIE isn't running.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool DestroyActorInPIE(const FString& ActorName);
+
+	/**
+	 * Current world location of a PIE actor. UE Python convention: returns
+	 * the `FVector` on success, `None` when PIE isn't running or the actor
+	 * is missing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPIEActorLocation(const FString& ActorName, FVector& OutLocation);
+
+	/**
+	 * Names (FName as string) of all PIE actors whose class derives from
+	 * `ClassPath`. Pass a broad class (e.g. `/Script/Engine.Actor`) to list
+	 * everything, or a specific class / BP for a targeted query.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static TArray<FString> FindPIEActorsByClass(const FString& ClassPath);
 };
