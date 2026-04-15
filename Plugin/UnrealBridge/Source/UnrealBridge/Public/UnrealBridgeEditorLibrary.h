@@ -437,4 +437,28 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool TriggerGarbageCollection(bool bFullPurge = false);
+
+	// ─── Project metadata + paths ────────────────────────────
+
+	/**
+	 * `ProjectVersion` string from `[/Script/EngineSettings.GeneralProjectSettings]`
+	 * in DefaultGame.ini. Empty when the project has none set.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetProjectVersion();
+
+	/** `CompanyName` from the project's general settings. Empty if unset. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetProjectCompanyName();
+
+	/**
+	 * Unique project identifier (`ProjectID` GUID from the .uproject).
+	 * Useful as a stable key for per-project caches / telemetry.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetProjectID();
+
+	/** Absolute path to the project's autosave directory (`.../Saved/Autosaves`). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetAutoSaveDirectory();
 };

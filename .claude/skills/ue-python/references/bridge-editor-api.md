@@ -293,6 +293,28 @@ print(unreal.UnrealBridgeEditorLibrary.get_memory_usage_mb())
 
 Returns True once the collection pass has run.
 
+### get_project_version() -> str
+
+Reads `ProjectVersion` from
+`[/Script/EngineSettings.GeneralProjectSettings]` in DefaultGame.ini.
+Empty string when unset.
+
+### get_project_company_name() -> str
+
+`CompanyName` from the project's general settings. Empty if unset.
+
+### get_project_id() -> str
+
+Stable per-project identifier. Current implementation returns the
+project short name (e.g. `"GameplayLocomotion"`) — sufficient as a
+cache key. If you specifically need the .uproject GUID, parse the
+`.uproject` JSON yourself via `unreal.SystemLibrary.get_project_directory()`.
+
+### get_auto_save_directory() -> str
+
+Absolute path to `<Project>/Saved/Autosaves`. Use to locate `.auto.umap`
+files UE drops there during long editing sessions.
+
 ---
 
 ## Asset Control

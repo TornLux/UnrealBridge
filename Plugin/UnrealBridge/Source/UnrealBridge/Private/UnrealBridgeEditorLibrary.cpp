@@ -1195,6 +1195,45 @@ bool UUnrealBridgeEditorLibrary::TriggerGarbageCollection(bool bFullPurge)
 	return true;
 }
 
+// ─── Project metadata + paths ──────────────────────────────────────────
+
+FString UUnrealBridgeEditorLibrary::GetProjectVersion()
+{
+	FString Value;
+	GConfig->GetString(
+		TEXT("/Script/EngineSettings.GeneralProjectSettings"),
+		TEXT("ProjectVersion"),
+		Value,
+		GGameIni);
+	return Value;
+}
+
+FString UUnrealBridgeEditorLibrary::GetProjectCompanyName()
+{
+	FString Value;
+	GConfig->GetString(
+		TEXT("/Script/EngineSettings.GeneralProjectSettings"),
+		TEXT("CompanyName"),
+		Value,
+		GGameIni);
+	return Value;
+}
+
+FString UUnrealBridgeEditorLibrary::GetProjectID()
+{
+	return FApp::GetProjectName();
+	// Note: UE 5.7 exposes ProjectID via FDesktopPlatformModule; for broad
+	// compatibility we fall back to the project's short name which is a
+	// stable-enough per-project key. Callers that need the .uproject GUID
+	// specifically should read it from the .uproject JSON themselves.
+}
+
+FString UUnrealBridgeEditorLibrary::GetAutoSaveDirectory()
+{
+	return FPaths::ConvertRelativePathToFull(
+		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Autosaves")));
+}
+
 bool UUnrealBridgeEditorLibrary::BringEditorToFront()
 {
 	if (!FSlateApplication::IsInitialized())
