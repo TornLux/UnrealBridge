@@ -680,4 +680,38 @@ public:
 		FVector Location,
 		FRotator Rotation,
 		FVector Scale);
+
+	// ─── Level streaming runtime control ─────────────────────
+	//
+	// Writer-side companions to GetStreamingLevels. All target the
+	// editor world. Toggling load/visibility queues a state change;
+	// call FlushLevelStreaming to apply synchronously.
+
+	/**
+	 * Request that a streaming sublevel be loaded or unloaded.
+	 * Matched by exact `WorldAssetPackageName` (e.g. "/Game/Maps/Sub_Foo").
+	 * Returns false if no matching streaming level exists.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetStreamingLevelLoaded(const FString& PackageName, bool bLoaded);
+
+	/**
+	 * Request that a streaming sublevel be visible (only meaningful when
+	 * it is also loaded).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetStreamingLevelVisible(const FString& PackageName, bool bVisible);
+
+	/** True if a streaming sublevel is currently loaded in memory. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool IsStreamingLevelLoaded(const FString& PackageName);
+
+	/**
+	 * Block the game thread until pending streaming-level load/visibility
+	 * state changes apply. Use this after a batch of SetStreamingLevel*
+	 * calls if the caller needs the new state reflected immediately
+	 * (e.g. before running a spatial query).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool FlushLevelStreaming();
 };

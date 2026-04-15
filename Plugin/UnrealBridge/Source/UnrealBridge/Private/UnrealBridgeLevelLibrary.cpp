@@ -1948,6 +1948,66 @@ bool UUnrealBridgeLevelLibrary::RemoveComponent(const FString& ActorName, const 
 	return true;
 }
 
+// ─── Level streaming runtime control ───────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	static ULevelStreaming* FindStreamingLevel(UWorld* World, const FString& PackageName)
+	{
+		if (!World || PackageName.IsEmpty()) return nullptr;
+		for (ULevelStreaming* SL : World->GetStreamingLevels())
+		{
+			if (SL && SL->GetWorldAssetPackageName() == PackageName)
+			{
+				return SL;
+			}
+		}
+		return nullptr;
+	}
+}
+
+bool UUnrealBridgeLevelLibrary::SetStreamingLevelLoaded(const FString& PackageName, bool bLoaded)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	ULevelStreaming* SL = BridgeLevelImpl::FindStreamingLevel(World, PackageName);
+	if (!SL)
+	{
+		return false;
+	}
+	SL->SetShouldBeLoaded(bLoaded);
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::SetStreamingLevelVisible(const FString& PackageName, bool bVisible)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	ULevelStreaming* SL = BridgeLevelImpl::FindStreamingLevel(World, PackageName);
+	if (!SL)
+	{
+		return false;
+	}
+	SL->SetShouldBeVisible(bVisible);
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::IsStreamingLevelLoaded(const FString& PackageName)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	ULevelStreaming* SL = BridgeLevelImpl::FindStreamingLevel(World, PackageName);
+	return SL && SL->IsLevelLoaded();
+}
+
+bool UUnrealBridgeLevelLibrary::FlushLevelStreaming()
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return false;
+	}
+	World->FlushLevelStreaming();
+	return true;
+}
+
 bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
 	const FString& ActorName,
 	const FString& ComponentName,

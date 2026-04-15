@@ -42,6 +42,34 @@ List streaming sublevels with load/visible flags.
 | `b_loaded` | bool | Currently loaded |
 | `b_visible` | bool | Currently visible |
 
+### set_streaming_level_loaded(package_name, loaded) -> bool
+
+Request that a streaming sublevel be loaded or unloaded. Matched by
+exact `WorldAssetPackageName` (see `get_streaming_levels`). Returns
+False if no sublevel with that name exists.
+
+### set_streaming_level_visible(package_name, visible) -> bool
+
+Request visibility change. Only meaningful when the sublevel is also
+loaded.
+
+### is_streaming_level_loaded(package_name) -> bool
+
+Quick "is this sublevel resident in memory" check.
+
+### flush_level_streaming() -> bool
+
+Block the game thread until pending load/visibility state changes
+apply. Call after a batch of `set_streaming_level_*` calls when the
+next query needs the new state reflected (e.g. spatial trace against
+freshly-loaded geometry).
+
+**Pitfall:** on maps with no streaming sublevels (e.g. standard single
+persistent level, or WorldPartition-based maps) `get_streaming_levels`
+returns empty and every setter returns False. WorldPartition cells are
+NOT enumerated here — use the WorldPartition APIs in UE Python
+directly.
+
 ---
 
 ## Read — Actor Queries
