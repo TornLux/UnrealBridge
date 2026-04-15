@@ -25,6 +25,14 @@
 #include "Engine/HitResult.h"
 #include "Engine/OverlapResult.h"
 #include "GameFramework/WorldSettings.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonWriter.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
+#include "Algo/Reverse.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeLevel"
 
@@ -1435,6 +1443,239 @@ int32 UUnrealBridgeLevelLibrary::ProbeFanXY(const FVector& Origin,
 		}
 	}
 	return NumRays;
+}
+
+// ─── NavGraph state + Dijkstra ─────────────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	struct FNavNode
+	{
+		FVector Location = FVector::ZeroVector;
+		TMap<FString, float> OutEdges;   // to_name -> cost
+	};
+
+	// Process-global so the graph survives across bridge exec calls.
+	static TMap<FString, FNavNode> GNavGraph;
+
+	/** Classic Dijkstra on `GNavGraph`. Returns the ordered node path
+	 *  (inclusive of From and To) and total cost, or empty + INF on failure. */
+	static TArray<FString> DijkstraPath(const FString& From, const FString& To, float& OutTotal)
+	{
+		OutTotal = TNumericLimits<float>::Max();
+		TArray<FString> Empty;
+		if (!GNavGraph.Contains(From) || !GNavGraph.Contains(To))
+		{
+			return Empty;
+		}
+		if (From == To)
+		{
+			OutTotal = 0.0f;
+			return { From };
+		}
+
+		TMap<FString, float> Dist;
+		TMap<FString, FString> Prev;
+		for (const auto& Pair : GNavGraph)
+		{
+			Dist.Add(Pair.Key, TNumericLimits<float>::Max());
+		}
+		Dist[From] = 0.0f;
+
+		// Simple priority set — pull minimum each iteration. N^2 works fine
+		// for the node counts an agent builds up (tens to hundreds).
+		TSet<FString> Unvisited;
+		for (const auto& Pair : GNavGraph) { Unvisited.Add(Pair.Key); }
+
+		while (Unvisited.Num() > 0)
+		{
+			FString U;
+			float Best = TNumericLimits<float>::Max();
+			for (const FString& Name : Unvisited)
+			{
+				if (Dist[Name] < Best)
+				{
+					Best = Dist[Name];
+					U = Name;
+				}
+			}
+			if (U.IsEmpty() || Best == TNumericLimits<float>::Max())
+			{
+				break; // remaining nodes unreachable
+			}
+			Unvisited.Remove(U);
+			if (U == To) { break; }
+
+			const FNavNode& UNode = GNavGraph[U];
+			for (const auto& Edge : UNode.OutEdges)
+			{
+				const FString& V = Edge.Key;
+				if (!Unvisited.Contains(V)) continue;
+				const float Alt = Dist[U] + Edge.Value;
+				if (Alt < Dist[V])
+				{
+					Dist[V] = Alt;
+					Prev.Add(V, U);
+				}
+			}
+		}
+
+		if (Dist[To] == TNumericLimits<float>::Max())
+		{
+			return Empty;
+		}
+		// Reconstruct path by walking Prev backwards from To.
+		TArray<FString> Reverse;
+		FString Cur = To;
+		Reverse.Add(Cur);
+		while (Cur != From)
+		{
+			const FString* P = Prev.Find(Cur);
+			if (!P) { return Empty; }
+			Cur = *P;
+			Reverse.Add(Cur);
+		}
+		Algo::Reverse(Reverse);
+		OutTotal = Dist[To];
+		return Reverse;
+	}
+}
+
+void UUnrealBridgeLevelLibrary::NavGraphClear()
+{
+	BridgeLevelImpl::GNavGraph.Reset();
+}
+
+bool UUnrealBridgeLevelLibrary::NavGraphAddNode(const FString& Name, const FVector& Location)
+{
+	if (Name.IsEmpty()) return false;
+	const bool bIsNew = !BridgeLevelImpl::GNavGraph.Contains(Name);
+	BridgeLevelImpl::FNavNode& Node = BridgeLevelImpl::GNavGraph.FindOrAdd(Name);
+	Node.Location = Location;
+	return bIsNew;
+}
+
+bool UUnrealBridgeLevelLibrary::NavGraphAddEdge(const FString& From, const FString& To, float Cost)
+{
+	if (From.IsEmpty() || To.IsEmpty()) return false;
+	BridgeLevelImpl::FNavNode* FromN = BridgeLevelImpl::GNavGraph.Find(From);
+	BridgeLevelImpl::FNavNode* ToN = BridgeLevelImpl::GNavGraph.Find(To);
+	if (!FromN || !ToN) return false;
+	FromN->OutEdges.Add(To, FMath::Max(Cost, 0.0f));
+	return true;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::NavGraphListNodes()
+{
+	TArray<FString> Names;
+	BridgeLevelImpl::GNavGraph.GetKeys(Names);
+	return Names;
+}
+
+bool UUnrealBridgeLevelLibrary::NavGraphGetNodeLocation(const FString& Name, FVector& OutLocation)
+{
+	OutLocation = FVector::ZeroVector;
+	if (const BridgeLevelImpl::FNavNode* Node = BridgeLevelImpl::GNavGraph.Find(Name))
+	{
+		OutLocation = Node->Location;
+		return true;
+	}
+	return false;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::NavGraphShortestPath(const FString& From, const FString& To, float& OutTotalCost)
+{
+	return BridgeLevelImpl::DijkstraPath(From, To, OutTotalCost);
+}
+
+bool UUnrealBridgeLevelLibrary::NavGraphSaveJson(const FString& FilePath)
+{
+	if (FilePath.IsEmpty()) return false;
+
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	TArray<TSharedPtr<FJsonValue>> NodesJson;
+	TArray<TSharedPtr<FJsonValue>> EdgesJson;
+	for (const auto& Pair : BridgeLevelImpl::GNavGraph)
+	{
+		TSharedRef<FJsonObject> N = MakeShared<FJsonObject>();
+		N->SetStringField(TEXT("name"), Pair.Key);
+		N->SetNumberField(TEXT("x"), Pair.Value.Location.X);
+		N->SetNumberField(TEXT("y"), Pair.Value.Location.Y);
+		N->SetNumberField(TEXT("z"), Pair.Value.Location.Z);
+		NodesJson.Add(MakeShared<FJsonValueObject>(N));
+
+		for (const auto& Edge : Pair.Value.OutEdges)
+		{
+			TSharedRef<FJsonObject> E = MakeShared<FJsonObject>();
+			E->SetStringField(TEXT("from"), Pair.Key);
+			E->SetStringField(TEXT("to"), Edge.Key);
+			E->SetNumberField(TEXT("cost"), Edge.Value);
+			EdgesJson.Add(MakeShared<FJsonValueObject>(E));
+		}
+	}
+	Root->SetArrayField(TEXT("nodes"), NodesJson);
+	Root->SetArrayField(TEXT("edges"), EdgesJson);
+
+	FString Serialized;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Serialized);
+	if (!FJsonSerializer::Serialize(Root, Writer))
+	{
+		return false;
+	}
+	return FFileHelper::SaveStringToFile(Serialized, *FilePath);
+}
+
+bool UUnrealBridgeLevelLibrary::NavGraphLoadJson(const FString& FilePath)
+{
+	if (FilePath.IsEmpty()) return false;
+	FString Raw;
+	if (!FFileHelper::LoadFileToString(Raw, *FilePath))
+	{
+		return false;
+	}
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(Raw);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	{
+		return false;
+	}
+	BridgeLevelImpl::GNavGraph.Reset();
+	const TArray<TSharedPtr<FJsonValue>>* NodesArr;
+	if (Root->TryGetArrayField(TEXT("nodes"), NodesArr))
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *NodesArr)
+		{
+			const TSharedPtr<FJsonObject>* Obj;
+			if (!Val->TryGetObject(Obj)) continue;
+			const FString Name = (*Obj)->GetStringField(TEXT("name"));
+			if (Name.IsEmpty()) continue;
+			FVector Loc(
+				(*Obj)->GetNumberField(TEXT("x")),
+				(*Obj)->GetNumberField(TEXT("y")),
+				(*Obj)->GetNumberField(TEXT("z")));
+			BridgeLevelImpl::FNavNode& N = BridgeLevelImpl::GNavGraph.FindOrAdd(Name);
+			N.Location = Loc;
+		}
+	}
+	const TArray<TSharedPtr<FJsonValue>>* EdgesArr;
+	if (Root->TryGetArrayField(TEXT("edges"), EdgesArr))
+	{
+		for (const TSharedPtr<FJsonValue>& Val : *EdgesArr)
+		{
+			const TSharedPtr<FJsonObject>* Obj;
+			if (!Val->TryGetObject(Obj)) continue;
+			const FString From = (*Obj)->GetStringField(TEXT("from"));
+			const FString To = (*Obj)->GetStringField(TEXT("to"));
+			const double Cost = (*Obj)->GetNumberField(TEXT("cost"));
+			if (From.IsEmpty() || To.IsEmpty()) continue;
+			BridgeLevelImpl::FNavNode* FromN = BridgeLevelImpl::GNavGraph.Find(From);
+			if (FromN && BridgeLevelImpl::GNavGraph.Contains(To))
+			{
+				FromN->OutEdges.Add(To, static_cast<float>(FMath::Max(Cost, 0.0)));
+			}
+		}
+	}
+	return true;
 }
 
 bool UUnrealBridgeLevelLibrary::LineTraceHitInfo(

@@ -522,6 +522,55 @@ public:
 		float StartAngleDeg, float SpanDeg,
 		TArray<float>& OutDistances, TArray<FString>& OutActorLabels);
 
+	// ─── NavGraph: persistent exploration topology ───────────────
+	//
+	// An agent-maintained graph of visited locations and the corridors
+	// between them. Lives in a process-global singleton (so it survives
+	// across bridge exec calls) and can be serialised to JSON for reuse
+	// across sessions.
+	//
+	// Node names are caller-chosen strings (e.g. "wp_12" or "ledge_north").
+	// Edges are directed — add both directions if traversal is symmetric.
+	// Missing from/to names are created automatically when AddEdge references
+	// them and NodeLocation is provided.
+
+	/** Remove all nodes and edges from the in-memory graph. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static void NavGraphClear();
+
+	/** Add or update a node. Returns true if this was a new node. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static bool NavGraphAddNode(const FString& Name, const FVector& Location);
+
+	/** Add or update a directed edge `From -> To` with cost (usually
+	 *  distance in cm). Returns false if either node is unknown. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static bool NavGraphAddEdge(const FString& From, const FString& To, float Cost);
+
+	/** List all node names currently in the graph. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static TArray<FString> NavGraphListNodes();
+
+	/** Look up a node's location. Returns zero vector + false if unknown. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static bool NavGraphGetNodeLocation(const FString& Name, FVector& OutLocation);
+
+	/**
+	 * Dijkstra shortest-path from `From` to `To` over the current edge set.
+	 * Returns the ordered list of node names (inclusive of both endpoints)
+	 * and total cost via out-param. Returns empty array when unreachable.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static TArray<FString> NavGraphShortestPath(const FString& From, const FString& To, float& OutTotalCost);
+
+	/** Serialise the graph to a JSON file at the given absolute path. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static bool NavGraphSaveJson(const FString& FilePath);
+
+	/** Load a graph from a JSON file, replacing any in-memory graph. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
+	static bool NavGraphLoadJson(const FString& FilePath);
+
 	/**
 	 * Physics-overlap query: actors whose collision primitives intersect
 	 * a sphere at `Center` with `Radius` cm. Distinct from
