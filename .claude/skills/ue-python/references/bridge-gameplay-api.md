@@ -650,6 +650,32 @@ against the values from `get_player_start_transform`.
 unreal.UnrealBridgeGameplayLibrary.respawn_player_pawn()
 ```
 
+---
+
+## Runtime pause + game class queries
+
+Runtime-side (`UGameplayStatics`) pause and class lookups. Distinct
+from `bridge-editor-api.pause_pie`, which targets the editor's
+play-session facility. Both pauses work; this one reads/writes the
+game-side flag that stops actor ticks.
+
+### pause_game(paused) -> bool
+
+Set runtime game pause. False outside PIE.
+
+### is_game_paused() -> bool
+
+Read runtime game pause state.
+
+### get_game_mode_class_name() -> str
+
+Short class name of the active `AGameModeBase` (e.g.
+`"GM_UnitCharacter_C"` for Blueprint game modes). Empty outside PIE.
+
+### get_game_state_class_name() -> str
+
+Short class name of the active `AGameStateBase`. Empty outside PIE.
+
 ```python
 # Visualise a nav path
 path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(

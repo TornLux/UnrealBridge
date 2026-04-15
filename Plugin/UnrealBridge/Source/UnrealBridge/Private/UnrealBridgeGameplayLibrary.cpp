@@ -13,6 +13,8 @@
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/DamageType.h"
+#include "GameFramework/GameModeBase.h"
+#include "GameFramework/GameStateBase.h"
 #include "Sound/SoundBase.h"
 #include "Engine/Engine.h"
 #include "DrawDebugHelpers.h"
@@ -1647,6 +1649,38 @@ bool UUnrealBridgeGameplayLibrary::RespawnPlayerPawn()
 	// Reuse the public TeleportPawn path so physics / controller snap are consistent.
 	return TeleportPawn(Start->GetActorLocation(), Start->GetActorRotation(),
 		/*bSnapController=*/ true, /*bStopVelocity=*/ true);
+}
+
+// ─── Runtime pause + game class queries ────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::PauseGame(bool bPaused)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return false;
+	return UGameplayStatics::SetGamePaused(World, bPaused);
+}
+
+bool UUnrealBridgeGameplayLibrary::IsGamePaused()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return false;
+	return UGameplayStatics::IsGamePaused(World);
+}
+
+FString UUnrealBridgeGameplayLibrary::GetGameModeClassName()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return FString();
+	AGameModeBase* GM = UGameplayStatics::GetGameMode(World);
+	return GM ? GM->GetClass()->GetName() : FString();
+}
+
+FString UUnrealBridgeGameplayLibrary::GetGameStateClassName()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return FString();
+	AGameStateBase* GS = UGameplayStatics::GetGameState(World);
+	return GS ? GS->GetClass()->GetName() : FString();
 }
 
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)

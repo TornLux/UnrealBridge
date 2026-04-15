@@ -888,4 +888,27 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool RespawnPlayerPawn();
+
+	// ─── Runtime pause + game class queries ──────────────────────────
+	//
+	// `SetGamePaused` / `IsGamePaused` via UGameplayStatics — distinct
+	// from Editor.pause_pie (which targets the editor play-session
+	// facility). Both are safe to use; this one reads/writes the
+	// game-side pause flag that affects actor ticks.
+
+	/** Set runtime game pause. Returns false outside PIE. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool PauseGame(bool bPaused);
+
+	/** Read runtime game pause state. False outside PIE. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool IsGamePaused();
+
+	/** Short class name of the active `AGameModeBase` (e.g. "GameMode"). Empty outside PIE. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetGameModeClassName();
+
+	/** Short class name of the active `AGameStateBase`. Empty outside PIE. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetGameStateClassName();
 };
