@@ -2124,6 +2124,86 @@ float UUnrealBridgeLevelLibrary::GetActorGroundClearance(const FString& ActorNam
 	return (Start - Hit.ImpactPoint).Size();
 }
 
+// ─── Actor hierarchy traversal ─────────────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	static void CollectDescendantsRecursive(AActor* Root, TArray<FString>& Out, int32 Guard = 0)
+	{
+		if (!Root || Guard > 1024) return;
+		TArray<AActor*> Children;
+		Root->GetAttachedActors(Children, /*bResetArray=*/ false);
+		for (AActor* C : Children)
+		{
+			if (!C) continue;
+			Out.Add(C->GetActorLabel());
+			CollectDescendantsRecursive(C, Out, Guard + 1);
+		}
+	}
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetAllDescendants(const FString& ActorName)
+{
+	TArray<FString> Out;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return Out;
+	}
+	BridgeLevelImpl::CollectDescendantsRecursive(Actor, Out);
+	return Out;
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::GetActorSiblings(const FString& ActorName)
+{
+	TArray<FString> Out;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return Out;
+	AActor* Parent = Actor->GetAttachParentActor();
+	if (!Parent) return Out;
+	TArray<AActor*> Siblings;
+	Parent->GetAttachedActors(Siblings, /*bResetArray=*/ false);
+	for (AActor* S : Siblings)
+	{
+		if (S && S != Actor)
+		{
+			Out.Add(S->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+FString UUnrealBridgeLevelLibrary::GetRootAttachParent(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return FString();
+	AActor* Cursor = Actor;
+	// Walk up with a small guard against malformed cycles.
+	for (int32 i = 0; i < 1024; ++i)
+	{
+		AActor* P = Cursor->GetAttachParentActor();
+		if (!P) break;
+		Cursor = P;
+	}
+	return Cursor->GetActorLabel();
+}
+
+int32 UUnrealBridgeLevelLibrary::GetAttachmentDepth(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor) return -1;
+	int32 Depth = 0;
+	AActor* Cursor = Actor;
+	for (int32 i = 0; i < 1024; ++i)
+	{
+		AActor* P = Cursor->GetAttachParentActor();
+		if (!P) break;
+		++Depth;
+		Cursor = P;
+	}
+	return Depth;
+}
+
 bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
 	const FString& ActorName,
 	const FString& ComponentName,

@@ -781,4 +781,38 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static float GetActorGroundClearance(const FString& ActorName, float MaxDistance = 10000.0f);
+
+	// ─── Actor hierarchy traversal ───────────────────────────
+
+	/**
+	 * Labels of all actors attached to this actor at any depth.
+	 * Complements `GetAttachmentTree` (formatted text) with a flat list
+	 * suitable for iteration. Pre-order (parent's children listed before
+	 * grandchildren).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetAllDescendants(const FString& ActorName);
+
+	/**
+	 * Labels of actors attached to the same parent as this actor
+	 * (excluding this actor itself). Empty if the actor has no parent
+	 * or is missing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> GetActorSiblings(const FString& ActorName);
+
+	/**
+	 * Label of the topmost ancestor in this actor's attachment chain.
+	 * Returns the actor's own label when it has no parent. Empty on
+	 * missing actor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetRootAttachParent(const FString& ActorName);
+
+	/**
+	 * Depth in the attachment tree. 0 = no parent (root), 1 = child of
+	 * root, etc. Returns -1 on missing actor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 GetAttachmentDepth(const FString& ActorName);
 };

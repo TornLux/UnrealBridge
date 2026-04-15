@@ -131,6 +131,35 @@ if clearance > 200:
 non-visibility collision profiles don't register — WorldPartition
 cells that haven't been loaded also return misses.
 
+### get_all_descendants(actor_name) -> list[str]
+
+Flat pre-order list of labels for every actor attached to this actor
+at any depth. Complements the formatted `get_attachment_tree` with
+iteration-friendly output.
+
+### get_actor_siblings(actor_name) -> list[str]
+
+Labels of other actors sharing the same attach-parent (self excluded).
+Empty when the actor has no parent (root-level actors don't share a
+sibling group).
+
+### get_root_attach_parent(actor_name) -> str
+
+Label of the topmost ancestor in the chain. Returns the actor's own
+label when it has no parent. Empty on missing actor.
+
+### get_attachment_depth(actor_name) -> int
+
+Depth in the attachment tree. `0` = no parent, `1` = child of a root,
+etc. Returns `-1` on missing actor.
+
+```python
+for a in unreal.UnrealBridgeLevelLibrary.get_actor_names('', '', ''):
+    d = unreal.UnrealBridgeLevelLibrary.get_attachment_depth(a)
+    if d > 3:
+        print(f'{a}: deeply nested (depth {d})')
+```
+
 ---
 
 ## Read — Actor Queries
