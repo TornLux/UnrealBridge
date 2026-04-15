@@ -257,6 +257,42 @@ toast is hidden when the user alt-tabbed to another app.
 Returns False when no Slate application / no visible top-level window
 (e.g. commandlet / headless editor run).
 
+### get_frame_rate() -> float
+
+Instantaneous FPS from the last `FApp::GetDeltaTime()` sample.
+Per-frame jittery — average 10–30 samples client-side for anything a
+human reads. Returns 0 when the delta is near-zero (paused tick).
+
+### get_memory_usage_mb() -> float
+
+Physical memory used by the editor process, in MB. Sampled via
+`FPlatformMemory::GetStats().UsedPhysical`. On Windows this matches
+Task Manager's "Working set" value.
+
+### get_engine_uptime() -> float
+
+Seconds since `GStartTime` (engine init complete). Useful for gating
+early automation — e.g. skip expensive work during the first 30 s
+while the editor is still loading shaders.
+
+### trigger_garbage_collection(b_full_purge=False) -> bool
+
+Force a GC pass. `b_full_purge=False` runs an incremental collection
+(fast, default). `True` runs the full purge — slow, compacts the pool,
+blocks the game thread for up to several seconds on a large project.
+
+Use after destroying a batch of actors / unloading many assets when
+you want `get_memory_usage_mb` to reflect the drop immediately rather
+than waiting for the next engine-scheduled GC.
+
+```python
+unreal.UnrealBridgeLevelLibrary.destroy_actors(many_actor_names)
+unreal.UnrealBridgeEditorLibrary.trigger_garbage_collection(False)
+print(unreal.UnrealBridgeEditorLibrary.get_memory_usage_mb())
+```
+
+Returns True once the collection pass has run.
+
 ---
 
 ## Asset Control

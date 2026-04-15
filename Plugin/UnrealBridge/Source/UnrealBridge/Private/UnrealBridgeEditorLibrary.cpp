@@ -1168,6 +1168,33 @@ FString UUnrealBridgeEditorLibrary::GetScreenshotDirectory()
 	return FPaths::ConvertRelativePathToFull(FPaths::ScreenShotDir());
 }
 
+float UUnrealBridgeEditorLibrary::GetFrameRate()
+{
+	const double Delta = FApp::GetDeltaTime();
+	if (Delta < KINDA_SMALL_NUMBER)
+	{
+		return 0.0f;
+	}
+	return static_cast<float>(1.0 / Delta);
+}
+
+float UUnrealBridgeEditorLibrary::GetMemoryUsageMB()
+{
+	const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
+	return static_cast<float>(Stats.UsedPhysical) / (1024.0f * 1024.0f);
+}
+
+float UUnrealBridgeEditorLibrary::GetEngineUptime()
+{
+	return static_cast<float>(FApp::GetCurrentTime() - GStartTime);
+}
+
+bool UUnrealBridgeEditorLibrary::TriggerGarbageCollection(bool bFullPurge)
+{
+	CollectGarbage(RF_NoFlags, bFullPurge);
+	return true;
+}
+
 bool UUnrealBridgeEditorLibrary::BringEditorToFront()
 {
 	if (!FSlateApplication::IsInitialized())

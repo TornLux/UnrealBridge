@@ -404,4 +404,37 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool BringEditorToFront();
+
+	// ─── Engine stats + GC ───────────────────────────────────
+
+	/**
+	 * Instantaneous FPS from the last delta-time sample.
+	 * Clamped to 0 at extremely small deltas. Expect per-frame jitter —
+	 * average client-side if you need a smoother signal.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static float GetFrameRate();
+
+	/** Physical memory used by the editor process, in MB. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static float GetMemoryUsageMB();
+
+	/**
+	 * Seconds since the engine finished initializing. Monotonic —
+	 * same clock `unreal.SystemLibrary.get_game_time_in_seconds` uses
+	 * for the editor world.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static float GetEngineUptime();
+
+	/**
+	 * Force a garbage-collection pass. Useful after destroying a large
+	 * batch of actors / unloading many assets when the caller wants
+	 * memory reclaimed now rather than at the next engine tick.
+	 *
+	 * @param bFullPurge  true = full purge (slow, compacts the GC pool);
+	 *                    false = incremental collection (default).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool TriggerGarbageCollection(bool bFullPurge = false);
 };
