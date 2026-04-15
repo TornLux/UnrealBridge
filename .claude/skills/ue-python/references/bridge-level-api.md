@@ -251,6 +251,32 @@ hier = unreal.UnrealBridgeLevelLibrary.get_actor_class_hierarchy('Cube')
 Labels of actors whose class matches AND whose tags contain `tag`.
 Avoids a double round-trip for class + tag queries.
 
+### rotate_actors(actor_names, delta_rotation) -> int
+
+Add `delta_rotation` to each named actor's world rotation
+(componentwise axis addition, not quaternion composition). Single
+undo transaction.
+
+### scale_actors(actor_names, scale_multiplier) -> int
+
+Multiply each actor's world scale componentwise by `scale_multiplier`
+(e.g. `Vector(2, 2, 2)` doubles uniform scale).
+
+### set_actors_uniform_scale(actor_names, uniform_scale) -> int
+
+Set scale to a uniform value on all three axes.
+
+### mirror_actors(actor_names, axis) -> int
+
+Flip each actor's location AND scale sign on the named axis
+(`"X"`/`"Y"`/`"Z"`, case-insensitive). Unknown axis returns 0.
+
+```python
+# Scripted left-right duplicate
+src = unreal.UnrealBridgeLevelLibrary.duplicate_actors(['Cube'])
+unreal.UnrealBridgeLevelLibrary.mirror_actors(src, 'X')
+```
+
 ---
 
 ## Read — Actor Queries

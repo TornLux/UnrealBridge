@@ -2404,6 +2404,89 @@ TArray<FString> UUnrealBridgeLevelLibrary::FindActorsByClassAndTag(const FString
 	return Out;
 }
 
+// ─── Bulk rotate / scale / mirror ──────────────────────────────────────
+
+int32 UUnrealBridgeLevelLibrary::RotateActors(const TArray<FString>& ActorNames, FRotator DeltaRotation)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	FScopedTransaction Tr(LOCTEXT("RotateActors", "Rotate Actors"));
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		A->SetActorRotation(A->GetActorRotation() + DeltaRotation);
+		++Count;
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::ScaleActors(const TArray<FString>& ActorNames, FVector ScaleMultiplier)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	FScopedTransaction Tr(LOCTEXT("ScaleActors", "Scale Actors"));
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		A->SetActorScale3D(A->GetActorScale3D() * ScaleMultiplier);
+		++Count;
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::SetActorsUniformScale(const TArray<FString>& ActorNames, float UniformScale)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	FScopedTransaction Tr(LOCTEXT("SetActorsUniformScale", "Set Actors Uniform Scale"));
+	const FVector S(UniformScale, UniformScale, UniformScale);
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		A->SetActorScale3D(S);
+		++Count;
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::MirrorActors(const TArray<FString>& ActorNames, const FString& Axis)
+{
+	const FString L = Axis.ToLower();
+	int32 AxisIdx = -1;
+	if (L == TEXT("x")) AxisIdx = 0;
+	else if (L == TEXT("y")) AxisIdx = 1;
+	else if (L == TEXT("z")) AxisIdx = 2;
+	else return 0;
+
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	FScopedTransaction Tr(LOCTEXT("MirrorActors", "Mirror Actors"));
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		FVector Loc = A->GetActorLocation();
+		FVector Scl = A->GetActorScale3D();
+		Loc[AxisIdx] = -Loc[AxisIdx];
+		Scl[AxisIdx] = -Scl[AxisIdx];
+		A->SetActorLocation(Loc);
+		A->SetActorScale3D(Scl);
+		++Count;
+	}
+	return Count;
+}
+
 bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
 	const FString& ActorName,
 	const FString& ComponentName,

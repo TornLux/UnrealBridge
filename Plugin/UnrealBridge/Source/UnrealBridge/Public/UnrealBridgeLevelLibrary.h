@@ -904,4 +904,41 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static TArray<FString> FindActorsByClassAndTag(const FString& ClassFilter, const FName Tag);
+
+	// ─── Bulk rotate / scale / mirror ────────────────────────
+	//
+	// Companions to OffsetActors. All three writers wrap in a single
+	// undo transaction and return the count of actors touched.
+
+	/**
+	 * Add `DeltaRotation` to each named actor's world rotation.
+	 * Combined via `FRotator + FRotator` (additive on each axis; not
+	 * quaternion-composed).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 RotateActors(const TArray<FString>& ActorNames, FRotator DeltaRotation);
+
+	/**
+	 * Multiply each named actor's world scale by `ScaleMultiplier`
+	 * component-wise (e.g. `(2, 2, 2)` doubles uniform scale).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 ScaleActors(const TArray<FString>& ActorNames, FVector ScaleMultiplier);
+
+	/**
+	 * Set each named actor's world scale to a uniform value
+	 * (same value on all three axes).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 SetActorsUniformScale(const TArray<FString>& ActorNames, float UniformScale);
+
+	/**
+	 * Mirror each named actor's location across a world-space plane
+	 * through the origin along the named `Axis` ("X"|"Y"|"Z",
+	 * case-insensitive). The sign of the actor's scale on that axis is
+	 * also flipped so rendered geometry mirrors correctly. Returns count
+	 * mirrored; 0 on unknown axis.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 MirrorActors(const TArray<FString>& ActorNames, const FString& Axis);
 };
