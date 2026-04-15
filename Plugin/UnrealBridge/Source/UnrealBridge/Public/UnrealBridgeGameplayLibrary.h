@@ -423,4 +423,37 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static FString GetActorAtScreenPosition(float NormalizedX, float NormalizedY, float MaxDistance = 10000.0f);
+
+	// ─── Camera control + fast view query ─────────────────────────────
+
+	/**
+	 * Current camera vertical field of view in degrees. Returns -1.0 when
+	 * PIE is not running or no PlayerCameraManager is available.
+	 * Reads from `APlayerCameraManager::GetFOVAngle()`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetCameraFOV();
+
+	/**
+	 * Override the camera FOV using `APlayerCameraManager::SetFOV`.
+	 * The override persists until `UnlockCameraFOV` is called. Typical
+	 * range is 60–120 degrees; values below 1 or above 170 are rejected.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SetCameraFOV(float FOV);
+
+	/**
+	 * Clear the FOV override set by `SetCameraFOV` so the camera returns
+	 * to the default FOV sourced from the active view target.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool UnlockCameraFOV();
+
+	/**
+	 * Current camera world location and rotation. Lightweight alternative
+	 * to assembling an `FAgentObservation` when the caller only needs the
+	 * view transform (e.g. stable cinematography logic).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetCameraViewPoint(FVector& OutLocation, FRotator& OutRotation);
 };

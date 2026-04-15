@@ -8,6 +8,7 @@
 #include "GameFramework/Character.h"
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PawnMovementComponent.h"
+#include "Camera/PlayerCameraManager.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
 #include "InputAction.h"
@@ -865,6 +866,69 @@ bool UUnrealBridgeGameplayLibrary::ProjectWorldToScreen(const FVector& WorldLoca
 	// Off-screen check — reject if outside [0,1] (already tells caller the
 	// point isn't currently rendered).
 	return NX >= 0.0f && NX <= 1.0f && NY >= 0.0f && NY <= 1.0f;
+}
+
+// ─── Camera control + fast view query ─────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	static APlayerCameraManager* GetPIECameraManager()
+	{
+		UWorld* World = GetPIEWorld();
+		if (!World) return nullptr;
+		APlayerController* PC = World->GetFirstPlayerController();
+		return PC ? PC->PlayerCameraManager : nullptr;
+	}
+}
+
+float UUnrealBridgeGameplayLibrary::GetCameraFOV()
+{
+	APlayerCameraManager* Cam = BridgeAgentImpl::GetPIECameraManager();
+	return Cam ? Cam->GetFOVAngle() : -1.0f;
+}
+
+bool UUnrealBridgeGameplayLibrary::SetCameraFOV(float FOV)
+{
+	if (FOV < 1.0f || FOV > 170.0f)
+	{
+		return false;
+	}
+	APlayerCameraManager* Cam = BridgeAgentImpl::GetPIECameraManager();
+	if (!Cam)
+	{
+		return false;
+	}
+	Cam->SetFOV(FOV);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::UnlockCameraFOV()
+{
+	APlayerCameraManager* Cam = BridgeAgentImpl::GetPIECameraManager();
+	if (!Cam)
+	{
+		return false;
+	}
+	Cam->UnlockFOV();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::GetCameraViewPoint(FVector& OutLocation, FRotator& OutRotation)
+{
+	OutLocation = FVector::ZeroVector;
+	OutRotation = FRotator::ZeroRotator;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	APlayerController* PC = World->GetFirstPlayerController();
+	if (!PC)
+	{
+		return false;
+	}
+	PC->GetPlayerViewPoint(OutLocation, OutRotation);
+	return true;
 }
 
 FString UUnrealBridgeGameplayLibrary::GetActorAtScreenPosition(float NormalizedX, float NormalizedY, float MaxDistance)

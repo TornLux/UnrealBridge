@@ -201,6 +201,43 @@ name = unreal.UnrealBridgeGameplayLibrary.get_actor_at_screen_position(0.5, 0.5)
 
 ---
 
+## Camera control + fast view query
+
+Wrappers around `APlayerCameraManager`. All four functions require PIE
+and a player controller; they return `None` / `-1.0` / `False`
+otherwise.
+
+### get_camera_fov() -> float
+
+Current vertical FOV in degrees. Returns `-1.0` outside PIE.
+
+### set_camera_fov(fov) -> bool
+
+Override the camera FOV. Valid range: `[1.0, 170.0]` — values outside
+that are rejected (returns False). The override persists until
+`unlock_camera_fov` is called; it is *not* automatically cleared when
+PIE stops.
+
+```python
+unreal.UnrealBridgeGameplayLibrary.set_camera_fov(30.0)   # tight zoom
+# ... inspect scene ...
+unreal.UnrealBridgeGameplayLibrary.unlock_camera_fov()
+```
+
+### unlock_camera_fov() -> bool
+
+Clear the FOV override so the camera returns to whatever the active
+view target provides (typically 90°).
+
+### get_camera_view_point() -> (Vector, Rotator) or None
+
+`APlayerController::GetPlayerViewPoint` wrapper — returns the current
+camera world location and rotation as a tuple. Cheaper than assembling
+a full `FAgentObservation` when you only need the view transform (e.g.
+recording a cinematography path).
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and
