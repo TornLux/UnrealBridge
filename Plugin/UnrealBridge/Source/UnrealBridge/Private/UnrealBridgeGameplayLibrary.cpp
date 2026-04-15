@@ -1345,6 +1345,44 @@ FString UUnrealBridgeGameplayLibrary::GetInputActionValueType(const FString& Inp
 	}
 }
 
+// ─── Extended debug drawing ────────────────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::DrawDebugBoxAt(const FVector& Center, const FVector& Extent, float Thickness, float DurationSeconds)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return false;
+	::DrawDebugBox(World, Center, Extent, FColor::Yellow,
+		/*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds,
+		/*DepthPriority=*/ 0, FMath::Max(Thickness, 0.0f));
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::DrawDebugArrow(const FVector& Start, const FVector& End, float ArrowSize, float DurationSeconds)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return false;
+	::DrawDebugDirectionalArrow(World, Start, End, FMath::Max(ArrowSize, 1.0f),
+		FColor::Yellow, /*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::DrawDebugString(const FString& Text, const FVector& Location, float DurationSeconds)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World || Text.IsEmpty()) return false;
+	::DrawDebugString(World, Location, Text, /*TestBaseActor=*/ nullptr,
+		FColor::Yellow, DurationSeconds, /*bDrawShadow=*/ true);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::FlushPersistentDebugDraws()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return false;
+	::FlushPersistentDebugLines(World);
+	return true;
+}
+
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
 {
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();

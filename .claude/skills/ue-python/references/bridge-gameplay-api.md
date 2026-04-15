@@ -466,6 +466,28 @@ tinting.
 
 Draw a yellow wireframe sphere (16 segments).
 
+### draw_debug_box_at(center, extent, thickness=1.0, duration_seconds=5.0) -> bool
+
+Axis-aligned wireframe box. `extent` is the half-size on each axis.
+
+### draw_debug_arrow(start, end, arrow_size=20.0, duration_seconds=5.0) -> bool
+
+Directional arrow — line + arrowhead. `arrow_size` is the head length
+in cm; total length is `|end - start|` regardless.
+
+### draw_debug_string(text, location, duration_seconds=5.0) -> bool
+
+World-anchored text label rendered via the engine debug text system.
+Visible only inside the PIE viewport — not captured by high-res
+screenshots.
+
+### flush_persistent_debug_draws() -> bool
+
+Clear every persistent (duration > 0) debug-draw primitive — lines,
+spheres, boxes, arrows, strings — in the PIE world at once. Single-
+frame draws (duration = 0) expire naturally on the next tick and
+don't need this.
+
 ```python
 # Visualise a nav path
 path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(

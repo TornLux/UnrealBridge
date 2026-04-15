@@ -707,4 +707,35 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static FString GetInputActionValueType(const FString& InputActionPath);
+
+	// ─── Extended debug drawing ──────────────────────────────────────
+	//
+	// Companions to DrawDebugLine / DrawDebugSphereAt. All require PIE.
+	// `DurationSeconds = 0` keeps the shape alive only for one frame.
+
+	/** Draw an axis-aligned wireframe box in the PIE viewport. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool DrawDebugBoxAt(const FVector& Center, const FVector& Extent, float Thickness = 1.0f, float DurationSeconds = 5.0f);
+
+	/**
+	 * Draw a debug arrow from Start to End. ArrowSize controls the head
+	 * length (cm); total segment length is `End - Start` regardless.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool DrawDebugArrow(const FVector& Start, const FVector& End, float ArrowSize = 20.0f, float DurationSeconds = 5.0f);
+
+	/**
+	 * Draw a world-anchored text label at `Location`. Renders via the
+	 * engine's debug text system — visible only inside the PIE viewport
+	 * (not captured by high-res screenshots).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool DrawDebugString(const FString& Text, const FVector& Location, float DurationSeconds = 5.0f);
+
+	/**
+	 * Immediately clear every persistent debug-draw primitive
+	 * (lines / spheres / boxes / arrows / strings) in the PIE world.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool FlushPersistentDebugDraws();
 };
