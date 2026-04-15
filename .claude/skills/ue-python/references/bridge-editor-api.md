@@ -470,6 +470,37 @@ p = unreal.UnrealBridgeEditorLibrary.get_module_binary_path('UnrealBridge')
 # p → ".../Plugins/UnrealBridge/Binaries/Win64/UnrealEditor-UnrealBridge.dll"
 ```
 
+### get_widget_mode() -> str
+
+Active transform-gizmo mode in the level viewport. One of:
+`"Translate"` | `"Rotate"` | `"Scale"` | `"TranslateRotateZ"` |
+`"2D"` | `"None"`. Empty on editor-mode-tools unavailable.
+
+### set_widget_mode(mode) -> bool
+
+Switch gizmo mode. Accepts the strings returned by `get_widget_mode`
+(case-insensitive). Returns False on unknown mode.
+
+### get_coord_system() -> str
+
+Current coordinate system used by the transform gizmo: `"World"` or
+`"Local"`.
+
+### set_coord_system(system) -> bool
+
+Toggle between `"World"` and `"Local"` (case-insensitive). Mirrors the
+`~` hotkey in the viewport toolbar. Returns False on unknown value.
+
+```python
+# Temporarily switch to rotate gizmo in local space for a scripted
+# placement, then restore.
+prev_mode = unreal.UnrealBridgeEditorLibrary.get_widget_mode()
+unreal.UnrealBridgeEditorLibrary.set_widget_mode('Rotate')
+unreal.UnrealBridgeEditorLibrary.set_coord_system('Local')
+# ... user interacts ...
+unreal.UnrealBridgeEditorLibrary.set_widget_mode(prev_mode)
+```
+
 ---
 
 ## Asset Control

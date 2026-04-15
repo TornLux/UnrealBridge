@@ -604,4 +604,32 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetModuleBinaryPath(const FString& ModuleName);
+
+	// ─── Viewport gizmo mode + coord system ──────────────────
+
+	/**
+	 * Active transform-gizmo mode in the level viewport:
+	 * "Translate" | "Rotate" | "Scale" | "TranslateRotateZ" | "2D" | "None".
+	 * Empty string when editor mode tools aren't available.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetWidgetMode();
+
+	/**
+	 * Switch gizmo mode. Accepts the strings returned by GetWidgetMode
+	 * (case-insensitive). Returns false on unknown mode name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetWidgetMode(const FString& Mode);
+
+	/** Current coordinate system: "World" or "Local". */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetCoordSystem();
+
+	/**
+	 * Switch coord system. Accepts "World" / "Local" (case-insensitive).
+	 * Mirrors the ~ key toggle in the viewport toolbar.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SetCoordSystem(const FString& System);
 };

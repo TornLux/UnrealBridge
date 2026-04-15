@@ -51,6 +51,8 @@
 #include "Interfaces/IMainFrameModule.h"
 #include "ShaderCompiler.h"
 #include "AssetCompilingManager.h"
+#include "EditorModeManager.h"
+#include "UnrealWidget.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1547,6 +1549,61 @@ FString UUnrealBridgeEditorLibrary::GetModuleBinaryPath(const FString& ModuleNam
 		return FString();
 	}
 	return FModuleManager::Get().GetModuleFilename(N);
+}
+
+// ─── Viewport gizmo mode + coord system ────────────────────────────────
+
+FString UUnrealBridgeEditorLibrary::GetWidgetMode()
+{
+	const UE::Widget::EWidgetMode Mode = GLevelEditorModeTools().GetWidgetMode();
+	switch (Mode)
+	{
+	case UE::Widget::WM_Translate:         return TEXT("Translate");
+	case UE::Widget::WM_Rotate:            return TEXT("Rotate");
+	case UE::Widget::WM_Scale:             return TEXT("Scale");
+	case UE::Widget::WM_TranslateRotateZ:  return TEXT("TranslateRotateZ");
+	case UE::Widget::WM_2D:                return TEXT("2D");
+	case UE::Widget::WM_None:              return TEXT("None");
+	default:                               return TEXT("Unknown");
+	}
+}
+
+bool UUnrealBridgeEditorLibrary::SetWidgetMode(const FString& Mode)
+{
+	const FString L = Mode.ToLower();
+	UE::Widget::EWidgetMode M;
+	if      (L == TEXT("translate"))        M = UE::Widget::WM_Translate;
+	else if (L == TEXT("rotate"))           M = UE::Widget::WM_Rotate;
+	else if (L == TEXT("scale"))            M = UE::Widget::WM_Scale;
+	else if (L == TEXT("translaterotatez")) M = UE::Widget::WM_TranslateRotateZ;
+	else if (L == TEXT("2d"))               M = UE::Widget::WM_2D;
+	else if (L == TEXT("none"))             M = UE::Widget::WM_None;
+	else return false;
+
+	GLevelEditorModeTools().SetWidgetMode(M);
+	return true;
+}
+
+FString UUnrealBridgeEditorLibrary::GetCoordSystem()
+{
+	const ECoordSystem CS = GLevelEditorModeTools().GetCoordSystem();
+	return (CS == COORD_World) ? TEXT("World") : TEXT("Local");
+}
+
+bool UUnrealBridgeEditorLibrary::SetCoordSystem(const FString& System)
+{
+	const FString L = System.ToLower();
+	if (L == TEXT("world"))
+	{
+		GLevelEditorModeTools().SetCoordSystem(COORD_World);
+		return true;
+	}
+	if (L == TEXT("local"))
+	{
+		GLevelEditorModeTools().SetCoordSystem(COORD_Local);
+		return true;
+	}
+	return false;
 }
 
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
