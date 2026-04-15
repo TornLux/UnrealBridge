@@ -735,4 +735,34 @@ public:
 	/** Process ID of the running editor. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static int32 GetEditorProcessID();
+
+	// ─── Source control basics ───────────────────────────────
+
+	/** True if a source-control provider is both registered and available. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsSourceControlEnabled();
+
+	/**
+	 * Name of the active source-control provider, e.g. "Perforce",
+	 * "Git", "Plastic", "None". Empty string if the module isn't loaded.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetSourceControlProviderName();
+
+	/**
+	 * Synchronous source-control state lookup for an asset. Returns one
+	 * of: "CheckedOut" | "NotCheckedOut" | "CheckedOutOther" | "Added" |
+	 * "Deleted" | "Ignored" | "NotControlled" | "Unknown". Empty if the
+	 * asset can't be resolved or SCC is disabled.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetAssetSourceControlState(const FString& AssetPath);
+
+	/**
+	 * Try to check out the asset from source control (synchronous).
+	 * Returns true on success; false if SCC is disabled, asset can't be
+	 * resolved, or the provider rejects the operation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool CheckOutAsset(const FString& AssetPath);
 };

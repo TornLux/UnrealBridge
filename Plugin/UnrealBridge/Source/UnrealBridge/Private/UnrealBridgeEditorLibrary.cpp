@@ -55,6 +55,10 @@
 #include "UnrealWidget.h"
 #include "Settings/LevelEditorViewportSettings.h"
 #include "Settings/EditorLoadingSavingSettings.h"
+#include "ISourceControlModule.h"
+#include "ISourceControlProvider.h"
+#include "SourceControlOperations.h"
+#include "SourceControlHelpers.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1771,6 +1775,52 @@ FString UUnrealBridgeEditorLibrary::GetNowUTC()
 int32 UUnrealBridgeEditorLibrary::GetEditorProcessID()
 {
 	return static_cast<int32>(FPlatformProcess::GetCurrentProcessId());
+}
+
+// ─── Source control basics ─────────────────────────────────────────────
+
+bool UUnrealBridgeEditorLibrary::IsSourceControlEnabled()
+{
+	return ISourceControlModule::Get().IsEnabled()
+		&& ISourceControlModule::Get().GetProvider().IsAvailable();
+}
+
+FString UUnrealBridgeEditorLibrary::GetSourceControlProviderName()
+{
+	ISourceControlModule& Mod = ISourceControlModule::Get();
+	if (!Mod.IsEnabled()) return FString();
+	return Mod.GetProvider().GetName().ToString();
+}
+
+FString UUnrealBridgeEditorLibrary::GetAssetSourceControlState(const FString& AssetPath)
+{
+	const FString Filename = BridgeAssetFileImpl::ResolveFilename(AssetPath);
+	if (Filename.IsEmpty()) return FString();
+	ISourceControlModule& Mod = ISourceControlModule::Get();
+	if (!Mod.IsEnabled()) return FString();
+
+	FSourceControlStatePtr State = Mod.GetProvider().GetState(Filename, EStateCacheUsage::Use);
+	if (!State.IsValid()) return TEXT("Unknown");
+
+	if (State->IsCheckedOut())        return TEXT("CheckedOut");
+	if (State->IsCheckedOutOther())   return TEXT("CheckedOutOther");
+	if (State->IsAdded())             return TEXT("Added");
+	if (State->IsDeleted())           return TEXT("Deleted");
+	if (State->IsIgnored())           return TEXT("Ignored");
+	if (!State->IsSourceControlled()) return TEXT("NotControlled");
+	if (State->CanCheckout())         return TEXT("NotCheckedOut");
+	return TEXT("Unknown");
+}
+
+bool UUnrealBridgeEditorLibrary::CheckOutAsset(const FString& AssetPath)
+{
+	const FString Filename = BridgeAssetFileImpl::ResolveFilename(AssetPath);
+	if (Filename.IsEmpty()) return false;
+	ISourceControlModule& Mod = ISourceControlModule::Get();
+	if (!Mod.IsEnabled()) return false;
+	const ECommandResult::Type R = Mod.GetProvider().Execute(
+		ISourceControlOperation::Create<FCheckOut>(), Filename);
+	return R == ECommandResult::Succeeded;
 }
 
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()

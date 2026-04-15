@@ -606,6 +606,32 @@ Useful as a timestamp prefix for automation logs.
 OS process ID of the running editor. Handy for external tooling that
 wants to attach a debugger or killswitch against this session.
 
+### is_source_control_enabled() -> bool
+
+True when a source-control provider is registered AND currently
+available (configured + reachable).
+
+### get_source_control_provider_name() -> str
+
+Active provider name, e.g. `"Perforce"`, `"Git"`, `"Plastic"`.
+Empty when the module isn't loaded.
+
+### get_asset_source_control_state(asset_path) -> str
+
+One of: `"CheckedOut"` | `"NotCheckedOut"` | `"CheckedOutOther"` |
+`"Added"` | `"Deleted"` | `"Ignored"` | `"NotControlled"` |
+`"Unknown"`. Empty if the asset can't be resolved or SCC is disabled.
+
+Cached state via `EStateCacheUsage::Use` — no network round-trip.
+Call `execute_console_command('Source Control Refresh')` to force a
+fresh query if stale state is suspected.
+
+### check_out_asset(asset_path) -> bool
+
+Synchronous check-out via `FCheckOut`. Returns True only when the
+provider reports success. Blocks briefly on network round-trip for
+remote providers — use sparingly in tight loops.
+
 ---
 
 ## Asset Control
