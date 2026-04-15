@@ -49,6 +49,8 @@
 #include "Framework/Docking/TabManager.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "Interfaces/IMainFrameModule.h"
+#include "ShaderCompiler.h"
+#include "AssetCompilingManager.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1298,6 +1300,35 @@ float UUnrealBridgeEditorLibrary::GetTotalPhysicalMemoryMB()
 {
 	const FPlatformMemoryStats Stats = FPlatformMemory::GetStats();
 	return static_cast<float>(Stats.TotalPhysical) / (1024.0f * 1024.0f);
+}
+
+// ─── Shader + asset compile state ──────────────────────────────────────
+
+int32 UUnrealBridgeEditorLibrary::GetShaderCompileJobCount()
+{
+	return GShaderCompilingManager ? GShaderCompilingManager->GetNumRemainingJobs() : 0;
+}
+
+int32 UUnrealBridgeEditorLibrary::GetAssetCompileJobCount()
+{
+	return static_cast<int32>(FAssetCompilingManager::Get().GetNumRemainingAssets());
+}
+
+bool UUnrealBridgeEditorLibrary::IsCompiling()
+{
+	const bool bShaders = GShaderCompilingManager && GShaderCompilingManager->IsCompiling();
+	const bool bAssets = FAssetCompilingManager::Get().GetNumRemainingAssets() > 0;
+	return bShaders || bAssets;
+}
+
+bool UUnrealBridgeEditorLibrary::FlushCompilation()
+{
+	if (GShaderCompilingManager)
+	{
+		GShaderCompilingManager->FinishAllCompilation();
+	}
+	FAssetCompilingManager::Get().FinishAllCompilation();
+	return true;
 }
 
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()

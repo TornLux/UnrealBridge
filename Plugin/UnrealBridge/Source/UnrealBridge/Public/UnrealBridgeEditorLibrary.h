@@ -510,4 +510,30 @@ public:
 	/** Total physical RAM installed on the host machine, in MB. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static float GetTotalPhysicalMemoryMB();
+
+	// ─── Shader + asset compile state ────────────────────────
+
+	/**
+	 * Pending shader-compile job count across all shader compilers. 0 when
+	 * the editor is idle. Spikes after opening a new map / editing a
+	 * material / reimporting a texture.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetShaderCompileJobCount();
+
+	/** Pending async asset-compile count (materials, textures, meshes). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetAssetCompileJobCount();
+
+	/** True while any shader or asset is still compiling in the background. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsCompiling();
+
+	/**
+	 * Block the game thread until all pending shader + asset compilation
+	 * jobs finish. Can take tens of seconds after a big import. Returns
+	 * after the queue drains.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool FlushCompilation();
 };

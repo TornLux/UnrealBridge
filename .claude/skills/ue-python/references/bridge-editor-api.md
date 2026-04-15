@@ -365,6 +365,34 @@ editor process. Useful as a cap for parallel-work heuristics.
 Total physical RAM on the host in MB. Pair with
 `get_memory_usage_mb()` to compute headroom ratios.
 
+### get_shader_compile_job_count() -> int
+
+Pending shader-compile jobs across `GShaderCompilingManager`. Non-zero
+right after opening a new level, editing a material, or reimporting
+a texture. Zero when the editor is idle.
+
+### get_asset_compile_job_count() -> int
+
+Pending async asset-compile count (materials, textures, meshes) via
+`FAssetCompilingManager`.
+
+### is_compiling() -> bool
+
+True while either shader or asset compilation is in-flight. Cheap
+gate for "wait until editor is idle" loops.
+
+### flush_compilation() -> bool
+
+Block the game thread until both queues drain via
+`FinishAllCompilation`. Can take tens of seconds after a big import —
+callers should show progress UI or raise their own watchdog.
+
+```python
+if unreal.UnrealBridgeEditorLibrary.is_compiling():
+    unreal.UnrealBridgeEditorLibrary.flush_compilation()
+# safe to take screenshots / run PIE now
+```
+
 ---
 
 ## Asset Control
