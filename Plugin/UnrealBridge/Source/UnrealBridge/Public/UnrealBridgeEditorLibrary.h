@@ -684,4 +684,37 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool SetAutoSaveIntervalMinutes(int32 Minutes);
+
+	// ─── Asset-on-disk metadata ──────────────────────────────
+
+	/**
+	 * True when the package resolves to an existing `.uasset` / `.umap`
+	 * on disk. Does not load or touch the asset registry — pure filesystem
+	 * check. Accepts package paths (`/Game/Foo/Bar`).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool DoesAssetExistOnDisk(const FString& AssetPath);
+
+	/**
+	 * Absolute filesystem path of the package's `.uasset` / `.umap`.
+	 * Empty string when the path can't be resolved.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetAssetDiskPath(const FString& AssetPath);
+
+	/**
+	 * Size on disk in bytes for the package's file. Returns -1 when
+	 * the file is missing. Uses `IFileManager::FileSize` — no package
+	 * load, no registry read.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int64 GetAssetFileSize(const FString& AssetPath);
+
+	/**
+	 * ISO-8601 UTC timestamp of the asset file's last-modified time,
+	 * e.g. `"2026-04-15T09:12:33Z"`. Empty string when the file is
+	 * missing or the timestamp can't be read.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetAssetLastModifiedTime(const FString& AssetPath);
 };

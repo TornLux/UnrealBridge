@@ -1690,6 +1690,67 @@ bool UUnrealBridgeEditorLibrary::SetAutoSaveIntervalMinutes(int32 Minutes)
 	return true;
 }
 
+// ─── Asset-on-disk metadata ────────────────────────────────────────────
+
+namespace BridgeAssetFileImpl
+{
+	/** Resolve a package path to an absolute filesystem path. Empty on failure. */
+	static FString ResolveFilename(const FString& AssetPath)
+	{
+		if (AssetPath.IsEmpty()) return FString();
+		// Strip object suffix (`/Game/Foo/Bar.Bar` → `/Game/Foo/Bar`).
+		FString PackagePath = AssetPath;
+		int32 DotIdx;
+		if (PackagePath.FindChar('.', DotIdx))
+		{
+			PackagePath.LeftInline(DotIdx);
+		}
+		FString Filename;
+		if (!FPackageName::TryConvertLongPackageNameToFilename(PackagePath, Filename))
+		{
+			return FString();
+		}
+		// Try .uasset first, then .umap.
+		const FString WithUAsset = Filename + FPackageName::GetAssetPackageExtension();
+		if (FPaths::FileExists(WithUAsset))
+		{
+			return FPaths::ConvertRelativePathToFull(WithUAsset);
+		}
+		const FString WithUMap = Filename + FPackageName::GetMapPackageExtension();
+		if (FPaths::FileExists(WithUMap))
+		{
+			return FPaths::ConvertRelativePathToFull(WithUMap);
+		}
+		return FString();
+	}
+}
+
+bool UUnrealBridgeEditorLibrary::DoesAssetExistOnDisk(const FString& AssetPath)
+{
+	return !BridgeAssetFileImpl::ResolveFilename(AssetPath).IsEmpty();
+}
+
+FString UUnrealBridgeEditorLibrary::GetAssetDiskPath(const FString& AssetPath)
+{
+	return BridgeAssetFileImpl::ResolveFilename(AssetPath);
+}
+
+int64 UUnrealBridgeEditorLibrary::GetAssetFileSize(const FString& AssetPath)
+{
+	const FString Filename = BridgeAssetFileImpl::ResolveFilename(AssetPath);
+	if (Filename.IsEmpty()) return -1;
+	return IFileManager::Get().FileSize(*Filename);
+}
+
+FString UUnrealBridgeEditorLibrary::GetAssetLastModifiedTime(const FString& AssetPath)
+{
+	const FString Filename = BridgeAssetFileImpl::ResolveFilename(AssetPath);
+	if (Filename.IsEmpty()) return FString();
+	const FDateTime Ts = IFileManager::Get().GetTimeStamp(*Filename);
+	if (Ts == FDateTime::MinValue()) return FString();
+	return Ts.ToIso8601();
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))

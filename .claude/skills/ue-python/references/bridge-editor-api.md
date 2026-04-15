@@ -556,6 +556,38 @@ run_capture()
 unreal.UnrealBridgeEditorLibrary.set_auto_save_enabled(prev)
 ```
 
+### does_asset_exist_on_disk(asset_path) -> bool
+
+Pure filesystem check — True when the package's `.uasset` or `.umap`
+file exists. Does not load the asset or consult the Asset Registry.
+Accepts package paths (`/Game/Foo/Bar`) or full object paths
+(`/Game/Foo/Bar.Bar` — the object suffix is stripped).
+
+### get_asset_disk_path(asset_path) -> str
+
+Absolute filesystem path to the package's backing file. Empty on
+unresolvable paths.
+
+### get_asset_file_size(asset_path) -> int
+
+File size in bytes. Returns `-1` when the file is missing.
+
+### get_asset_last_modified_time(asset_path) -> str
+
+ISO-8601 UTC timestamp of the file's last modification. Empty when
+the file is missing or the timestamp can't be read.
+
+```python
+# Detect recently-edited assets.
+import datetime
+p = '/Game/Maps/MyLevel'
+mtime = unreal.UnrealBridgeEditorLibrary.get_asset_last_modified_time(p)
+if mtime:
+    delta = datetime.datetime.utcnow() - datetime.datetime.fromisoformat(mtime.rstrip('Z'))
+    if delta.total_seconds() < 3600:
+        print(f'{p} modified within last hour')
+```
+
 ---
 
 ## Asset Control
