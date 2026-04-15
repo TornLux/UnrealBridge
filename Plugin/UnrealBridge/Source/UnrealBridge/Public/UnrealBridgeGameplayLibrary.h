@@ -676,4 +676,35 @@ public:
 	/** Draw a debug wireframe sphere in the PIE viewport. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool DrawDebugSphereAt(const FVector& Center, float Radius = 50.0f, float Thickness = 1.0f, float DurationSeconds = 5.0f);
+
+	// ─── Enhanced Input mapping contexts ─────────────────────────────
+	//
+	// Thin wrappers around UEnhancedInputLocalPlayerSubsystem for
+	// runtime IMC management. All require PIE + a local-player
+	// EnhancedInput subsystem.
+
+	/**
+	 * Add a Mapping Context asset to the local player's Enhanced Input
+	 * subsystem. Higher `Priority` wins when multiple contexts bind the
+	 * same key. Returns false if the asset fails to load or PIE isn't
+	 * ready.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool AddMappingContext(const FString& MappingContextPath, int32 Priority = 0);
+
+	/** Remove a previously-added Mapping Context. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool RemoveMappingContext(const FString& MappingContextPath);
+
+	/** True if the Mapping Context is currently applied on the local player. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool IsMappingContextActive(const FString& MappingContextPath);
+
+	/**
+	 * Declared value type of an InputAction asset, as a string:
+	 * "Bool" | "Axis1D" | "Axis2D" | "Axis3D". Empty when the asset
+	 * fails to load. Useful to sanity-check SetStickyInput values.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetInputActionValueType(const FString& InputActionPath);
 };

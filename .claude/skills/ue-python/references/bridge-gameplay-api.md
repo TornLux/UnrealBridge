@@ -476,6 +476,40 @@ for i in range(len(path) - 1):
 
 ---
 
+## Enhanced Input mapping contexts
+
+Runtime IMC management via `UEnhancedInputLocalPlayerSubsystem`. All
+four require PIE + a local-player Enhanced Input subsystem.
+
+### add_mapping_context(mapping_context_path, priority=0) -> bool
+
+Add a Mapping Context asset. Higher `priority` wins when multiple
+contexts bind the same key. Returns False on failed asset load or
+subsystem unavailable.
+
+### remove_mapping_context(mapping_context_path) -> bool
+
+Remove a previously-added Mapping Context.
+
+### is_mapping_context_active(mapping_context_path) -> bool
+
+True when the Mapping Context is currently applied on the local player.
+
+### get_input_action_value_type(input_action_path) -> str
+
+Declared value type of an `UInputAction` asset: `"Bool"` | `"Axis1D"`
+| `"Axis2D"` | `"Axis3D"` | `"Unknown"`. Empty when the asset fails
+to load. Pair with `set_sticky_input` to confirm your injected
+`FVector` matches the IA's shape.
+
+```python
+ty = unreal.UnrealBridgeGameplayLibrary.get_input_action_value_type(
+    '/LocomotionDriver/Input/IA_Move')
+# ty == 'Axis2D' → pass Vector(x, y, 0)
+```
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and

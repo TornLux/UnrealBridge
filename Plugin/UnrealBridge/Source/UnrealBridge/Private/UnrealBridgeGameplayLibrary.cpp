@@ -19,6 +19,7 @@
 #include "NavigationPath.h"
 #include "InputAction.h"
 #include "InputActionValue.h"
+#include "InputMappingContext.h"
 #include "EnhancedInputSubsystems.h"
 #include "EnhancedInputComponent.h"
 #include "Containers/Ticker.h"
@@ -1268,6 +1269,80 @@ bool UUnrealBridgeGameplayLibrary::DrawDebugSphereAt(const FVector& Center, floa
 		/*bPersistent=*/ DurationSeconds > 0.0f, DurationSeconds,
 		/*DepthPriority=*/ 0, FMath::Max(Thickness, 0.0f));
 	return true;
+}
+
+// ─── Enhanced Input mapping contexts ───────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	static UEnhancedInputLocalPlayerSubsystem* GetEILocalPlayerSub()
+	{
+		UWorld* World = GetPIEWorld();
+		if (!World) return nullptr;
+		APlayerController* PC = World->GetFirstPlayerController();
+		if (!PC || !PC->GetLocalPlayer()) return nullptr;
+		return PC->GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+	}
+}
+
+bool UUnrealBridgeGameplayLibrary::AddMappingContext(const FString& MappingContextPath, int32 Priority)
+{
+	UEnhancedInputLocalPlayerSubsystem* Sub = BridgeAgentImpl::GetEILocalPlayerSub();
+	if (!Sub)
+	{
+		return false;
+	}
+	UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *MappingContextPath);
+	if (!IMC)
+	{
+		return false;
+	}
+	Sub->AddMappingContext(IMC, Priority);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::RemoveMappingContext(const FString& MappingContextPath)
+{
+	UEnhancedInputLocalPlayerSubsystem* Sub = BridgeAgentImpl::GetEILocalPlayerSub();
+	if (!Sub)
+	{
+		return false;
+	}
+	UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *MappingContextPath);
+	if (!IMC)
+	{
+		return false;
+	}
+	Sub->RemoveMappingContext(IMC);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::IsMappingContextActive(const FString& MappingContextPath)
+{
+	UEnhancedInputLocalPlayerSubsystem* Sub = BridgeAgentImpl::GetEILocalPlayerSub();
+	if (!Sub)
+	{
+		return false;
+	}
+	UInputMappingContext* IMC = LoadObject<UInputMappingContext>(nullptr, *MappingContextPath);
+	return IMC && Sub->HasMappingContext(IMC);
+}
+
+FString UUnrealBridgeGameplayLibrary::GetInputActionValueType(const FString& InputActionPath)
+{
+	UInputAction* IA = LoadObject<UInputAction>(nullptr, *InputActionPath);
+	if (!IA)
+	{
+		return FString();
+	}
+	switch (IA->ValueType)
+	{
+	case EInputActionValueType::Boolean: return TEXT("Bool");
+	case EInputActionValueType::Axis1D:  return TEXT("Axis1D");
+	case EInputActionValueType::Axis2D:  return TEXT("Axis2D");
+	case EInputActionValueType::Axis3D:  return TEXT("Axis3D");
+	default:                             return TEXT("Unknown");
+	}
 }
 
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
