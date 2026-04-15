@@ -586,6 +586,37 @@ unreal.UnrealBridgeGameplayLibrary.add_impulse_to_pie_actor(
     'Cube', unreal.Vector(500, 0, 0), True)
 ```
 
+---
+
+## Camera shake control
+
+Thin wrappers around `APlayerController` / `UGameplayStatics` shake
+APIs. Class paths resolve to a `UCameraShakeBase` subclass — native
+(e.g. `/Script/Engine.MatineeCameraShake`) or Blueprint
+(`/Game/Camera/BP_HitShake_C`; `_C` auto-appended if the raw path
+fails to load).
+
+### start_camera_shake(shake_class_path, scale=1.0) -> bool
+
+Play a shake on the local player. Auto-stops after its default
+duration. `scale` is clamped to ≥ 0.
+
+### stop_camera_shake_by_class(shake_class_path, immediately=True) -> bool
+
+Stop shakes of the given class on the local player. `immediately=False`
+lets the blend-out phase play.
+
+### stop_all_camera_shakes(immediately=True) -> bool
+
+Stop every shake currently playing. Returns True even when no shakes
+are active (no-op).
+
+### play_world_camera_shake(shake_class_path, epicenter, inner_radius, outer_radius, scale_multiplier=1.0) -> bool
+
+Radial-falloff shake — every camera within `outer_radius` of
+`epicenter` feels it, strength scales from full at `inner_radius` to
+zero at `outer_radius`. Useful for explosion or impact effects.
+
 ```python
 # Visualise a nav path
 path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(

@@ -825,4 +825,38 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool GetPIEActorLinearVelocity(const FString& ActorName, FVector& OutVelocity);
+
+	// ─── Camera shake control ────────────────────────────────────────
+	//
+	// Target the first PIE player controller / camera manager. Shake
+	// class paths must resolve to a `UCameraShakeBase` Blueprint (e.g.
+	// `/Game/Camera/BP_HitShake_C`) or native subclass. PIE-only.
+
+	/**
+	 * Start a camera shake on the local player. `Scale` >= 0; the shake
+	 * plays for its default duration and then auto-stops.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool StartCameraShake(const FString& ShakeClassPath, float Scale = 1.0f);
+
+	/**
+	 * Stop a shake of the given class on the local player.
+	 * `bImmediately=true` cuts it instantly; false lets the blend-out
+	 * phase play.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool StopCameraShakeByClass(const FString& ShakeClassPath, bool bImmediately = true);
+
+	/** Stop every camera shake currently playing on the local player. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool StopAllCameraShakes(bool bImmediately = true);
+
+	/**
+	 * Radial-falloff shake. All players within `OuterRadius` of `Epicenter`
+	 * feel a shake scaled by distance — full strength inside `InnerRadius`,
+	 * fading to zero at `OuterRadius`. Wraps
+	 * `UGameplayStatics::PlayWorldCameraShake`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool PlayWorldCameraShake(const FString& ShakeClassPath, const FVector& Epicenter, float InnerRadius, float OuterRadius, float ScaleMultiplier = 1.0f);
 };

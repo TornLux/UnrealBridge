@@ -9,6 +9,7 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Camera/CameraShakeBase.h"
 #include "Kismet/GameplayStatics.h"
 #include "GameFramework/WorldSettings.h"
 #include "GameFramework/DamageType.h"
@@ -1507,6 +1508,82 @@ bool UUnrealBridgeGameplayLibrary::GetPIEActorLinearVelocity(const FString& Acto
 	UPrimitiveComponent* Prim = BridgeAgentImpl::GetPIEPrimitive(ActorName);
 	if (!Prim) return false;
 	OutVelocity = Prim->GetPhysicsLinearVelocity();
+	return true;
+}
+
+// ─── Camera shake control ──────────────────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	/** Resolve a shake class path, accepting Blueprint or native. */
+	static TSubclassOf<UCameraShakeBase> LoadShakeClass(const FString& ClassPath)
+	{
+		if (ClassPath.IsEmpty()) return nullptr;
+		if (UClass* Cls = LoadObject<UClass>(nullptr, *ClassPath))
+		{
+			if (Cls->IsChildOf(UCameraShakeBase::StaticClass()))
+			{
+				return Cls;
+			}
+		}
+		// Try `_C` suffix for bare BP paths.
+		if (!ClassPath.EndsWith(TEXT("_C")))
+		{
+			const FString WithC = ClassPath + TEXT("_C");
+			if (UClass* Cls = LoadObject<UClass>(nullptr, *WithC))
+			{
+				if (Cls->IsChildOf(UCameraShakeBase::StaticClass()))
+				{
+					return Cls;
+				}
+			}
+		}
+		return nullptr;
+	}
+}
+
+bool UUnrealBridgeGameplayLibrary::StartCameraShake(const FString& ShakeClassPath, float Scale)
+{
+	APlayerCameraManager* Cam = BridgeAgentImpl::GetPIECameraManager();
+	if (!Cam) return false;
+	TSubclassOf<UCameraShakeBase> Cls = BridgeAgentImpl::LoadShakeClass(ShakeClassPath);
+	if (!Cls) return false;
+	APlayerController* PC = Cam->GetOwningPlayerController();
+	if (!PC) return false;
+	PC->ClientStartCameraShake(Cls, FMath::Max(Scale, 0.0f));
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::StopCameraShakeByClass(const FString& ShakeClassPath, bool bImmediately)
+{
+	APlayerCameraManager* Cam = BridgeAgentImpl::GetPIECameraManager();
+	if (!Cam) return false;
+	TSubclassOf<UCameraShakeBase> Cls = BridgeAgentImpl::LoadShakeClass(ShakeClassPath);
+	if (!Cls) return false;
+	APlayerController* PC = Cam->GetOwningPlayerController();
+	if (!PC) return false;
+	PC->ClientStopCameraShake(Cls, bImmediately);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::StopAllCameraShakes(bool bImmediately)
+{
+	APlayerCameraManager* Cam = BridgeAgentImpl::GetPIECameraManager();
+	if (!Cam) return false;
+	Cam->StopAllCameraShakes(bImmediately);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::PlayWorldCameraShake(const FString& ShakeClassPath, const FVector& Epicenter, float InnerRadius, float OuterRadius, float ScaleMultiplier)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return false;
+	TSubclassOf<UCameraShakeBase> Cls = BridgeAgentImpl::LoadShakeClass(ShakeClassPath);
+	if (!Cls) return false;
+	UGameplayStatics::PlayWorldCameraShake(
+		World, Cls, Epicenter,
+		FMath::Max(InnerRadius, 0.0f), FMath::Max(OuterRadius, 0.0f),
+		/*Falloff=*/ 1.0f, /*bOrientShakeTowardsEpicenter=*/ false);
 	return true;
 }
 
