@@ -559,4 +559,42 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 ToggleActorsHidden(const TArray<FString>& ActorNames);
+
+	// ─── Static mesh + material setters ──────────────────────
+
+	/**
+	 * Asset path of the UStaticMesh on the actor's first UStaticMeshComponent.
+	 * Empty string if the actor has no SMC or the mesh slot is empty.
+	 * Pair with `set_actor_mesh` to swap the mesh.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetActorMesh(const FString& ActorName);
+
+	/**
+	 * Swap the mesh on the actor's first UStaticMeshComponent.
+	 * @param MeshAssetPath  Full asset path to a UStaticMesh (e.g. "/Game/Meshes/SM_Cube").
+	 * Wrapped in a single undo transaction.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorMesh(const FString& ActorName, const FString& MeshAssetPath);
+
+	/**
+	 * Override a material slot on the actor's first UMeshComponent
+	 * (Static or Skeletal). Passing an empty `MaterialAssetPath` resets
+	 * that slot to the mesh's default material.
+	 *
+	 * @param MaterialIndex    Slot index (0-based).
+	 * @param MaterialAssetPath Path to a UMaterialInterface, or "" to reset.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorMaterial(const FString& ActorName, int32 MaterialIndex, const FString& MaterialAssetPath);
+
+	/**
+	 * Restore every overridden material slot on the actor's mesh
+	 * components back to the mesh's default materials (i.e. clear all
+	 * Material Overrides set via SetActorMaterial or the details panel).
+	 * Returns the number of overrides cleared.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 ResetActorMaterials(const FString& ActorName);
 };

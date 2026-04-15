@@ -17,6 +17,8 @@
 #include "Subsystems/EditorActorSubsystem.h"
 #include "UObject/UnrealType.h"
 #include "Components/MeshComponent.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "Materials/MaterialInterface.h"
 #include "CollisionQueryParams.h"
 #include "Engine/HitResult.h"
@@ -1720,6 +1722,116 @@ int32 UUnrealBridgeLevelLibrary::ToggleActorsHidden(const TArray<FString>& Actor
 		++Count;
 	}
 	return Count;
+}
+
+// ─── Static mesh + material setters ────────────────────────────────────
+
+FString UUnrealBridgeLevelLibrary::GetActorMesh(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return FString();
+	}
+	UStaticMeshComponent* SMC = Actor->FindComponentByClass<UStaticMeshComponent>();
+	if (!SMC || !SMC->GetStaticMesh())
+	{
+		return FString();
+	}
+	return SMC->GetStaticMesh()->GetPathName();
+}
+
+bool UUnrealBridgeLevelLibrary::SetActorMesh(const FString& ActorName, const FString& MeshAssetPath)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	UStaticMeshComponent* SMC = Actor->FindComponentByClass<UStaticMeshComponent>();
+	if (!SMC)
+	{
+		return false;
+	}
+	UStaticMesh* NewMesh = LoadObject<UStaticMesh>(nullptr, *MeshAssetPath);
+	if (!NewMesh)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetActorMesh", "Set Actor Mesh"));
+	Actor->Modify();
+	SMC->Modify();
+	SMC->SetStaticMesh(NewMesh);
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::SetActorMaterial(const FString& ActorName, int32 MaterialIndex, const FString& MaterialAssetPath)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	UMeshComponent* MC = Actor->FindComponentByClass<UMeshComponent>();
+	if (!MC)
+	{
+		return false;
+	}
+	if (MaterialIndex < 0 || MaterialIndex >= MC->GetNumMaterials())
+	{
+		return false;
+	}
+	UMaterialInterface* NewMat = nullptr;
+	if (!MaterialAssetPath.IsEmpty())
+	{
+		NewMat = LoadObject<UMaterialInterface>(nullptr, *MaterialAssetPath);
+		if (!NewMat)
+		{
+			return false;
+		}
+	}
+	FScopedTransaction Tr(LOCTEXT("SetActorMaterial", "Set Actor Material"));
+	Actor->Modify();
+	MC->Modify();
+	MC->SetMaterial(MaterialIndex, NewMat);
+	return true;
+}
+
+int32 UUnrealBridgeLevelLibrary::ResetActorMaterials(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return 0;
+	}
+	TArray<UMeshComponent*> MeshComps;
+	Actor->GetComponents<UMeshComponent>(MeshComps);
+	FScopedTransaction Tr(LOCTEXT("ResetActorMaterials", "Reset Actor Materials"));
+	int32 Cleared = 0;
+	for (UMeshComponent* MC : MeshComps)
+	{
+		if (!MC) continue;
+		const int32 Num = MC->GetNumMaterials();
+		bool bTouched = false;
+		for (int32 i = 0; i < Num; ++i)
+		{
+			if (MC->OverrideMaterials.IsValidIndex(i) && MC->OverrideMaterials[i] != nullptr)
+			{
+				if (!bTouched)
+				{
+					MC->Modify();
+					bTouched = true;
+				}
+				MC->SetMaterial(i, nullptr);
+				++Cleared;
+			}
+		}
+		if (bTouched)
+		{
+			Actor->Modify();
+		}
+	}
+	return Cleared;
 }
 
 #undef LOCTEXT_NAMESPACE

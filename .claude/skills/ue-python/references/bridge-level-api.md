@@ -542,6 +542,55 @@ toggled (missing actor names are skipped silently).
 
 ---
 
+## Static mesh + material setters
+
+Complement the read-side `get_actor_materials` / `get_actor_bounds`
+with writers that swap the mesh or override material slots on the
+actor's primary mesh component. All writes use `FScopedTransaction` so
+Ctrl+Z restores the previous state.
+
+### get_actor_mesh(actor_name) -> str
+
+Asset path of the `UStaticMesh` on the actor's first
+`UStaticMeshComponent`. Empty string if the actor has no SMC, the slot
+is empty, or the actor is missing.
+
+### set_actor_mesh(actor_name, mesh_asset_path) -> bool
+
+Swap the mesh on the actor's first `UStaticMeshComponent`. The path
+must resolve to a `UStaticMesh` asset. Returns False on missing actor,
+missing SMC, or failed asset load.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_mesh('Cube', '/Engine/BasicShapes/Sphere')
+```
+
+**Pitfall:** the component's existing material overrides are preserved
+and may index past the new mesh's slot count. Call `reset_actor_materials`
+after if you want the new mesh's defaults.
+
+### set_actor_material(actor_name, material_index, material_asset_path) -> bool
+
+Override a material slot on the actor's first `UMeshComponent` (Static
+or Skeletal). Pass an empty `material_asset_path` to clear that slot's
+override back to the mesh default.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_material(
+    'Cube', 0, '/Engine/BasicShapes/BasicShapeMaterial')
+```
+
+Returns False when the actor / mesh component is missing, the slot
+index is out of range, or the material asset fails to load.
+
+### reset_actor_materials(actor_name) -> int
+
+Clear every overridden material slot across ALL mesh components on the
+actor, restoring the underlying mesh's default materials. Returns the
+count of slots cleared.
+
+---
+
 ## Components / Sockets
 
 ### get_actor_sockets(actor_name) -> list[str]
