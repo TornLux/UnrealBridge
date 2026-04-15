@@ -1526,4 +1526,105 @@ bool UUnrealBridgeLevelLibrary::SetComponentMobility(const FString& ActorName, c
 	return true;
 }
 
+// ─── Bulk transform + level-wide spatial ───────────────────────────────
+
+bool UUnrealBridgeLevelLibrary::SnapActorToFloor(const FString& ActorName, float MaxDistance)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AActor* Actor = BridgeLevelImpl::FindActor(World, ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	const FVector Start = Actor->GetActorLocation();
+	const FVector End = Start - FVector(0, 0, FMath::Max(MaxDistance, 0.0f));
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeSnapToFloor), /*bTraceComplex=*/ false, Actor);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SnapActorToFloor", "Snap Actor To Floor"));
+	Actor->Modify();
+	FVector NewLoc = Start;
+	NewLoc.Z = Hit.ImpactPoint.Z;
+	Actor->SetActorLocation(NewLoc);
+	return true;
+}
+
+int32 UUnrealBridgeLevelLibrary::SnapActorsToGrid(const TArray<FString>& ActorNames, float GridSize)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World || GridSize <= 0.0f)
+	{
+		return 0;
+	}
+	FScopedTransaction Tr(LOCTEXT("SnapActorsToGrid", "Snap Actors To Grid"));
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		const FVector L = A->GetActorLocation();
+		const FVector Snapped(
+			FMath::GridSnap(L.X, GridSize),
+			FMath::GridSnap(L.Y, GridSize),
+			FMath::GridSnap(L.Z, GridSize));
+		A->SetActorLocation(Snapped);
+		++Count;
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::OffsetActors(const TArray<FString>& ActorNames, FVector DeltaLocation)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return 0;
+	}
+	FScopedTransaction Tr(LOCTEXT("OffsetActors", "Offset Actors"));
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		A->SetActorLocation(A->GetActorLocation() + DeltaLocation);
+		++Count;
+	}
+	return Count;
+}
+
+FBridgeActorBounds UUnrealBridgeLevelLibrary::GetLevelBounds()
+{
+	FBridgeActorBounds Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	FBox Total(ForceInit);
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A) continue;
+		FVector Origin, Extent;
+		A->GetActorBounds(/*bOnlyCollidingComponents=*/ false, Origin, Extent, /*bIncludeFromChildActors=*/ true);
+		if (!Extent.IsNearlyZero())
+		{
+			Total += FBox::BuildAABB(Origin, Extent);
+		}
+	}
+	if (!Total.IsValid)
+	{
+		return Out;
+	}
+	Out.Origin = Total.GetCenter();
+	Out.BoxExtent = Total.GetExtent();
+	Out.SphereRadius = Out.BoxExtent.Size();
+	return Out;
+}
+
 #undef LOCTEXT_NAMESPACE

@@ -443,6 +443,65 @@ nearby = unreal.UnrealBridgeLevelLibrary.overlap_sphere_actors(
 
 ---
 
+## Bulk transform + level-wide spatial
+
+### snap_actor_to_floor(actor_name, max_distance=10000.0) -> bool
+
+Line-trace downward from the actor's current location for up to
+`max_distance` cm (visibility channel, self-ignored) and set the actor's
+Z to the hit surface. X / Y / rotation / scale untouched. Wrapped in
+an undo transaction.
+
+```python
+unreal.UnrealBridgeLevelLibrary.snap_actor_to_floor('Cube', 5000.0)
+```
+
+Returns False on miss (trace hit nothing), missing actor, or no editor
+world.
+
+### snap_actors_to_grid(actor_names, grid_size) -> int
+
+Snap each actor's world location to a `grid_size` cm grid (applied to
+all three axes). Single undo transaction. Returns the count of actors
+actually moved (existed + non-null).
+
+```python
+cubes = unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', 'Cube')
+unreal.UnrealBridgeLevelLibrary.snap_actors_to_grid(cubes, 100.0)
+```
+
+`grid_size <= 0` returns 0 with no effect.
+
+### offset_actors(actor_names, delta_location) -> int
+
+Add `delta_location` to every named actor's world location. Single undo
+transaction. Returns count offset.
+
+```python
+unreal.UnrealBridgeLevelLibrary.offset_actors(cubes, unreal.Vector(0, 0, 200))
+```
+
+### get_level_bounds() -> FBridgeActorBounds
+
+Union of bounds over every actor in the level (all primitives,
+colliding or not). Returns a zero-bounds struct for empty levels.
+
+```python
+b = unreal.UnrealBridgeLevelLibrary.get_level_bounds()
+print(f'center={b.origin} extent={b.box_extent} r={b.sphere_radius:.1f}')
+```
+
+**Pitfalls**
+
+- WorldPartition / Landscape / infinite-bounds actors inflate the union
+  to absurd values (radius in the billions of cm). Filter those out
+  beforehand by calling `get_actor_names()` with a class filter and
+  computing the union client-side via `get_actor_bounds()` on each.
+- An actor with no primitive components contributes nothing — bounds
+  are skipped when both origin and extent are zero.
+
+---
+
 ## Components / Sockets
 
 ### get_actor_sockets(actor_name) -> list[str]

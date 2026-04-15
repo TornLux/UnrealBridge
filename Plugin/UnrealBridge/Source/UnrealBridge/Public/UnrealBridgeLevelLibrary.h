@@ -489,4 +489,41 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool SetComponentMobility(const FString& ActorName, const FString& ComponentName, const FString& Mobility);
+
+	// ─── Bulk transform + level-wide spatial ─────────────────
+
+	/**
+	 * Line-trace downward from the actor's current location up to `MaxDistance`
+	 * cm and set the actor's Z to the hit surface. The actor is ignored from
+	 * the trace so it doesn't self-hit. Leaves X/Y/rotation/scale untouched.
+	 * Wrapped in an undo transaction. Returns false on miss, missing actor,
+	 * or no editor world.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SnapActorToFloor(const FString& ActorName, float MaxDistance = 10000.0f);
+
+	/**
+	 * Quantise each actor's world location to a grid of `GridSize` cm. Rotation
+	 * and scale are untouched. Whole batch is a single undo transaction.
+	 * @return Number of actors actually moved (existed in level and were non-null).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 SnapActorsToGrid(const TArray<FString>& ActorNames, float GridSize);
+
+	/**
+	 * Apply `DeltaLocation` cm to every named actor's world location. Useful
+	 * for sliding a selection as a group. Single undo transaction.
+	 * @return Number of actors actually offset.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 OffsetActors(const TArray<FString>& ActorNames, FVector DeltaLocation);
+
+	/**
+	 * Union of bounds across every actor in the current level (all primitives,
+	 * colliding or not). Returns zero-bounds when the level is empty or has
+	 * no renderable actors. Use this to size an overview camera or sanity-check
+	 * world extent before running a spatial query.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FBridgeActorBounds GetLevelBounds();
 };
