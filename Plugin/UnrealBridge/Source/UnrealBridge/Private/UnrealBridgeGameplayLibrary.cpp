@@ -1383,6 +1383,46 @@ bool UUnrealBridgeGameplayLibrary::FlushPersistentDebugDraws()
 	return true;
 }
 
+// ─── Pawn basis vectors + distance ─────────────────────────────────────
+
+bool UUnrealBridgeGameplayLibrary::GetPawnForwardVector(FVector& OutForward)
+{
+	OutForward = FVector::ForwardVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn) return false;
+	OutForward = Pawn->GetActorForwardVector();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::GetPawnRightVector(FVector& OutRight)
+{
+	OutRight = FVector::RightVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn) return false;
+	OutRight = Pawn->GetActorRightVector();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::GetPawnUpVector(FVector& OutUp)
+{
+	OutUp = FVector::UpVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn) return false;
+	OutUp = Pawn->GetActorUpVector();
+	return true;
+}
+
+float UUnrealBridgeGameplayLibrary::GetDistanceToPawn(const FVector& Location)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn) return -1.0f;
+	return FVector::Dist(Pawn->GetActorLocation(), Location);
+}
+
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
 {
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();

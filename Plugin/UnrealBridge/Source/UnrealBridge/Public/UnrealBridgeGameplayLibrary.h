@@ -738,4 +738,28 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool FlushPersistentDebugDraws();
+
+	// ─── Pawn basis vectors + distance ───────────────────────────────
+	//
+	// Convenience reads around the player pawn's orientation, for agents
+	// that reason in local space. All return false / -1.0 outside PIE.
+
+	/** World-space forward unit vector of the PIE player pawn. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPawnForwardVector(FVector& OutForward);
+
+	/** World-space right unit vector. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPawnRightVector(FVector& OutRight);
+
+	/** World-space up unit vector. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPawnUpVector(FVector& OutUp);
+
+	/**
+	 * Distance (cm) from the PIE pawn's origin to `Location`. Returns
+	 * -1.0 outside PIE.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetDistanceToPawn(const FVector& Location);
 };

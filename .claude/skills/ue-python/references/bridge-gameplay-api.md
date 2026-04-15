@@ -488,6 +488,37 @@ spheres, boxes, arrows, strings — in the PIE world at once. Single-
 frame draws (duration = 0) expire naturally on the next tick and
 don't need this.
 
+---
+
+## Pawn basis vectors + distance
+
+Convenience getters around the PIE player pawn's orientation.
+Vector returns follow the UE Python bool-plus-outparam convention —
+the `Vector` on success, `None` outside PIE / no pawn.
+
+### get_pawn_forward_vector() -> Vector or None
+
+Unit forward direction in world space.
+
+### get_pawn_right_vector() -> Vector or None
+
+Unit right direction.
+
+### get_pawn_up_vector() -> Vector or None
+
+Unit up direction.
+
+### get_distance_to_pawn(location) -> float
+
+Distance in cm from the pawn's pivot to `location`. Returns `-1.0`
+outside PIE / no pawn.
+
+```python
+if unreal.UnrealBridgeGameplayLibrary.get_distance_to_pawn(waypoint) < 100:
+    # reached waypoint, advance
+    ...
+```
+
 ```python
 # Visualise a nav path
 path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(
