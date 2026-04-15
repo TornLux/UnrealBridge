@@ -941,4 +941,33 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 MirrorActors(const TArray<FString>& ActorNames, const FString& Axis);
+
+	// ─── Folder bulk management ──────────────────────────────
+	//
+	// Companions to the per-actor SetActorFolder / GetActorFolders.
+	// All writes wrap in a single undo transaction.
+
+	/** Assign a batch of actors to the same World Outliner folder. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 MoveActorsToFolder(const TArray<FString>& ActorNames, const FString& FolderPath);
+
+	/**
+	 * Rename a folder: move every actor whose folder path matches
+	 * `OldFolder` (exact match, not recursive) to `NewFolder`. Returns
+	 * count moved.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 RenameFolder(const FString& OldFolder, const FString& NewFolder);
+
+	/**
+	 * Dissolve a folder: move every actor currently assigned to
+	 * `FolderPath` (exact match, not recursive) to the outliner root.
+	 * Returns count moved.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 DissolveFolder(const FString& FolderPath);
+
+	/** True if no actor is currently assigned to `FolderPath` (exact match). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool IsFolderEmpty(const FString& FolderPath);
 };

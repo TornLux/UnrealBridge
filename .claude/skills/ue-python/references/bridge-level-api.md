@@ -277,6 +277,34 @@ src = unreal.UnrealBridgeLevelLibrary.duplicate_actors(['Cube'])
 unreal.UnrealBridgeLevelLibrary.mirror_actors(src, 'X')
 ```
 
+### move_actors_to_folder(actor_names, folder_path) -> int
+
+Assign a batch of actors to the same World Outliner folder. Empty
+path moves them to the outliner root.
+
+### rename_folder(old_folder, new_folder) -> int
+
+Move every actor whose folder path matches `old_folder` (exact,
+non-recursive) to `new_folder`. Returns count moved.
+
+### dissolve_folder(folder_path) -> int
+
+Move every actor assigned to `folder_path` (exact match) back to the
+outliner root. The folder itself has no persistent state — it
+disappears from the outliner once empty.
+
+### is_folder_empty(folder_path) -> bool
+
+True when no actor is currently assigned to `folder_path` (exact
+match, not recursive).
+
+```python
+# Reorganise: collect test actors into one folder, then tear it down
+unreal.UnrealBridgeLevelLibrary.move_actors_to_folder(probes, 'Probes')
+# ...work...
+unreal.UnrealBridgeLevelLibrary.dissolve_folder('Probes')
+```
+
 ---
 
 ## Read — Actor Queries

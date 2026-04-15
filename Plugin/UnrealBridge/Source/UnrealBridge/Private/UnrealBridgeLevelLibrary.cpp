@@ -2458,6 +2458,78 @@ int32 UUnrealBridgeLevelLibrary::SetActorsUniformScale(const TArray<FString>& Ac
 	return Count;
 }
 
+int32 UUnrealBridgeLevelLibrary::MoveActorsToFolder(const TArray<FString>& ActorNames, const FString& FolderPath)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	FScopedTransaction Tr(LOCTEXT("MoveActorsToFolder", "Move Actors To Folder"));
+	const FName Target = FolderPath.IsEmpty() ? FName() : FName(*FolderPath);
+	int32 Count = 0;
+	for (const FString& Name : ActorNames)
+	{
+		AActor* A = BridgeLevelImpl::FindActor(World, Name);
+		if (!A) continue;
+		A->Modify();
+		A->SetFolderPath(Target);
+		++Count;
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::RenameFolder(const FString& OldFolder, const FString& NewFolder)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	FScopedTransaction Tr(LOCTEXT("RenameFolder", "Rename Folder"));
+	const FName Target = NewFolder.IsEmpty() ? FName() : FName(*NewFolder);
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && A->GetFolderPath().ToString() == OldFolder)
+		{
+			A->Modify();
+			A->SetFolderPath(Target);
+			++Count;
+		}
+	}
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::DissolveFolder(const FString& FolderPath)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	FScopedTransaction Tr(LOCTEXT("DissolveFolder", "Dissolve Folder"));
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && A->GetFolderPath().ToString() == FolderPath)
+		{
+			A->Modify();
+			A->SetFolderPath(FName());
+			++Count;
+		}
+	}
+	return Count;
+}
+
+bool UUnrealBridgeLevelLibrary::IsFolderEmpty(const FString& FolderPath)
+{
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return true;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && A->GetFolderPath().ToString() == FolderPath)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 int32 UUnrealBridgeLevelLibrary::MirrorActors(const TArray<FString>& ActorNames, const FString& Axis)
 {
 	const FString L = Axis.ToLower();
