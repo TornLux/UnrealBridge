@@ -457,6 +457,63 @@ bool UUnrealBridgeEditorLibrary::PausePIE(bool bPaused)
 	return GEditor->SetPIEWorldsPaused(bPaused);
 }
 
+bool UUnrealBridgeEditorLibrary::StartSimulate()
+{
+	if (!GEditor)
+	{
+		return false;
+	}
+	if (GEditor->PlayWorld)
+	{
+		// Already playing — can't switch mode without stopping first.
+		return true;
+	}
+	FRequestPlaySessionParams Params;
+	Params.WorldType = EPlaySessionWorldType::SimulateInEditor;
+
+	if (FModuleManager::Get().IsModuleLoaded("LevelEditor"))
+	{
+		FLevelEditorModule& LE = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
+		TSharedPtr<IAssetViewport> ActiveViewport = LE.GetFirstActiveViewport();
+		if (ActiveViewport.IsValid())
+		{
+			Params.DestinationSlateViewport = ActiveViewport;
+		}
+	}
+	GEditor->RequestPlaySession(Params);
+	return true;
+}
+
+bool UUnrealBridgeEditorLibrary::IsSimulating()
+{
+	return GEditor && GEditor->bIsSimulatingInEditor;
+}
+
+FString UUnrealBridgeEditorLibrary::GetPIENetMode()
+{
+	if (!GEditor || !GEditor->PlayWorld)
+	{
+		return FString();
+	}
+	switch (GEditor->PlayWorld->GetNetMode())
+	{
+	case NM_Standalone:      return TEXT("Standalone");
+	case NM_DedicatedServer: return TEXT("DedicatedServer");
+	case NM_ListenServer:    return TEXT("ListenServer");
+	case NM_Client:          return TEXT("Client");
+	default:                 return TEXT("Standalone");
+	}
+}
+
+float UUnrealBridgeEditorLibrary::GetPIEWorldTime()
+{
+	if (!GEditor || !GEditor->PlayWorld)
+	{
+		return -1.0f;
+	}
+	return GEditor->PlayWorld->GetTimeSeconds();
+}
+
 // ─── Undo ───────────────────────────────────────────────────
 
 bool UUnrealBridgeEditorLibrary::Undo()

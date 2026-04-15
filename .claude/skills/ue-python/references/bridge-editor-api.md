@@ -237,6 +237,43 @@ unreal.UnrealBridgeEditorLibrary.create_new_level(True)
 
 ### pause_pie(paused) -> bool
 
+### start_simulate() -> bool
+
+Start "Simulate in Editor" — spins up the play world but skips player
+controller spawn / pawn possession. Useful for observing AI, Sequencer,
+or physics without stealing input focus. Fails (returns False) if a
+play session is already running; stop it first.
+
+```python
+unreal.UnrealBridgeEditorLibrary.start_simulate()
+# ... observe ...
+unreal.UnrealBridgeEditorLibrary.stop_pie()   # same StopPIE works
+```
+
+### is_simulating() -> bool
+
+True only during a Simulate-in-Editor session. Note that `is_in_pie()`
+also returns True during Simulate — use `is_simulating()` to distinguish.
+
+### get_pie_net_mode() -> str
+
+Network mode of the current PIE/Simulate world, one of:
+`"Standalone"` | `"DedicatedServer"` | `"ListenServer"` | `"Client"`.
+Returns `""` when no play session is running.
+
+### get_pie_world_time() -> float
+
+Seconds since BeginPlay on the PIE/Simulate world. Returns `-1.0` when
+no play session is running. Time freezes while PIE is paused (mirrors
+`UWorld::GetTimeSeconds`), so it's suitable for scripting "wait 2
+seconds of in-game time" delays that respect pause.
+
+```python
+t0 = unreal.UnrealBridgeEditorLibrary.get_pie_world_time()
+# ... run some gameplay ...
+elapsed = unreal.UnrealBridgeEditorLibrary.get_pie_world_time() - t0
+```
+
 ---
 
 ## Undo / Redo

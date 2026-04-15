@@ -165,6 +165,35 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool PausePIE(bool bPaused);
 
+	/**
+	 * Start "Simulate in Editor" — spins up the play world without spawning a
+	 * player controller / possessing a pawn. Useful for observing AI, physics,
+	 * or Sequencer playback without taking input focus.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool StartSimulate();
+
+	/** True when a Simulate-in-Editor session is currently running. False for PIE proper or idle editor. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsSimulating();
+
+	/**
+	 * Network mode of the active PIE/Simulate world, as a string:
+	 * "Standalone" | "DedicatedServer" | "ListenServer" | "Client".
+	 * Empty string when no PIE/Simulate world is running.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetPIENetMode();
+
+	/**
+	 * Play world time in seconds since `BeginPlay` on the PIE/Simulate world.
+	 * Returns -1.0 when no PIE/Simulate world is running. Honors PIE pause
+	 * (frozen time advances to whatever UWorld::GetTimeSeconds reports, which
+	 * stops while paused).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static float GetPIEWorldTime();
+
 	// ─── Undo ─────────────────────────────────────────────
 
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
