@@ -377,6 +377,35 @@ if len(unreal.UnrealBridgeLevelLibrary.get_selection_class_set()) > 1:
     print('mixed selection — use a filter before the bulk op')
 ```
 
+### find_actors_in_cone(origin, direction, half_angle_deg, max_distance, class_filter) -> list[str]
+
+Labels of actors whose pivot falls inside a wedge rooted at `origin`,
+facing `direction`, with half-angle `half_angle_deg` degrees and
+length `max_distance` cm. Not distance-sorted.
+
+### is_actor_in_cone(actor_name, origin, direction, half_angle_deg, max_distance) -> bool
+
+Cheaper variant when the caller already has a candidate name.
+
+### closest_point_on_segment(point, segment_start, segment_end) -> Vector
+
+`FMath::ClosestPointOnSegment` — nearest point on the finite segment
+to an arbitrary point. Useful for "snap to corridor" placement or
+projecting an actor onto a ray.
+
+### distance_from_point_to_segment(point, segment_start, segment_end) -> float
+
+Perpendicular distance (cm) to the finite segment.
+
+```python
+# Does the camera see the cube?
+cam_loc, cam_rot = unreal.UnrealBridgeGameplayLibrary.get_camera_view_point()
+fwd = cam_rot.rotate_vector(unreal.Vector(1, 0, 0))
+if unreal.UnrealBridgeLevelLibrary.is_actor_in_cone(
+        'Cube', cam_loc, fwd, 45.0, 5000.0):
+    print('in FOV')
+```
+
 ---
 
 ## Read — Actor Queries

@@ -1053,4 +1053,34 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static TArray<FString> GetSelectionClassSet();
+
+	// ─── Cone / segment geometry helpers ─────────────────────
+
+	/**
+	 * Labels of actors whose pivot falls inside a wedge/cone rooted at
+	 * `Origin`, facing `Direction`, with half-angle `HalfAngleDeg` and
+	 * length `MaxDistance` cm. Matches `FindActorsInRadius` on distance
+	 * but adds an angular filter. Not distance-sorted.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FString> FindActorsInCone(FVector Origin, FVector Direction, float HalfAngleDeg, float MaxDistance, const FString& ClassFilter);
+
+	/**
+	 * True when the named actor's pivot is inside the cone at
+	 * (`Origin`, `Direction`, `HalfAngleDeg`) within `MaxDistance` cm.
+	 * Cheaper than `FindActorsInCone` when caller already has the name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool IsActorInCone(const FString& ActorName, FVector Origin, FVector Direction, float HalfAngleDeg, float MaxDistance);
+
+	/**
+	 * Nearest point on the finite line segment (A,B) to `Point`. Useful
+	 * for snapping test actors to a ray or measuring to a corridor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FVector ClosestPointOnSegment(FVector Point, FVector SegmentStart, FVector SegmentEnd);
+
+	/** Perpendicular distance (cm) from `Point` to the finite segment (A,B). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static float DistanceFromPointToSegment(FVector Point, FVector SegmentStart, FVector SegmentEnd);
 };

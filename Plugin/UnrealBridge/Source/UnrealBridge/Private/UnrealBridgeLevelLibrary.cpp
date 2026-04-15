@@ -2750,6 +2750,69 @@ TArray<FString> UUnrealBridgeLevelLibrary::GetSelectionClassSet()
 	return Out;
 }
 
+// ─── Cone / segment geometry helpers ───────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	static bool IsPointInsideCone(const FVector& Point, const FVector& Origin, const FVector& Direction, float HalfAngleDeg, float MaxDistance)
+	{
+		const FVector ToPoint = Point - Origin;
+		const float DistSq = ToPoint.SizeSquared();
+		if (DistSq > FMath::Square(FMath::Max(MaxDistance, 0.0f)))
+		{
+			return false;
+		}
+		FVector Dir = Direction;
+		if (!Dir.Normalize())
+		{
+			return false;
+		}
+		if (DistSq < KINDA_SMALL_NUMBER)
+		{
+			return true; // at origin
+		}
+		const FVector ToPointDir = ToPoint.GetSafeNormal();
+		const float Dot = FVector::DotProduct(Dir, ToPointDir);
+		const float CosLimit = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(HalfAngleDeg, 0.0f, 180.0f)));
+		return Dot >= CosLimit;
+	}
+}
+
+TArray<FString> UUnrealBridgeLevelLibrary::FindActorsInCone(FVector Origin, FVector Direction, float HalfAngleDeg, float MaxDistance, const FString& ClassFilter)
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return Out;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A) continue;
+		if (!BridgeLevelImpl::MatchesClassFilter(A->GetClass(), ClassFilter)) continue;
+		if (BridgeLevelImpl::IsPointInsideCone(A->GetActorLocation(), Origin, Direction, HalfAngleDeg, MaxDistance))
+		{
+			Out.Add(A->GetActorLabel());
+		}
+	}
+	return Out;
+}
+
+bool UUnrealBridgeLevelLibrary::IsActorInCone(const FString& ActorName, FVector Origin, FVector Direction, float HalfAngleDeg, float MaxDistance)
+{
+	AActor* A = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!A) return false;
+	return BridgeLevelImpl::IsPointInsideCone(A->GetActorLocation(), Origin, Direction, HalfAngleDeg, MaxDistance);
+}
+
+FVector UUnrealBridgeLevelLibrary::ClosestPointOnSegment(FVector Point, FVector SegmentStart, FVector SegmentEnd)
+{
+	return FMath::ClosestPointOnSegment(Point, SegmentStart, SegmentEnd);
+}
+
+float UUnrealBridgeLevelLibrary::DistanceFromPointToSegment(FVector Point, FVector SegmentStart, FVector SegmentEnd)
+{
+	return FMath::PointDistToSegment(Point, SegmentStart, SegmentEnd);
+}
+
 int32 UUnrealBridgeLevelLibrary::SelectActorsInSphere(FVector Center, float Radius, bool bAddToSelection)
 {
 	if (!GEditor) return 0;
