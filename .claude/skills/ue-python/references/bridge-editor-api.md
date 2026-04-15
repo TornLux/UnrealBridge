@@ -393,6 +393,52 @@ if unreal.UnrealBridgeEditorLibrary.is_compiling():
 # safe to take screenshots / run PIE now
 ```
 
+### get_recent_log_lines(num_lines=50, min_severity="") -> list[str]
+
+Lazily installs a thread-safe `FOutputDevice` ring buffer on first
+call (capacity 500 lines). Each entry is preformatted as
+`"[Category][Severity] Message"`, ordered oldest → newest.
+
+`min_severity` (case-insensitive) is one of: `"Verbose"` | `"Log"` |
+`"Display"` | `"Warning"` | `"Error"` | `"Fatal"`. Empty string = no
+filter. Entries are returned at or above that severity.
+
+`num_lines=0` returns everything currently buffered; a positive value
+returns the last N after filtering.
+
+```python
+# Run an expensive op, then surface any warnings/errors.
+unreal.UnrealBridgeEditorLibrary.clear_log_buffer()
+run_big_thing()
+for l in unreal.UnrealBridgeEditorLibrary.get_recent_log_lines(0, 'Warning'):
+    print(l)
+```
+
+### get_log_buffer_size() -> int
+
+Current buffered line count (0..500). Maxes out once the ring fills;
+further writes overwrite the oldest entries.
+
+### get_log_buffer_capacity() -> int
+
+Fixed ring capacity (currently 500). Useful for clients that want to
+gauge potential loss before a big log-heavy operation.
+
+### clear_log_buffer() -> int
+
+Empty the ring; returns the count of lines dropped. The `FOutputDevice`
+stays registered — subsequent log output continues to accumulate.
+
+**Pitfalls**
+
+- The ring buffer is *append-only* across editor sessions; there's no
+  persistence. Log lines from before the first `get_recent_log_lines`
+  call of a session are lost — the device installs lazily.
+- At 500 lines capacity, a verbose operation (shader compile, asset
+  import) can overflow the buffer and drop earlier lines. Call
+  `clear_log_buffer()` right before the operation to make sure its
+  output fits.
+
 ---
 
 ## Asset Control

@@ -1331,6 +1331,179 @@ bool UUnrealBridgeEditorLibrary::FlushCompilation()
 	return true;
 }
 
+// ─── Output log tail (ring buffer) ─────────────────────────────────────
+
+namespace BridgeLogImpl
+{
+	struct FBridgeLogEntry
+	{
+		FString Line;
+		uint8 Verbosity = ELogVerbosity::Log;
+	};
+
+	class FBridgeLogDevice : public FOutputDevice
+	{
+	public:
+		static constexpr int32 kCapacity = 500;
+
+		FBridgeLogDevice()
+		{
+			Entries.Reserve(kCapacity);
+		}
+
+		virtual void Serialize(const TCHAR* Msg, ELogVerbosity::Type V, const class FName& Category) override
+		{
+			if (!Msg) return;
+			FScopeLock Lock(&Mutex);
+			FBridgeLogEntry E;
+			E.Verbosity = static_cast<uint8>(V & ELogVerbosity::VerbosityMask);
+			E.Line = FString::Printf(TEXT("[%s][%s] %s"),
+				*Category.ToString(),
+				ToString(static_cast<ELogVerbosity::Type>(E.Verbosity)),
+				Msg);
+			if (Entries.Num() < kCapacity)
+			{
+				Entries.Add(MoveTemp(E));
+			}
+			else
+			{
+				Entries[Head] = MoveTemp(E);
+				Head = (Head + 1) % kCapacity;
+			}
+		}
+
+		virtual bool CanBeUsedOnAnyThread() const override { return true; }
+		virtual bool CanBeUsedOnMultipleThreads() const override { return true; }
+
+		void Snapshot(TArray<FBridgeLogEntry>& Out) const
+		{
+			FScopeLock Lock(&Mutex);
+			const int32 N = Entries.Num();
+			Out.Reset(N);
+			if (N < kCapacity)
+			{
+				Out.Append(Entries);
+				return;
+			}
+			// Ring: oldest is at Head, walk forward capacity times.
+			for (int32 i = 0; i < N; ++i)
+			{
+				Out.Add(Entries[(Head + i) % kCapacity]);
+			}
+		}
+
+		int32 Clear()
+		{
+			FScopeLock Lock(&Mutex);
+			const int32 N = Entries.Num();
+			Entries.Reset();
+			Head = 0;
+			return N;
+		}
+
+		int32 Count() const
+		{
+			FScopeLock Lock(&Mutex);
+			return Entries.Num();
+		}
+
+	private:
+		static const TCHAR* ToString(ELogVerbosity::Type V)
+		{
+			switch (V)
+			{
+			case ELogVerbosity::Fatal:       return TEXT("Fatal");
+			case ELogVerbosity::Error:       return TEXT("Error");
+			case ELogVerbosity::Warning:     return TEXT("Warning");
+			case ELogVerbosity::Display:     return TEXT("Display");
+			case ELogVerbosity::Log:         return TEXT("Log");
+			case ELogVerbosity::Verbose:     return TEXT("Verbose");
+			case ELogVerbosity::VeryVerbose: return TEXT("VeryVerbose");
+			default:                         return TEXT("Log");
+			}
+		}
+
+		mutable FCriticalSection Mutex;
+		TArray<FBridgeLogEntry> Entries;
+		int32 Head = 0;
+	};
+
+	static FBridgeLogDevice* GLogDevice = nullptr;
+	static FBridgeLogDevice& EnsureDevice()
+	{
+		if (!GLogDevice)
+		{
+			GLogDevice = new FBridgeLogDevice();
+			if (GLog)
+			{
+				GLog->AddOutputDevice(GLogDevice);
+			}
+		}
+		return *GLogDevice;
+	}
+
+	static uint8 ParseMinSeverity(const FString& S, bool& bOk)
+	{
+		bOk = true;
+		const FString L = S.ToLower();
+		if (L.IsEmpty())         return static_cast<uint8>(ELogVerbosity::VeryVerbose);
+		if (L == TEXT("fatal"))  return static_cast<uint8>(ELogVerbosity::Fatal);
+		if (L == TEXT("error"))  return static_cast<uint8>(ELogVerbosity::Error);
+		if (L == TEXT("warning"))return static_cast<uint8>(ELogVerbosity::Warning);
+		if (L == TEXT("display"))return static_cast<uint8>(ELogVerbosity::Display);
+		if (L == TEXT("log"))    return static_cast<uint8>(ELogVerbosity::Log);
+		if (L == TEXT("verbose"))return static_cast<uint8>(ELogVerbosity::Verbose);
+		bOk = false;
+		return static_cast<uint8>(ELogVerbosity::VeryVerbose);
+	}
+}
+
+TArray<FString> UUnrealBridgeEditorLibrary::GetRecentLogLines(int32 NumLines, const FString& MinSeverity)
+{
+	TArray<FString> Out;
+	bool bOk = true;
+	const uint8 MinV = BridgeLogImpl::ParseMinSeverity(MinSeverity, bOk);
+	if (!bOk) return Out;
+
+	BridgeLogImpl::FBridgeLogDevice& Dev = BridgeLogImpl::EnsureDevice();
+	TArray<BridgeLogImpl::FBridgeLogEntry> Snap;
+	Dev.Snapshot(Snap);
+
+	// Filter by severity (numerically, smaller = higher severity in UE enum).
+	TArray<FString> Filtered;
+	Filtered.Reserve(Snap.Num());
+	for (const BridgeLogImpl::FBridgeLogEntry& E : Snap)
+	{
+		if (E.Verbosity <= MinV)
+		{
+			Filtered.Add(E.Line);
+		}
+	}
+	const int32 Total = Filtered.Num();
+	const int32 Take = (NumLines <= 0) ? Total : FMath::Min(NumLines, Total);
+	Out.Reserve(Take);
+	for (int32 i = Total - Take; i < Total; ++i)
+	{
+		Out.Add(Filtered[i]);
+	}
+	return Out;
+}
+
+int32 UUnrealBridgeEditorLibrary::GetLogBufferSize()
+{
+	return BridgeLogImpl::EnsureDevice().Count();
+}
+
+int32 UUnrealBridgeEditorLibrary::GetLogBufferCapacity()
+{
+	return BridgeLogImpl::FBridgeLogDevice::kCapacity;
+}
+
+int32 UUnrealBridgeEditorLibrary::ClearLogBuffer()
+{
+	return BridgeLogImpl::EnsureDevice().Clear();
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))

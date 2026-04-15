@@ -536,4 +536,37 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool FlushCompilation();
+
+	// ─── Output log tail ─────────────────────────────────────
+	//
+	// Lazily installs a custom FOutputDevice on first query, keeping the
+	// most recent log lines in a thread-safe ring buffer. Ideal for
+	// automation that wants to surface editor warnings/errors after a
+	// long operation without scraping the full .log file.
+
+	/**
+	 * Return the most recent captured log lines, newest last. Each entry
+	 * is preformatted as `"[Category][Severity] Message"`.
+	 *
+	 * @param NumLines       Max lines to return; clamped to ring capacity.
+	 *                       Pass 0 to return everything currently buffered.
+	 * @param MinSeverity    Filter: "Verbose" | "Log" | "Display" |
+	 *                       "Warning" | "Error" | "Fatal" (case-insensitive).
+	 *                       Only entries at or above this severity are
+	 *                       returned. Pass empty string for no filter.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static TArray<FString> GetRecentLogLines(int32 NumLines = 50, const FString& MinSeverity = TEXT(""));
+
+	/** Number of lines currently buffered. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetLogBufferSize();
+
+	/** Ring buffer capacity (max lines retained). Default 500. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetLogBufferCapacity();
+
+	/** Clear the log ring buffer. Returns the number of lines dropped. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 ClearLogBuffer();
 };
