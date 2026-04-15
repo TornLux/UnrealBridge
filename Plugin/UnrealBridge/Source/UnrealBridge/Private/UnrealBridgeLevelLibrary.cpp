@@ -18,6 +18,7 @@
 #include "UObject/UnrealType.h"
 #include "Components/MeshComponent.h"
 #include "Components/StaticMeshComponent.h"
+#include "Components/PrimitiveComponent.h"
 #include "Engine/StaticMesh.h"
 #include "Materials/MaterialInterface.h"
 #include "CollisionQueryParams.h"
@@ -1794,6 +1795,84 @@ bool UUnrealBridgeLevelLibrary::SetActorMaterial(const FString& ActorName, int32
 	Actor->Modify();
 	MC->Modify();
 	MC->SetMaterial(MaterialIndex, NewMat);
+	return true;
+}
+
+namespace BridgeLevelImpl
+{
+	/** Prefer the root component if it's a primitive; else the first primitive found. */
+	static UPrimitiveComponent* GetPrimaryPrimitive(AActor* Actor)
+	{
+		if (!Actor) return nullptr;
+		if (UPrimitiveComponent* Root = Cast<UPrimitiveComponent>(Actor->GetRootComponent()))
+		{
+			return Root;
+		}
+		return Actor->FindComponentByClass<UPrimitiveComponent>();
+	}
+}
+
+FString UUnrealBridgeLevelLibrary::GetActorCollisionProfile(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	UPrimitiveComponent* Prim = BridgeLevelImpl::GetPrimaryPrimitive(Actor);
+	if (!Prim)
+	{
+		return FString();
+	}
+	return Prim->GetCollisionProfileName().ToString();
+}
+
+bool UUnrealBridgeLevelLibrary::SetActorCollisionProfile(const FString& ActorName, const FString& ProfileName)
+{
+	if (ProfileName.IsEmpty())
+	{
+		return false;
+	}
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	UPrimitiveComponent* Prim = BridgeLevelImpl::GetPrimaryPrimitive(Actor);
+	if (!Prim)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetActorCollisionProfile", "Set Actor Collision Profile"));
+	Actor->Modify();
+	Prim->Modify();
+	Prim->SetCollisionProfileName(FName(*ProfileName));
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::SetActorSimulatePhysics(const FString& ActorName, bool bSimulate)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	UPrimitiveComponent* Prim = BridgeLevelImpl::GetPrimaryPrimitive(Actor);
+	if (!Prim)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetActorSimulatePhysics", "Set Actor Simulate Physics"));
+	Actor->Modify();
+	Prim->Modify();
+	// Physics sim requires Movable mobility — auto-promote and let the
+	// transaction revert it on undo.
+	if (bSimulate && Prim->Mobility != EComponentMobility::Movable)
+	{
+		Prim->SetMobility(EComponentMobility::Movable);
+	}
+	Prim->SetSimulatePhysics(bSimulate);
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::SetActorEnableCollision(const FString& ActorName, bool bEnabled)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetActorEnableCollision", "Set Actor Enable Collision"));
+	Actor->Modify();
+	Actor->SetActorEnableCollision(bEnabled);
 	return true;
 }
 

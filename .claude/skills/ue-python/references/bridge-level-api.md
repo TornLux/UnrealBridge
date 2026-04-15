@@ -591,6 +591,47 @@ count of slots cleared.
 
 ---
 
+## Collision + physics control
+
+All four helpers target the actor's primary `UPrimitiveComponent` —
+the root when it's a primitive, otherwise the first primitive
+component found. Every write uses `FScopedTransaction`; `Cmd+Z`
+restores the previous state.
+
+### get_actor_collision_profile(actor_name) -> str
+
+Current collision profile name (e.g. `"BlockAll"`, `"NoCollision"`,
+`"Pawn"`). Empty string when the actor has no primitive component.
+
+### set_actor_collision_profile(actor_name, profile_name) -> bool
+
+Apply a named collision profile. Common presets:
+`"NoCollision"`, `"BlockAll"`, `"BlockAllDynamic"`, `"OverlapAll"`,
+`"Pawn"`, `"PhysicsActor"`, `"Vehicle"`. Unknown profile names are
+accepted by UE and silently behave as `"NoCollision"` — validate
+against your project's `DefaultEngine.ini` collision profiles list
+client-side if precision matters.
+
+### set_actor_simulate_physics(actor_name, simulate) -> bool
+
+Toggle physics simulation on the primary primitive. `simulate=true`
+requires `Movable` mobility; this helper auto-promotes if the
+component was Static/Stationary. The mobility change is captured in
+the transaction, so a single `undo()` reverts both.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_simulate_physics('Cube', True)
+# cube now falls under gravity in PIE
+```
+
+### set_actor_enable_collision(actor_name, enabled) -> bool
+
+Actor-level enable/disable via `AActor::SetActorEnableCollision` —
+cascades to every primitive component on the actor. Use this for a
+quick "ignore me" toggle without changing per-component profiles.
+
+---
+
 ## Components / Sockets
 
 ### get_actor_sockets(actor_name) -> list[str]

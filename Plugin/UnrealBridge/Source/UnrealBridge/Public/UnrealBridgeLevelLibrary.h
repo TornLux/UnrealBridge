@@ -597,4 +597,44 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 ResetActorMaterials(const FString& ActorName);
+
+	// ─── Collision + physics control ────────────────────────
+	//
+	// All four helpers operate on the actor's first UPrimitiveComponent
+	// (preferring the root when it's a primitive). Every write is a
+	// single undo transaction.
+
+	/**
+	 * Current collision profile name on the actor's primary primitive
+	 * component (e.g. "BlockAll", "NoCollision", "Pawn"). Empty string
+	 * when the actor has no primitive component or is missing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetActorCollisionProfile(const FString& ActorName);
+
+	/**
+	 * Set the collision profile on the actor's primary primitive.
+	 * Common presets: "NoCollision", "BlockAll", "BlockAllDynamic",
+	 * "OverlapAll", "Pawn", "PhysicsActor", "Vehicle". Profile names
+	 * outside the project's `DefaultEngine.ini` list are still accepted
+	 * by UE but behave as "NoCollision".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorCollisionProfile(const FString& ActorName, const FString& ProfileName);
+
+	/**
+	 * Toggle physics simulation on the actor's primary primitive.
+	 * `bSimulate=true` requires the component's Mobility to be Movable
+	 * — this helper auto-promotes it if needed (reversed on undo).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorSimulatePhysics(const FString& ActorName, bool bSimulate);
+
+	/**
+	 * Actor-level collision enable (cascades to all components via
+	 * `AActor::SetActorEnableCollision`). Useful for quickly making an
+	 * actor ignore traces without destroying it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetActorEnableCollision(const FString& ActorName, bool bEnabled);
 };
