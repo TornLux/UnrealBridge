@@ -24,6 +24,7 @@
 #include "InputAction.h"
 #include "InputActionValue.h"
 #include "InputMappingContext.h"
+#include "InputTriggers.h"
 #include "EnhancedInputSubsystems.h"
 #include "EnhancedInputComponent.h"
 #include "Containers/Ticker.h"
@@ -41,6 +42,10 @@ namespace BridgeAgentImpl
 	{
 		TWeakObjectPtr<UInputAction> Action;
 		FVector Value = FVector::ZeroVector;
+		// Auto-clear deadline in world-time seconds. <= 0 means "no deadline,
+		// caller will call ClearStickyInput". Set by TriggerInputAction() so
+		// a timed hold releases on its own.
+		double AutoClearWorldTime = 0.0;
 	};
 
 	static TMap<FString, FStickyEntry> GStickyInputs;
@@ -415,18 +420,29 @@ namespace BridgeAgentImpl
 			return true;
 		}
 
+		const double WorldNow = World->GetTimeSeconds();
 		for (TMap<FString, FStickyEntry>::TIterator It(GStickyInputs); It; ++It)
 		{
-			UInputAction* Action = It->Value.Action.Get();
+			FStickyEntry& E = It->Value;
+			if (E.AutoClearWorldTime > 0.0 && WorldNow >= E.AutoClearWorldTime)
+			{
+				UE_LOG(LogUnrealBridgeAgent, Verbose,
+					TEXT("StickyTick: auto-clear '%s' at world-time %.3f"),
+					*It->Key, WorldNow);
+				It.RemoveCurrent();
+				continue;
+			}
+			UInputAction* Action = E.Action.Get();
 			if (!Action)
 			{
 				It.RemoveCurrent();
 				continue;
 			}
 			const EInputActionValueType IaType = Action->ValueType;
-			FInputActionValue Value(IaType, It->Value.Value);
+			FInputActionValue Value(IaType, E.Value);
 			Subsystem->InjectInputForAction(Action, Value, {}, {});
 		}
+		StopStickyTickerIfIdle();
 		return true;
 	}
 }
@@ -463,6 +479,141 @@ bool UUnrealBridgeGameplayLibrary::ClearStickyInput(const FString& InputActionPa
 	const int32 Removed = BridgeAgentImpl::GStickyInputs.Remove(InputActionPath);
 	BridgeAgentImpl::StopStickyTickerIfIdle();
 	return Removed > 0;
+}
+
+// ─── Adaptive trigger ──────────────────────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	/** Short class name for an InputTrigger subclass, stripped of the
+	 *  "InputTrigger" prefix so callers see "Hold" instead of "InputTriggerHold". */
+	static FString TriggerShortName(const UInputTrigger* Trigger)
+	{
+		if (!Trigger) return TEXT("");
+		FString Name = Trigger->GetClass()->GetName();
+		Name.RemoveFromStart(TEXT("InputTrigger"));
+		return Name;
+	}
+
+	/** Time threshold (seconds) baked into the trigger, or 0 if it has none. */
+	static float TriggerThresholdSeconds(const UInputTrigger* Trigger)
+	{
+		if (const UInputTriggerHold* Hold = Cast<UInputTriggerHold>(Trigger))
+		{
+			return Hold->HoldTimeThreshold;
+		}
+		if (const UInputTriggerTap* Tap = Cast<UInputTriggerTap>(Trigger))
+		{
+			return Tap->TapReleaseTimeThreshold;
+		}
+		if (const UInputTriggerPulse* Pulse = Cast<UInputTriggerPulse>(Trigger))
+		{
+			return Pulse->Interval;
+		}
+		return 0.0f;
+	}
+}
+
+bool UUnrealBridgeGameplayLibrary::GetInputActionTriggers(
+	const FString& InputActionPath,
+	TArray<FString>& OutTriggerNames,
+	TArray<float>& OutThresholdSeconds)
+{
+	OutTriggerNames.Reset();
+	OutThresholdSeconds.Reset();
+	UInputAction* Action = LoadObject<UInputAction>(nullptr, *InputActionPath);
+	if (!Action)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("GetInputActionTriggers: failed to load IA '%s'"), *InputActionPath);
+		return false;
+	}
+	OutTriggerNames.Reserve(Action->Triggers.Num());
+	OutThresholdSeconds.Reserve(Action->Triggers.Num());
+	for (const UInputTrigger* Trigger : Action->Triggers)
+	{
+		OutTriggerNames.Add(BridgeAgentImpl::TriggerShortName(Trigger));
+		OutThresholdSeconds.Add(BridgeAgentImpl::TriggerThresholdSeconds(Trigger));
+	}
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::TriggerInputAction(const FString& InputActionPath, float HoldSeconds)
+{
+	UInputAction* Action = LoadObject<UInputAction>(nullptr, *InputActionPath);
+	if (!Action)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("TriggerInputAction: failed to load IA '%s'"), *InputActionPath);
+		return false;
+	}
+	if (Action->ValueType != EInputActionValueType::Boolean)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("TriggerInputAction: IA '%s' is not Bool (type=%d) — use SetStickyInput for axes."),
+			*InputActionPath, (int32)Action->ValueType);
+		return false;
+	}
+
+	// Resolve hold duration.
+	float EffectiveHold = HoldSeconds;
+	if (EffectiveHold < 0.0f)
+	{
+		// Auto: inspect triggers.
+		EffectiveHold = 0.0f; // default to single pulse
+		for (const UInputTrigger* Trigger : Action->Triggers)
+		{
+			if (const UInputTriggerHold* Hold = Cast<UInputTriggerHold>(Trigger))
+			{
+				EffectiveHold = FMath::Max(EffectiveHold, Hold->HoldTimeThreshold + 0.05f);
+			}
+			else if (const UInputTriggerTap* Tap = Cast<UInputTriggerTap>(Trigger))
+			{
+				// Release before the tap threshold so the Tap trigger fires.
+				const float TapHold = FMath::Max(0.01f, Tap->TapReleaseTimeThreshold * 0.5f);
+				EffectiveHold = FMath::Max(EffectiveHold, TapHold);
+			}
+			else if (Cast<UInputTriggerReleased>(Trigger) || Cast<UInputTriggerPulse>(Trigger)
+				|| Cast<UInputTriggerDown>(Trigger))
+			{
+				// Released needs a key-up edge; Pulse needs at least one interval;
+				// Down fires continuously while held and many gameplay handlers
+				// (Character::Jump via InputComponent, sprint, etc.) need
+				// several ticks of Triggered state before they latch — a
+				// single pulse isn't enough. 150 ms matches the press duration
+				// the earlier manual sticky→clear demo used to trigger jump
+				// reliably on 60 Hz.
+				EffectiveHold = FMath::Max(EffectiveHold, 0.15f);
+			}
+		}
+	}
+
+	if (EffectiveHold <= 0.0f)
+	{
+		// Single-tick pulse path — same as InjectEnhancedInputAxis.
+		return InjectEnhancedInputAxis(InputActionPath, FVector(1.0, 0.0, 0.0));
+	}
+
+	// Sticky-hold path: need a PIE world to anchor the world-time deadline.
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("TriggerInputAction: no PIE world; cannot schedule auto-clear for '%s'"),
+			*InputActionPath);
+		return false;
+	}
+
+	BridgeAgentImpl::FStickyEntry Entry;
+	Entry.Action = Action;
+	Entry.Value = FVector(1.0, 0.0, 0.0);
+	Entry.AutoClearWorldTime = World->GetTimeSeconds() + EffectiveHold;
+	BridgeAgentImpl::GStickyInputs.Add(InputActionPath, Entry);
+	BridgeAgentImpl::EnsureStickyTickerRunning();
+	UE_LOG(LogUnrealBridgeAgent, Log,
+		TEXT("TriggerInputAction: '%s' held for %.3fs (auto-clear)"),
+		*InputActionPath, EffectiveHold);
+	return true;
 }
 
 // ─── State inspection + reset ──────────────────────────────────────────

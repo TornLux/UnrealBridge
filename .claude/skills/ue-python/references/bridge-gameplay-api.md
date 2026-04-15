@@ -718,6 +718,53 @@ ty = unreal.UnrealBridgeGameplayLibrary.get_input_action_value_type(
 # ty == 'Axis2D' → pass Vector(x, y, 0)
 ```
 
+### get_input_action_triggers(input_action_path) -> (Array[str], Array[float]) or None
+
+Inspect the `Triggers` array declared on the IA asset. Returns parallel
+arrays of short trigger names (`"Pressed"`, `"Released"`, `"Hold"`,
+`"Tap"`, `"Pulse"`, `"Down"`, `"ChordAction"`) and a threshold in seconds
+parsed from `HoldTimeThreshold` / `TapReleaseTimeThreshold` / `Interval`
+(0.0 when the trigger has no timing parameter). Returns `None` on load
+failure.
+
+Only inspects triggers declared on the IA itself — per-mapping triggers
+configured inside an Input Mapping Context are NOT reflected.
+
+```python
+names, thresholds = unreal.UnrealBridgeGameplayLibrary.get_input_action_triggers(
+    '/LocomotionDriver/Input/IA_Jump')
+# names == ['Down'], thresholds == [0.0]
+```
+
+### trigger_input_action(input_action_path, hold_seconds=-1.0) -> bool
+
+Adaptive "press a Bool IA" entry point. Inspects the IA's `Triggers` and
+picks between a single-tick pulse (same as `inject_enhanced_input_axis`)
+and a timed sticky-hold with automatic release — the caller doesn't
+need to know whether the action listens to Pressed / Released / Hold /
+Tap / Down.
+
+`hold_seconds` semantics:
+- `< 0` (default): auto-pick from Triggers. `Hold(t)` → sticky `t + 0.05s`.
+  `Tap(t)` → sticky `max(0.01, t * 0.5)s`. Any `Released` / `Pulse` / `Down`
+  → sticky `0.15s`. Otherwise (Pressed-only, empty) → single-tick pulse.
+- `== 0`: force single-tick pulse.
+- `> 0`: force sticky hold for exactly this many seconds.
+
+Rejects Axis1D / Axis2D / Axis3D IAs with `False` — use `set_sticky_input`
+for continuous axes. The auto-clear deadline is checked in world-time,
+so a `Hold(1.0)` trigger still fires correctly under 0.5× time dilation.
+
+```python
+L = unreal.UnrealBridgeGameplayLibrary
+# Discrete toggle — single pulse suffices.
+L.trigger_input_action('/LocomotionDriver/Input/IA_SwitchAnimStyle.IA_SwitchAnimStyle')
+# Jump — auto-picks 150ms hold because IA has a Down trigger.
+L.trigger_input_action('/LocomotionDriver/Input/IA_Jump.IA_Jump')
+# Force-override the hold length (e.g. for a longer-press ability).
+L.trigger_input_action('/Game/Input/IA_ChargeShot.IA_ChargeShot', 1.2)
+```
+
 ---
 
 ## Actuators

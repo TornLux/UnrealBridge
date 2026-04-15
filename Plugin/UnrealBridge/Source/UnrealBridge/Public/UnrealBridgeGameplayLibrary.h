@@ -708,6 +708,48 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static FString GetInputActionValueType(const FString& InputActionPath);
 
+	/**
+	 * Inspect the Triggers array configured on an InputAction asset.
+	 * Returns parallel arrays: trigger class short-name (e.g. "Pressed",
+	 * "Released", "Hold", "Tap", "Pulse", "ChordAction", "Down") and a
+	 * threshold (seconds) parsed from HoldTimeThreshold / TapReleaseTimeThreshold
+	 * / Interval — 0.0f when the trigger has no timing parameter.
+	 *
+	 * Note: this only inspects triggers declared on the IA itself. Per-mapping
+	 * triggers added inside a UInputMappingContext are NOT reflected here.
+	 * Returns false if the IA fails to load.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetInputActionTriggers(
+		const FString& InputActionPath,
+		TArray<FString>& OutTriggerNames,
+		TArray<float>& OutThresholdSeconds);
+
+	/**
+	 * Adaptive "press a Bool IA" entry point. Inspects the IA's Triggers
+	 * and picks between single-tick inject vs. sticky-then-auto-release so
+	 * callers don't have to know which pattern fits a given action.
+	 *
+	 * HoldSeconds semantics:
+	 *   < 0 (default): auto-pick from Triggers. If any Hold/Tap/Released/Pulse
+	 *       trigger is present, use a sticky hold sized to satisfy the
+	 *       timing threshold (Hold duration + 50 ms, or Tap threshold * 0.5).
+	 *       Otherwise fire a single-tick pulse.
+	 *   == 0: force single-tick pulse (same as InjectEnhancedInputAxis).
+	 *   > 0: force sticky hold for exactly this many seconds, then auto-clear.
+	 *
+	 * The auto-clear runs on the GameThread ticker using World time, so it
+	 * tracks time-dilation correctly — a Hold(1.0) trigger will still fire
+	 * when the game is slowed down 0.5×, because both our deadline and UE's
+	 * hold timer use the same clock.
+	 *
+	 * For Axis1D / Axis2D / Axis3D IAs (continuous inputs like IA_Move,
+	 * IA_Look), this function refuses and returns false — use SetStickyInput
+	 * with an explicit release point instead.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool TriggerInputAction(const FString& InputActionPath, float HoldSeconds = -1.0f);
+
 	// ─── Extended debug drawing ──────────────────────────────────────
 	//
 	// Companions to DrawDebugLine / DrawDebugSphereAt. All require PIE.
