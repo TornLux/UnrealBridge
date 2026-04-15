@@ -527,3 +527,164 @@ bool UUnrealBridgeGameplayLibrary::IsInPIE()
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();
 	return World != nullptr && BridgeAgentImpl::GetPlayerPawn(World) != nullptr;
 }
+
+// ─── Camera aim + perception helpers ───────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	/** Find an actor by FName or visible label in the PIE world. */
+	static AActor* FindPIEActor(UWorld* World, const FString& NameOrLabel)
+	{
+		if (!World || NameOrLabel.IsEmpty())
+		{
+			return nullptr;
+		}
+		const FName AsFName(*NameOrLabel);
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* A = *It;
+			if (!A) continue;
+			if (A->GetFName() == AsFName)
+			{
+				return A;
+			}
+		}
+		// Fall back to label match.
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* A = *It;
+			if (A && A->GetActorLabel() == NameOrLabel)
+			{
+				return A;
+			}
+		}
+		return nullptr;
+	}
+
+	/** Camera viewpoint of the first PIE player controller. */
+	static bool GetCameraView(UWorld* World, FVector& OutLoc, FRotator& OutRot)
+	{
+		if (!World) return false;
+		APlayerController* PC = World->GetFirstPlayerController();
+		if (!PC) return false;
+		PC->GetPlayerViewPoint(OutLoc, OutRot);
+		return true;
+	}
+}
+
+FString UUnrealBridgeGameplayLibrary::GetCameraHitActor(float MaxDistance)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	FVector CamLoc; FRotator CamRot;
+	if (!BridgeAgentImpl::GetCameraView(World, CamLoc, CamRot))
+	{
+		return FString();
+	}
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	const FVector End = CamLoc + CamRot.Vector() * FMath::Max(MaxDistance, 0.0f);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeCameraAim), /*bTraceComplex=*/ false);
+	if (Pawn) Params.AddIgnoredActor(Pawn);
+	FHitResult Hit;
+	const bool bHit = World->LineTraceSingleByChannel(Hit, CamLoc, End, ECC_Visibility, Params);
+	if (!bHit || !Hit.GetActor())
+	{
+		return FString();
+	}
+	return Hit.GetActor()->GetFName().ToString();
+}
+
+bool UUnrealBridgeGameplayLibrary::GetCameraHitLocation(float MaxDistance, FVector& OutHitLocation)
+{
+	OutHitLocation = FVector::ZeroVector;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	FVector CamLoc; FRotator CamRot;
+	if (!BridgeAgentImpl::GetCameraView(World, CamLoc, CamRot))
+	{
+		return false;
+	}
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	const FVector End = CamLoc + CamRot.Vector() * FMath::Max(MaxDistance, 0.0f);
+
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeCameraAimLoc), /*bTraceComplex=*/ false);
+	if (Pawn) Params.AddIgnoredActor(Pawn);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, CamLoc, End, ECC_Visibility, Params))
+	{
+		return false;
+	}
+	OutHitLocation = Hit.ImpactPoint;
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::IsActorVisibleFromCamera(const FString& ActorName, float MaxDistance)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	FVector CamLoc; FRotator CamRot;
+	if (!BridgeAgentImpl::GetCameraView(World, CamLoc, CamRot))
+	{
+		return false;
+	}
+	AActor* Target = BridgeAgentImpl::FindPIEActor(World, ActorName);
+	if (!Target)
+	{
+		return false;
+	}
+
+	// Test against 9 sample points: bounds center + 8 corners. An actor
+	// counts as visible if ANY of these can be reached without being
+	// blocked by a different actor first. This handles cases where the
+	// actor's pivot is inside its own mesh / beneath terrain.
+	FVector Origin, Extent;
+	Target->GetActorBounds(/*bOnlyCollidingComponents=*/ false, Origin, Extent, /*bIncludeFromChildActors=*/ true);
+
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	const float MaxDistSafe = FMath::Max(MaxDistance, 0.0f);
+
+	TArray<FVector, TInlineAllocator<9>> SamplePoints;
+	SamplePoints.Add(Origin);
+	for (int32 i = 0; i < 8; ++i)
+	{
+		const FVector C(
+			(i & 1) ? Extent.X : -Extent.X,
+			(i & 2) ? Extent.Y : -Extent.Y,
+			(i & 4) ? Extent.Z : -Extent.Z);
+		SamplePoints.Add(Origin + C);
+	}
+
+	for (const FVector& P : SamplePoints)
+	{
+		if (FVector::Dist(CamLoc, P) > MaxDistSafe)
+		{
+			continue;
+		}
+		FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgeCameraVis), /*bTraceComplex=*/ false);
+		if (Pawn) Params.AddIgnoredActor(Pawn);
+		FHitResult Hit;
+		const bool bHit = World->LineTraceSingleByChannel(Hit, CamLoc, P, ECC_Visibility, Params);
+		if (!bHit || Hit.GetActor() == Target)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+float UUnrealBridgeGameplayLibrary::GetPawnGroundHeight(float MaxDistance)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn)
+	{
+		return -1.0f;
+	}
+	const FVector Start = Pawn->GetActorLocation();
+	const FVector End = Start - FVector(0, 0, FMath::Max(MaxDistance, 0.0f));
+	FCollisionQueryParams Params(SCENE_QUERY_STAT(BridgePawnGround), /*bTraceComplex=*/ false, Pawn);
+	FHitResult Hit;
+	if (!World->LineTraceSingleByChannel(Hit, Start, End, ECC_Visibility, Params))
+	{
+		return -1.0f;
+	}
+	return (Start - Hit.ImpactPoint).Size();
+}

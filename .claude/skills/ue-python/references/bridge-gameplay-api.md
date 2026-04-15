@@ -266,6 +266,71 @@ for p, v in zip(paths, values):
     print(f'  {p} = ({v.x}, {v.y}, {v.z})')
 ```
 
+### get_camera_hit_actor(max_distance=10000.0) -> str
+
+Line-trace forward from the player camera for up to `max_distance` cm
+against the visibility channel. Returns the FIRST actor's `FName` as
+string (matches `FAgentVisibleActor.actor_name`, *not* the display
+label), or empty string on miss / no PIE. The pawn is auto-ignored so
+self-hits never occur.
+
+```python
+target = unreal.UnrealBridgeGameplayLibrary.get_camera_hit_actor(5000.0)
+if target:
+    print(f'aiming at {target}')
+```
+
+### get_camera_hit_location(max_distance, out_hit_location) -> bool
+
+UE Python convention: returns `FVector` when the ray hits, `None` when
+it misses or PIE isn't running. The hit point is `FHitResult.ImpactPoint`.
+
+```python
+loc = unreal.UnrealBridgeGameplayLibrary.get_camera_hit_location(10000.0)
+if loc is not None:
+    print(f'aim point = {loc}')
+```
+
+### is_actor_visible_from_camera(actor_name, max_distance=10000.0) -> bool
+
+Bounds-sampling visibility test: traces from the camera to nine sample
+points on the target's bounds (center + 8 corners). Returns True as
+soon as ANY ray reaches the target or its endpoint unobstructed; False
+if every sample is blocked by another actor first.
+
+`actor_name` is matched first by `FName`, then by display label. Pass
+the value returned by `get_camera_hit_actor()` directly.
+
+**Pitfalls**
+
+- Bounds are evaluated via `AActor::GetActorBounds(bOnlyCollidingComponents=false)`.
+  Actors without any primitive components return zero bounds — all 9
+  samples collapse to the pivot, which may be occluded.
+- When the camera is inside another actor's collision (e.g. a default
+  PIE spectator spawned inside geometry), every outbound ray hits that
+  actor first and this check returns False even for visually-unobstructed
+  targets. Fix by possessing a proper pawn before querying.
+- The pawn is auto-ignored, but sibling occluders (smoke volumes,
+  trigger boxes on Visibility channel) are not — they'll register as
+  blockers.
+
+### get_pawn_ground_height(max_distance=5000.0) -> float
+
+Downward line-trace from the pawn's pivot for up to `max_distance` cm.
+Returns the distance to the first hit surface in cm, or `-1.0` on miss
+/ no PIE. Useful for stairs/drop detection without parsing the full
+`CharacterMovement` state.
+
+```python
+h = unreal.UnrealBridgeGameplayLibrary.get_pawn_ground_height()
+if h < 0:
+    print('pawn is airborne or over a bottomless pit')
+elif h > 200:
+    print(f'drop below is {h:.0f} cm')
+```
+
+---
+
 ### teleport_pawn(new_location, new_rotation, b_snap_controller=True, b_stop_velocity=True) -> bool
 
 Hard-reset the pawn's pose for scenario setup. Wraps

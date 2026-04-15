@@ -297,4 +297,40 @@ public:
 	/** True when a PIE world is currently playing with a player pawn spawned. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool IsInPIE();
+
+	// ─── Camera aim + perception helpers ──────────────────────────────
+
+	/**
+	 * Line-trace from the player's camera along its forward vector up to
+	 * `MaxDistance` cm. Returns the hit actor's FName (not label — consistent
+	 * with FAgentVisibleActor.ActorName) or empty string if nothing hit.
+	 * Pawn is ignored from the trace so the ray doesn't self-hit.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetCameraHitActor(float MaxDistance = 10000.0f);
+
+	/**
+	 * Same ray as GetCameraHitActor, but returns the world-space hit point.
+	 * @return true on hit; OutHitLocation is zeroed on miss / no PIE.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetCameraHitLocation(float MaxDistance, FVector& OutHitLocation);
+
+	/**
+	 * Line-trace from camera to the named actor's centroid. Returns true if
+	 * the ray is clear (or only obstructed by the actor itself). Actor is
+	 * matched by FName first, then label. Returns false if no PIE, no
+	 * actor, or line-of-sight blocked.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool IsActorVisibleFromCamera(const FString& ActorName, float MaxDistance = 10000.0f);
+
+	/**
+	 * Downward line-trace from the pawn's pivot for `MaxDistance` cm.
+	 * Returns the distance (cm) to the first hit surface; -1.0 if the
+	 * trace misses everything or no PIE. Handy for stairs/drop detection
+	 * in agent policies without resolving the full CharacterMovement state.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetPawnGroundHeight(float MaxDistance = 5000.0f);
 };
