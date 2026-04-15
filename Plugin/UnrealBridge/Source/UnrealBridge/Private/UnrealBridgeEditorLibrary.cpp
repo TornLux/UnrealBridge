@@ -46,6 +46,9 @@
 #include "HAL/PlatformOutputDevices.h"
 #include "Misc/Paths.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Docking/TabManager.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Interfaces/IMainFrameModule.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -1232,6 +1235,57 @@ FString UUnrealBridgeEditorLibrary::GetAutoSaveDirectory()
 {
 	return FPaths::ConvertRelativePathToFull(
 		FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("Autosaves")));
+}
+
+// ─── Editor tab management + window title ──────────────────────────────
+
+bool UUnrealBridgeEditorLibrary::OpenEditorTab(const FString& TabName)
+{
+	if (TabName.IsEmpty() || !FGlobalTabmanager::Get()->HasTabSpawner(FName(*TabName)))
+	{
+		return false;
+	}
+	const TSharedPtr<SDockTab> Tab = FGlobalTabmanager::Get()->TryInvokeTab(FName(*TabName));
+	return Tab.IsValid();
+}
+
+bool UUnrealBridgeEditorLibrary::CloseEditorTab(const FString& TabName)
+{
+	if (TabName.IsEmpty())
+	{
+		return false;
+	}
+	const TSharedPtr<SDockTab> Tab = FGlobalTabmanager::Get()->FindExistingLiveTab(FName(*TabName));
+	if (!Tab.IsValid())
+	{
+		return false;
+	}
+	Tab->RequestCloseTab();
+	return true;
+}
+
+bool UUnrealBridgeEditorLibrary::IsEditorTabOpen(const FString& TabName)
+{
+	if (TabName.IsEmpty())
+	{
+		return false;
+	}
+	return FGlobalTabmanager::Get()->FindExistingLiveTab(FName(*TabName)).IsValid();
+}
+
+FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
+{
+	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))
+	{
+		return FString();
+	}
+	IMainFrameModule& MF = FModuleManager::LoadModuleChecked<IMainFrameModule>("MainFrame");
+	const TSharedPtr<SWindow> Window = MF.GetParentWindow();
+	if (!Window.IsValid())
+	{
+		return FString();
+	}
+	return Window->GetTitle().ToString();
 }
 
 bool UUnrealBridgeEditorLibrary::BringEditorToFront()

@@ -315,6 +315,36 @@ cache key. If you specifically need the .uproject GUID, parse the
 Absolute path to `<Project>/Saved/Autosaves`. Use to locate `.auto.umap`
 files UE drops there during long editing sessions.
 
+### open_editor_tab(tab_name) -> bool
+
+Invoke a docked-tab spawner by tab id via `FGlobalTabmanager::TryInvokeTab`.
+Opens the tab if registered and not already open; refocuses it
+otherwise. Returns False when the id isn't a registered spawner.
+
+Common ids: `"OutputLog"`, `"ContentBrowserTab1"`, `"StatsViewer"`,
+`"MessageLog"`, `"LevelEditorToolBox"`, `"LevelEditorStatsViewer"`.
+
+### close_editor_tab(tab_name) -> bool
+
+Close a live docked tab. Returns False if no live tab with that id
+exists.
+
+### is_editor_tab_open(tab_name) -> bool
+
+Tab-liveness check via `FGlobalTabmanager::FindExistingLiveTab`.
+
+**Pitfall:** `FindExistingLiveTab` is stricter than `TryInvokeTab`'s
+spawner registry — freshly-invoked tabs may need a frame to register
+as "live", so immediately-following `is_editor_tab_open` can still
+return False even after `open_editor_tab` succeeded. Wait a tick, or
+rely on `open_editor_tab`'s return value directly.
+
+### get_main_window_title() -> str
+
+Title text of the editor's main frame window (e.g. `"MyProject -
+Unreal Editor"`). Empty string when the MainFrame module isn't
+loaded yet (very early boot).
+
 ---
 
 ## Asset Control

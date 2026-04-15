@@ -461,4 +461,35 @@ public:
 	/** Absolute path to the project's autosave directory (`.../Saved/Autosaves`). */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetAutoSaveDirectory();
+
+	// ─── Editor tab management + window title ────────────────
+
+	/**
+	 * Invoke a docked-tab spawner by tab id. Opens the tab if registered
+	 * but not open; refocuses it if already open. Common ids:
+	 *   "OutputLog", "ContentBrowserTab1", "StatsViewer",
+	 *   "MessageLog", "LevelEditorToolBox".
+	 * Returns false if the id isn't a registered spawner.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool OpenEditorTab(const FString& TabName);
+
+	/**
+	 * Close a live docked tab by id. Returns false if no matching tab is
+	 * currently open. No effect on tabs that aren't registered.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool CloseEditorTab(const FString& TabName);
+
+	/** True if a tab with the given id is currently live (docked or floating). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsEditorTabOpen(const FString& TabName);
+
+	/**
+	 * Title text of the editor's main frame window (e.g.
+	 * "GameplayLocomotion - Unreal Editor"). Empty string when the
+	 * main frame module isn't yet available.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetMainWindowTitle();
 };
