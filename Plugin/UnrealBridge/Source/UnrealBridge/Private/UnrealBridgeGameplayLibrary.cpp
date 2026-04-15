@@ -913,6 +913,69 @@ bool UUnrealBridgeGameplayLibrary::UnlockCameraFOV()
 	return true;
 }
 
+// ─── Character movement tuning ─────────────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	static UCharacterMovementComponent* GetPIECharMove()
+	{
+		UWorld* World = GetPIEWorld();
+		APawn* Pawn = GetPlayerPawn(World);
+		if (ACharacter* Char = Cast<ACharacter>(Pawn))
+		{
+			return Char->GetCharacterMovement();
+		}
+		return nullptr;
+	}
+}
+
+float UUnrealBridgeGameplayLibrary::GetPawnMaxWalkSpeed()
+{
+	UCharacterMovementComponent* Move = BridgeAgentImpl::GetPIECharMove();
+	return Move ? Move->MaxWalkSpeed : -1.0f;
+}
+
+bool UUnrealBridgeGameplayLibrary::SetPawnMaxWalkSpeed(float Speed)
+{
+	if (Speed < 0.0f)
+	{
+		return false;
+	}
+	UCharacterMovementComponent* Move = BridgeAgentImpl::GetPIECharMove();
+	if (!Move)
+	{
+		return false;
+	}
+	Move->MaxWalkSpeed = Speed;
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::SetPawnGravityScale(float Scale)
+{
+	if (Scale < 0.0f)
+	{
+		return false;
+	}
+	UCharacterMovementComponent* Move = BridgeAgentImpl::GetPIECharMove();
+	if (!Move)
+	{
+		return false;
+	}
+	Move->GravityScale = Scale;
+	return true;
+}
+
+float UUnrealBridgeGameplayLibrary::GetPawnSpeed()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
+	if (!Pawn)
+	{
+		return -1.0f;
+	}
+	return Pawn->GetVelocity().Size();
+}
+
 bool UUnrealBridgeGameplayLibrary::GetCameraViewPoint(FVector& OutLocation, FRotator& OutRotation)
 {
 	OutLocation = FVector::ZeroVector;

@@ -238,6 +238,39 @@ recording a cinematography path).
 
 ---
 
+## Character movement tuning
+
+All four helpers target the PIE player pawn's
+`UCharacterMovementComponent`. Non-Character pawns (raw APawn
+subclasses without CharMove) return `-1.0` / `False` across the board.
+
+### get_pawn_max_walk_speed() -> float
+
+`MaxWalkSpeed` in cm/s. Returns `-1.0` when PIE isn't running or no
+Character pawn exists.
+
+### set_pawn_max_walk_speed(speed) -> bool
+
+Override `MaxWalkSpeed`. Negative values rejected. Does NOT touch
+`MaxAcceleration` — the pawn ramps to the new speed over a few frames
+via existing acceleration rules. Persists until overwritten; NOT
+reset automatically when PIE stops.
+
+### set_pawn_gravity_scale(scale) -> bool
+
+Override `GravityScale`. `1.0` = default, `0.0` = zero-g, `2.0` =
+double gravity. Negative values rejected. Useful for test scenarios
+that need the pawn to hang in air or fall faster without changing
+world gravity.
+
+### get_pawn_speed() -> float
+
+Magnitude of `APawn::GetVelocity()` in cm/s. Returns `-1.0` when no
+pawn / no PIE. Works for any pawn type — falls back to
+`AActor::GetVelocity` for non-Characters.
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and

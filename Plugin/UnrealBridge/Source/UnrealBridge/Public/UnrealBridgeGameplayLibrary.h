@@ -456,4 +456,43 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static bool GetCameraViewPoint(FVector& OutLocation, FRotator& OutRotation);
+
+	// ─── Character movement tuning ────────────────────────────────────
+	//
+	// All four target the PIE player pawn's UCharacterMovementComponent.
+	// They return a sentinel / false for non-Character pawns (raw APawn
+	// subclasses without CharMove won't respond).
+
+	/**
+	 * `UCharacterMovementComponent::MaxWalkSpeed` in cm/s.
+	 * Returns -1.0 when PIE isn't running or the pawn lacks a
+	 * character-movement component.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetPawnMaxWalkSpeed();
+
+	/**
+	 * Override `MaxWalkSpeed`. Does not touch `MaxAcceleration` — the
+	 * pawn ramps up to the new speed over a few frames via existing
+	 * acceleration rules.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SetPawnMaxWalkSpeed(float Speed);
+
+	/**
+	 * Override `UCharacterMovementComponent::GravityScale`. 1.0 = default,
+	 * 0.0 = zero-g, 2.0 = double gravity. Negative values are rejected.
+	 * Useful for test scenarios where you want the pawn to hang in air
+	 * or fall faster without changing world gravity.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SetPawnGravityScale(float Scale);
+
+	/**
+	 * Current speed of the pawn — magnitude of `APawn::GetVelocity()` in
+	 * cm/s. Returns -1.0 when PIE isn't running / no pawn. Works for
+	 * non-Character pawns too (falls back to `AActor::GetVelocity`).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetPawnSpeed();
 };
