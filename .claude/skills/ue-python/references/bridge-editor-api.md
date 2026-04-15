@@ -632,6 +632,26 @@ Synchronous check-out via `FCheckOut`. Returns True only when the
 provider reports success. Blocks briefly on network round-trip for
 remote providers — use sparingly in tight loops.
 
+### get_engine_directory() -> str
+
+Absolute path to the engine installation's `Engine/` directory
+(e.g. `G:/UnrealEngine/UE_5.7/Engine/`).
+
+### get_project_content_directory() -> str
+
+Absolute path to the project's `Content/` directory.
+
+### get_project_intermediate_directory() -> str
+
+Absolute path to `Intermediate/` — transient build outputs, asset
+cache, shader cache live here.
+
+### get_project_plugins_directory() -> str
+
+Absolute path to the project's `Plugins/` directory. Engine-side
+plugins (e.g. those bundled with UE) live under
+`get_engine_directory() + 'Plugins/'`, not here.
+
 ---
 
 ## Asset Control

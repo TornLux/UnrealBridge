@@ -1823,6 +1823,28 @@ bool UUnrealBridgeEditorLibrary::CheckOutAsset(const FString& AssetPath)
 	return R == ECommandResult::Succeeded;
 }
 
+// ─── Project / engine paths ────────────────────────────────────────────
+
+FString UUnrealBridgeEditorLibrary::GetEngineDirectory()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::EngineDir());
+}
+
+FString UUnrealBridgeEditorLibrary::GetProjectContentDirectory()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectContentDir());
+}
+
+FString UUnrealBridgeEditorLibrary::GetProjectIntermediateDirectory()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir());
+}
+
+FString UUnrealBridgeEditorLibrary::GetProjectPluginsDirectory()
+{
+	return FPaths::ConvertRelativePathToFull(FPaths::ProjectPluginsDir());
+}
+
 FString UUnrealBridgeEditorLibrary::GetMainWindowTitle()
 {
 	if (!FModuleManager::Get().IsModuleLoaded("MainFrame"))

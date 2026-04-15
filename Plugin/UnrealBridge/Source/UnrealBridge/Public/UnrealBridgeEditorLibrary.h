@@ -765,4 +765,22 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool CheckOutAsset(const FString& AssetPath);
+
+	// ─── Project / engine paths ──────────────────────────────
+
+	/** Absolute path to the engine installation directory. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetEngineDirectory();
+
+	/** Absolute path to the project's `Content/` directory. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetProjectContentDirectory();
+
+	/** Absolute path to the project's `Intermediate/` directory. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetProjectIntermediateDirectory();
+
+	/** Absolute path to the project's `Plugins/` directory. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetProjectPluginsDirectory();
 };
