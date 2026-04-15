@@ -2600,6 +2600,110 @@ int32 UUnrealBridgeLevelLibrary::GetPersistentLevelActorCount()
 	return Count;
 }
 
+// ─── Bulk selection helpers ────────────────────────────────────────────
+
+int32 UUnrealBridgeLevelLibrary::InvertSelection()
+{
+	if (!GEditor) return 0;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+
+	// Snapshot current selection so we don't flip actors twice.
+	TSet<AActor*> Selected;
+	if (USelection* Sel = GEditor->GetSelectedActors())
+	{
+		for (FSelectionIterator It(*Sel); It; ++It)
+		{
+			if (AActor* A = Cast<AActor>(*It))
+			{
+				Selected.Add(A);
+			}
+		}
+	}
+	GEditor->SelectNone(false, true, false);
+	int32 NowSelected = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (!A) continue;
+		const bool bShouldSelect = !Selected.Contains(A);
+		if (bShouldSelect)
+		{
+			GEditor->SelectActor(A, true, true, true, false);
+			++NowSelected;
+		}
+	}
+	GEditor->NoteSelectionChange();
+	return NowSelected;
+}
+
+int32 UUnrealBridgeLevelLibrary::SelectAllActors()
+{
+	if (!GEditor) return 0;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	GEditor->SelectNone(false, true, false);
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		if (AActor* A = *It)
+		{
+			GEditor->SelectActor(A, true, true, true, false);
+			++Count;
+		}
+	}
+	GEditor->NoteSelectionChange();
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::SelectActorsInBox(FVector Min, FVector Max, bool bAddToSelection)
+{
+	if (!GEditor) return 0;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	const FBox Box(Min, Max);
+	if (!bAddToSelection)
+	{
+		GEditor->SelectNone(false, true, false);
+	}
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && Box.IsInside(A->GetActorLocation()))
+		{
+			GEditor->SelectActor(A, true, true, true, false);
+			++Count;
+		}
+	}
+	GEditor->NoteSelectionChange();
+	return Count;
+}
+
+int32 UUnrealBridgeLevelLibrary::SelectActorsInSphere(FVector Center, float Radius, bool bAddToSelection)
+{
+	if (!GEditor) return 0;
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	if (!World) return 0;
+	const float RadSq = FMath::Max(Radius, 0.0f) * FMath::Max(Radius, 0.0f);
+	if (!bAddToSelection)
+	{
+		GEditor->SelectNone(false, true, false);
+	}
+	int32 Count = 0;
+	for (TActorIterator<AActor> It(World); It; ++It)
+	{
+		AActor* A = *It;
+		if (A && FVector::DistSquared(A->GetActorLocation(), Center) <= RadSq)
+		{
+			GEditor->SelectActor(A, true, true, true, false);
+			++Count;
+		}
+	}
+	GEditor->NoteSelectionChange();
+	return Count;
+}
+
 int32 UUnrealBridgeLevelLibrary::MirrorActors(const TArray<FString>& ActorNames, const FString& Axis)
 {
 	const FString L = Axis.ToLower();

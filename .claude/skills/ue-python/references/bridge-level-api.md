@@ -325,6 +325,32 @@ an op to actors in the persistent level only.
 
 Number of actors in the persistent level (excludes sublevels).
 
+### invert_selection() -> int
+
+Flip the selection state of every actor. Returns the count now
+selected after the flip.
+
+### select_all_actors() -> int
+
+Select every actor in the level. Returns total selected.
+
+### select_actors_in_box(min, max, add_to_selection=False) -> int
+
+Select actors whose pivot location falls inside the axis-aligned
+box `[min, max]`.
+
+### select_actors_in_sphere(center, radius, add_to_selection=False) -> int
+
+Select actors whose pivot location lies within `radius` cm of `center`.
+
+```python
+# Group everything in a 20m radius into one folder for quick edit
+unreal.UnrealBridgeLevelLibrary.select_actors_in_sphere(
+    unreal.Vector(0, 0, 0), 2000.0)
+selection = unreal.UnrealBridgeLevelLibrary.get_selected_actors()
+unreal.UnrealBridgeLevelLibrary.move_actors_to_folder(selection, 'NearOrigin')
+```
+
 ---
 
 ## Read — Actor Queries

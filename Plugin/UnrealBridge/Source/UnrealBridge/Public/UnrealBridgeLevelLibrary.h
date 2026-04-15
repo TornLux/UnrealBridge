@@ -995,4 +995,32 @@ public:
 	/** Number of actors in the persistent level only (excludes sublevels). */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static int32 GetPersistentLevelActorCount();
+
+	// ─── Bulk selection helpers ──────────────────────────────
+
+	/**
+	 * Flip the selection state of every actor in the level. Actors
+	 * currently selected become deselected and vice versa. Returns the
+	 * count now selected after the flip.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 InvertSelection();
+
+	/** Select every actor in the level. Returns total selected. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 SelectAllActors();
+
+	/**
+	 * Select actors whose pivot location falls inside the axis-aligned
+	 * box [Min, Max]. `bAddToSelection=false` clears the current selection
+	 * first.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 SelectActorsInBox(FVector Min, FVector Max, bool bAddToSelection = false);
+
+	/**
+	 * Select actors whose pivot location lies within `Radius` of `Center`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static int32 SelectActorsInSphere(FVector Center, float Radius, bool bAddToSelection = false);
 };
