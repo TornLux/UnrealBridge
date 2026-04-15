@@ -9,6 +9,8 @@
 #include "GameFramework/CharacterMovementComponent.h"
 #include "GameFramework/PawnMovementComponent.h"
 #include "Camera/PlayerCameraManager.h"
+#include "Kismet/GameplayStatics.h"
+#include "GameFramework/WorldSettings.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
 #include "InputAction.h"
@@ -1041,6 +1043,62 @@ bool UUnrealBridgeGameplayLibrary::GetPIEActorLocation(const FString& ActorName,
 		return false;
 	}
 	OutLocation = Target->GetActorLocation();
+	return true;
+}
+
+// ─── Time dilation control ─────────────────────────────────────────────
+
+float UUnrealBridgeGameplayLibrary::GetGlobalTimeDilation()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return 1.0f;
+	}
+	AWorldSettings* WS = World->GetWorldSettings();
+	return WS ? WS->TimeDilation : 1.0f;
+}
+
+bool UUnrealBridgeGameplayLibrary::SetGlobalTimeDilation(float Scale)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return false;
+	}
+	const float Clamped = FMath::Clamp(Scale, 0.0001f, 20.0f);
+	if (Scale <= 0.0f)
+	{
+		return false;
+	}
+	UGameplayStatics::SetGlobalTimeDilation(World, Clamped);
+	return true;
+}
+
+float UUnrealBridgeGameplayLibrary::GetActorTimeDilation(const FString& ActorName)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	AActor* Target = BridgeAgentImpl::FindPIEActor(World, ActorName);
+	if (!Target)
+	{
+		return -1.0f;
+	}
+	return Target->CustomTimeDilation;
+}
+
+bool UUnrealBridgeGameplayLibrary::SetActorTimeDilation(const FString& ActorName, float Scale)
+{
+	if (Scale <= 0.0f)
+	{
+		return false;
+	}
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	AActor* Target = BridgeAgentImpl::FindPIEActor(World, ActorName);
+	if (!Target)
+	{
+		return false;
+	}
+	Target->CustomTimeDilation = FMath::Clamp(Scale, 0.0001f, 20.0f);
 	return true;
 }
 

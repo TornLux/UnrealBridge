@@ -320,6 +320,46 @@ FName-as-string list of every PIE actor whose class derives from
 
 ---
 
+## Time dilation control
+
+Scales delta-time delivered to actor ticks. DISTINCT from
+`bridge-editor-api.pause_pie` — pause hard-stops the play session;
+time dilation keeps ticking at a scaled rate (e.g. `0.25` = quarter
+speed for bullet-time, `4.0` = fast-forward). Zero is rejected — use
+`pause_pie` for a true pause.
+
+### get_global_time_dilation() -> float
+
+Current world-level `AWorldSettings::TimeDilation`. Returns `1.0`
+outside PIE.
+
+### set_global_time_dilation(scale) -> bool
+
+World-level time dilation. Clamped to `[0.0001, 20.0]`; zero rejected.
+Persists after PIE stops if you don't restore — teardown scripts
+should call `set_global_time_dilation(1.0)` to reset.
+
+### get_actor_time_dilation(actor_name) -> float
+
+Per-actor `AActor::CustomTimeDilation` (multiplied by the global).
+Returns `-1.0` on missing actor / no PIE.
+
+### set_actor_time_dilation(actor_name, scale) -> bool
+
+Per-actor multiplier. Combined effective tick rate is
+`global * actor_scale`. Useful for making a single enemy move
+faster/slower without affecting the whole world.
+
+```python
+# Bullet-time on one target
+unreal.UnrealBridgeGameplayLibrary.set_global_time_dilation(0.25)
+unreal.UnrealBridgeGameplayLibrary.set_actor_time_dilation('Boss', 4.0)
+# Boss ticks at global*actor = 0.25 * 4.0 = 1.0 (normal speed)
+# Everything else ticks at 0.25 (slow-mo)
+```
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and

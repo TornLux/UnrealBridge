@@ -536,4 +536,38 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static TArray<FString> FindPIEActorsByClass(const FString& ClassPath);
+
+	// ─── Time dilation control ───────────────────────────────────────
+	//
+	// Differs from Editor::PausePIE (which hard-pauses PIE via the
+	// editor's play-session facility). Time dilation scales delta-time
+	// delivered to actor ticks — 0.25 = quarter-speed, 4.0 = 4x, 0.0 is
+	// rejected (use PausePIE for a true pause).
+
+	/** Current world-level time dilation. Returns 1.0 outside PIE. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetGlobalTimeDilation();
+
+	/**
+	 * Set world-level time dilation. Clamped to `[0.0001, 20.0]`;
+	 * zero is rejected. Persists until overwritten — NOT reset when PIE
+	 * stops, so a test script should restore to 1.0 in its teardown.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SetGlobalTimeDilation(float Scale);
+
+	/**
+	 * Per-actor time dilation (multiplied with the global value). Returns
+	 * -1.0 on missing actor / no PIE.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetActorTimeDilation(const FString& ActorName);
+
+	/**
+	 * Set a per-actor time dilation multiplier. Clamped to `[0.0001, 20.0]`.
+	 * Combined with `GetGlobalTimeDilation`, the effective tick rate for
+	 * this actor is `global * actor_scale`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool SetActorTimeDilation(const FString& ActorName, float Scale);
 };
