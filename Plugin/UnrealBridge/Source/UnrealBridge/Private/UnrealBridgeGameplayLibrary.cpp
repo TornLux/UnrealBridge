@@ -15,6 +15,7 @@
 #include "Sound/SoundBase.h"
 #include "Engine/Engine.h"
 #include "DrawDebugHelpers.h"
+#include "Components/PrimitiveComponent.h"
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
 #include "InputAction.h"
@@ -1457,6 +1458,56 @@ int32 UUnrealBridgeGameplayLibrary::GetPIENumAIControllers()
 		}
 	}
 	return Count;
+}
+
+// ─── Physics impulse / force ───────────────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	static UPrimitiveComponent* GetPIEPrimitive(const FString& ActorName)
+	{
+		UWorld* World = GetPIEWorld();
+		AActor* A = FindPIEActor(World, ActorName);
+		if (!A) return nullptr;
+		if (UPrimitiveComponent* Root = Cast<UPrimitiveComponent>(A->GetRootComponent()))
+		{
+			return Root;
+		}
+		return A->FindComponentByClass<UPrimitiveComponent>();
+	}
+}
+
+bool UUnrealBridgeGameplayLibrary::AddImpulseToPIEActor(const FString& ActorName, const FVector& Impulse, bool bVelocityChange)
+{
+	UPrimitiveComponent* Prim = BridgeAgentImpl::GetPIEPrimitive(ActorName);
+	if (!Prim) return false;
+	Prim->AddImpulse(Impulse, NAME_None, bVelocityChange);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::AddForceToPIEActor(const FString& ActorName, const FVector& Force)
+{
+	UPrimitiveComponent* Prim = BridgeAgentImpl::GetPIEPrimitive(ActorName);
+	if (!Prim) return false;
+	Prim->AddForce(Force);
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::WakePIEActorPhysics(const FString& ActorName)
+{
+	UPrimitiveComponent* Prim = BridgeAgentImpl::GetPIEPrimitive(ActorName);
+	if (!Prim) return false;
+	Prim->WakeAllRigidBodies();
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::GetPIEActorLinearVelocity(const FString& ActorName, FVector& OutVelocity)
+{
+	OutVelocity = FVector::ZeroVector;
+	UPrimitiveComponent* Prim = BridgeAgentImpl::GetPIEPrimitive(ActorName);
+	if (!Prim) return false;
+	OutVelocity = Prim->GetPhysicsLinearVelocity();
+	return true;
 }
 
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)

@@ -548,6 +548,44 @@ Count of controllers whose class name contains `"AIController"`.
 Matches the detection used by `get_ai_pawns` — custom AI controllers
 with non-standard names are missed.
 
+---
+
+## Physics impulse / force
+
+Target the PIE actor's primary `UPrimitiveComponent` (root if it's a
+primitive, otherwise the first primitive found). The body must have
+physics simulation enabled — see
+`bridge-level-api.set_actor_simulate_physics`. Non-PIE calls and
+missing actors return `False` / `None`.
+
+### add_impulse_to_pie_actor(actor_name, impulse, b_velocity_change=False) -> bool
+
+Apply an instantaneous impulse in kg·cm/s. `b_velocity_change=True`
+treats `impulse` as a delta-velocity (ignores mass).
+
+### add_force_to_pie_actor(actor_name, force) -> bool
+
+Apply a continuous force this frame (kg·cm/s²). Reapply each tick
+for sustained acceleration — otherwise behaves like a kick.
+
+### wake_pie_actor_physics(actor_name) -> bool
+
+Wake every rigid body on the actor so the next tick processes forces.
+No-op for non-simulating bodies.
+
+### get_pie_actor_linear_velocity(actor_name) -> Vector or None
+
+`UPrimitiveComponent::GetPhysicsLinearVelocity` in cm/s. Returns `None`
+outside PIE / missing actor; returns `Vector(0, 0, 0)` for bodies that
+exist but aren't simulating.
+
+```python
+# Push a physics cube sideways, read result after a frame
+unreal.UnrealBridgeLevelLibrary.set_actor_simulate_physics('Cube', True)
+unreal.UnrealBridgeGameplayLibrary.add_impulse_to_pie_actor(
+    'Cube', unreal.Vector(500, 0, 0), True)
+```
+
 ```python
 # Visualise a nav path
 path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(

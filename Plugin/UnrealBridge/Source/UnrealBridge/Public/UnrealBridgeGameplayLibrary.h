@@ -789,4 +789,40 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static int32 GetPIENumAIControllers();
+
+	// ─── Physics impulse / force ─────────────────────────────────────
+	//
+	// Target the PIE actor's primary `UPrimitiveComponent` (root if it's
+	// a primitive, else the first primitive found). The component must
+	// have physics simulation enabled — see `bridge-level-api.set_actor_
+	// simulate_physics`. Non-PIE calls return false.
+
+	/**
+	 * Apply an instantaneous impulse (kg·cm/s) to the actor.
+	 *
+	 * @param bVelocityChange  If true, treats `Impulse` as a delta-V
+	 *                         (ignores mass). False = classical impulse.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool AddImpulseToPIEActor(const FString& ActorName, const FVector& Impulse, bool bVelocityChange = false);
+
+	/**
+	 * Apply a continuous force this frame (kg·cm/s²). Caller must re-apply
+	 * each tick for sustained acceleration — otherwise behaves like a
+	 * one-shot kick.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool AddForceToPIEActor(const FString& ActorName, const FVector& Force);
+
+	/** Wake a sleeping physics body so it responds to forces this tick. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool WakePIEActorPhysics(const FString& ActorName);
+
+	/**
+	 * Linear velocity (cm/s) of the actor's primary physics body.
+	 * UE Python convention: returns `Vector` on success, `None` when
+	 * the actor is missing or has no physics body.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetPIEActorLinearVelocity(const FString& ActorName, FVector& OutVelocity);
 };
