@@ -762,4 +762,31 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static float GetDistanceToPawn(const FVector& Location);
+
+	// ─── PIE clock / counter queries ─────────────────────────────────
+
+	/** Engine global frame counter (`GFrameCounter`). Wraps around at uint64 max. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static int64 GetPIEFrameNumber();
+
+	/**
+	 * Last delta-seconds the PIE world ticked with. Returns 0 outside
+	 * PIE. Dominant uses: agent-loop cadence tuning, velocity integration
+	 * checks.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static float GetPIEDeltaSeconds();
+
+	/** Count of player controllers in the PIE world (split-screen / multi-player). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static int32 GetPIENumPlayers();
+
+	/**
+	 * Count of controllers whose class name contains "AIController".
+	 * Mirrors `GetAIPawns`'s string-match detection — robust to custom
+	 * AI controller subclasses but insensitive to projects that rename
+	 * the "AIController" token.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static int32 GetPIENumAIControllers();
 };

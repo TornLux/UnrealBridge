@@ -519,6 +519,35 @@ if unreal.UnrealBridgeGameplayLibrary.get_distance_to_pawn(waypoint) < 100:
     ...
 ```
 
+---
+
+## PIE clock / counter queries
+
+Cheap reads for agent-loop pacing + scene-level status.
+
+### get_pie_frame_number() -> int
+
+`GFrameCounter` — global engine frame counter, advances every tick
+including editor-only frames (not PIE-exclusive). Use deltas, not
+absolute values.
+
+### get_pie_delta_seconds() -> float
+
+Last delta-seconds the PIE world ticked with. Returns `0.0` outside
+PIE. Combine with `get_global_time_dilation` to sanity-check the
+effective tick rate.
+
+### get_pie_num_players() -> int
+
+Count of player controllers in the PIE world (split-screen /
+multi-player scenarios).
+
+### get_pie_num_ai_controllers() -> int
+
+Count of controllers whose class name contains `"AIController"`.
+Matches the detection used by `get_ai_pawns` — custom AI controllers
+with non-standard names are missed.
+
 ```python
 # Visualise a nav path
 path, *_ = unreal.UnrealBridgeGameplayLibrary.find_nav_path(

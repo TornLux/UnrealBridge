@@ -1423,6 +1423,42 @@ float UUnrealBridgeGameplayLibrary::GetDistanceToPawn(const FVector& Location)
 	return FVector::Dist(Pawn->GetActorLocation(), Location);
 }
 
+// ─── PIE clock / counter queries ───────────────────────────────────────
+
+int64 UUnrealBridgeGameplayLibrary::GetPIEFrameNumber()
+{
+	return static_cast<int64>(GFrameCounter);
+}
+
+float UUnrealBridgeGameplayLibrary::GetPIEDeltaSeconds()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	return World ? World->GetDeltaSeconds() : 0.0f;
+}
+
+int32 UUnrealBridgeGameplayLibrary::GetPIENumPlayers()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return 0;
+	return UGameplayStatics::GetNumPlayerControllers(World);
+}
+
+int32 UUnrealBridgeGameplayLibrary::GetPIENumAIControllers()
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World) return 0;
+	int32 Count = 0;
+	for (TActorIterator<AController> It(World); It; ++It)
+	{
+		AController* C = *It;
+		if (C && C->GetClass()->GetName().Contains(TEXT("AIController")))
+		{
+			++Count;
+		}
+	}
+	return Count;
+}
+
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
 {
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();
