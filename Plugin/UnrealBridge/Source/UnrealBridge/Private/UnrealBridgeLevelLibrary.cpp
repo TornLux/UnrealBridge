@@ -33,6 +33,13 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Algo/Reverse.h"
+#include "Engine/SceneCapture2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "RenderingThread.h"
+#include "ImageCore.h"
+#include "ImageUtils.h"
+#include "HAL/PlatformFileManager.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeLevel"
 
@@ -1676,6 +1683,148 @@ bool UUnrealBridgeLevelLibrary::NavGraphLoadJson(const FString& FilePath)
 		}
 	}
 	return true;
+}
+
+// ─── Vision: SceneCapture2D → PNG ──────────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	/** When a render target reads back with RGB but zero alpha (a common
+	 *  SceneCapture2D quirk on the PNG path), force alpha to 255 so saved
+	 *  files aren't transparent. Adapted from LocomotionOrthoTileCapture. */
+	static void FixZeroAlphaWhenRgbVisible(FColor* Pixels, int32 Count)
+	{
+		for (int32 i = 0; i < Count; ++i)
+		{
+			FColor& C = Pixels[i];
+			if (C.A == 0 && FMath::Max3(C.R, C.G, C.B) > 4)
+			{
+				C.A = 255;
+			}
+		}
+	}
+
+	/** Save an FImage to PNG, creating parent directories as needed. */
+	static bool SaveImageToPng(const FImage& Image, const FString& FilePath)
+	{
+		IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+		PlatformFile.CreateDirectoryTree(*FPaths::GetPath(FilePath));
+		return FImageUtils::SaveImageByExtension(*FilePath, Image, /*CompressionQuality=*/ 0);
+	}
+
+	/** Core capture routine shared by the ortho + perspective wrappers.
+	 *  Spawns a transient SceneCapture2D, issues a one-off CaptureScene(),
+	 *  flushes the render thread, reads pixels, writes PNG, destroys the
+	 *  capture actor. Returns false on any failure. */
+	static bool CaptureSceneToPng(
+		UWorld* World,
+		const FVector& CameraLocation,
+		const FRotator& CameraRotation,
+		bool bOrthographic,
+		float OrthoWidth,
+		float FOVDeg,
+		int32 PixelWidth,
+		int32 PixelHeight,
+		const FString& OutPngPath)
+	{
+		if (!World || PixelWidth <= 0 || PixelHeight <= 0 || OutPngPath.IsEmpty())
+		{
+			return false;
+		}
+		if (bOrthographic && OrthoWidth <= 0.0f) return false;
+		if (!bOrthographic && (FOVDeg <= 0.0f || FOVDeg >= 180.0f)) return false;
+
+		FActorSpawnParameters SpawnInfo;
+		SpawnInfo.ObjectFlags |= RF_Transient;
+		SpawnInfo.Name = MakeUniqueObjectName(World, ASceneCapture2D::StaticClass(), TEXT("BridgeCaptureCam"));
+
+		ASceneCapture2D* CaptureActor = World->SpawnActor<ASceneCapture2D>(
+			CameraLocation, CameraRotation, SpawnInfo);
+		if (!CaptureActor || !CaptureActor->GetCaptureComponent2D())
+		{
+			return false;
+		}
+
+		UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(
+			GetTransientPackage(),
+			MakeUniqueObjectName(GetTransientPackage(), UTextureRenderTarget2D::StaticClass(), TEXT("BridgeCaptureRT")));
+		RT->ClearColor = FLinearColor::Black;
+		RT->bAutoGenerateMips = false;
+		RT->InitCustomFormat(PixelWidth, PixelHeight, PF_B8G8R8A8, /*bForceLinearGamma=*/ false);
+		RT->UpdateResourceImmediate(true);
+
+		USceneCaptureComponent2D* SCC = CaptureActor->GetCaptureComponent2D();
+		SCC->ProjectionType = bOrthographic ? ECameraProjectionMode::Orthographic : ECameraProjectionMode::Perspective;
+		if (bOrthographic)
+		{
+			SCC->OrthoWidth = OrthoWidth;
+		}
+		else
+		{
+			SCC->FOVAngle = FOVDeg;
+		}
+		SCC->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+		SCC->bCaptureEveryFrame = false;
+		SCC->bCaptureOnMovement = false;
+		SCC->TextureTarget = RT;
+
+		SCC->CaptureScene();
+		FlushRenderingCommands();
+
+		TArray<FColor> Pixels;
+		FTextureRenderTargetResource* Res = RT->GameThread_GetRenderTargetResource();
+		if (!Res)
+		{
+			CaptureActor->Destroy();
+			return false;
+		}
+		FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
+		ReadFlags.SetLinearToGamma(false);
+		if (!Res->ReadPixels(Pixels, ReadFlags) || Pixels.Num() != PixelWidth * PixelHeight)
+		{
+			CaptureActor->Destroy();
+			return false;
+		}
+
+		FixZeroAlphaWhenRgbVisible(Pixels.GetData(), Pixels.Num());
+
+		FImage Img;
+		Img.Init(PixelWidth, PixelHeight, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+		FMemory::Memcpy(Img.RawData.GetData(), Pixels.GetData(), Pixels.Num() * sizeof(FColor));
+
+		const bool bSaved = SaveImageToPng(Img, OutPngPath);
+		CaptureActor->Destroy();
+		return bSaved;
+	}
+}
+
+bool UUnrealBridgeLevelLibrary::CaptureOrthoTopDown(
+	const FVector& Center, float WorldSize,
+	int32 Width, int32 Height, const FString& FilePath,
+	float CameraHeight)
+{
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
+	const FVector CamLoc(Center.X, Center.Y, Center.Z + CameraHeight);
+	const FRotator CamRot(-90.0f, 0.0f, 0.0f);  // look straight down
+	return BridgeLevelImpl::CaptureSceneToPng(
+		World, CamLoc, CamRot,
+		/*bOrthographic=*/ true,
+		/*OrthoWidth=*/ WorldSize,
+		/*FOVDeg=*/ 0.0f,
+		Width, Height, FilePath);
+}
+
+bool UUnrealBridgeLevelLibrary::CaptureFromPose(
+	const FVector& CameraLocation, const FRotator& CameraRotation,
+	float FOVDeg, int32 Width, int32 Height, const FString& FilePath)
+{
+	UWorld* World = BridgeLevelImpl::GetRuntimeWorld();
+	return BridgeLevelImpl::CaptureSceneToPng(
+		World, CameraLocation, CameraRotation,
+		/*bOrthographic=*/ false,
+		/*OrthoWidth=*/ 0.0f,
+		FOVDeg,
+		Width, Height, FilePath);
 }
 
 bool UUnrealBridgeLevelLibrary::LineTraceHitInfo(

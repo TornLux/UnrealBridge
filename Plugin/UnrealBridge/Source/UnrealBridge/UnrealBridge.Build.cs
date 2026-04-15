@@ -45,6 +45,9 @@ public class UnrealBridge : ModuleRules
 			"Slate",
 			"SlateCore",
 			"SourceControl",
+			"ImageCore",
+			"ImageWrapper",
+			"RenderCore",
 		});
 	}
 }

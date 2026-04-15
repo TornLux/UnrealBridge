@@ -571,6 +571,35 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|NavGraph")
 	static bool NavGraphLoadJson(const FString& FilePath);
 
+	// ─── Vision: render-to-file capture ─────────────────────────
+	//
+	// Synchronously capture a frame from the runtime world to a PNG file.
+	// Backed by a transient ASceneCapture2D + UTextureRenderTarget2D, so
+	// the capture does not depend on the editor viewport having focus and
+	// can be issued from any pose.
+
+	/**
+	 * Render a top-down orthographic view centred on `Center`, covering
+	 * `WorldSize` cm horizontally, to a PNG file at `FilePath`.
+	 *
+	 * The camera is placed `CameraHeight` cm above Center looking straight
+	 * down. Use this for whole-level / maze overviews the agent can reason
+	 * about visually in one shot — the single-best upgrade for navmesh-
+	 * free navigation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|Vision")
+	static bool CaptureOrthoTopDown(const FVector& Center, float WorldSize,
+		int32 Width, int32 Height, const FString& FilePath,
+		float CameraHeight = 5000.0f);
+
+	/**
+	 * Render a perspective view from the given pose to a PNG file.
+	 * `FOVDeg` = 90 gives a wide FPS-style frame; lower = more zoomed in.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|Vision")
+	static bool CaptureFromPose(const FVector& CameraLocation, const FRotator& CameraRotation,
+		float FOVDeg, int32 Width, int32 Height, const FString& FilePath);
+
 	/**
 	 * Physics-overlap query: actors whose collision primitives intersect
 	 * a sphere at `Center` with `Radius` cm. Distinct from
