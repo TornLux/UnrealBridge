@@ -876,6 +876,106 @@ Observed behaviour in a GAS/Mover-style project (GameplayLocomotion):
 pawn reaches ~300 cm/s within one frame, stays at walk speed for
 the sticky duration, decelerates on clear.
 
+### Pattern: move to a target and stop near it
+
+Navigating to a world-space point and stopping on arrival is two loops,
+not one "move_to" call:
+
+```python
+import math, time, unreal
+L = unreal.UnrealBridgeGameplayLibrary
+IA_MOVE = '/LocomotionDriver/Input/IA_Move.IA_Move'
+
+def distance_xy(a, b):
+    return math.hypot(a.x - b.x, a.y - b.y)
+
+def move_to(target_loc, arrive_radius_cm=300.0, poll_seconds=0.3, timeout_s=60.0):
+    L.set_sticky_input(IA_MOVE, unreal.Vector(0, 1, 0))  # forward (camera-relative)
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        pawn = L.get_player_pawn_actor_name()
+        ploc = L.get_pie_actor_location(pawn)
+        if distance_xy(ploc, target_loc) < arrive_radius_cm:
+            L.clear_sticky_input()   # ← stops the pawn: nothing is being injected anymore
+            return True
+        time.sleep(poll_seconds)
+    L.clear_sticky_input()
+    return False
+```
+
+**Why `clear_sticky_input()` stops the pawn**: the sticky ticker re-injects
+the registered `IA_Move` value every GameThread frame. Clearing the map
+leaves the Enhanced Input subsystem with no new input, the character
+movement component stops receiving an acceleration target, and UE's
+deceleration model brings speed to 0 naturally. You are *not* braking
+the pawn — you are letting go of the virtual stick. Same mechanism for
+sprint (`IA_Sprint` sticky → clear = release shift) or any other held
+IA.
+
+**Tuning the arrive radius.** Use ~250–400 cm for foot nav — the
+character cannot converge on an exact point because of movement-component
+deceleration, foot-IK adjustments, and collision slop. Tighter radii
+cause the loop to overshoot past the target, turn around, and oscillate.
+
+**Pair with per-tick yaw correction** — see the next pattern.
+
+### Pattern: steer the camera toward a target
+
+`apply_look_input(yaw_delta, pitch_delta)` feeds the player controller's
+yaw/pitch input accumulator. This is the **only** reliable way to rotate
+the view: `set_control_rotation` is overridden on the next tick by the
+PlayerCameraManager / spring arm / locomotion driver in most third-person
+projects, so it doesn't stick.
+
+Look input is scaled by the project's mouse sensitivity before reaching
+the controller. In this project the observed multiplier is ~2.5× (a
+call with yaw_delta=-20 rotated the camera ~50°). Converge with a damped
+proportional controller:
+
+```python
+import math, unreal
+L = unreal.UnrealBridgeGameplayLibrary
+
+def aim_at(target_loc, tolerance_deg=2.0, max_iters=20, damping=3.0):
+    """Rotate camera to face target_loc. Returns final yaw error (deg)."""
+    for _ in range(max_iters):
+        pawn = L.get_player_pawn_actor_name()
+        ploc = L.get_pie_actor_location(pawn)
+        dx, dy = target_loc.x - ploc.x, target_loc.y - ploc.y
+        want = math.degrees(math.atan2(dy, dx))
+        cur = L.get_control_rotation().yaw
+        delta = ((want - cur + 540) % 360) - 180  # shortest signed arc
+        if abs(delta) <= tolerance_deg:
+            return delta
+        L.apply_look_input(delta / damping, 0.0)
+    return delta
+```
+
+`damping` divides the desired correction so the camera doesn't overshoot
+across the look-input multiplier. 3.0 works well for this project's
+~2.5× scale — on project with different sensitivity, increase until
+you stop seeing sign flips around the target yaw.
+
+**For sustained steering while moving** (target is ahead while you run
+toward it), don't call `aim_at` once and then drive — instead recompute
+`delta` each poll iteration of your move loop and apply a single
+`apply_look_input(delta/damping, 0)` per tick. That handles drift,
+curved paths, and moving targets with one line inside the same loop:
+
+```python
+while not arrived:
+    ploc = L.get_pie_actor_location(pawn)
+    dx, dy = target.x - ploc.x, target.y - ploc.y
+    cur = L.get_control_rotation().yaw
+    want = math.degrees(math.atan2(dy, dx))
+    delta = ((want - cur + 540) % 360) - 180
+    L.apply_look_input(delta / 3.0, 0.0)            # keep camera pointed
+    if math.hypot(dx, dy) < 300:                    # arrival test
+        L.clear_sticky_input()                      # release stick
+        break
+    time.sleep(0.3)
+```
+
 ### Debug fields on FAgentObservation
 
 Added to the existing observation struct to help diagnose "why isn't
