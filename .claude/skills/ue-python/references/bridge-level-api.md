@@ -632,6 +632,47 @@ quick "ignore me" toggle without changing per-component profiles.
 
 ---
 
+## Component add/remove + root query
+
+Editor-time component management. Added components are tracked as
+instance components (survive save/reload). Only instance components
+can be removed — native / CDO / Blueprint-archetype components reject
+removal.
+
+### get_actor_root_component_name(actor_name) -> str
+
+FName of the actor's root `USceneComponent` (e.g. `"StaticMeshComponent0"`).
+Empty string if the actor has no root or is missing.
+
+### add_component_of_class(actor_name, component_class_path) -> str
+
+Instantiate a new component. `component_class_path` must resolve to a
+`UActorComponent`-derived `UClass` — a native class path like
+`/Script/Engine.PointLightComponent` or a Blueprint component class.
+
+The new component is auto-attached to the actor's root (for scene
+components) and registered. Returns the component's FName, or empty
+string on failure.
+
+```python
+comp = unreal.UnrealBridgeLevelLibrary.add_component_of_class(
+    'Cube', '/Script/Engine.PointLightComponent')
+```
+
+### remove_component(actor_name, component_name) -> bool
+
+Remove a named instance component. Returns False if:
+- the actor / component is missing, OR
+- the component is a native/CDO archetype (not in `GetInstanceComponents`).
+
+### set_component_relative_transform(actor_name, component_name, location, rotation, scale) -> bool
+
+Assign all three relative-transform fields on a named scene component.
+Other properties (physics, visibility, ...) untouched. Wrapped in one
+undo transaction.
+
+---
+
 ## Components / Sockets
 
 ### get_actor_sockets(actor_name) -> list[str]

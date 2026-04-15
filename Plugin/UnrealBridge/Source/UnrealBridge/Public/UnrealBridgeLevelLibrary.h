@@ -637,4 +637,47 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool SetActorEnableCollision(const FString& ActorName, bool bEnabled);
+
+	// ─── Component add/remove + root query ───────────────────
+
+	/**
+	 * Name of the actor's root scene component ("RootComponent" alias
+	 * is NOT resolved — returns the component's actual FName). Empty
+	 * string if the actor has no root or is missing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString GetActorRootComponentName(const FString& ActorName);
+
+	/**
+	 * Instantiate a new component on an editor actor.
+	 *
+	 * @param ComponentClassPath  Full class path, e.g. `/Script/Engine.PointLightComponent`
+	 *                            or a Blueprint component class.
+	 * @return  FName of the new component, or empty string on failure.
+	 *          The component is registered and tracked as an editor-instance
+	 *          component (survives save/reload). Scene components are attached
+	 *          to the actor's root.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static FString AddComponentOfClass(const FString& ActorName, const FString& ComponentClassPath);
+
+	/**
+	 * Remove a component from an editor actor by its FName. Only instance
+	 * components (not archetype/CDO components) can be removed — trying to
+	 * remove a native-CDO component returns false.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool RemoveComponent(const FString& ActorName, const FString& ComponentName);
+
+	/**
+	 * Set the relative transform on a named scene component. Leaves
+	 * other component fields untouched. Single undo transaction.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool SetComponentRelativeTransform(
+		const FString& ActorName,
+		const FString& ComponentName,
+		FVector Location,
+		FRotator Rotation,
+		FVector Scale);
 };

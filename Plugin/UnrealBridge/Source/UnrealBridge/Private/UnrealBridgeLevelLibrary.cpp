@@ -1876,6 +1876,104 @@ bool UUnrealBridgeLevelLibrary::SetActorEnableCollision(const FString& ActorName
 	return true;
 }
 
+// ─── Component add/remove + root query ─────────────────────────────────
+
+FString UUnrealBridgeLevelLibrary::GetActorRootComponentName(const FString& ActorName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor || !Actor->GetRootComponent())
+	{
+		return FString();
+	}
+	return Actor->GetRootComponent()->GetName();
+}
+
+FString UUnrealBridgeLevelLibrary::AddComponentOfClass(const FString& ActorName, const FString& ComponentClassPath)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return FString();
+	}
+	UClass* CompClass = LoadObject<UClass>(nullptr, *ComponentClassPath);
+	if (!CompClass || !CompClass->IsChildOf(UActorComponent::StaticClass()))
+	{
+		return FString();
+	}
+	FScopedTransaction Tr(LOCTEXT("AddComponentOfClass", "Add Component Of Class"));
+	Actor->Modify();
+
+	UActorComponent* NewComp = NewObject<UActorComponent>(Actor, CompClass, NAME_None, RF_Transactional);
+	if (!NewComp)
+	{
+		return FString();
+	}
+	Actor->AddInstanceComponent(NewComp);
+	// Scene components need attachment to the root; non-scene are just registered.
+	if (USceneComponent* SC = Cast<USceneComponent>(NewComp))
+	{
+		if (USceneComponent* Root = Actor->GetRootComponent())
+		{
+			SC->SetupAttachment(Root);
+		}
+	}
+	NewComp->RegisterComponent();
+	Actor->RerunConstructionScripts();
+	return NewComp->GetName();
+}
+
+bool UUnrealBridgeLevelLibrary::RemoveComponent(const FString& ActorName, const FString& ComponentName)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	UActorComponent* Comp = BridgeLevelImpl::FindComponent(Actor, ComponentName);
+	if (!Comp)
+	{
+		return false;
+	}
+	// Only instance components can be safely removed — refuse CDO/native.
+	if (!Actor->GetInstanceComponents().Contains(Comp))
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("RemoveComponent", "Remove Component"));
+	Actor->Modify();
+	Comp->Modify();
+	Actor->RemoveInstanceComponent(Comp);
+	Comp->DestroyComponent();
+	Actor->RerunConstructionScripts();
+	return true;
+}
+
+bool UUnrealBridgeLevelLibrary::SetComponentRelativeTransform(
+	const FString& ActorName,
+	const FString& ComponentName,
+	FVector Location,
+	FRotator Rotation,
+	FVector Scale)
+{
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return false;
+	}
+	USceneComponent* SC = Cast<USceneComponent>(BridgeLevelImpl::FindComponent(Actor, ComponentName));
+	if (!SC)
+	{
+		return false;
+	}
+	FScopedTransaction Tr(LOCTEXT("SetComponentRelativeTransform", "Set Component Relative Transform"));
+	Actor->Modify();
+	SC->Modify();
+	SC->SetRelativeLocation(Location);
+	SC->SetRelativeRotation(Rotation);
+	SC->SetRelativeScale3D(Scale);
+	return true;
+}
+
 int32 UUnrealBridgeLevelLibrary::ResetActorMaterials(const FString& ActorName)
 {
 	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
