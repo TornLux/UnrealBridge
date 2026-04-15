@@ -1152,6 +1152,69 @@ float UUnrealBridgeGameplayLibrary::ApplyDamageToActor(const FString& TargetActo
 		Target, DamageAmount, Instigator, Pawn, UDamageType::StaticClass());
 }
 
+// ─── Multi-pawn + controller queries ───────────────────────────────────
+
+TArray<FString> UUnrealBridgeGameplayLibrary::GetAllPawns()
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	for (TActorIterator<APawn> It(World); It; ++It)
+	{
+		if (APawn* P = *It)
+		{
+			Out.Add(P->GetFName().ToString());
+		}
+	}
+	return Out;
+}
+
+TArray<FString> UUnrealBridgeGameplayLibrary::GetAIPawns()
+{
+	TArray<FString> Out;
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	if (!World)
+	{
+		return Out;
+	}
+	for (TActorIterator<APawn> It(World); It; ++It)
+	{
+		APawn* P = *It;
+		if (!P) continue;
+		AController* C = P->GetController();
+		if (!C) continue;
+		// Identify AI controllers by class-name prefix rather than a hard
+		// AAIController include — avoids pulling the AIModule into the
+		// plugin's public build deps.
+		if (C->GetClass()->GetName().Contains(TEXT("AIController")))
+		{
+			Out.Add(P->GetFName().ToString());
+		}
+	}
+	return Out;
+}
+
+FString UUnrealBridgeGameplayLibrary::GetActorController(const FString& ActorName)
+{
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	AActor* A = BridgeAgentImpl::FindPIEActor(World, ActorName);
+	APawn* P = Cast<APawn>(A);
+	if (!P || !P->GetController())
+	{
+		return FString();
+	}
+	return P->GetController()->GetClass()->GetName();
+}
+
+bool UUnrealBridgeGameplayLibrary::IsActorAIControlled(const FString& ActorName)
+{
+	const FString ClassName = GetActorController(ActorName);
+	return !ClassName.IsEmpty() && ClassName.Contains(TEXT("AIController"));
+}
+
 int32 UUnrealBridgeGameplayLibrary::ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius)
 {
 	UWorld* World = BridgeAgentImpl::GetPIEWorld();

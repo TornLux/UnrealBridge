@@ -398,6 +398,43 @@ print(f'{hits} actors within blast radius')
 
 ---
 
+## Multi-pawn + controller queries
+
+Read-only queries that widen the single-player helpers
+(`get_agent_observation` etc., which only inspect the first player
+pawn) to every pawn / AI agent in the PIE world.
+
+### get_all_pawns() -> list[str]
+
+FNames of every `APawn` in the PIE world, in iterator order. Empty
+outside PIE.
+
+### get_ai_pawns() -> list[str]
+
+Subset of `get_all_pawns` whose possessing controller's class name
+contains `"AIController"`. AI detection is name-based to avoid
+pulling the `AIModule` into the plugin's build deps — custom AI
+controllers with non-standard names may be missed.
+
+### get_actor_controller(actor_name) -> str
+
+Short class name of the controller currently possessing a PIE actor
+(e.g. `"PlayerController"`, `"AIController"`, `"BP_EnemyAIController_C"`).
+Empty string when the actor isn't a pawn or has no controller.
+
+### is_actor_ai_controlled(actor_name) -> bool
+
+Convenience: True when `get_actor_controller` returns a class name
+containing `"AIController"`.
+
+```python
+for name in unreal.UnrealBridgeGameplayLibrary.get_all_pawns():
+    ctrl = unreal.UnrealBridgeGameplayLibrary.get_actor_controller(name)
+    print(f'{name}: {ctrl}')
+```
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and

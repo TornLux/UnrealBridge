@@ -613,4 +613,37 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static int32 ApplyRadialDamage(const FVector& Origin, float DamageAmount, float InnerRadius, float OuterRadius);
+
+	// ─── Multi-pawn + controller queries ─────────────────────────────
+	//
+	// Read-only queries for scenarios with multiple pawns / AI agents.
+	// The single-player helpers above (GetAgentObservation etc.) target
+	// the first player pawn only — these give a broader view.
+
+	/** FNames of every APawn in the PIE world. Empty outside PIE. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static TArray<FString> GetAllPawns();
+
+	/**
+	 * FNames of pawns whose controller class name contains "AI" (i.e.
+	 * `AAIController` subclasses). String match is case-sensitive.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static TArray<FString> GetAIPawns();
+
+	/**
+	 * Short class name of the controller currently possessing a PIE
+	 * actor (pawn or non-pawn). Empty string when the actor has no
+	 * controller or isn't a pawn. Examples: "PlayerController",
+	 * "AIController", "BP_EnemyAIController_C".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static FString GetActorController(const FString& ActorName);
+
+	/**
+	 * Quick "is this pawn AI-driven" test — true when the actor is a
+	 * pawn and its controller's class is `AAIController` or a subclass.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool IsActorAIControlled(const FString& ActorName);
 };
