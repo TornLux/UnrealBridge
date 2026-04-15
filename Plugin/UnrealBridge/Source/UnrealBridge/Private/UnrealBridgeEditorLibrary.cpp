@@ -441,9 +441,11 @@ bool UUnrealBridgeEditorLibrary::StartPIE()
 	FRequestPlaySessionParams Params;
 	Params.WorldType = EPlaySessionWorldType::PlayInEditor;
 
-	// Route the session into the currently-focused level viewport so the user's
-	// "Selected Viewport" play-mode preference is honored (without this UE falls
-	// back to a new window).
+	// Route PIE into the active level viewport (Play-In-Editor "Selected
+	// Viewport" mode) and forward the viewport camera as the spawn transform.
+	// The StartLocation matters when the level has no PlayerStart — without it
+	// RequestPlaySession spawns at (0,0,0), collides, and the default pawn is
+	// never possessed.
 	if (FModuleManager::Get().IsModuleLoaded("LevelEditor"))
 	{
 		FLevelEditorModule& LE = FModuleManager::GetModuleChecked<FLevelEditorModule>("LevelEditor");
@@ -451,10 +453,16 @@ bool UUnrealBridgeEditorLibrary::StartPIE()
 		if (ActiveViewport.IsValid())
 		{
 			Params.DestinationSlateViewport = ActiveViewport;
+			FEditorViewportClient& VC = ActiveViewport->GetAssetViewportClient();
+			Params.StartLocation = VC.GetViewLocation();
+			Params.StartRotation = VC.GetViewRotation();
 		}
 	}
 
 	GEditor->RequestPlaySession(Params);
+	// The request is deferred to the next editor tick; kick it so PIE actually
+	// starts (and spawns the default pawn) without requiring an external tick.
+	GEditor->StartQueuedPlaySessionRequest();
 	return true;
 }
 
