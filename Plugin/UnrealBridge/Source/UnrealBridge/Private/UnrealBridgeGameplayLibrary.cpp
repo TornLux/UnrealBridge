@@ -688,3 +688,97 @@ float UUnrealBridgeGameplayLibrary::GetPawnGroundHeight(float MaxDistance)
 	}
 	return (Start - Hit.ImpactPoint).Size();
 }
+
+// ─── Navmesh utilities ─────────────────────────────────────────────────
+
+namespace BridgeAgentImpl
+{
+	/** PIE world first, editor world second (matches FindNavPath behaviour). */
+	static UWorld* GetNavWorld()
+	{
+		if (UWorld* W = GetPIEWorld())
+		{
+			return W;
+		}
+		return GEditor ? GEditor->GetEditorWorldContext(false).World() : nullptr;
+	}
+}
+
+bool UUnrealBridgeGameplayLibrary::ProjectPointToNavmesh(const FVector& Point, const FVector& SearchExtent, FVector& OutProjected)
+{
+	OutProjected = FVector::ZeroVector;
+	UWorld* World = BridgeAgentImpl::GetNavWorld();
+	if (!World)
+	{
+		return false;
+	}
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	if (!NavSys)
+	{
+		return false;
+	}
+	const FVector SafeExtent(
+		FMath::Max(SearchExtent.X, 1.0f),
+		FMath::Max(SearchExtent.Y, 1.0f),
+		FMath::Max(SearchExtent.Z, 1.0f));
+	FNavLocation Projected;
+	if (!NavSys->ProjectPointToNavigation(Point, Projected, SafeExtent))
+	{
+		return false;
+	}
+	OutProjected = Projected.Location;
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::IsPointOnNavmesh(const FVector& Point, float Tolerance)
+{
+	FVector Dummy;
+	const float T = FMath::Max(Tolerance, 1.0f);
+	return ProjectPointToNavmesh(Point, FVector(T, T, T), Dummy);
+}
+
+bool UUnrealBridgeGameplayLibrary::GetNavMeshBounds(FVector& OutMin, FVector& OutMax)
+{
+	OutMin = FVector::ZeroVector;
+	OutMax = FVector::ZeroVector;
+	UWorld* World = BridgeAgentImpl::GetNavWorld();
+	if (!World)
+	{
+		return false;
+	}
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	if (!NavSys)
+	{
+		return false;
+	}
+	const FBox Bounds = NavSys->GetNavigableWorldBounds();
+	if (!Bounds.IsValid)
+	{
+		return false;
+	}
+	OutMin = Bounds.Min;
+	OutMax = Bounds.Max;
+	return true;
+}
+
+bool UUnrealBridgeGameplayLibrary::GetRandomReachablePointInRadius(const FVector& Origin, float Radius, FVector& OutPoint)
+{
+	OutPoint = FVector::ZeroVector;
+	UWorld* World = BridgeAgentImpl::GetNavWorld();
+	if (!World)
+	{
+		return false;
+	}
+	UNavigationSystemV1* NavSys = FNavigationSystem::GetCurrent<UNavigationSystemV1>(World);
+	if (!NavSys)
+	{
+		return false;
+	}
+	FNavLocation Result;
+	if (!NavSys->GetRandomReachablePointInRadius(Origin, FMath::Max(Radius, 0.0f), Result))
+	{
+		return false;
+	}
+	OutPoint = Result.Location;
+	return true;
+}

@@ -333,4 +333,53 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static float GetPawnGroundHeight(float MaxDistance = 5000.0f);
+
+	// ─── Navmesh utilities ────────────────────────────────────────────
+	//
+	// Companion queries to FindNavPath. All operate on the PIE world's
+	// primary RecastNavMesh when PIE is running, otherwise fall back to
+	// the editor world's navmesh (same behaviour as FindNavPath).
+
+	/**
+	 * Project `Point` onto the nearest navmesh surface within a half-extent
+	 * search box. Used to "clamp" arbitrary world points (e.g. a camera
+	 * hit position) onto walkable navmesh before planning a path.
+	 *
+	 * @param Point          World-space source.
+	 * @param SearchExtent   Half-extent of the search box (cm). Default
+	 *                       200 cm covers most small drops/ramps.
+	 * @param OutProjected   Projected point on navmesh; zeroed on failure.
+	 * @return true if a navmesh point was found within the box.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool ProjectPointToNavmesh(const FVector& Point, const FVector& SearchExtent, FVector& OutProjected);
+
+	/**
+	 * Quick yes/no variant of ProjectPointToNavmesh — true if *any* navmesh
+	 * surface is reachable within `Tolerance` cm of the query point.
+	 * Tolerance is expanded to an axis-aligned half-extent of (T, T, T).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool IsPointOnNavmesh(const FVector& Point, float Tolerance = 50.0f);
+
+	/**
+	 * World-space AABB of the primary RecastNavMesh data. Both corners are
+	 * zeroed when no navmesh exists. Useful for sizing random-sample
+	 * queries or validating that a plan origin lies within the navigable
+	 * region at all.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetNavMeshBounds(FVector& OutMin, FVector& OutMax);
+
+	/**
+	 * Pick a random reachable navmesh point within `Radius` cm of `Origin`.
+	 * Wraps UNavigationSystemV1::GetRandomReachablePointInRadius — respects
+	 * corridor connectivity, so the returned point is guaranteed path-
+	 * reachable from Origin (not just "on the navmesh nearby").
+	 *
+	 * @param OutPoint   Random reachable point; zeroed on failure.
+	 * @return true if a point was found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool GetRandomReachablePointInRadius(const FVector& Origin, float Radius, FVector& OutPoint);
 };

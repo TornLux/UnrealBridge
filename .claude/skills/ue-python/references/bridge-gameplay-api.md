@@ -89,6 +89,65 @@ print(f'path ok={ok} length={length:.0f}cm points={len(waypoints)}')
 
 ---
 
+## Navmesh utilities
+
+All four queries use the PIE world's navmesh when PIE is running and
+fall back to the editor world's navmesh otherwise — same behaviour as
+`find_nav_path`. Output is `None` when no world / no `UNavigationSystemV1`
+/ the query itself fails.
+
+### project_point_to_navmesh(point, search_extent) -> Vector or None
+
+Clamp `point` onto the nearest walkable navmesh surface within an
+axis-aligned half-extent box `search_extent` (cm). Use this before
+`find_nav_path` when the caller has an arbitrary world point (e.g. a
+camera hit on a wall) that isn't itself on the navmesh.
+
+```python
+origin = unreal.UnrealBridgeGameplayLibrary.get_camera_hit_location(10000.0)
+if origin is not None:
+    target = unreal.UnrealBridgeGameplayLibrary.project_point_to_navmesh(
+        origin, unreal.Vector(200, 200, 400))
+```
+
+### is_point_on_navmesh(point, tolerance=50.0) -> bool
+
+Boolean variant of `project_point_to_navmesh` — True if any navmesh
+surface exists within `(tolerance, tolerance, tolerance)` cm of the
+query point.
+
+### get_nav_mesh_bounds() -> (Vector, Vector) or None
+
+World-space AABB of the navigable world. Returned as `(min, max)`
+Vector tuple on success, `None` when no navmesh exists. Use to seed
+random sampling or to sanity-check that a planned path origin lies
+within the navigable region.
+
+### get_random_reachable_point_in_radius(origin, radius) -> Vector or None
+
+Pick a random navmesh point within `radius` cm of `origin` that is
+**path-reachable from `origin`** — not just "on a navmesh nearby".
+Different navmesh islands are rejected. Returns `None` when the radius
+contains no reachable points.
+
+```python
+obs = unreal.UnrealBridgeGameplayLibrary.get_agent_observation()
+if obs.b_valid:
+    wander = unreal.UnrealBridgeGameplayLibrary.get_random_reachable_point_in_radius(
+        obs.pawn_location, 1500.0)
+```
+
+**Pitfalls**
+
+- All four queries return None outside a navmesh-enabled level, even if
+  `find_nav_path` was previously working — the level's navmesh may have
+  been invalidated. Call `execute_console_command('RebuildNavigation')`
+  from `bridge-editor-api` and retry.
+- `search_extent` / `tolerance` must be positive — internally clamped
+  to a minimum of 1 cm.
+
+---
+
 ## Actuators
 
 All actuators target the PIE world's first player pawn/controller and
