@@ -36,6 +36,12 @@
 #include "Engine/SceneCapture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "Components/SkeletalMeshComponent.h"
+#include "Animation/AnimSequenceBase.h"
+#include "Animation/AnimMontage.h"
+#include "Animation/Skeleton.h"
+#include "Engine/SkeletalMesh.h"
+#include "PreviewScene.h"
 #include "RenderingThread.h"
 #include "ImageCore.h"
 #include "ImageUtils.h"
@@ -1836,6 +1842,285 @@ bool UUnrealBridgeLevelLibrary::CaptureFromPose(
 		/*OrthoWidth=*/ 0.0f,
 		FOVDeg,
 		Width, Height, FilePath);
+}
+
+// ─── Anim pose grid capture (isolated FPreviewScene) ──────────
+
+namespace BridgeLevelImpl
+{
+	/** Offset direction from mesh centre for a named view (pre-normalised). */
+	static bool ResolveViewDirection(const FString& Name, FVector& OutDir)
+	{
+		if (Name.Equals(TEXT("Front"),        ESearchCase::IgnoreCase)) { OutDir = FVector( 1,  0,  0);                       return true; }
+		if (Name.Equals(TEXT("Back"),         ESearchCase::IgnoreCase)) { OutDir = FVector(-1,  0,  0);                       return true; }
+		if (Name.Equals(TEXT("Side"),         ESearchCase::IgnoreCase) ||
+			Name.Equals(TEXT("SideRight"),    ESearchCase::IgnoreCase)) { OutDir = FVector( 0,  1,  0);                       return true; }
+		if (Name.Equals(TEXT("SideLeft"),     ESearchCase::IgnoreCase)) { OutDir = FVector( 0, -1,  0);                       return true; }
+		if (Name.Equals(TEXT("ThreeQuarter"), ESearchCase::IgnoreCase)) { OutDir = FVector( 1,  1, 0.35f).GetSafeNormal();    return true; }
+		if (Name.Equals(TEXT("Top"),          ESearchCase::IgnoreCase)) { OutDir = FVector( 0,  0,  1);                       return true; }
+		if (Name.Equals(TEXT("Bottom"),       ESearchCase::IgnoreCase)) { OutDir = FVector( 0,  0, -1);                       return true; }
+		return false;
+	}
+
+	/** Capture one view of the preview world into an in-memory pixel buffer. */
+	static bool CaptureViewToPixels(
+		UWorld* World,
+		const FVector& CameraLocation,
+		const FRotator& CameraRotation,
+		float FOVDeg, int32 PixelWidth, int32 PixelHeight,
+		TArray<FColor>& OutPixels)
+	{
+		FActorSpawnParameters SpawnInfo;
+		SpawnInfo.ObjectFlags |= RF_Transient;
+		SpawnInfo.Name = MakeUniqueObjectName(World, ASceneCapture2D::StaticClass(), TEXT("BridgeAnimPoseCam"));
+		ASceneCapture2D* CaptureActor = World->SpawnActor<ASceneCapture2D>(
+			CameraLocation, CameraRotation, SpawnInfo);
+		if (!CaptureActor || !CaptureActor->GetCaptureComponent2D()) return false;
+
+		UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(GetTransientPackage(),
+			MakeUniqueObjectName(GetTransientPackage(), UTextureRenderTarget2D::StaticClass(), TEXT("BridgeAnimPoseRT")));
+		RT->ClearColor = FLinearColor(0.12f, 0.12f, 0.14f, 1.0f); // soft neutral grey so the mesh silhouette reads cleanly
+		RT->bAutoGenerateMips = false;
+		RT->InitCustomFormat(PixelWidth, PixelHeight, PF_B8G8R8A8, /*bForceLinearGamma=*/ false);
+		RT->UpdateResourceImmediate(true);
+
+		USceneCaptureComponent2D* SCC = CaptureActor->GetCaptureComponent2D();
+		SCC->ProjectionType = ECameraProjectionMode::Perspective;
+		SCC->FOVAngle = FOVDeg;
+		// Base-color capture — renders mesh albedo without lighting, yielding
+		// consistent output across views and pose times regardless of the
+		// preview scene's light placement. Much more legible for agent vision
+		// analysis than SCS_FinalColorLDR, which tends to read very dark when
+		// a skylight has no cubemap.
+		SCC->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
+		SCC->bCaptureEveryFrame = false;
+		SCC->bCaptureOnMovement = false;
+		SCC->ShowFlags.SetFog(false);
+		SCC->ShowFlags.SetAtmosphere(false);
+		SCC->ShowFlags.SetVolumetricFog(false);
+		SCC->TextureTarget = RT;
+
+		SCC->CaptureScene();
+		FlushRenderingCommands();
+
+		FTextureRenderTargetResource* Res = RT->GameThread_GetRenderTargetResource();
+		if (!Res)
+		{
+			CaptureActor->Destroy();
+			return false;
+		}
+		FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
+		ReadFlags.SetLinearToGamma(false);
+		if (!Res->ReadPixels(OutPixels, ReadFlags) || OutPixels.Num() != PixelWidth * PixelHeight)
+		{
+			CaptureActor->Destroy();
+			return false;
+		}
+		FixZeroAlphaWhenRgbVisible(OutPixels.GetData(), OutPixels.Num());
+		CaptureActor->Destroy();
+		return true;
+	}
+}
+
+bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
+	const FString& AnimPath,
+	float Time,
+	const FString& SkeletalMeshPath,
+	const TArray<FString>& Views,
+	bool bBoneOverlay,
+	int32 GridCols,
+	int32 CellWidth,
+	int32 CellHeight,
+	const FString& FilePath)
+{
+	if (bBoneOverlay)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("CaptureAnimPoseGrid: bBoneOverlay is not yet implemented — proceeding without overlay."));
+	}
+	if (AnimPath.IsEmpty() || FilePath.IsEmpty() ||
+		Views.Num() == 0 || GridCols <= 0 || CellWidth <= 0 || CellHeight <= 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureAnimPoseGrid: bad input."));
+		return false;
+	}
+
+	// 1. Resolve anim asset.
+	UAnimSequenceBase* Anim = LoadObject<UAnimSequenceBase>(nullptr, *AnimPath);
+	if (!Anim)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureAnimPoseGrid: failed to load anim '%s'"), *AnimPath);
+		return false;
+	}
+
+	// 2. Resolve mesh — explicit param wins, else Skeleton's preview mesh.
+	USkeletalMesh* Mesh = nullptr;
+	if (!SkeletalMeshPath.IsEmpty())
+	{
+		Mesh = LoadObject<USkeletalMesh>(nullptr, *SkeletalMeshPath);
+	}
+	if (!Mesh)
+	{
+		if (USkeleton* Skel = Anim->GetSkeleton())
+		{
+			Mesh = Skel->GetPreviewMesh();
+		}
+	}
+	if (!Mesh)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("CaptureAnimPoseGrid: no mesh — pass SkeletalMeshPath or set the Skeleton's PreviewMesh"));
+		return false;
+	}
+
+	// 3. Build preview scene. FPreviewScene auto-provisions a neutral skylight
+	//    + directional light and nothing else — exactly what we want.
+	FPreviewScene::ConstructionValues CVS;
+	CVS.SetCreatePhysicsScene(false);
+	CVS.SetTransactional(false);
+	FPreviewScene PreviewScene(CVS);
+	UWorld* PreviewWorld = PreviewScene.GetWorld();
+	if (!PreviewWorld) return false;
+
+	// 4. Add a SkeletalMeshComponent with the anim.
+	USkeletalMeshComponent* SkelComp = NewObject<USkeletalMeshComponent>(
+		GetTransientPackage(), USkeletalMeshComponent::StaticClass());
+	SkelComp->SetSkeletalMesh(Mesh);
+	SkelComp->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	SkelComp->SetUpdateAnimationInEditor(true);
+	SkelComp->bForceRefpose = false;
+	PreviewScene.AddComponent(SkelComp, FTransform::Identity);
+
+	// 5. Drive the pose. PlayAnimation creates the single-node instance;
+	//    SetPosition seeks to Time, TickAnimation(0) evaluates at that time.
+	SkelComp->PlayAnimation(Anim, /*bLooping=*/ false);
+	const float ClampedTime = FMath::Clamp(Time, 0.0f, Anim->GetPlayLength());
+	SkelComp->SetPosition(ClampedTime, /*bFireNotifies=*/ false);
+	SkelComp->TickAnimation(0.0f, /*bNeedsValidRootMotion=*/ false);
+	SkelComp->RefreshBoneTransforms();
+	SkelComp->UpdateBounds();
+
+	// 6. Framing. Centre prefers the pelvis bone (stable across poses,
+	//    robust to raised-arm asymmetry where a full-bone-AABB would
+	//    pull the camera target toward the extremity). Radius uses the
+	//    full posed bone AABB diagonal so extreme limbs still fit.
+	constexpr float FOVDeg = 45.0f;
+	FVector Centre = FVector::ZeroVector;
+	float Radius = 100.0f;
+	{
+		const TArray<FTransform>& CSBones = SkelComp->GetComponentSpaceTransforms();
+		const FReferenceSkeleton& RefSkel = Mesh->GetRefSkeleton();
+
+		// Try common pelvis-equivalent names in priority order.
+		static const TCHAR* PelvisCandidates[] = {
+			TEXT("pelvis"), TEXT("Pelvis"), TEXT("hips"), TEXT("Hips"),
+			TEXT("spine_01"), TEXT("spine"), TEXT("root"), TEXT("Root"),
+		};
+		int32 CentreBoneIdx = INDEX_NONE;
+		for (const TCHAR* Candidate : PelvisCandidates)
+		{
+			const int32 Idx = RefSkel.FindBoneIndex(FName(Candidate));
+			if (Idx != INDEX_NONE && Idx < CSBones.Num())
+			{
+				CentreBoneIdx = Idx;
+				break;
+			}
+		}
+
+		if (CSBones.Num() > 0)
+		{
+			FBox BonesAABB(ForceInit);
+			for (const FTransform& T : CSBones)
+			{
+				BonesAABB += T.GetLocation();
+			}
+			// Pelvis as centre when available; otherwise the geometric AABB
+			// centre (which biases toward bone-dense regions like the head).
+			Centre = (CentreBoneIdx != INDEX_NONE)
+				? CSBones[CentreBoneIdx].GetLocation()
+				: BonesAABB.GetCenter();
+			// Pad 1.2× to cover skin stretch beyond bone AABB (hands, hair).
+			// Because Centre may not equal AABB centre, take max over
+			// distance-to-corners rather than half-diagonal.
+			const FVector Extents = BonesAABB.GetSize() * 0.5f;
+			const FVector AABBCentre = BonesAABB.GetCenter();
+			const FVector ToMin = (BonesAABB.Min - Centre).GetAbs();
+			const FVector ToMax = (BonesAABB.Max - Centre).GetAbs();
+			const FVector ToCorner = ToMin.ComponentMax(ToMax);
+			Radius = FMath::Max(10.0f, ToCorner.Size() * 1.2f);
+		}
+		else
+		{
+			const FBoxSphereBounds Fallback = Mesh->GetBounds();
+			Centre = Fallback.Origin;
+			Radius = FMath::Max(10.0f, Fallback.SphereRadius);
+		}
+	}
+	const float HalfFovRad = FMath::DegreesToRadians(FOVDeg * 0.5f);
+	const float Distance = Radius / FMath::Max(0.01f, FMath::Tan(HalfFovRad));
+
+	UE_LOG(LogTemp, Verbose,
+		TEXT("CaptureAnimPoseGrid: mesh=%s bone_count=%d centre=%s radius=%.1f distance=%.1f"),
+		*Mesh->GetName(), SkelComp->GetComponentSpaceTransforms().Num(),
+		*Centre.ToString(), Radius, Distance);
+
+	// 7. Allocate composite image.
+	const int32 NumViews = Views.Num();
+	const int32 Rows = FMath::DivideAndRoundUp(NumViews, GridCols);
+	const int32 CompW = GridCols * CellWidth;
+	const int32 CompH = Rows * CellHeight;
+
+	FImage Composite;
+	Composite.Init(CompW, CompH, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+	FColor* CompDst = reinterpret_cast<FColor*>(Composite.RawData.GetData());
+	// Fill with the same neutral grey as per-view clear so unused cells match.
+	for (int32 i = 0; i < CompW * CompH; ++i)
+	{
+		CompDst[i] = FColor(31, 31, 36, 255);
+	}
+
+	// 8. Render each view + copy into its grid cell (flipping rows on the way).
+	for (int32 ViewIdx = 0; ViewIdx < NumViews; ++ViewIdx)
+	{
+		FVector Dir;
+		if (!BridgeLevelImpl::ResolveViewDirection(Views[ViewIdx], Dir))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("CaptureAnimPoseGrid: unknown view '%s' — skipping"), *Views[ViewIdx]);
+			continue;
+		}
+		const FVector CamLoc = Centre + Dir * Distance;
+		const FRotator CamRot = (Centre - CamLoc).Rotation();
+
+		TArray<FColor> Pixels;
+		if (!BridgeLevelImpl::CaptureViewToPixels(
+				PreviewWorld, CamLoc, CamRot, FOVDeg, CellWidth, CellHeight, Pixels))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("CaptureAnimPoseGrid: capture for view '%s' failed"), *Views[ViewIdx]);
+			continue;
+		}
+
+		const int32 Col = ViewIdx % GridCols;
+		const int32 Row = ViewIdx / GridCols;
+		const int32 DstX = Col * CellWidth;
+		const int32 DstY = Row * CellHeight;
+		// SCS_BaseColor readback in a FPreviewScene already arrives top-down —
+		// unlike SCS_FinalColorLDR in the game world where it's bottom-up and
+		// we'd need to flip rows. Straight memcpy here.
+		for (int32 Y = 0; Y < CellHeight; ++Y)
+		{
+			FMemory::Memcpy(
+				CompDst + (DstY + Y) * CompW + DstX,
+				Pixels.GetData() + Y * CellWidth,
+				CellWidth * sizeof(FColor));
+		}
+	}
+
+	// 9. Save PNG.
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	PlatformFile.CreateDirectoryTree(*FPaths::GetPath(FilePath));
+	return FImageUtils::SaveImageByExtension(*FilePath, Composite, /*CompressionQuality=*/ 0);
 }
 
 bool UUnrealBridgeLevelLibrary::LineTraceHitInfo(

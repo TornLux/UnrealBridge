@@ -601,6 +601,38 @@ public:
 		float FOVDeg, int32 Width, int32 Height, const FString& FilePath);
 
 	/**
+	 * Render N views of a skeletal mesh posed at a specific time of an anim
+	 * sequence / montage, composited into one PNG grid. The capture runs in a
+	 * FPreviewScene — isolated UWorld with default neutral skylight +
+	 * directional light — so the project's level lighting, sky, fog, and
+	 * stray actors do NOT appear in the frame.
+	 *
+	 * @param AnimPath          Soft path to UAnimSequenceBase (sequence or montage).
+	 * @param Time              Seconds into the anim. Clamped to [0, length].
+	 * @param SkeletalMeshPath  Mesh to pose. Empty → use the skeleton's preview
+	 *                          mesh (USkeleton::GetPreviewMesh()); fails if absent.
+	 * @param Views             Subset of: "Front", "Back", "Side" (right), "SideLeft",
+	 *                          "ThreeQuarter" (front-right-elevated), "Top", "Bottom".
+	 *                          Unknown names are skipped.
+	 * @param bBoneOverlay      Reserved — not yet implemented; ignored.
+	 * @param GridCols          Columns in the composite; rows = ceil(N/cols).
+	 * @param CellWidth         Pixel width of each view cell (e.g. 512).
+	 * @param CellHeight        Pixel height of each view cell (e.g. 512).
+	 * @param FilePath          Output PNG path (will create parent dirs).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|Vision")
+	static bool CaptureAnimPoseGrid(
+		const FString& AnimPath,
+		float Time,
+		const FString& SkeletalMeshPath,
+		const TArray<FString>& Views,
+		bool bBoneOverlay,
+		int32 GridCols,
+		int32 CellWidth,
+		int32 CellHeight,
+		const FString& FilePath);
+
+	/**
 	 * Physics-overlap query: actors whose collision primitives intersect
 	 * a sphere at `Center` with `Radius` cm. Distinct from
 	 * `FindActorsInRadius`, which tests actor centroids — overlap catches

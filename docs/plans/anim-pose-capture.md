@@ -1,9 +1,14 @@
 # Animation pose capture — multi-view grid
 
-Pending feature. Give an agent the ability to "watch" an `AnimSequence` /
-`AnimMontage` and identify semantic beats (windup start, impact frame,
-recovery end) so tooling can auto-place Notifies, SoundCues, or VFX
-triggers without the user clicking through the timeline frame-by-frame.
+Status: **`CaptureAnimPoseGrid` landed** (2026-04-17). Single-time
+multi-view capture works against any `UAnimSequenceBase` (sequence or
+montage). `CaptureAnimMontageTimeline` (grid of N time samples)
+deferred. Bone overlay deferred.
+
+Give an agent the ability to "watch" an `AnimSequence` / `AnimMontage`
+and identify semantic beats (windup start, impact frame, recovery end)
+so tooling can auto-place Notifies, SoundCues, or VFX triggers without
+the user clicking through the timeline frame-by-frame.
 
 ## Why single-camera capture isn't enough
 
@@ -80,3 +85,50 @@ placed by the animator; if so, the visual analysis isn't needed.
 **Audit `UnrealBridgeAnimLibrary` for existing notify / curve readout
 before building the render pipeline** — the notify route is zero-cost
 and covers the majority of in-project animations.
+
+## Current implementation (2026-04-17)
+
+`UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(AnimPath, Time,
+SkeletalMeshPath, Views, bBoneOverlay, GridCols, CellWidth, CellHeight,
+FilePath)` implemented and runtime-verified against Ellie montages in
+this project.
+
+Key implementation choices that diverged from the original sketch:
+
+- **Scene isolation via `FPreviewScene`**, not the runtime world.
+  Confirmed: no scene lighting, fog, or stray actors reach the capture.
+- **`USkeletalMeshComponent` via `PreviewScene.AddComponent`** (not
+  `SpawnActor<ASkeletalMeshActor>` — simpler, doesn't rely on actor
+  tick).
+- **Pose eval:** `SkelComp->PlayAnimation(Anim, false)` +
+  `SkelComp->SetPosition(Time, false)` + `TickAnimation(0)` +
+  `RefreshBoneTransforms`. `GlobalAnimRateScale=0` was tried and removed —
+  unnecessary since we pass `DeltaTime=0` to `TickAnimation`.
+- **`SCS_BaseColor` capture source** (not `SCS_FinalColorLDR`). Unlit
+  albedo against solid grey gives clean, consistent output regardless
+  of the preview scene's light placement. Final-color capture produced
+  mostly-black frames because the skylight has no cubemap.
+- **`SkelComp->Bounds` does NOT reflect the posed AABB** — it caches
+  the mesh's authored bounds. Workaround: walk `GetComponentSpaceTransforms`
+  and compute a tight posed AABB from actual bone positions.
+- **Framing from pelvis bone**, not AABB centre. 1079-bone rigs
+  (Ellie) have most bones clustered in face + hands, so AABB centre is
+  pulled toward extremities and asymmetric poses (raised arm) offset
+  the frame. Pelvis (falls back through Pelvis/hips/Hips/spine_01/
+  spine/root/Root if the bone isn't named "pelvis") gives a stable
+  character-anchor. Radius uses the full bone AABB's max distance to
+  any corner from Centre, padded 1.2×.
+- **No row flip in composite copy.** The game-world capture flips rows
+  because `SCS_FinalColorLDR` readback is bottom-up; `SCS_BaseColor` in
+  a `FPreviewScene` arrives top-down and a flip would invert output.
+
+**Still deferred:**
+- `CaptureAnimMontageTimeline(..., NumTimeSamples, ...)` — grid of N
+  time samples × len(Views). Same pipeline, loop the time axis.
+- **Bone overlay.** `bBoneOverlay` param is accepted but logs a warning
+  and proceeds without overlay.
+- **Asymmetric-pose framing bias.** When one limb extends far from
+  the pelvis, the opposite side of the frame is empty. Fix would be
+  per-view framing (project bone AABB into camera space and centre
+  the camera target accordingly) — not done; the current pose is
+  still clearly legible.
