@@ -425,9 +425,23 @@ TArray<FBridgeHandlerSummary> UBridgeReactiveSubsystem::ListAllHandlers(
 		{
 			continue;
 		}
-		if (!FilterTag.IsEmpty() && !R.Tags.Contains(FilterTag))
+		// Tag filter: literal text matches by exact equality (covers existing
+		// callers); patterns containing '*' or '?' use FString::MatchesWildcard.
+		// Detection is char-scan over the filter, not the per-handler tag list,
+		// so it's O(filter_len) once per call.
+		if (!FilterTag.IsEmpty())
 		{
-			continue;
+			const bool bWildcard = FilterTag.Contains(TEXT("*")) || FilterTag.Contains(TEXT("?"));
+			const bool bMatch = bWildcard
+				? R.Tags.ContainsByPredicate([&FilterTag](const FString& T)
+				  {
+					  return T.MatchesWildcard(FilterTag);
+				  })
+				: R.Tags.Contains(FilterTag);
+			if (!bMatch)
+			{
+				continue;
+			}
 		}
 
 		FBridgeHandlerSummary S;

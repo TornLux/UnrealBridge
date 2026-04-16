@@ -105,9 +105,60 @@ hid = unreal.UnrealBridgeReactiveLibrary.register_runtime_gameplay_event(
 )
 ```
 
-**ctx keys:** `trigger` ('gameplay_event'), `tag`, `event_instigator`, `event_target`, `event_optional_object`, `event_optional_object2`, `event_magnitude`, `event_instigator_tags`, `event_target_tags`.
+**ctx keys:** `trigger` ('gameplay_event'), `tag`, `source_asc` (the ASC that received the event — primary signal for global handlers to identify which ASC fired), `event_instigator`, `event_target`, `event_optional_object`, `event_optional_object2`, `event_magnitude`, `event_instigator_tags`, `event_target_tags`.
 
 > **ASC resolution.** The target actor doesn't need a direct ASC — the bridge walks `Actor → Pawn.PlayerState → Pawn.Controller → PC.PlayerState`. Fires `SendGameplayEventByName` through the same walker.
+
+#### Global mode — pass `target_actor_name=""`
+
+Empty `target_actor_name` registers a **global** handler that fires whenever
+*any* live ASC in the PIE world receives `event_tag`. Use for cross-actor
+listeners (combat broadcaster, ML reward signal, debug HUD) where you don't
+want to per-bind every ASC by name.
+
+```python
+hid = unreal.UnrealBridgeReactiveLibrary.register_runtime_gameplay_event(
+    task_name="hit_logger",
+    description="Log every Event.Combat.Hit on any ASC in PIE",
+    target_actor_name="",                    # ← empty = global
+    event_tag="Event.Combat.Hit",
+    script="""
+        owner = source_asc.get_owner() if source_asc else None
+        log('hit on asc=' + str(source_asc) + ' owner=' + str(owner))
+    """,
+    script_path="", tags=["combat", "telemetry"],
+    lifetime="Permanent", error_policy="LogContinue", throttle_ms=0,
+)
+```
+
+How it works internally:
+
+- At register, the adapter walks live PIE-world actors and binds the ASC
+  delegate on every one with an ASC. A subsequent per-subject handler on
+  the same `(ASC, tag)` shares that binding (refcounted).
+- New actors that spawn after register are caught via
+  `UWorld::OnActorSpawned`. If the actor doesn't have an ASC at spawn time
+  (e.g. PlayerState ASCs assigned one tick later), a one-tick deferred
+  re-resolve catches it.
+- On `EndPIE`, dead bindings are swept; the global record persists and
+  re-snapshots ASCs on the next `PostPIEStarted` so the same registration
+  survives PIE restarts.
+
+`subject_path` reads as `""` for global handlers in `list_all_handlers`
+output — distinguishes them from `<invalid>` (subject was a real object
+that has since been GC'd).
+
+**Caveats:**
+
+- ASCs that you attach to actors *after* registration via Python (e.g.
+  `EnsureAbilitySystemComponent` called post-register) are not auto-bound
+  unless the actor was just spawned. The spawn-watcher only triggers on
+  the original `OnActorSpawned`. If you bolt ASCs onto pre-existing
+  actors mid-session, unregister and re-register the global handler to
+  re-snapshot.
+- Each fire dispatches twice internally — once with `Subject=ASC` (per-
+  subject handlers match), once with `Subject=null` (globals match). No
+  double-firing because the matcher uses pointer equality.
 
 ### register_runtime_attribute_changed
 
@@ -259,7 +310,15 @@ hid = unreal.UnrealBridgeReactiveLibrary.register_runtime_input_action(
 summaries = unreal.UnrealBridgeReactiveLibrary.list_all_handlers(
     filter_scope="",            # "", "runtime", "editor"
     filter_trigger_type="",     # "", "GameplayEvent", "AttributeChanged", ...
-    filter_tag="")              # "", or a tag that must appear in Tags
+    filter_tag="")              # "", exact tag, or wildcard pattern
+
+# filter_tag wildcard support:
+#   "combat.hit"  → exact match (any handler with that exact tag)
+#   "combat.*"    → prefix wildcard (combat.hit, combat.dodge, …)
+#   "*.alert"     → suffix wildcard
+#   "combat.???"  → '?' matches a single char
+# Plain text without '*' or '?' uses fast exact-equality. Wildcards use
+# UE's FString::MatchesWildcard.
 
 for s in summaries:
     print(f"{s.handler_id}  {s.task_name:32}  {s.trigger_summary}  paused={s.paused}  calls={s.stats.calls}")

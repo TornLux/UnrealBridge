@@ -171,26 +171,31 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeGameplayEvent(
 		UE_LOG(LogUnrealBridgeReactiveLib, Warning, TEXT("RegisterRuntimeGameplayEvent: subsystem unavailable"));
 		return FString();
 	}
-	if (TargetActorName.IsEmpty())
+
+	// Empty TargetActorName => global handler: fires whenever ANY live ASC
+	// receives EventTag. The adapter walks current PIE-world ASCs at register
+	// time and watches OnActorSpawned for late arrivals.
+	const bool bGlobal = TargetActorName.IsEmpty();
+	UAbilitySystemComponent* ASC = nullptr;
+	if (!bGlobal)
 	{
-		UE_LOG(LogUnrealBridgeReactiveLib, Warning, TEXT("RegisterRuntimeGameplayEvent: TargetActorName is empty"));
-		return FString();
+		AActor* TargetActor = BridgeReactiveLibImpl::FindActorByName(TargetActorName);
+		if (!TargetActor)
+		{
+			UE_LOG(LogUnrealBridgeReactiveLib, Warning,
+				TEXT("RegisterRuntimeGameplayEvent: actor '%s' not found in PIE or editor world"),
+				*TargetActorName);
+			return FString();
+		}
+		ASC = BridgeReactiveLibImpl::ResolveActorASC(TargetActor);
+		if (!ASC)
+		{
+			UE_LOG(LogUnrealBridgeReactiveLib, Warning,
+				TEXT("RegisterRuntimeGameplayEvent: no ASC on actor '%s'"), *TargetActor->GetPathName());
+			return FString();
+		}
 	}
-	AActor* TargetActor = BridgeReactiveLibImpl::FindActorByName(TargetActorName);
-	if (!TargetActor)
-	{
-		UE_LOG(LogUnrealBridgeReactiveLib, Warning,
-			TEXT("RegisterRuntimeGameplayEvent: actor '%s' not found in PIE or editor world"),
-			*TargetActorName);
-		return FString();
-	}
-	UAbilitySystemComponent* ASC = BridgeReactiveLibImpl::ResolveActorASC(TargetActor);
-	if (!ASC)
-	{
-		UE_LOG(LogUnrealBridgeReactiveLib, Warning,
-			TEXT("RegisterRuntimeGameplayEvent: no ASC on actor '%s'"), *TargetActor->GetPathName());
-		return FString();
-	}
+
 	if (EventTag.IsEmpty())
 	{
 		UE_LOG(LogUnrealBridgeReactiveLib, Warning, TEXT("RegisterRuntimeGameplayEvent: EventTag is empty"));
@@ -229,8 +234,9 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeGameplayEvent(
 	Record.ScriptPath = ScriptPath;
 	Record.Script = Script;
 	Record.TriggerType = EBridgeTrigger::GameplayEvent;
-	Record.Subject = TWeakObjectPtr<UObject>(ASC);
+	Record.Subject = bGlobal ? TWeakObjectPtr<UObject>() : TWeakObjectPtr<UObject>(ASC);
 	Record.Selector = Tag.GetTagName();
+	Record.AdapterPayload = bGlobal ? TEXT("global") : FString();
 	Record.Lifetime = ParsedLifetime;
 	Record.RemainingCalls = ParsedCount;
 	Record.ErrorPolicy = ParsedPolicy;
