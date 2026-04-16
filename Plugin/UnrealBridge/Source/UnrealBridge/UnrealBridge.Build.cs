@@ -29,6 +29,7 @@ public class UnrealBridge : ModuleRules
 			"UMGEditor",
 			"AnimGraph",
 			"UnrealEd",
+			"EditorSubsystem",
 			"MovieScene",
 			"AnimGraphRuntime",
 			"ContentBrowser",
