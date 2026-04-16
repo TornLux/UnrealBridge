@@ -1347,5 +1347,46 @@ on-demand analysis, don't loop thousands.
 - Asymmetric poses (e.g. one arm fully extended) leave the opposite
   side of the frame empty — pelvis-anchored framing keeps the body
   centred but doesn't chase outliers.
-- `CaptureAnimMontageTimeline(NumTimeSamples, ...)` — grid of N time
-  samples × views — deferred; same pipeline, loop the time axis.
+### capture_anim_montage_timeline(anim_path, skeletal_mesh_path, num_time_samples, views, bone_overlay, cell_width, cell_height, file_path) -> bool
+
+Render the anim's timeline as a `NumTimeSamples × len(Views)` grid — rows
+are evenly spaced time samples, columns are view angles. Motion reads
+left-to-right within a row and top-to-bottom across rows.
+
+**Camera framing is motion-aware.** Before capturing, the function
+evaluates the pose at every sample time to build a union bone AABB
+covering the full timeline. The camera is then fixed at a distance
+that fits that union; so character scale stays consistent across rows
+even when the anim translates the pelvis, and you can directly compare
+silhouettes between frames.
+
+| Param | Meaning |
+|-------|---------|
+| `anim_path` | `UAnimSequenceBase` soft path |
+| `skeletal_mesh_path` | Empty → skeleton's preview mesh |
+| `num_time_samples` | Rows. Times = `0, L/(N-1), 2L/(N-1), …, L`. `N=1` → single row at `t=0` |
+| `views` | Column views (same names as `capture_anim_pose_grid`) |
+| `bone_overlay` | Reserved; ignored today |
+| `cell_width`, `cell_height` | Pixel size per cell (e.g. 384) |
+| `file_path` | Output PNG path |
+
+```python
+ok = Lv.capture_anim_montage_timeline(
+    anim_path='/Game/Animations/Attack_Montage',
+    skeletal_mesh_path='',
+    num_time_samples=5,           # 0%, 25%, 50%, 75%, 100%
+    views=['Front', 'Side', 'ThreeQuarter'],
+    bone_overlay=False,
+    cell_width=384, cell_height=384,
+    file_path='G:/Claude/UnrealBridge/.captures/attack_timeline.png')
+# → PNG is (3 × 384) × (5 × 384) = 1152 × 1920
+```
+
+Use this to give an agent a single image from which to identify
+semantic beats (windup, impact frame, recovery end) across the whole
+montage at once. Much cheaper in tokens than uploading N separate
+frame images, and consistent framing makes pose comparison tractable.
+
+**Perf:** ~N × M × 50ms; a 5-sample × 3-view capture ≈ 750 ms. Pose
+evaluation happens once per time sample; camera poses are computed
+once total.

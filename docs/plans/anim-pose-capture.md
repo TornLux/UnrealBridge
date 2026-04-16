@@ -1,9 +1,8 @@
 # Animation pose capture — multi-view grid
 
-Status: **`CaptureAnimPoseGrid` landed** (2026-04-17). Single-time
-multi-view capture works against any `UAnimSequenceBase` (sequence or
-montage). `CaptureAnimMontageTimeline` (grid of N time samples)
-deferred. Bone overlay deferred.
+Status: **`CaptureAnimPoseGrid` + `CaptureAnimMontageTimeline` landed**
+(2026-04-17). Both APIs work against any `UAnimSequenceBase` (sequence
+or montage). Bone overlay still deferred.
 
 Give an agent the ability to "watch" an `AnimSequence` / `AnimMontage`
 and identify semantic beats (windup start, impact frame, recovery end)
@@ -122,11 +121,18 @@ Key implementation choices that diverged from the original sketch:
   because `SCS_FinalColorLDR` readback is bottom-up; `SCS_BaseColor` in
   a `FPreviewScene` arrives top-down and a flip would invert output.
 
+**Shipped since the above:**
+- **`CaptureAnimMontageTimeline(anim, mesh, N, views, overlay, w, h, path)`** —
+  grid of `N` time samples × `len(views)` with motion-aware framing:
+  samples each time to build a union bone AABB, then fixes cameras
+  across rows so character scale + orientation are consistent for
+  visual motion comparison. `ApplyPoseAtTime` + `ComputePoseFraming`
+  + `FindPelvisBoneIndex` helpers extracted; `CaptureAnimPoseGrid`
+  refactored to share them.
+
 **Still deferred:**
-- `CaptureAnimMontageTimeline(..., NumTimeSamples, ...)` — grid of N
-  time samples × len(Views). Same pipeline, loop the time axis.
 - **Bone overlay.** `bBoneOverlay` param is accepted but logs a warning
-  and proceeds without overlay.
+  and proceeds without overlay on both functions.
 - **Asymmetric-pose framing bias.** When one limb extends far from
   the pelvis, the opposite side of the frame is empty. Fix would be
   per-view framing (project bone AABB into camera space and centre

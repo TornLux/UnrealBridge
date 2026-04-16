@@ -1862,6 +1862,69 @@ namespace BridgeLevelImpl
 		return false;
 	}
 
+	/** Drive the skel mesh component's pose to a specific anim time. */
+	static void ApplyPoseAtTime(USkeletalMeshComponent* SkelComp, UAnimSequenceBase* Anim, float Time)
+	{
+		if (!SkelComp || !Anim) return;
+		const float ClampedTime = FMath::Clamp(Time, 0.0f, Anim->GetPlayLength());
+		SkelComp->SetPosition(ClampedTime, /*bFireNotifies=*/ false);
+		SkelComp->TickAnimation(0.0f, /*bNeedsValidRootMotion=*/ false);
+		SkelComp->RefreshBoneTransforms();
+		SkelComp->UpdateBounds();
+	}
+
+	/** Index of a pelvis-equivalent bone in the ref skeleton, or INDEX_NONE. */
+	static int32 FindPelvisBoneIndex(const FReferenceSkeleton& RefSkel, int32 ValidBoneCount)
+	{
+		static const TCHAR* Candidates[] = {
+			TEXT("pelvis"), TEXT("Pelvis"), TEXT("hips"), TEXT("Hips"),
+			TEXT("spine_01"), TEXT("spine"), TEXT("root"), TEXT("Root"),
+		};
+		for (const TCHAR* Name : Candidates)
+		{
+			const int32 Idx = RefSkel.FindBoneIndex(FName(Name));
+			if (Idx != INDEX_NONE && Idx < ValidBoneCount) return Idx;
+		}
+		return INDEX_NONE;
+	}
+
+	/**
+	 * Compute camera target + radius for the CURRENTLY posed skel mesh.
+	 * Centre prefers pelvis; radius uses the max corner distance of the
+	 * bone AABB from Centre, padded 1.2× for skin stretch.
+	 */
+	static void ComputePoseFraming(
+		USkeletalMesh* Mesh, USkeletalMeshComponent* SkelComp,
+		FVector& OutCentre, float& OutRadius)
+	{
+		OutCentre = FVector::ZeroVector;
+		OutRadius = 100.0f;
+
+		const TArray<FTransform>& CSBones = SkelComp->GetComponentSpaceTransforms();
+		if (CSBones.Num() > 0 && Mesh)
+		{
+			const FReferenceSkeleton& RefSkel = Mesh->GetRefSkeleton();
+			const int32 PelvisIdx = FindPelvisBoneIndex(RefSkel, CSBones.Num());
+
+			FBox BonesAABB(ForceInit);
+			for (const FTransform& T : CSBones) { BonesAABB += T.GetLocation(); }
+
+			OutCentre = (PelvisIdx != INDEX_NONE)
+				? CSBones[PelvisIdx].GetLocation()
+				: BonesAABB.GetCenter();
+			const FVector ToMin = (BonesAABB.Min - OutCentre).GetAbs();
+			const FVector ToMax = (BonesAABB.Max - OutCentre).GetAbs();
+			const FVector ToCorner = ToMin.ComponentMax(ToMax);
+			OutRadius = FMath::Max(10.0f, ToCorner.Size() * 1.2f);
+		}
+		else if (Mesh)
+		{
+			const FBoxSphereBounds Fallback = Mesh->GetBounds();
+			OutCentre = Fallback.Origin;
+			OutRadius = FMath::Max(10.0f, Fallback.SphereRadius);
+		}
+	}
+
 	/** Capture one view of the preview world into an in-memory pixel buffer. */
 	static bool CaptureViewToPixels(
 		UWorld* World,
@@ -1991,71 +2054,15 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	SkelComp->bForceRefpose = false;
 	PreviewScene.AddComponent(SkelComp, FTransform::Identity);
 
-	// 5. Drive the pose. PlayAnimation creates the single-node instance;
-	//    SetPosition seeks to Time, TickAnimation(0) evaluates at that time.
+	// 5. Drive the pose to the requested time.
 	SkelComp->PlayAnimation(Anim, /*bLooping=*/ false);
-	const float ClampedTime = FMath::Clamp(Time, 0.0f, Anim->GetPlayLength());
-	SkelComp->SetPosition(ClampedTime, /*bFireNotifies=*/ false);
-	SkelComp->TickAnimation(0.0f, /*bNeedsValidRootMotion=*/ false);
-	SkelComp->RefreshBoneTransforms();
-	SkelComp->UpdateBounds();
+	BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, Time);
 
-	// 6. Framing. Centre prefers the pelvis bone (stable across poses,
-	//    robust to raised-arm asymmetry where a full-bone-AABB would
-	//    pull the camera target toward the extremity). Radius uses the
-	//    full posed bone AABB diagonal so extreme limbs still fit.
+	// 6. Framing anchored on pelvis (or bone AABB fallback).
 	constexpr float FOVDeg = 45.0f;
-	FVector Centre = FVector::ZeroVector;
-	float Radius = 100.0f;
-	{
-		const TArray<FTransform>& CSBones = SkelComp->GetComponentSpaceTransforms();
-		const FReferenceSkeleton& RefSkel = Mesh->GetRefSkeleton();
-
-		// Try common pelvis-equivalent names in priority order.
-		static const TCHAR* PelvisCandidates[] = {
-			TEXT("pelvis"), TEXT("Pelvis"), TEXT("hips"), TEXT("Hips"),
-			TEXT("spine_01"), TEXT("spine"), TEXT("root"), TEXT("Root"),
-		};
-		int32 CentreBoneIdx = INDEX_NONE;
-		for (const TCHAR* Candidate : PelvisCandidates)
-		{
-			const int32 Idx = RefSkel.FindBoneIndex(FName(Candidate));
-			if (Idx != INDEX_NONE && Idx < CSBones.Num())
-			{
-				CentreBoneIdx = Idx;
-				break;
-			}
-		}
-
-		if (CSBones.Num() > 0)
-		{
-			FBox BonesAABB(ForceInit);
-			for (const FTransform& T : CSBones)
-			{
-				BonesAABB += T.GetLocation();
-			}
-			// Pelvis as centre when available; otherwise the geometric AABB
-			// centre (which biases toward bone-dense regions like the head).
-			Centre = (CentreBoneIdx != INDEX_NONE)
-				? CSBones[CentreBoneIdx].GetLocation()
-				: BonesAABB.GetCenter();
-			// Pad 1.2× to cover skin stretch beyond bone AABB (hands, hair).
-			// Because Centre may not equal AABB centre, take max over
-			// distance-to-corners rather than half-diagonal.
-			const FVector Extents = BonesAABB.GetSize() * 0.5f;
-			const FVector AABBCentre = BonesAABB.GetCenter();
-			const FVector ToMin = (BonesAABB.Min - Centre).GetAbs();
-			const FVector ToMax = (BonesAABB.Max - Centre).GetAbs();
-			const FVector ToCorner = ToMin.ComponentMax(ToMax);
-			Radius = FMath::Max(10.0f, ToCorner.Size() * 1.2f);
-		}
-		else
-		{
-			const FBoxSphereBounds Fallback = Mesh->GetBounds();
-			Centre = Fallback.Origin;
-			Radius = FMath::Max(10.0f, Fallback.SphereRadius);
-		}
-	}
+	FVector Centre;
+	float Radius;
+	BridgeLevelImpl::ComputePoseFraming(Mesh, SkelComp, Centre, Radius);
 	const float HalfFovRad = FMath::DegreesToRadians(FOVDeg * 0.5f);
 	const float Distance = Radius / FMath::Max(0.01f, FMath::Tan(HalfFovRad));
 
@@ -2118,6 +2125,188 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	}
 
 	// 9. Save PNG.
+	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
+	PlatformFile.CreateDirectoryTree(*FPaths::GetPath(FilePath));
+	return FImageUtils::SaveImageByExtension(*FilePath, Composite, /*CompressionQuality=*/ 0);
+}
+
+// ─── Anim montage timeline grid ───────────────────────────────
+
+bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
+	const FString& AnimPath,
+	const FString& SkeletalMeshPath,
+	int32 NumTimeSamples,
+	const TArray<FString>& Views,
+	bool bBoneOverlay,
+	int32 CellWidth,
+	int32 CellHeight,
+	const FString& FilePath)
+{
+	if (bBoneOverlay)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("CaptureAnimMontageTimeline: bBoneOverlay is not yet implemented — proceeding without overlay."));
+	}
+	if (AnimPath.IsEmpty() || FilePath.IsEmpty() ||
+		Views.Num() == 0 || NumTimeSamples <= 0 ||
+		CellWidth <= 0 || CellHeight <= 0)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureAnimMontageTimeline: bad input."));
+		return false;
+	}
+
+	// 1. Load anim + mesh (same fallback chain as CaptureAnimPoseGrid).
+	UAnimSequenceBase* Anim = LoadObject<UAnimSequenceBase>(nullptr, *AnimPath);
+	if (!Anim)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("CaptureAnimMontageTimeline: failed to load anim '%s'"), *AnimPath);
+		return false;
+	}
+	USkeletalMesh* Mesh = nullptr;
+	if (!SkeletalMeshPath.IsEmpty())
+	{
+		Mesh = LoadObject<USkeletalMesh>(nullptr, *SkeletalMeshPath);
+	}
+	if (!Mesh && Anim->GetSkeleton())
+	{
+		Mesh = Anim->GetSkeleton()->GetPreviewMesh();
+	}
+	if (!Mesh)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("CaptureAnimMontageTimeline: no mesh — pass SkeletalMeshPath or set the Skeleton's PreviewMesh"));
+		return false;
+	}
+
+	// 2. Build preview scene + skel mesh component.
+	FPreviewScene::ConstructionValues CVS;
+	CVS.SetCreatePhysicsScene(false);
+	CVS.SetTransactional(false);
+	FPreviewScene PreviewScene(CVS);
+	UWorld* PreviewWorld = PreviewScene.GetWorld();
+	if (!PreviewWorld) return false;
+
+	USkeletalMeshComponent* SkelComp = NewObject<USkeletalMeshComponent>(
+		GetTransientPackage(), USkeletalMeshComponent::StaticClass());
+	SkelComp->SetSkeletalMesh(Mesh);
+	SkelComp->VisibilityBasedAnimTickOption = EVisibilityBasedAnimTickOption::AlwaysTickPoseAndRefreshBones;
+	SkelComp->SetUpdateAnimationInEditor(true);
+	SkelComp->bForceRefpose = false;
+	PreviewScene.AddComponent(SkelComp, FTransform::Identity);
+	SkelComp->PlayAnimation(Anim, /*bLooping=*/ false);
+
+	// 3. Generate time samples across [0, PlayLength].
+	const int32 N = FMath::Max(1, NumTimeSamples);
+	const float PlayLength = Anim->GetPlayLength();
+	TArray<float> SampleTimes;
+	SampleTimes.Reserve(N);
+	if (N == 1)
+	{
+		SampleTimes.Add(0.0f);
+	}
+	else
+	{
+		for (int32 i = 0; i < N; ++i)
+		{
+			SampleTimes.Add(i * PlayLength / static_cast<float>(N - 1));
+		}
+	}
+
+	// 4. Motion-aware framing: evaluate each sample once to build a union
+	//    bone AABB covering the entire timeline's pose envelope. Camera
+	//    then stays fixed across rows so motion reads cleanly and scale
+	//    is consistent between frames.
+	constexpr float FOVDeg = 45.0f;
+	FBox MotionAABB(ForceInit);
+	for (float T : SampleTimes)
+	{
+		BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, T);
+		const TArray<FTransform>& CSBones = SkelComp->GetComponentSpaceTransforms();
+		for (const FTransform& Tr : CSBones)
+		{
+			MotionAABB += Tr.GetLocation();
+		}
+	}
+	// Centre on pelvis at the middle sample (stable visual anchor); fall
+	// back to motion AABB centre.
+	const int32 MidIdx = N / 2;
+	BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, SampleTimes[MidIdx]);
+	const FReferenceSkeleton& RefSkel = Mesh->GetRefSkeleton();
+	const int32 PelvisIdx = BridgeLevelImpl::FindPelvisBoneIndex(
+		RefSkel, SkelComp->GetComponentSpaceTransforms().Num());
+	FVector Centre = (PelvisIdx != INDEX_NONE)
+		? SkelComp->GetComponentSpaceTransforms()[PelvisIdx].GetLocation()
+		: MotionAABB.GetCenter();
+	const FVector ToMin = (MotionAABB.Min - Centre).GetAbs();
+	const FVector ToMax = (MotionAABB.Max - Centre).GetAbs();
+	const FVector ToCorner = ToMin.ComponentMax(ToMax);
+	const float Radius = FMath::Max(10.0f, ToCorner.Size() * 1.15f);
+	const float HalfFovRad = FMath::DegreesToRadians(FOVDeg * 0.5f);
+	const float Distance = Radius / FMath::Max(0.01f, FMath::Tan(HalfFovRad));
+
+	UE_LOG(LogTemp, Verbose,
+		TEXT("CaptureAnimMontageTimeline: mesh=%s N=%d centre=%s motion_radius=%.1f distance=%.1f"),
+		*Mesh->GetName(), N, *Centre.ToString(), Radius, Distance);
+
+	// 5. Pre-compute camera poses per view (fixed across rows).
+	const int32 NumViews = Views.Num();
+	TArray<FVector>  CamLocs;  CamLocs.SetNum(NumViews);
+	TArray<FRotator> CamRots;  CamRots.SetNum(NumViews);
+	TArray<bool>     ViewOk;   ViewOk.SetNum(NumViews);
+	for (int32 c = 0; c < NumViews; ++c)
+	{
+		FVector Dir;
+		ViewOk[c] = BridgeLevelImpl::ResolveViewDirection(Views[c], Dir);
+		if (ViewOk[c])
+		{
+			CamLocs[c] = Centre + Dir * Distance;
+			CamRots[c] = (Centre - CamLocs[c]).Rotation();
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("CaptureAnimMontageTimeline: unknown view '%s' — skipping"), *Views[c]);
+		}
+	}
+
+	// 6. Allocate composite: rows = N (time), cols = NumViews.
+	const int32 CompW = NumViews * CellWidth;
+	const int32 CompH = N * CellHeight;
+	FImage Composite;
+	Composite.Init(CompW, CompH, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+	FColor* CompDst = reinterpret_cast<FColor*>(Composite.RawData.GetData());
+	for (int32 i = 0; i < CompW * CompH; ++i)
+	{
+		CompDst[i] = FColor(31, 31, 36, 255);
+	}
+
+	// 7. For each row (time), set pose + capture each view.
+	for (int32 Row = 0; Row < N; ++Row)
+	{
+		BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, SampleTimes[Row]);
+		for (int32 Col = 0; Col < NumViews; ++Col)
+		{
+			if (!ViewOk[Col]) continue;
+			TArray<FColor> Pixels;
+			if (!BridgeLevelImpl::CaptureViewToPixels(
+					PreviewWorld, CamLocs[Col], CamRots[Col], FOVDeg,
+					CellWidth, CellHeight, Pixels))
+			{
+				continue;
+			}
+			const int32 DstX = Col * CellWidth;
+			const int32 DstY = Row * CellHeight;
+			for (int32 Y = 0; Y < CellHeight; ++Y)
+			{
+				FMemory::Memcpy(
+					CompDst + (DstY + Y) * CompW + DstX,
+					Pixels.GetData() + Y * CellWidth,
+					CellWidth * sizeof(FColor));
+			}
+		}
+	}
+
+	// 8. Save PNG.
 	IPlatformFile& PlatformFile = FPlatformFileManager::Get().GetPlatformFile();
 	PlatformFile.CreateDirectoryTree(*FPaths::GetPath(FilePath));
 	return FImageUtils::SaveImageByExtension(*FilePath, Composite, /*CompressionQuality=*/ 0);

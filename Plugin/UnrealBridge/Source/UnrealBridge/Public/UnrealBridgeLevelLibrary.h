@@ -633,6 +633,38 @@ public:
 		const FString& FilePath);
 
 	/**
+	 * Render an anim's timeline as a grid: NumTimeSamples rows × len(Views)
+	 * columns, composited into one PNG. Time samples are evenly spaced
+	 * across [0, play_length]; views repeat per row with FIXED camera poses
+	 * so motion reads left-to-right within a row and top-to-bottom across
+	 * rows.
+	 *
+	 * Camera framing is motion-aware: the function evaluates the pose at
+	 * every sample time first to build a union bone AABB covering the
+	 * whole timeline, then positions cameras to fit that. Character scale
+	 * stays consistent across rows even when the anim translates the pelvis.
+	 *
+	 * @param AnimPath          Soft path to UAnimSequenceBase.
+	 * @param SkeletalMeshPath  Empty → skeleton's preview mesh.
+	 * @param NumTimeSamples    Rows; times = 0, L/(N-1), 2L/(N-1), ..., L.
+	 *                          N=1 → single row at t=0.
+	 * @param Views             Column views; same names as CaptureAnimPoseGrid.
+	 * @param bBoneOverlay      Reserved — not yet implemented; ignored.
+	 * @param CellWidth,CellHeight  Pixel size per cell (e.g. 384).
+	 * @param FilePath          Output PNG path (parent dirs auto-created).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level|Vision")
+	static bool CaptureAnimMontageTimeline(
+		const FString& AnimPath,
+		const FString& SkeletalMeshPath,
+		int32 NumTimeSamples,
+		const TArray<FString>& Views,
+		bool bBoneOverlay,
+		int32 CellWidth,
+		int32 CellHeight,
+		const FString& FilePath);
+
+	/**
 	 * Physics-overlap query: actors whose collision primitives intersect
 	 * a sphere at `Center` with `Radius` cm. Distinct from
 	 * `FindActorsInRadius`, which tests actor centroids — overlap catches
