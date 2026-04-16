@@ -357,6 +357,263 @@ Flagged so a future session can close the gap:
 - ✅ Sticky-input ticker not migrated for now.
 - ✅ Cross-handler shared state via `bridge_state`; per-handler private state via `state`. Both injected to preamble.
 
+## P5 implementation strategy (drafted 2026-04-17)
+
+Three new adapters; all three trigger sources are non-dynamic
+multicasts, so **no listener UClasses needed** — adapters can bind
+lambdas directly. Wiring effort: one `RegisterAdapter` line in
+`UBridgeReactiveSubsystem::Initialize` per adapter; one new
+`RegisterEditor*` UFUNCTION per adapter on
+`UnrealBridgeReactiveLibrary`. `EBridgeTrigger::AssetEvent | PieEvent
+| BpCompiled` enum slots already reserved in
+`UnrealBridgeReactiveTypes.h`. Build deps already cover everything
+needed (`AssetRegistry`, `UnrealEd`, `Kismet`).
+
+### A1. `BridgeReactiveAdapter_AssetEvent`
+
+- **File:** `Plugin/UnrealBridge/Source/UnrealBridge/Private/BridgeReactiveAdapter_AssetEvent.cpp`
+- **Delegates bound (one-shot, refcounted by handler count):**
+  - `IAssetRegistry::OnAssetAdded()` → dispatch with `Selector="Added"`
+  - `IAssetRegistry::OnAssetRemoved()` → `Selector="Removed"`
+  - `IAssetRegistry::OnAssetRenamed()` → `Selector="Renamed"`
+  - `IAssetRegistry::OnAssetUpdated()` → `Selector="Updated"`
+- **Filtering:** `Selector=NAME_None` matches any event (existing
+  `DispatchLocked` logic at `UnrealBridgeReactiveSubsystem.cpp:556`
+  treats none-selector handlers as "match all"). No special code.
+- **Subject:** always null (global). Per-handler class filter happens
+  inside the script via `ctx['asset_class']`.
+- **ctx keys:** `trigger='asset_event'`, `event` (Added/Removed/Renamed/
+  Updated), `asset_path` (str), `asset_class` (str), `package_name`
+  (str), `old_path` (str — empty unless `event=='Renamed'`).
+- **Library entry point:**
+  `RegisterEditorAssetEvent(task_name, description, event_filter,
+  script, script_path, tags, lifetime, error_policy, throttle_ms)`.
+  `event_filter=""` → Selector=NAME_None (match all). Otherwise must be
+  one of the four event names; reject with warning otherwise.
+- **Refcounting model:** copy `FBridgeAnimNotifyAdapter` shape — keep
+  one `int32 HandlerCount`; on first add, bind all four delegates +
+  store `FDelegateHandle`s; on last remove, unbind. Skip the
+  per-Subject `FBinding` array (no per-subject grouping needed).
+- **Initial-scan gating:** AssetRegistry fires `OnAssetAdded` for every
+  asset during its discovery scan at editor startup. Agents register
+  long after that, so v1 doesn't gate. If startup-time registration
+  becomes a use case, gate with
+  `IAssetRegistry::IsLoadingAssets()`.
+
+### A2. `BridgeReactiveAdapter_PieState`
+
+- **File:** `Plugin/UnrealBridge/Source/UnrealBridge/Private/BridgeReactiveAdapter_PieState.cpp`
+- **Delegates bound (refcount as above):**
+  - `FEditorDelegates::PreBeginPIE` → `Selector="PreBeginPIE"`
+  - `FEditorDelegates::BeginPIE` → `Selector="BeginPIE"`
+  - `FEditorDelegates::PostPIEStarted` → `Selector="PostPIEStarted"`
+  - `FEditorDelegates::PrePIEEnded` → `Selector="PrePIEEnded"`
+  - `FEditorDelegates::EndPIE` → `Selector="EndPIE"`
+  - `FEditorDelegates::PausePIE` → `Selector="PausePIE"`
+  - `FEditorDelegates::ResumePIE` → `Selector="ResumePIE"`
+  - `FEditorDelegates::SingleStepPIE` → `Selector="SingleStepPIE"`
+- **Subject:** null. **ctx keys:** `trigger='pie_event'`, `phase` (str),
+  `is_simulating` (bool — from delegate payload, where applicable).
+- **Coordination with existing `HandlePieEnded`.** The subsystem
+  already binds `FEditorDelegates::EndPIE` to purge `WhilePIE`
+  handlers (`UnrealBridgeReactiveSubsystem.cpp:173`). The adapter's
+  EndPIE handler must run **after** the purge so handlers can
+  observe their own removal. Subscribe later via `AddLambda` —
+  delegate fire order matches subscription order in UE — and don't
+  rely on it; instead, document that `EndPIE` handlers should not
+  expect any other PIE-scoped handler to still exist.
+- **Library entry point:** `RegisterEditorPieEvent(task_name,
+  description, phase_filter, script, ...)`. `phase_filter=""` → Any.
+
+### A3. `BridgeReactiveAdapter_BpCompiled`
+
+- **File:** `Plugin/UnrealBridge/Source/UnrealBridge/Private/BridgeReactiveAdapter_BpCompiled.cpp`
+- **Two binding modes:**
+  1. **Per-blueprint (Subject = UBlueprint).** Bind to `UBlueprint::
+     OnCompiled()` (a `FOnBlueprintCompiledMulticast` —
+     non-dynamic). Maintain `TMap<TWeakObjectPtr<UBlueprint>,
+     FBindingState>` keyed by Subject for per-BP refcount.
+  2. **Global (Subject = null).** Bind once to
+     `GEditor->OnBlueprintCompiled()` (broadcast for any compile).
+     Use the same one-binding-refcount pattern as AssetEvent for the
+     global path.
+- **Subject = UBlueprint** (per-BP) or null (global). **Selector** =
+  always NAME_None (no sub-types).
+- **ctx keys:** `trigger='bp_compiled'`, `blueprint_path` (str),
+  `parent_class` (str), `bytecode_only` (bool — pull from compile
+  context if reachable; otherwise omit and document gap).
+- **Library entry point:** `RegisterEditorBpCompiled(task_name,
+  description, blueprint_path_filter, script, ...)`. Empty path =
+  global, otherwise resolve via `LoadObject<UBlueprint>` and store
+  Subject. Reject with warning if path doesn't load.
+
+### Wiring (A4)
+
+- `UnrealBridgeReactiveSubsystem.cpp:15-23`: add three forward decls
+  (`MakeAssetEventAdapter` / `MakePieStateAdapter` /
+  `MakeBpCompiledAdapter`).
+- `UnrealBridgeReactiveSubsystem.cpp:197-203`: add three
+  `RegisterAdapter` calls.
+- `UnrealBridgeReactiveLibrary.h/cpp`: add three `RegisterEditor*`
+  UFUNCTIONs, mirroring the runtime-entry-point shape (TaskName /
+  Description / filter / Script / ScriptPath / Tags / Lifetime /
+  ErrorPolicy / ThrottleMs). Set `Record.Scope = "editor"` so
+  `IssueHandlerId` produces `ed_<seq>_<rand4>` ids.
+
+### Verify (A5)
+
+Each end-to-end smoke test is a single bridge `exec-file`:
+
+- **AssetEvent:** register handler with `event_filter='Renamed'`;
+  duplicate a temp Material to a new path via
+  `unreal.EditorAssetLibrary.duplicate_asset`; rename via
+  `rename_asset`; assert handler `call_count == 1` with correct
+  `old_path` / new path in stats `LastError` field is empty.
+- **PieEvent:** register with `phase_filter='BeginPIE'`; call
+  `unreal.UnrealBridgeEditorLibrary.start_pie` then `stop_pie`;
+  assert one fire (BeginPIE only).
+- **BpCompiled:** register with empty `blueprint_path_filter` (global);
+  load a BP via `unreal.EditorAssetLibrary.load_blueprint_class`;
+  call `unreal.UnrealBridgeEditorLibrary.compile_blueprints`; assert
+  fire with correct `blueprint_path`.
+
+Cleanup between runs via `clear_all('editor')`.
+
+### Docs (A6)
+
+- `bridge-reactive.md`: add three new sections (one per adapter)
+  with a worked register example. Update the table of contents
+  / overview block.
+- `reactive-handlers.md`: change P5 row to ✅ done, append
+  implementation notes if anything diverged.
+
+---
+
+## P6 implementation strategy (drafted 2026-04-17)
+
+Three independent sub-features. **B1 is cheap** (single function
+update); **B2 is medium** (new dispatch path + ASC discovery hook);
+**B3 is the big one** (schema design + persistence + subject re-resolution).
+Land in B1 → B2 → B3 order so each is independently verifiable.
+
+### B1. Tag wildcard matching
+
+- **Surface:** `list_all_handlers(filter_tag="combat.*")` returns
+  handlers whose tags match the wildcard pattern.
+- **Implementation:** in `UBridgeReactiveSubsystem::ListAllHandlers`
+  (`UnrealBridgeReactiveSubsystem.cpp:404` area), replace exact
+  `Tags.Contains(FilterTag)` with `Tags.ContainsByPredicate([&](const
+  FString& T){ return T.MatchesWildcard(FilterTag); })`. Use UE's
+  built-in `FString::MatchesWildcard` — handles `*` and `?` correctly,
+  no regex dep.
+- **Backwards compatible:** patterns without wildcards still match
+  exactly via `MatchesWildcard`.
+- **Verify:** register handlers with tags `["combat.hit"]`,
+  `["combat.dodge"]`, `["movement"]`; `list_all_handlers(filter_tag=
+  "combat.*")` returns the first two only.
+
+### B2. Global GameplayEvent listener (no-subject)
+
+- **Surface:** `register_runtime_gameplay_event(target_actor_name=
+  "", event_tag="Event.Combat.Hit", ...)` — empty target means
+  "fire whenever any live ASC receives this tag".
+- **Discovery model:** at register time, snapshot all live ASCs in
+  the PIE world via `TActorIterator<AActor>` + `ResolveActorASC`,
+  bind to each. Subscribe to `UWorld::OnActorSpawned` to catch
+  ASCs created mid-PIE, and to `UWorld::OnActorDestroyed` to drop
+  bindings cleanly. PIE start/stop already handled by existing
+  WorldCleanup wiring.
+- **Adapter changes:** `BridgeReactiveAdapter_GameplayEvent`
+  needs a "global handler" bucket alongside the existing
+  per-Subject map. Single bound delegate per ASC; on fire,
+  dispatch to both per-subject handlers (existing path) AND
+  global handlers whose tag matches.
+- **Subject storage in record:** keep `Subject = nullptr`,
+  `Selector = tag`, and add `AdapterPayload = "global"` as a
+  marker so the adapter can route correctly on `OnHandlerAdded`.
+  Alternative: a new `bIsGlobal` field on the record, but
+  `AdapterPayload` keeps the schema flat.
+- **Edge cases to design out:**
+  - PIE not running at register time → defer ASC discovery until
+    `FEditorDelegates::PostPIEStarted`. Park record in pending list.
+  - Late-spawned actors with ASC on PlayerState — `OnActorSpawned`
+    fires before PlayerState assigns; need a one-tick delayed
+    re-resolve.
+  - Editor world ASCs (asset preview) — exclude unless
+    `WorldType == EWorldType::PIE`.
+- **Verify:** spawn a fresh ASC mid-PIE, send GameplayEvent on it,
+  assert global handler fires; destroy actor, assert binding
+  dropped (no zombie fires next time tag is sent).
+
+### B3. JSON persistence
+
+- **What persists:** all handler records — task_name, description,
+  tags, script (inline or path), lifetime, error_policy,
+  throttle_ms, trigger_type, subject path string (if any),
+  selector, adapter_payload. Stats deliberately NOT persisted
+  (counts reset on reload — load is "first run after restart").
+- **What does NOT persist by default:**
+  - `WhilePIE` lifetime (purpose-bound to one session).
+  - Handlers with `bPersist=false` flag (new optional field on
+    every register entry point, default `true`).
+- **File layout:** `<ProjectDir>/Saved/UnrealBridge/
+  reactive-handlers.json`. One file, top-level array of records.
+  Schema versioned via top-level `{ "version": 1, "handlers":
+  [...] }` so future migrations have somewhere to hook.
+- **Save triggers:** on `RegisterHandler` success, `UnregisterHandler`,
+  `PauseHandler`, `ResumeHandler`, `ClearHandlers`. Debounce with a
+  100 ms `FTSTicker` coalescer to avoid hammering disk during
+  burst registers (e.g. agent re-creating its 20 handlers on
+  reconnect).
+- **Load:** in `UBridgeReactiveSubsystem::Initialize`, after
+  adapters are registered, parse JSON and replay each record via
+  the same code path as runtime register, **except**:
+  - Re-issue HandlerId? Or preserve? **Preserve** — agents stash
+    HandlerIds across sessions. Add an `internal` overload of
+    `RegisterHandler` that accepts a pre-existing id and skips
+    `IssueHandlerId`.
+  - On subject re-resolve failure, push to a `DeferredHandlers`
+    list that retries on `PostPIEStarted` (since most subjects
+    are PIE-tied actors).
+- **Subject re-resolution:**
+  - GameplayEvent subject = ASC. Stored path is the ASC's path,
+    not the actor's. On reload: `LoadObject<UAbilitySystemComponent>`,
+    fall back to `FindActorByName(<actor-path-derived>)` →
+    `ResolveActorASC`.
+  - AnimNotify subject = AnimInstance. Same path-load + fallback.
+  - PerActor adapters (ActorLifecycle, MovementMode, InputAction):
+    `LoadObject<AActor>`.
+  - Per-BP BpCompiled subject: `LoadObject<UBlueprint>` (editor
+    world, no PIE issues).
+- **Failure modes & UX:**
+  - Subject not found after one PIE start cycle → log warning,
+    leave in `DeferredHandlers`. `list_all_handlers()` should
+    surface deferred records with `subject_path = "<unresolved>"`
+    so agents see them.
+  - Schema version mismatch → log + skip the file (don't drop user
+    data).
+  - Corrupt JSON → rename to `.json.bak.<timestamp>`, start fresh.
+- **Library surface additions:**
+  - `RegisterEditor*` / `RegisterRuntime*` gain optional
+    `bool bPersist = true` parameter (default true; agents pass
+    false for ephemeral throwaway handlers).
+  - New `SaveAllHandlers()` and `LoadAllHandlers()` for explicit
+    control (e.g. forced reload after editing the JSON externally).
+- **Verify:** register 5 handlers across multiple trigger types,
+  restart editor, check `list_all_handlers` returns the same 5
+  with the same HandlerIds; fire each event source and confirm
+  they still respond.
+
+### Open question (defer until building)
+
+- Should persistence be per-project (`Saved/UnrealBridge/`) or
+  per-user (`%APPDATA%/UnrealBridge/`)? Per-project is more useful
+  (handlers tied to project content), per-user is friendlier when
+  multiple projects share an agent setup. Default to per-project
+  with override env var.
+
+---
+
 ## Tradeoffs / gotchas to revisit during implementation
 
 - **Heavy handler scripts hitch the frame.** No way around this in
