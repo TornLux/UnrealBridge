@@ -31,6 +31,7 @@
 #include "EnhancedInputSubsystems.h"
 #include "EnhancedInputComponent.h"
 #include "Containers/Ticker.h"
+#include "UnrealBridgeReactiveSubsystem.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridgeAgent, Log, All);
 
@@ -62,16 +63,36 @@ namespace BridgeAgentImpl
 		{
 			return;
 		}
-		GStickyTicker = FTSTicker::GetCoreTicker().AddTicker(
-			FTickerDelegate::CreateStatic(&StickyTick), 0.0f);
+		// Delegate ticker ownership to the reactive subsystem: centralises
+		// lifetime so editor shutdown cleans us up even if we forget.
+		if (UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get())
+		{
+			GStickyTicker = Sub->RegisterPersistentTicker(
+				[](float Dt) { return StickyTick(Dt); },
+				TEXT("StickyInput"));
+		}
+		else
+		{
+			// Subsystem unavailable — fall back to direct ticker so sticky still
+			// works during tests that run before subsystem init.
+			GStickyTicker = FTSTicker::GetCoreTicker().AddTicker(
+				FTickerDelegate::CreateStatic(&StickyTick), 0.0f);
+		}
 	}
 
 	static void StopStickyTickerIfIdle()
 	{
 		if (GStickyInputs.Num() == 0 && GStickyTicker.IsValid())
 		{
-			FTSTicker::GetCoreTicker().RemoveTicker(GStickyTicker);
-			GStickyTicker.Reset();
+			if (UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get())
+			{
+				Sub->UnregisterPersistentTicker(GStickyTicker);
+			}
+			else
+			{
+				FTSTicker::GetCoreTicker().RemoveTicker(GStickyTicker);
+				GStickyTicker.Reset();
+			}
 		}
 	}
 
