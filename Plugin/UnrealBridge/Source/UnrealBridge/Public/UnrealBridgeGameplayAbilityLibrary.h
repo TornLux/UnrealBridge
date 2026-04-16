@@ -596,4 +596,61 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
 	static TArray<FBridgeActiveAbilityInfo> GetActorActiveAbilities(const FString& ActorName);
+
+	/**
+	 * Send a GameplayEvent to an actor's ASC by name. Searches PIE worlds first
+	 * (so this works during play), then the editor world. Mirrors
+	 * UAbilitySystemBlueprintLibrary::SendGameplayEventToActor with a string
+	 * actor handle so callers don't need a Python UObject reference.
+	 *
+	 * @param ActorName       Actor label or FName.
+	 * @param EventTag        Registered gameplay tag to fire.
+	 * @param EventMagnitude  Optional magnitude payload (FGameplayEventData::EventMagnitude).
+	 * @return Number of triggered abilities (0 means no abilities responded — the event
+	 *         still fired and any registered GenericGameplayEventCallbacks will run).
+	 *         -1 indicates the actor or its ASC could not be resolved.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 SendGameplayEventByName(
+		const FString& ActorName,
+		const FString& EventTag,
+		float EventMagnitude);
+
+	/**
+	 * Ensure a UAbilitySystemComponent exists at the given Location, creating
+	 * one if absent. Searches PIE worlds first, then editor world.
+	 *
+	 * @param Location  "Actor" (default) attaches ASC to the actor itself;
+	 *                  "Controller" attaches to the actor's Controller (pawn only);
+	 *                  "PlayerState" attaches to the actor's PlayerState (pawn only).
+	 *                  Useful for exercising the ASC resolution walker with
+	 *                  non-standard placements during tests.
+	 *
+	 * If an ASC already exists at the requested Location, this is a no-op
+	 * and returns true.
+	 *
+	 * @return true on success, false when the actor/target can't be found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool EnsureAbilitySystemComponent(const FString& ActorName, const FString& Location = TEXT("Actor"));
+
+	/**
+	 * Test scaffolding: ensure the actor has a UBridgeTestAttributeSet (Health+Mana)
+	 * registered on its ASC. Resolves the ASC via the standard walker
+	 * (Actor / Pawn.PlayerState / Pawn.Controller / PC.PlayerState). Attribute
+	 * set is initialized with Health=100, Mana=100. Safe to call multiple times
+	 * — re-registration is avoided if already present.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool EnsureBridgeTestAttributeSet(const FString& ActorName);
+
+	/**
+	 * Set a numeric attribute on the actor's ASC via SetNumericAttributeBase.
+	 * Fires the attribute-value-change delegate that FBridgeAttributeChangedAdapter
+	 * listens to. AttributeName accepts "AttrSet.Field" or bare "Field".
+	 *
+	 * @return true when the attribute was found and written.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool SetActorAttributeValue(const FString& ActorName, const FString& AttributeName, float Value);
 };

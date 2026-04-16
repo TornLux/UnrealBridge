@@ -1,4 +1,5 @@
 #include "UnrealBridgeGameplayAbilityLibrary.h"
+#include "UnrealBridgeTestAttributeSet.h"
 #include "Abilities/GameplayAbility.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
@@ -11,6 +12,10 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
+#include "GameFramework/Controller.h"
+#include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
+#include "GameFramework/PlayerState.h"
 #include "GameplayAbilitySpec.h"
 #include "GameplayEffect.h"
 #include "GameplayEffectComponent.h"
@@ -1596,3 +1601,305 @@ TArray<FBridgeActiveAbilityInfo> UUnrealBridgeGameplayAbilityLibrary::GetActorAc
 	}
 	return Results;
 }
+
+// ─── Send GameplayEvent by actor name ────────────────────────
+
+int32 UUnrealBridgeGameplayAbilityLibrary::SendGameplayEventByName(
+	const FString& ActorName,
+	const FString& EventTag,
+	float EventMagnitude)
+{
+	if (!GEditor)
+	{
+		return -1;
+	}
+
+	auto SearchWorld = [&ActorName](UWorld* World) -> AActor*
+	{
+		if (!World) return nullptr;
+		for (TActorIterator<AActor> It(World); It; ++It)
+		{
+			AActor* A = *It;
+			if (!A) continue;
+			if (A->GetName() == ActorName || A->GetActorNameOrLabel() == ActorName)
+			{
+				return A;
+			}
+		}
+		return nullptr;
+	};
+
+	AActor* Actor = nullptr;
+	for (const FWorldContext& Ctx : GEditor->GetWorldContexts())
+	{
+		if (Ctx.WorldType == EWorldType::PIE)
+		{
+			Actor = SearchWorld(Ctx.World());
+			if (Actor) break;
+		}
+	}
+	if (!Actor)
+	{
+		Actor = SearchWorld(GEditor->GetEditorWorldContext().World());
+	}
+	if (!Actor)
+	{
+		return -1;
+	}
+
+	// Walk standard GAS placement patterns: actor → pawn's PlayerState → pawn's
+	// Controller (and its PlayerState). Mirrors UnrealBridgeReactiveLibrary's
+	// ResolveActorASC; this project keeps the ASC on PlayerState.
+	auto FromObject = [](UObject* Obj) -> UAbilitySystemComponent*
+	{
+		if (!Obj) return nullptr;
+		if (IAbilitySystemInterface* I = Cast<IAbilitySystemInterface>(Obj))
+		{
+			if (UAbilitySystemComponent* ASC = I->GetAbilitySystemComponent()) return ASC;
+		}
+		if (AActor* A = Cast<AActor>(Obj))
+		{
+			return A->FindComponentByClass<UAbilitySystemComponent>();
+		}
+		return nullptr;
+	};
+
+	UAbilitySystemComponent* ASC = FromObject(Actor);
+	if (!ASC)
+	{
+		if (APawn* Pawn = Cast<APawn>(Actor))
+		{
+			if (APlayerState* PS = Pawn->GetPlayerState())
+			{
+				ASC = FromObject(PS);
+			}
+			if (!ASC)
+			{
+				if (AController* Ctrl = Pawn->GetController())
+				{
+					ASC = FromObject(Ctrl);
+					if (!ASC)
+					{
+						if (APlayerController* PC = Cast<APlayerController>(Ctrl))
+						{
+							ASC = FromObject(PC->PlayerState);
+						}
+					}
+				}
+			}
+		}
+	}
+	if (!ASC)
+	{
+		return -1;
+	}
+
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*EventTag), false);
+	if (!Tag.IsValid())
+	{
+		return -1;
+	}
+
+	FGameplayEventData EventData;
+	EventData.EventTag = Tag;
+	EventData.Instigator = Actor;
+	EventData.Target = Actor;
+	EventData.EventMagnitude = EventMagnitude;
+
+	return ASC->HandleGameplayEvent(Tag, &EventData);
+}
+
+// ─── Ensure ASC on actor (test scaffolding) ─────────────────
+
+namespace BridgeGameplayAbilityImpl
+{
+	/** Same PIE-first-then-editor lookup used by SendGameplayEventByName. */
+	AActor* FindActorAnyWorld(const FString& ActorName)
+	{
+		if (!GEditor) return nullptr;
+		auto SearchWorld = [&ActorName](UWorld* World) -> AActor*
+		{
+			if (!World) return nullptr;
+			for (TActorIterator<AActor> It(World); It; ++It)
+			{
+				AActor* A = *It;
+				if (!A) continue;
+				if (A->GetName() == ActorName || A->GetActorNameOrLabel() == ActorName)
+				{
+					return A;
+				}
+			}
+			return nullptr;
+		};
+		for (const FWorldContext& Ctx : GEditor->GetWorldContexts())
+		{
+			if (Ctx.WorldType == EWorldType::PIE)
+			{
+				if (AActor* A = SearchWorld(Ctx.World())) return A;
+			}
+		}
+		return SearchWorld(GEditor->GetEditorWorldContext().World());
+	}
+
+	/** Walk Pawn→PlayerState→Controller→PC.PlayerState looking for an ASC. Mirrors the reactive library walker. */
+	UAbilitySystemComponent* WalkForASC(AActor* Actor)
+	{
+		if (!Actor) return nullptr;
+		auto FromObject = [](UObject* Obj) -> UAbilitySystemComponent*
+		{
+			if (!Obj) return nullptr;
+			if (IAbilitySystemInterface* I = Cast<IAbilitySystemInterface>(Obj))
+			{
+				if (UAbilitySystemComponent* ASC = I->GetAbilitySystemComponent()) return ASC;
+			}
+			if (AActor* A = Cast<AActor>(Obj))
+			{
+				return A->FindComponentByClass<UAbilitySystemComponent>();
+			}
+			return nullptr;
+		};
+		if (UAbilitySystemComponent* ASC = FromObject(Actor)) return ASC;
+		if (APawn* Pawn = Cast<APawn>(Actor))
+		{
+			if (APlayerState* PS = Pawn->GetPlayerState())
+			{
+				if (UAbilitySystemComponent* ASC = FromObject(PS)) return ASC;
+			}
+			if (AController* Ctrl = Pawn->GetController())
+			{
+				if (UAbilitySystemComponent* ASC = FromObject(Ctrl)) return ASC;
+				if (APlayerController* PC = Cast<APlayerController>(Ctrl))
+				{
+					if (UAbilitySystemComponent* ASC = FromObject(PC->PlayerState)) return ASC;
+				}
+			}
+		}
+		return nullptr;
+	}
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::EnsureAbilitySystemComponent(const FString& ActorName, const FString& Location)
+{
+	AActor* Actor = BridgeGameplayAbilityImpl::FindActorAnyWorld(ActorName);
+	if (!Actor) return false;
+
+	// Resolve the UObject that should host the ASC.
+	UObject* Host = nullptr;
+	if (Location.Equals(TEXT("Controller"), ESearchCase::IgnoreCase))
+	{
+		APawn* Pawn = Cast<APawn>(Actor);
+		if (!Pawn || !Pawn->GetController())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("EnsureAbilitySystemComponent: Location=Controller but actor '%s' has no Controller"),
+				*ActorName);
+			return false;
+		}
+		Host = Pawn->GetController();
+	}
+	else if (Location.Equals(TEXT("PlayerState"), ESearchCase::IgnoreCase))
+	{
+		APawn* Pawn = Cast<APawn>(Actor);
+		if (!Pawn || !Pawn->GetPlayerState())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("EnsureAbilitySystemComponent: Location=PlayerState but actor '%s' has no PlayerState"),
+				*ActorName);
+			return false;
+		}
+		Host = Pawn->GetPlayerState();
+	}
+	else
+	{
+		Host = Actor;
+	}
+
+	AActor* HostActor = Cast<AActor>(Host);
+	if (!HostActor) return false;
+
+	// No-op if this host already has one.
+	if (HostActor->FindComponentByClass<UAbilitySystemComponent>() != nullptr)
+	{
+		return true;
+	}
+
+	UAbilitySystemComponent* NewASC = NewObject<UAbilitySystemComponent>(HostActor, TEXT("BridgeTestASC"));
+	NewASC->RegisterComponent();
+	// For Controller/PlayerState placements the ASC conventionally takes the
+	// owning actor = the host, avatar = the controlled pawn.
+	AActor* Avatar = (HostActor == Actor) ? Actor : Actor;
+	NewASC->InitAbilityActorInfo(HostActor, Avatar);
+	return true;
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::EnsureBridgeTestAttributeSet(const FString& ActorName)
+{
+	AActor* Actor = BridgeGameplayAbilityImpl::FindActorAnyWorld(ActorName);
+	if (!Actor) return false;
+
+	UAbilitySystemComponent* ASC = BridgeGameplayAbilityImpl::WalkForASC(Actor);
+	if (!ASC)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("EnsureBridgeTestAttributeSet: no ASC reachable on '%s' (call EnsureAbilitySystemComponent first)"),
+			*ActorName);
+		return false;
+	}
+
+	// Already spawned?
+	for (const UAttributeSet* AS : ASC->GetSpawnedAttributes())
+	{
+		if (AS && AS->IsA(UBridgeTestAttributeSet::StaticClass()))
+		{
+			return true;
+		}
+	}
+
+	UBridgeTestAttributeSet* NewAS = NewObject<UBridgeTestAttributeSet>(ASC->GetOwner());
+	ASC->AddSpawnedAttribute(NewAS);
+	// Seed base values so the first modification produces a clean delta.
+	if (FStructProperty* HealthProp = FindFProperty<FStructProperty>(
+		UBridgeTestAttributeSet::StaticClass(), TEXT("Health")))
+	{
+		ASC->SetNumericAttributeBase(FGameplayAttribute(HealthProp), 100.f);
+	}
+	if (FStructProperty* ManaProp = FindFProperty<FStructProperty>(
+		UBridgeTestAttributeSet::StaticClass(), TEXT("Mana")))
+	{
+		ASC->SetNumericAttributeBase(FGameplayAttribute(ManaProp), 100.f);
+	}
+	return true;
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::SetActorAttributeValue(const FString& ActorName, const FString& AttributeName, float Value)
+{
+	AActor* Actor = BridgeGameplayAbilityImpl::FindActorAnyWorld(ActorName);
+	if (!Actor) return false;
+
+	UAbilitySystemComponent* ASC = BridgeGameplayAbilityImpl::WalkForASC(Actor);
+	if (!ASC) return false;
+
+	FString SetName, BareName;
+	if (!AttributeName.Split(TEXT("."), &SetName, &BareName))
+	{
+		BareName = AttributeName;
+	}
+
+	for (const UAttributeSet* AS : ASC->GetSpawnedAttributes())
+	{
+		if (!AS) continue;
+		if (!SetName.IsEmpty() && AS->GetClass()->GetName() != SetName) continue;
+		for (TFieldIterator<FStructProperty> It(AS->GetClass()); It; ++It)
+		{
+			FStructProperty* P = *It;
+			if (!P || P->Struct != FGameplayAttributeData::StaticStruct()) continue;
+			if (P->GetName() == BareName)
+			{
+				ASC->SetNumericAttributeBase(FGameplayAttribute(P), Value);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
