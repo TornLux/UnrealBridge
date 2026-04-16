@@ -1215,3 +1215,103 @@ else:
 - World gravity is typically `–980 cm/s²` in UE defaults. Verify with
   `unreal.GameplayStatics.get_global_gravity_z()`.
 
+---
+
+## OS-level key simulation (Slate bypass)
+
+When a UI popup / full-screen menu is active, UE typically removes all
+gameplay `InputMappingContext`s. In this state **every Enhanced Input
+injection is silently dropped** — `inject_enhanced_input_axis`,
+`set_sticky_input`, and `trigger_input_action` all return True but
+produce no effect because no IMC is listening.
+
+**Detection:** call `is_mapping_context_active` on the project's
+gameplay IMCs. If none are active while PIE is running, a blocking UI
+is open.
+
+**Solution:** simulate the key press at the OS / Slate level via
+`ctypes.windll.user32.keybd_event`. This injects a hardware-level
+event that Slate processes through its normal key-event pipeline,
+reaching the focused widget regardless of Enhanced Input state.
+
+**IMPORTANT:** This runs **outside** the bridge `exec` — it is a
+regular Python call on the Claude-side process. Do NOT put this inside
+a bridge exec script (the bridge Python runs in-process on the
+GameThread where `keybd_event` would target the wrong window).
+
+### press_key helper
+
+```python
+# Run from bash, NOT inside bridge exec
+python -c "
+import ctypes, time
+
+VK_E = 0x45          # virtual-key code for E
+KEYEVENTF_KEYUP = 0x0002
+
+ctypes.windll.user32.keybd_event(VK_E, 0, 0, 0)          # key down
+time.sleep(0.05)
+ctypes.windll.user32.keybd_event(VK_E, 0, KEYEVENTF_KEYUP, 0)  # key up
+print('E pressed')
+"
+```
+
+### Common virtual-key codes
+
+| Key | VK code | Hex |
+|-----|---------|-----|
+| E | 69 | 0x45 |
+| F | 70 | 0x46 |
+| Enter | 13 | 0x0D |
+| Escape | 27 | 0x1B |
+| Space | 32 | 0x20 |
+| Tab | 9 | 0x09 |
+
+Full list: [Microsoft VK docs](https://learn.microsoft.com/en-us/windows/win32/inputdev/virtual-key-codes)
+
+### Pattern: interact then dismiss popup
+
+```bash
+# 1. Inject the project's interaction IA (while IMCs are still active)
+python bridge.py exec "
+import unreal
+L = unreal.UnrealBridgeGameplayLibrary
+L.clear_sticky_input()
+L.inject_enhanced_input_axis('<interaction_IA_path>', unreal.Vector(1,0,0))
+"
+
+# 2. Wait for popup to appear
+sleep 1.0
+
+# 3. Dismiss popup via OS key press (Enhanced Input is dead here)
+python -c "
+import ctypes, time
+VK = 0x45  # whichever key the popup expects
+ctypes.windll.user32.keybd_event(VK, 0, 0, 0)
+time.sleep(0.05)
+ctypes.windll.user32.keybd_event(VK, 0, 0x0002, 0)
+"
+
+# 4. Wait for UI to close, then verify
+sleep 0.5
+python bridge.py exec "
+import unreal
+alive = unreal.UnrealBridgeGameplayLibrary.get_pie_actor_location('<actor_name>') is not None
+print(f'picked={not alive}')
+"
+```
+
+**Pitfalls**
+
+- `keybd_event` targets the **foreground window**. The UE editor must
+  be the active window. If Claude Code's terminal is focused instead,
+  the key goes there. In practice PIE grabs focus on play.
+- Hold duration matters: some UE widgets debounce or require a minimum
+  hold. 50 ms (`time.sleep(0.05)`) works for simple confirm buttons;
+  increase to 100–150 ms for hold-triggered widgets.
+- `keybd_event` is Windows-only. On macOS/Linux, use platform
+  equivalents (CGEventPost / xdotool).
+- After the popup closes, gameplay IMCs are typically restored within
+  1–2 frames. Add a short sleep (0.3–0.5 s) before resuming
+  Enhanced Input injection.
+
