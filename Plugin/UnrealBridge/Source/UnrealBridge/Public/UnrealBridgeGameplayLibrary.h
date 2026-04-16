@@ -1017,4 +1017,17 @@ public:
 	/** Short class name of the active `AGameStateBase`. Empty outside PIE. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static FString GetGameStateClassName();
+
+	/**
+	 * Inject a key press/release event through FSlateApplication.
+	 * Bypasses Enhanced Input entirely — the event is processed by
+	 * whatever Slate widget currently has focus (UMG menus, CommonUI, etc.).
+	 *
+	 * @param KeyName   FKey name string, e.g. "Gamepad_FaceButton_Bottom",
+	 *                  "Gamepad_DPad_Down", "SpaceBar", "Enter", "BackSpace".
+	 * @param bPressed  true = key down, false = key up.
+	 * @return true if the event was dispatched.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
+	static bool PressKey(const FString& KeyName, bool bPressed = true);
 };

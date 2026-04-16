@@ -23,6 +23,8 @@
 #include "NavigationSystem.h"
 #include "NavigationPath.h"
 #include "InputAction.h"
+#include "Framework/Application/SlateApplication.h"
+#include "InputCoreTypes.h"
 #include "InputActionValue.h"
 #include "InputMappingContext.h"
 #include "InputTriggers.h"
@@ -2019,4 +2021,39 @@ FString UUnrealBridgeGameplayLibrary::GetActorAtScreenPosition(float NormalizedX
 	}
 	AActor* A = Hit.GetActor();
 	return A ? A->GetFName().ToString() : FString();
+}
+
+bool UUnrealBridgeGameplayLibrary::PressKey(const FString& KeyName, bool bPressed)
+{
+	if (!FSlateApplication::IsInitialized())
+	{
+		return false;
+	}
+
+	const FKey Key(*KeyName);
+	if (!Key.IsValid())
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning, TEXT("PressKey: invalid key name '%s'"), *KeyName);
+		return false;
+	}
+
+	FSlateApplication& Slate = FSlateApplication::Get();
+
+	// Build a synthetic key event targeting the currently focused widget.
+	const uint32 CharCode = 0;
+	const uint32 KeyCode  = 0;
+	const FModifierKeysState ModKeys;
+
+	if (bPressed)
+	{
+		FKeyEvent KeyEvent(Key, ModKeys, Slate.GetUserIndexForKeyboard(), /*bIsRepeat=*/ false, CharCode, KeyCode);
+		Slate.ProcessKeyDownEvent(KeyEvent);
+	}
+	else
+	{
+		FKeyEvent KeyEvent(Key, ModKeys, Slate.GetUserIndexForKeyboard(), /*bIsRepeat=*/ false, CharCode, KeyCode);
+		Slate.ProcessKeyUpEvent(KeyEvent);
+	}
+
+	return true;
 }

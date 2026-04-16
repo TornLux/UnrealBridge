@@ -44,6 +44,7 @@ public class UnrealBridge : ModuleRules
 			"Projects",
 			"Slate",
 			"SlateCore",
+			"InputCore",
 			"SourceControl",
 			"ImageCore",
 			"ImageWrapper",
