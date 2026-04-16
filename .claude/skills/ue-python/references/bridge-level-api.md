@@ -1083,3 +1083,208 @@ Set a scene component's mobility. `mobility` must be one of `"Static"`, `"Statio
 unreal.UnrealBridgeLevelLibrary.set_component_mobility(
     'BP_Prop_1', 'StaticMeshComponent', 'Movable')
 ```
+
+## Trace — hit detail
+
+All traces run against the **runtime world** (live PIE world when
+Play-in-Editor is active, editor world as fallback). Agents navigating
+inside PIE therefore see dynamic objects (spawned actors, moving
+platforms, destructible walls) that only exist in the PIE copy.
+
+### line_trace_hit_info(start, end) -> (str, float, Vector) or None
+
+Line-trace returning full hit detail: actor label, hit distance (cm)
+along the ray, and world-space impact location. Returns `None` when
+the ray reaches `End` without obstruction.
+
+Far cheaper than probing at multiple distances to find "reach" — one
+call tells you exactly how far a clear corridor extends in a given
+direction.
+
+```python
+Lv = unreal.UnrealBridgeLevelLibrary
+r = Lv.line_trace_hit_info(
+    unreal.Vector(1000, 2000, 150),
+    unreal.Vector(4000, 2000, 150))
+if r is None:
+    print('clear 3000 cm')
+else:
+    label, distance, impact = r
+    print(f'hit {label} at {distance:.0f} cm')
+```
+
+## 3D geometry sensing
+
+Vertical probes and height sampling — what the horizontal trace family
+cannot answer: "how tall is the wall in front of me", "is the floor
+ahead a cliff", "what is the ceiling clearance".
+
+### get_height_at(x, y, z_start, z_end) -> (str, float) or None
+
+Downward trace at arbitrary XY. Casts from `(X, Y, ZStart)` down to
+`(X, Y, ZEnd)`. Returns `(actor_label, ground_z)` on hit, `None` when
+no geometry is below.
+
+```python
+r = Lv.get_height_at(500.0, 1000.0, 2000.0, -500.0)
+if r:
+    label, ground_z = r
+    print(f'ground at z={ground_z:.1f}, actor={label}')
+```
+
+### get_height_profile_along(start_xy, end_xy, sample_count, z_start, z_end) -> (int, Array[float], Array[str])
+
+Sample ground height along a straight XY segment. Returns parallel
+arrays of ground Z values (one per sample, evenly spaced) and actor
+labels hit at each sample. Missed samples get `Z = z_end` and empty
+label. Classic "walkable?" check: feed the pawn's path and look at
+deltas between consecutive heights — big jumps mean cliffs, steep
+rises mean unwalkable slopes.
+
+```python
+count, heights, labels = Lv.get_height_profile_along(
+    unreal.Vector(0, 0, 0), unreal.Vector(2000, 0, 0),
+    10, 1000.0, -500.0)
+for i in range(count):
+    print(f'  sample {i}: z={heights[i]:.1f} actor={labels[i]}')
+```
+
+### measure_ceiling_height(origin, max_up) -> float
+
+Upward trace from `Origin`. Returns the distance (cm) to whatever is
+directly above, clamped to `MaxUp`. Returns `MaxUp` when nothing is
+hit (open sky above). Use to check "can I stand up from crouch here"
+(compare to CrouchedHalfHeight vs full CapsuleHalfHeight) or "can I
+jump this high".
+
+```python
+clearance = Lv.measure_ceiling_height(
+    unreal.Vector(500, 0, 90), 1000.0)
+print(f'ceiling {clearance:.0f} cm above')
+```
+
+### probe_fan_xy(origin, num_rays, max_distance, start_angle_deg, span_deg) -> (int, Array[float], Array[str])
+
+Fan out N rays in the XY plane from a single origin. Replaces the
+"call `line_trace_hit_info` N times from Python" pattern — one bridge
+round-trip instead of N.
+
+- `start_angle_deg`: first ray angle (0 = +X / east, 90 = +Y / north).
+- `span_deg`: total arc swept; 360 = full circle.
+- Returns `(num_rays, distances, actor_labels)`. Each distance is either
+  the hit distance or `max_distance` if clear.
+
+```python
+n, dists, labels = Lv.probe_fan_xy(
+    unreal.Vector(500, 0, 140), 12, 3000.0, 0.0, 360.0)
+for i in range(n):
+    ang = i * 30
+    print(f'  {ang:3d}° → {dists[i]:.0f} cm  actor={labels[i]}')
+```
+
+## NavGraph: persistent exploration topology
+
+An agent-maintained graph of visited locations and corridors between
+them. Lives in a process-global singleton (survives across bridge exec
+calls) and can be serialised to JSON for reuse across sessions. Node
+names are caller-chosen strings. Edges are directed — add both
+directions if traversal is symmetric.
+
+### nav_graph_clear()
+
+Remove all nodes and edges from the in-memory graph.
+
+### nav_graph_add_node(name, location) -> bool
+
+Add or update a node. Returns `True` if this was a new node.
+
+```python
+Lv.nav_graph_add_node('wp_start', unreal.Vector(100, 200, 0))
+```
+
+### nav_graph_add_edge(from_name, to_name, cost) -> bool
+
+Add or update a directed edge with cost (usually distance in cm).
+Returns `False` if either node is unknown.
+
+```python
+Lv.nav_graph_add_edge('wp_start', 'wp_corridor', 500.0)
+Lv.nav_graph_add_edge('wp_corridor', 'wp_start', 500.0)  # symmetric
+```
+
+### nav_graph_list_nodes() -> list[str]
+
+List all node names currently in the graph.
+
+### nav_graph_get_node_location(name) -> Vector or None
+
+Look up a node's location. Returns `None` if unknown.
+
+### nav_graph_shortest_path(from_name, to_name) -> (Array[str], float)
+
+Dijkstra shortest-path. Returns the ordered list of node names
+(inclusive of both endpoints) and total cost. Returns `([], inf)` when
+unreachable.
+
+```python
+path, cost = Lv.nav_graph_shortest_path('wp_start', 'wp_exit')
+print(f'path: {list(path)}  cost={cost:.0f}')
+# path: ['wp_start', 'wp_corridor', 'wp_exit']  cost=1200
+```
+
+### nav_graph_save_json(file_path) -> bool
+
+Serialise the graph to a JSON file at the given absolute path.
+
+### nav_graph_load_json(file_path) -> bool
+
+Load a graph from a JSON file, replacing any in-memory graph.
+
+```python
+Lv.nav_graph_save_json('G:/Claude/UnrealBridge/nav_graph.json')
+# ... later ...
+Lv.nav_graph_load_json('G:/Claude/UnrealBridge/nav_graph.json')
+```
+
+## Vision: render-to-file capture
+
+Synchronously capture a frame from the runtime world to a PNG file.
+Backed by a transient `ASceneCapture2D` + `UTextureRenderTarget2D`, so
+the capture does not depend on the editor viewport having focus and can
+be issued from any pose.
+
+### capture_ortho_top_down(center, world_size, width, height, file_path, camera_height=5000.0) -> bool
+
+Render a top-down orthographic view centred on `center`, covering
+`world_size` cm horizontally, to a PNG file. The camera is placed
+`camera_height` cm above centre looking straight down. Use this for
+whole-level / maze overviews the agent can reason about visually in
+one shot.
+
+```python
+ok = Lv.capture_ortho_top_down(
+    unreal.Vector(25000, 18000, 0), 8000.0,
+    512, 512,
+    'G:/Claude/UnrealBridge/.captures/topdown.png',
+    5000.0)
+```
+
+### capture_from_pose(camera_location, camera_rotation, fov_deg, width, height, file_path) -> bool
+
+Render a perspective view from the given pose to a PNG file.
+`fov_deg = 90` gives a wide FPS-style frame; lower = more zoomed in.
+
+```python
+import math
+fwd = L.get_pawn_forward_vector()
+yaw = math.degrees(math.atan2(fwd.y, fwd.x))
+ok = Lv.capture_from_pose(
+    unreal.Vector(pl.x, pl.y, pl.z + 160),
+    unreal.Rotator(-15, yaw, 0),   # slight downward pitch
+    90.0, 640, 360,
+    'G:/Claude/UnrealBridge/.captures/perspective.png')
+```
+
+**Duration semantics for both:** captures are synchronous — the PNG is
+fully written when the function returns. The transient SceneCapture2D
+actor is destroyed immediately after readback.

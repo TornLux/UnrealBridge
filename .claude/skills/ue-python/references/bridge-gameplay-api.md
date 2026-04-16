@@ -1142,3 +1142,76 @@ ok = unreal.UnrealBridgeGameplayLibrary.teleport_pawn(
 - Non-Character pawns skip `StopMovementImmediately` gracefully (their
   `UPawnMovementComponent::StopMovementImmediately` is a no-op).
 
+## Pawn capabilities
+
+### get_pawn_capabilities() -> tuple or None
+
+Read the pawn's traversal capabilities out of
+`CharacterMovementComponent` + `CapsuleComponent` — the numbers an
+agent needs to reason about "can I fit / jump / step up there". Returns
+`None` when there is no PIE pawn or the pawn is not an `ACharacter`.
+
+Returns a 9-tuple:
+```
+(jump_z_velocity,       # cm/s — vertical launch speed from Jump()
+ max_walk_speed,        # cm/s — current walking cap
+ max_step_height,       # cm — height the movement comp auto-steps
+ walkable_floor_angle,  # degrees — slopes shallower than this count as floor
+ capsule_radius,        # cm — half-width of the collision capsule
+ capsule_half_height,   # cm — half-height standing up
+ crouched_half_height,  # cm — half-height while crouched
+ b_can_crouch,          # bool — movement mode allows crouch
+ b_can_jump)            # bool — NavAgentProps.bCanJump
+```
+
+```python
+caps = unreal.UnrealBridgeGameplayLibrary.get_pawn_capabilities()
+if caps:
+    jz, ws, sh, wa, cr, chh, crchh, ccr, cjp = caps
+    print(f'jump={jz:.0f} step={sh:.0f} capsule R/H={cr:.0f}/{chh:.0f}')
+    print(f'crouched half-h={crchh:.0f} can_crouch={ccr} can_jump={cjp}')
+```
+
+**Usage:** combine with `measure_ceiling_height` to decide "can I crouch
+under this?" (ceiling < `capsule_half_height * 2` but ≥ `crouched_half_height * 2`),
+or with `simulate_jump_arc` to predict "can I clear this wall?"
+(`jump_z_velocity` feeds the initial velocity).
+
+### simulate_jump_arc(start_location, initial_velocity, max_time, step_dt, max_path_length) -> (Vector, str) or None
+
+Simulate a projectile arc from `start_location` with
+`initial_velocity`, stepping ballistics at `step_dt` until something
+is hit, `max_time` runs out, or `max_path_length` in travelled
+distance is reached. Uses the PIE world's gravity (`pawn.GravityScale`
+is NOT applied — scale the velocity yourself if needed).
+
+Returns `(land_location, land_actor_label)` when the arc hits
+something (floor or wall). Returns `None` when the arc timed out in
+midair without hitting geometry.
+
+```python
+L = unreal.UnrealBridgeGameplayLibrary
+caps = L.get_pawn_capabilities()
+jump_z = caps[0]   # e.g. 500 cm/s
+fwd = L.get_pawn_forward_vector()
+# Simulate a forward jump
+velocity = unreal.Vector(fwd.x * 400, fwd.y * 400, jump_z)
+pawn_loc = L.get_pie_actor_location(L.get_player_pawn_actor_name())
+result = L.simulate_jump_arc(
+    unreal.Vector(pawn_loc.x, pawn_loc.y, pawn_loc.z + 90),
+    velocity, 3.0, 0.05, 5000.0)
+if result:
+    land_loc, land_actor = result
+    print(f'land at ({land_loc.x:.0f},{land_loc.y:.0f},{land_loc.z:.0f}) on {land_actor}')
+else:
+    print('arc timed out — no collision')
+```
+
+**Pitfalls:**
+- The pawn's own capsule is excluded from traces so the arc doesn't
+  immediately self-intersect at the start location.
+- `step_dt` precision: 0.05 (20 Hz) is fine for rough estimates; use
+  0.01 if you need sub-cm landing precision (but 5× slower).
+- World gravity is typically `–980 cm/s²` in UE defaults. Verify with
+  `unreal.GameplayStatics.get_global_gravity_z()`.
+
