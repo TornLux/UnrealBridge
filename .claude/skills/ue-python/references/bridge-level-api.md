@@ -1288,3 +1288,64 @@ ok = Lv.capture_from_pose(
 **Duration semantics for both:** captures are synchronous — the PNG is
 fully written when the function returns. The transient SceneCapture2D
 actor is destroyed immediately after readback.
+
+### capture_anim_pose_grid(anim_path, time, skeletal_mesh_path, views, bone_overlay, grid_cols, cell_width, cell_height, file_path) -> bool
+
+Render N views of a skeletal mesh posed at a specific time of an anim
+sequence / montage, composited into one PNG grid. Runs in an **isolated
+`FPreviewScene`** with default neutral skylight + directional light —
+the project's level lighting, fog, and stray actors do NOT appear in
+the frame, so output is consistent regardless of what's loaded.
+
+Use this to give an agent a multi-angle view of a single anim frame
+for identifying impact poses, windup beats, recovery ends, etc.
+without clicking the timeline frame-by-frame.
+
+| Param | Meaning |
+|-------|---------|
+| `anim_path` | Soft path to `UAnimSequenceBase` (sequence OR montage) |
+| `time` | Seconds into the anim; clamped to `[0, play_length]` |
+| `skeletal_mesh_path` | Explicit mesh; empty → `USkeleton::GetPreviewMesh()` |
+| `views` | Subset of `"Front" / "Back" / "Side" (right) / "SideLeft" / "ThreeQuarter" / "Top" / "Bottom"`; unknown names skip |
+| `bone_overlay` | Reserved; currently ignored (logs a warning) |
+| `grid_cols` | Columns in the composite; rows = `ceil(N/cols)` |
+| `cell_width`, `cell_height` | Pixel size of each view cell (e.g. 512) |
+| `file_path` | Output PNG path (parent dirs auto-created) |
+
+```python
+ok = Lv.capture_anim_pose_grid(
+    anim_path='/Game/Animations/Punch_Montage',
+    time=0.35,
+    skeletal_mesh_path='',   # empty → skeleton's preview mesh
+    views=['Front', 'Side', 'ThreeQuarter', 'Top'],
+    bone_overlay=False,
+    grid_cols=2, cell_width=512, cell_height=512,
+    file_path='G:/Claude/UnrealBridge/.captures/punch_0p35.png')
+```
+
+Output: single 1024×1024 PNG (for 2×2 grid @ 512 cell). Figures against
+a clean white background (unlit base-color rendering — avoids dark
+output that would happen with scene lighting).
+
+**Pose evaluation:** `PlayAnimation(anim, false)` +
+`SetPosition(time, false)` + `TickAnimation(0)` +
+`RefreshBoneTransforms()`. Works for both `UAnimSequence` and
+`UAnimMontage`.
+
+**Framing:** centre is the pelvis bone when one is found (tries
+`pelvis` / `Pelvis` / `hips` / `Hips` / `spine_01` / `spine` / `root` /
+`Root` in priority order), else the geometric AABB of posed bones.
+Distance auto-computed from the posed-bone AABB so the character
+fits comfortably in a 45° FOV.
+
+**Perf:** ~200 ms for 4 views at 512×512. Cheap enough for
+on-demand analysis, don't loop thousands.
+
+**Limitations:**
+- Bone overlay (draw key joint parent-child lines into the pixel
+  buffer) is not yet implemented; the param is accepted but ignored.
+- Asymmetric poses (e.g. one arm fully extended) leave the opposite
+  side of the frame empty — pelvis-anchored framing keeps the body
+  centred but doesn't chase outliers.
+- `CaptureAnimMontageTimeline(NumTimeSamples, ...)` — grid of N time
+  samples × views — deferred; same pipeline, loop the time axis.

@@ -589,6 +589,89 @@ for a in unreal.UnrealBridgeGameplayAbilityLibrary.get_actor_active_abilities('B
 
 ---
 
+## Send GameplayEvent by Name
+
+### send_gameplay_event_by_name(actor_name, event_tag, event_magnitude) -> int
+
+Fire a GameplayEvent on an actor's ASC without needing a Python `UObject` reference to the actor. Searches PIE worlds first (so it works during play), then the editor world. Walks the same ASC resolution chain the reactive library uses (actor → `Pawn.PlayerState` → `Pawn.Controller` → `PC.PlayerState`).
+
+Returns the number of abilities triggered by the event (`UAbilitySystemComponent::HandleGameplayEvent` return). Zero means no ability responded — the event still fired, and any registered `GenericGameplayEventCallbacks` run. `-1` indicates the actor or its ASC could not be resolved.
+
+> Token cost: MINIMAL.
+
+```python
+rv = unreal.UnrealBridgeGameplayAbilityLibrary.send_gameplay_event_by_name(
+    'BP_UnitCharacterBase_C_0', 'Event.Combat.Hit', 25.0)
+print(rv)   # -1 = no ASC; 0 = fired but no ability triggered; >0 = ability count
+```
+
+Pairs naturally with `UnrealBridgeReactiveLibrary.register_runtime_gameplay_event` — this is the firing side, reactive is the listening side.
+
+---
+
+## Test Scaffolding (reactive framework)
+
+These helpers exist so reactive-handler smoke tests and experiments can run without a full GAS setup in the project. They're safe to use at runtime but are primarily intended for test code.
+
+### ensure_ability_system_component(actor_name, location="Actor") -> bool
+
+Ensure a `UAbilitySystemComponent` exists at the given `location`, creating and initialising one if absent. Searches PIE worlds first, then editor world.
+
+| `location` | Where the ASC is attached |
+|------------|---------------------------|
+| `"Actor"` (default) | The actor itself (direct component) |
+| `"Controller"` | The actor's `Controller` — pawn only |
+| `"PlayerState"` | The actor's `PlayerState` — pawn only |
+
+Use non-default locations to exercise the ASC resolver walker during tests. Returns `True` when an ASC already exists at the requested location OR was successfully created.
+
+```python
+# Attach an ASC to a spawned actor so reactive handlers can bind:
+name = unreal.UnrealBridgeGameplayLibrary.spawn_actor_in_pie(
+    '/Script/Engine.Actor', unreal.Vector(0,0,500), unreal.Rotator(0,0,0))
+unreal.UnrealBridgeGameplayAbilityLibrary.ensure_ability_system_component(name)
+
+# Exercise the Pawn→Controller walker branch:
+pawn = unreal.UnrealBridgeGameplayLibrary.get_all_pawns()[0]
+unreal.UnrealBridgeGameplayAbilityLibrary.ensure_ability_system_component(pawn, 'Controller')
+```
+
+### ensure_bridge_test_attribute_set(actor_name) -> bool
+
+Register a `UBridgeTestAttributeSet` (Health + Mana, each initialised to 100) on the actor's ASC. Resolves the ASC via the standard walker. Safe to call multiple times — no-op if already spawned.
+
+Required before `register_runtime_attribute_changed` can match "Health" / "Mana" attributes on the actor.
+
+```python
+unreal.UnrealBridgeGameplayAbilityLibrary.ensure_bridge_test_attribute_set('BP_UnitCharacterBase_C_0')
+```
+
+### set_actor_attribute_value(actor_name, attribute_name, value) -> bool
+
+Write a numeric attribute base value on the actor's ASC via `SetNumericAttributeBase`. Fires the attribute-value-change delegate that `FBridgeAttributeChangedAdapter` listens to.
+
+`attribute_name` accepts `"AttrSet.Field"` or bare `"Field"`.
+
+```python
+# After ensure_bridge_test_attribute_set:
+unreal.UnrealBridgeGameplayAbilityLibrary.set_actor_attribute_value(
+    'BP_UnitCharacterBase_C_0', 'Health', 75.0)
+# → fires any registered AttributeChanged handler on Health
+```
+
+---
+
+## Related: reactive framework
+
+`UnrealBridgeReactiveLibrary` is a separate library that registers **Python scripts to run when ASC / character / actor events fire**. If you want a script that reacts to `Event.Combat.Hit` without polling, read `bridge-reactive.md`.
+
+Key bridges between this library and the reactive framework:
+- `send_gameplay_event_by_name` is the firing side; `register_runtime_gameplay_event` is the listening side.
+- `set_actor_attribute_value` is the firing side; `register_runtime_attribute_changed` is the listening side.
+- The ASC walker defined here is the same one the reactive library uses for its `target_actor_name` resolution.
+
+---
+
 ## Native UE Python fallbacks
 
 ```python
