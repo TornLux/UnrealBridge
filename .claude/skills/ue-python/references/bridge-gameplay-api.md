@@ -863,118 +863,184 @@ Sticky entries are auto-dropped when PIE ends, so each fresh PIE
 session starts with no sticky input. The server-side ticker stops
 running when the registry is empty.
 
-**Example — walk forward for 2s:**
+**Example — hold forward for 2s:**
+
+Each `bridge.exec` runs on the GameThread, so a Python `time.sleep`
+inside one exec freezes the engine — the sticky ticker stops, no frames
+advance, the pawn doesn't move during the sleep. Drive duration from
+outside the exec (two execs separated by a wall-clock pause), or use
+the reactive Timer adapter (next pattern).
+
 ```python
-import unreal, time
-IA = '/LocomotionDriver/Input/IA_Move'
-unreal.UnrealBridgeGameplayLibrary.set_sticky_input(IA, unreal.Vector(1, 0, 0))
-time.sleep(2.0)
-unreal.UnrealBridgeGameplayLibrary.clear_sticky_input(IA)
+# exec #1 — start holding forward
+import unreal
+IA = '/Game/Input/IA_Move.IA_Move'
+unreal.UnrealBridgeGameplayLibrary.set_sticky_input(IA, unreal.Vector(0, 1, 0))
+```
+```bash
+sleep 2   # wall-clock pause in the calling shell, NOT inside an exec
+```
+```python
+# exec #2 — release
+import unreal
+unreal.UnrealBridgeGameplayLibrary.clear_sticky_input('/Game/Input/IA_Move.IA_Move')
 ```
 
-Observed behaviour in a GAS/Mover-style project (GameplayLocomotion):
-pawn reaches ~300 cm/s within one frame, stays at walk speed for
-the sticky duration, decelerates on clear.
+Pawn accelerates within one frame, holds walk speed during the gap,
+decelerates on clear.
 
-### Pattern: move to a target and stop near it
+### Pattern: chase a (possibly moving) target and stop on arrival
 
-Navigating to a world-space point and stopping on arrival is two loops,
-not one "move_to" call:
+Steering toward a world-space target requires four things every frame:
 
-```python
-import math, time, unreal
-L = unreal.UnrealBridgeGameplayLibrary
-IA_MOVE = '/LocomotionDriver/Input/IA_Move.IA_Move'
+1. **Re-read** both pawn and target locations (target may be moving).
+2. **Compute direction** — desired yaw `atan2(dy, dx)`, then shortest
+   signed-arc delta against current control rotation.
+3. **Steer the camera** — `apply_look_input(delta / damping, 0)`.
+   Camera yaw drives the IA_Move forward direction (camera-relative
+   axis), so the pawn naturally curves onto the line to the target.
+4. **Drive forward** — keep `IA_Move` sticky at the project's "forward"
+   Axis2D vector (typically `(0, 1, 0)` — verify per project).
+5. **Arrival check** — when XY distance < arrive radius,
+   `clear_sticky_input("")` and unregister the loop.
 
-def distance_xy(a, b):
-    return math.hypot(a.x - b.x, a.y - b.y)
-
-def move_to(target_loc, arrive_radius_cm=300.0, poll_seconds=0.3, timeout_s=60.0):
-    L.set_sticky_input(IA_MOVE, unreal.Vector(0, 1, 0))  # forward (camera-relative)
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        pawn = L.get_player_pawn_actor_name()
-        ploc = L.get_pie_actor_location(pawn)
-        if distance_xy(ploc, target_loc) < arrive_radius_cm:
-            L.clear_sticky_input()   # ← stops the pawn: nothing is being injected anymore
-            return True
-        time.sleep(poll_seconds)
-    L.clear_sticky_input()
-    return False
-```
-
-**Why `clear_sticky_input()` stops the pawn**: the sticky ticker re-injects
-the registered `IA_Move` value every GameThread frame. Clearing the map
-leaves the Enhanced Input subsystem with no new input, the character
-movement component stops receiving an acceleration target, and UE's
-deceleration model brings speed to 0 naturally. You are *not* braking
-the pawn — you are letting go of the virtual stick. Same mechanism for
-sprint (`IA_Sprint` sticky → clear = release shift) or any other held
-IA.
-
-**Tuning the arrive radius.** Use ~250–400 cm for foot nav — the
-character cannot converge on an exact point because of movement-component
-deceleration, foot-IK adjustments, and collision slop. Tighter radii
-cause the loop to overshoot past the target, turn around, and oscillate.
-
-**Pair with per-tick yaw correction** — see the next pattern.
-
-### Pattern: steer the camera toward a target
-
-`apply_look_input(yaw_delta, pitch_delta)` feeds the player controller's
-yaw/pitch input accumulator. This is the **only** reliable way to rotate
-the view: `set_control_rotation` is overridden on the next tick by the
-PlayerCameraManager / spring arm / locomotion driver in most third-person
-projects, so it doesn't stick.
-
-Look input is scaled by the project's mouse sensitivity before reaching
-the controller. In this project the observed multiplier is ~2.5× (a
-call with yaw_delta=-20 rotated the camera ~50°). Converge with a damped
-proportional controller:
+A Python `while + time.sleep` loop does NOT work for this:
+`bridge.exec` runs on the GameThread, so `time.sleep` halts UE itself —
+the sticky ticker stops re-injecting, no frames advance, the polled pawn
+position never changes, and the loop spins on stale data. The right
+primitive is the reactive Timer adapter
+(`UnrealBridgeReactiveLibrary.register_runtime_timer`, see
+`bridge-reactive.md`), which fires a Python callback between ticks at
+the configured interval — UE keeps ticking, the sticky ticker keeps
+running, positions stay live.
 
 ```python
-import math, unreal
-L = unreal.UnrealBridgeGameplayLibrary
+"""chase_target.py — drive pawn toward a (possibly moving) actor.
 
-def aim_at(target_loc, tolerance_deg=2.0, max_iters=20, damping=3.0):
-    """Rotate camera to face target_loc. Returns final yaw error (deg)."""
-    for _ in range(max_iters):
-        pawn = L.get_player_pawn_actor_name()
-        ploc = L.get_pie_actor_location(pawn)
-        dx, dy = target_loc.x - ploc.x, target_loc.y - ploc.y
+Run with:  bridge.py exec-file chase_target.py
+Idempotent: any prior chase_target handler is unregistered first.
+The chase loop self-unregisters on arrival.
+"""
+import unreal
+
+L = unreal.UnrealBridgeGameplayLibrary
+R = unreal.UnrealBridgeReactiveLibrary
+
+PAWN = 'BP_Player_C_0'           # FName of the controlled pawn in PIE
+TARGET = 'BP_Target_C_0'         # FName of the target actor in PIE
+IA_MOVE = '/Game/Input/IA_Move.IA_Move'
+ARRIVE_CM = 250.0                # stop when XY distance < this
+LOOK_DAMPING = 3.0               # raise if yaw flips sign around target
+LOOK_STEP_CAP = 4.0              # max input-units per tick (anti-snap)
+TIMER_HZ = 30.0                  # 30 plenty for steering; 60 also fine
+
+if not L.is_in_pie():
+    raise SystemExit('not in PIE')
+if L.get_pie_actor_location(PAWN) is None:
+    raise SystemExit(f'pawn {PAWN} missing')
+if L.get_pie_actor_location(TARGET) is None:
+    raise SystemExit(f'target {TARGET} missing')
+
+# Idempotent: drop any leftover chase loop + sticky input from a prior run.
+for h in (R.list_all_handlers('runtime', '', 'chase_target') or []):
+    R.unregister(h.handler_id)
+L.clear_sticky_input('')
+
+# The script body runs each timer fire on the GameThread. The reactive
+# preamble injects `handler_id`, `fire_count`, `elapsed_since_last`, and
+# a `log()` helper (see bridge-reactive.md). We bake constants into the
+# script source via f-string substitution so the closure is self-contained.
+chase_script = f'''
+import math
+import unreal as u
+G = u.UnrealBridgeGameplayLibrary
+R = u.UnrealBridgeReactiveLibrary
+
+PAWN, TARGET = {PAWN!r}, {TARGET!r}
+IA_MOVE = {IA_MOVE!r}
+ARRIVE_CM, LOOK_DAMPING, LOOK_STEP_CAP = {ARRIVE_CM}, {LOOK_DAMPING}, {LOOK_STEP_CAP}
+
+if not G.is_in_pie():
+    G.clear_sticky_input("")
+    R.unregister(handler_id); raise SystemExit
+
+ploc = G.get_pie_actor_location(PAWN)
+tloc = G.get_pie_actor_location(TARGET)
+if ploc is None or tloc is None:
+    log("pawn or target lost — aborting")
+    G.clear_sticky_input("")
+    R.unregister(handler_id); raise SystemExit
+
+dx, dy = tloc.x - ploc.x, tloc.y - ploc.y
+dist_xy = math.hypot(dx, dy)            # XY-only — Z would never converge
+
+if dist_xy < ARRIVE_CM:
+    G.clear_sticky_input("")            # release virtual stick
+    log(f"arrived dist={{dist_xy:.0f}} fires={{fire_count}}")
+    R.unregister(handler_id)            # self-terminate
+else:
+    G.set_sticky_input(IA_MOVE, u.Vector(0, 1, 0))   # keep pushing forward
+    rot = G.get_control_rotation()
+    if rot is not None:
         want = math.degrees(math.atan2(dy, dx))
-        cur = L.get_control_rotation().yaw
-        delta = ((want - cur + 540) % 360) - 180  # shortest signed arc
-        if abs(delta) <= tolerance_deg:
-            return delta
-        L.apply_look_input(delta / damping, 0.0)
-    return delta
+        delta = ((want - rot.yaw + 540.0) % 360.0) - 180.0   # shortest arc
+        step = max(-LOOK_STEP_CAP, min(LOOK_STEP_CAP, delta / LOOK_DAMPING))
+        G.apply_look_input(step, 0.0)   # nudge camera toward target
+'''
+
+hid = R.register_runtime_timer(
+    task_name='chase_target',
+    description=f'Chase {TARGET}, stop within {ARRIVE_CM:.0f} cm',
+    interval_seconds=1.0 / TIMER_HZ,
+    script=chase_script,
+    script_path='',
+    tags=['chase_target'],          # used by the cleanup pass above
+    lifetime='WhilePIE',            # auto-drop when PIE stops
+    error_policy='LogContinue',
+    throttle_ms=0,
+)
+unreal.log(f'chase_target armed: handler={hid}')
 ```
 
-`damping` divides the desired correction so the camera doesn't overshoot
-across the look-input multiplier. 3.0 works well for this project's
-~2.5× scale — on project with different sensitivity, increase until
-you stop seeing sign flips around the target yaw.
+**Why `clear_sticky_input("")` stops the pawn:** the sticky ticker
+re-injects the registered IA value every GameThread frame. Clearing the
+map leaves Enhanced Input with no new input, the character movement
+component stops receiving an acceleration target, and UE's deceleration
+brings speed to 0 naturally — you are *not* braking, you are letting go
+of the virtual stick. Same mechanism for sprint or any held IA.
 
-**For sustained steering while moving** (target is ahead while you run
-toward it), don't call `aim_at` once and then drive — instead recompute
-`delta` each poll iteration of your move loop and apply a single
-`apply_look_input(delta/damping, 0)` per tick. That handles drift,
-curved paths, and moving targets with one line inside the same loop:
+**Tuning the arrive radius.** ~250–400 cm for foot nav — the character
+cannot converge on an exact point because of movement-component
+deceleration, foot-IK, and collision slop. Tighter radii cause overshoot
+and oscillation. Always use XY-only distance; a Z-floating target (or
+one on a different floor) will never satisfy a 3D-distance check.
 
-```python
-while not arrived:
-    ploc = L.get_pie_actor_location(pawn)
-    dx, dy = target.x - ploc.x, target.y - ploc.y
-    cur = L.get_control_rotation().yaw
-    want = math.degrees(math.atan2(dy, dx))
-    delta = ((want - cur + 540) % 360) - 180
-    L.apply_look_input(delta / 3.0, 0.0)            # keep camera pointed
-    if math.hypot(dx, dy) < 300:                    # arrival test
-        L.clear_sticky_input()                      # release stick
-        break
-    time.sleep(0.3)
-```
+**Tuning `LOOK_DAMPING` and `LOOK_STEP_CAP`.** `apply_look_input` is
+scaled by the project's mouse sensitivity before reaching the
+controller. If yaw flips sign around the target each tick, raise
+damping. If the camera turns too slowly to keep up with a moving
+target, lower it. Calibrate once with a fixed-target script: send
+`apply_look_input(20, 0)` from a single exec and measure how many
+degrees of yaw the controller reports — that ratio is your effective
+sensitivity multiplier; pick `LOOK_DAMPING` ≥ that value.
+
+**Forward-axis convention.** `IA_Move` is camera-relative; whether
+forward is `(0, 1, 0)` or `(1, 0, 0)` depends on which Axis2D the
+project's Input Mapping Context bound to W/S vs A/D. Confirm with
+`get_input_action_value_type(IA_MOVE) == 'Axis2D'`, then test once:
+push `(0, 1, 0)` for ~1 s and check whether the pawn moves forward or
+strafes. If the project also exposes a strafe-toggle action
+(orientation-locked movement), make sure it is *off* — strafe mode
+decouples facing from movement and breaks the camera-drives-direction
+assumption.
+
+**Stopping behaviour after arrival.** This pattern fully unregisters on
+arrival, so if the target moves away again the pawn stays put. For a
+"keep tracking, re-engage on drift" controller, replace the unregister
+branch with a state flag (e.g. store `state['arrived'] = True`,
+re-enter chase when `dist_xy > resume_radius` with `resume_radius >
+ARRIVE_CM` for hysteresis). The reactive preamble exposes a per-handler
+`state` dict for this.
 
 ### Debug fields on FAgentObservation
 
