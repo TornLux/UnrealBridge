@@ -4169,6 +4169,203 @@ TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindFunctionCallSites(
 	return Result;
 }
 
+// ─── Pin introspection helpers ─────────────────────────────────
+
+namespace BridgeBPSummaryImpl
+{
+	/** Locate a node inside a graph by its digits-form guid. */
+	static UEdGraphNode* FindNodeInGraphByGuid(UEdGraph* Graph, const FString& NodeGuid)
+	{
+		if (!Graph) return nullptr;
+		FGuid Target;
+		if (!FGuid::ParseExact(NodeGuid, EGuidFormats::Digits, Target)) return nullptr;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (N && N->NodeGuid == Target) return N;
+		}
+		return nullptr;
+	}
+
+	/** Search all of a BP's graphs (ubergraph + functions + macros) by name. */
+	static UEdGraph* FindSingleGraphByName(UBlueprint* BP, const FString& Name)
+	{
+		if (!BP) return nullptr;
+		auto Probe = [&Name](const TArray<UEdGraph*>& Arr) -> UEdGraph*
+		{
+			for (UEdGraph* G : Arr) if (G && G->GetName() == Name) return G;
+			return nullptr;
+		};
+		if (UEdGraph* G = Probe(BP->FunctionGraphs)) return G;
+		if (UEdGraph* G = Probe(BP->UbergraphPages)) return G;
+		if (UEdGraph* G = Probe(BP->MacroGraphs))    return G;
+		return nullptr;
+	}
+
+	/** Short human-readable type for a pin from its FEdGraphPinType. */
+	static FString PinTypeToHuman(const FEdGraphPinType& PT)
+	{
+		auto BaseType = [&]() -> FString
+		{
+			const FName Cat = PT.PinCategory;
+			if (Cat == UEdGraphSchema_K2::PC_Exec)      return TEXT("Exec");
+			if (Cat == UEdGraphSchema_K2::PC_Boolean)   return TEXT("Bool");
+			if (Cat == UEdGraphSchema_K2::PC_Byte)
+			{
+				if (UEnum* E = Cast<UEnum>(PT.PinSubCategoryObject.Get()))
+				{
+					return FString::Printf(TEXT("Enum<%s>"), *E->GetName());
+				}
+				return TEXT("Byte");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_Int)       return TEXT("Int");
+			if (Cat == UEdGraphSchema_K2::PC_Int64)     return TEXT("Int64");
+			if (Cat == UEdGraphSchema_K2::PC_Float)     return TEXT("Float");
+			if (Cat == UEdGraphSchema_K2::PC_Double)    return TEXT("Double");
+			if (Cat == UEdGraphSchema_K2::PC_Real)
+			{
+				if (PT.PinSubCategory == UEdGraphSchema_K2::PC_Float) return TEXT("Float");
+				if (PT.PinSubCategory == UEdGraphSchema_K2::PC_Double) return TEXT("Double");
+				return TEXT("Real");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_String)    return TEXT("String");
+			if (Cat == UEdGraphSchema_K2::PC_Name)      return TEXT("Name");
+			if (Cat == UEdGraphSchema_K2::PC_Text)      return TEXT("Text");
+			if (Cat == UEdGraphSchema_K2::PC_Object ||
+				Cat == UEdGraphSchema_K2::PC_Interface)
+			{
+				if (UClass* C = Cast<UClass>(PT.PinSubCategoryObject.Get()))
+					return FString::Printf(TEXT("%s"), *C->GetName());
+				return TEXT("Object");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_SoftObject)
+			{
+				if (UClass* C = Cast<UClass>(PT.PinSubCategoryObject.Get()))
+					return FString::Printf(TEXT("SoftObject<%s>"), *C->GetName());
+				return TEXT("SoftObject");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_Class)
+			{
+				if (UClass* C = Cast<UClass>(PT.PinSubCategoryObject.Get()))
+					return FString::Printf(TEXT("Class<%s>"), *C->GetName());
+				return TEXT("Class");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_SoftClass)
+			{
+				if (UClass* C = Cast<UClass>(PT.PinSubCategoryObject.Get()))
+					return FString::Printf(TEXT("SoftClass<%s>"), *C->GetName());
+				return TEXT("SoftClass");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_Struct)
+			{
+				if (UScriptStruct* S = Cast<UScriptStruct>(PT.PinSubCategoryObject.Get()))
+					return S->GetName();
+				return TEXT("Struct");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_Enum)
+			{
+				if (UEnum* E = Cast<UEnum>(PT.PinSubCategoryObject.Get()))
+					return FString::Printf(TEXT("Enum<%s>"), *E->GetName());
+				return TEXT("Enum");
+			}
+			if (Cat == UEdGraphSchema_K2::PC_Delegate)  return TEXT("Delegate");
+			if (Cat == UEdGraphSchema_K2::PC_MCDelegate) return TEXT("MulticastDelegate");
+			if (Cat == UEdGraphSchema_K2::PC_Wildcard)  return TEXT("Wildcard");
+			return Cat.ToString();
+		}();
+		// Containers.
+		if (PT.ContainerType == EPinContainerType::Array) return FString::Printf(TEXT("Array of %s"), *BaseType);
+		if (PT.ContainerType == EPinContainerType::Set)   return FString::Printf(TEXT("Set of %s"),   *BaseType);
+		if (PT.ContainerType == EPinContainerType::Map)
+		{
+			// Value-type key side is BaseType; value side lives in PinValueType.
+			FString ValType = TEXT("?");
+			const FName VCat = PT.PinValueType.TerminalCategory;
+			if (VCat == UEdGraphSchema_K2::PC_Int)    ValType = TEXT("Int");
+			else if (VCat == UEdGraphSchema_K2::PC_Boolean) ValType = TEXT("Bool");
+			else if (VCat == UEdGraphSchema_K2::PC_String)  ValType = TEXT("String");
+			else if (VCat == UEdGraphSchema_K2::PC_Double)  ValType = TEXT("Double");
+			else if (VCat == UEdGraphSchema_K2::PC_Float)   ValType = TEXT("Float");
+			else if (VCat == UEdGraphSchema_K2::PC_Object)
+			{
+				if (UClass* C = Cast<UClass>(PT.PinValueType.TerminalSubCategoryObject.Get()))
+					ValType = C->GetName();
+			}
+			return FString::Printf(TEXT("Map<%s, %s>"), *BaseType, *ValType);
+		}
+		return BaseType;
+	}
+
+	/** Extract a pin's effective default as a string. */
+	static FString GetPinDefaultString(const UEdGraphPin* Pin)
+	{
+		if (!Pin) return FString();
+		if (Pin->DefaultObject) return Pin->DefaultObject->GetPathName();
+		if (!Pin->DefaultTextValue.IsEmpty()) return Pin->DefaultTextValue.ToString();
+		return Pin->DefaultValue;
+	}
+}
+
+FString UUnrealBridgeBlueprintLibrary::GetPinDefaultValue(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& PinName)
+{
+	using namespace BridgeBPSummaryImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return FString();
+	UEdGraph* Graph = FindSingleGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+	UEdGraphNode* Node = FindNodeInGraphByGuid(Graph, NodeGuid);
+	if (!Node) return FString();
+	UEdGraphPin* Pin = Node->FindPin(PinName);
+	if (!Pin) return FString();
+	return GetPinDefaultString(Pin);
+}
+
+TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
+	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	using namespace BridgeBPSummaryImpl;
+	TArray<FBridgePinInfo> Result;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Result;
+	UEdGraph* Graph = FindSingleGraphByName(BP, GraphName);
+	if (!Graph) return Result;
+	UEdGraphNode* Node = FindNodeInGraphByGuid(Graph, NodeGuid);
+	if (!Node) return Result;
+
+	const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
+
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin) continue;
+		FBridgePinInfo Info;
+		Info.Name        = Pin->PinName.ToString();
+		Info.DisplayName = Pin->GetDisplayName().ToString();
+		Info.Type        = PinTypeToHuman(Pin->PinType);
+		Info.Direction   = (Pin->Direction == EGPD_Input) ? TEXT("input") : TEXT("output");
+		Info.Category    = Pin->PinType.PinCategory.ToString();
+		Info.SubCategory = Pin->PinType.PinSubCategory.ToString();
+		if (UObject* SubObj = Pin->PinType.PinSubCategoryObject.Get())
+		{
+			Info.SubCategoryObjectPath = SubObj->GetPathName();
+		}
+		Info.DefaultValue     = GetPinDefaultString(Pin);
+		Info.bHasDefaultObject = (Pin->DefaultObject != nullptr);
+		Info.bIsExec          = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+		Info.bIsConnected     = (Pin->LinkedTo.Num() > 0);
+		Info.LinkCount        = Pin->LinkedTo.Num();
+		Info.bIsArray         = (Pin->PinType.ContainerType == EPinContainerType::Array);
+		Info.bIsSet           = (Pin->PinType.ContainerType == EPinContainerType::Set);
+		Info.bIsMap           = (Pin->PinType.ContainerType == EPinContainerType::Map);
+		Info.bIsReference     = Pin->PinType.bIsReference;
+		Info.bIsConst         = Pin->PinType.bIsConst;
+		Info.bIsHidden        = Pin->bHidden;
+		Info.bIsSelfPin       = (K2 && K2->IsSelfPin(*Pin));
+		Result.Add(Info);
+	}
+	return Result;
+}
+
 TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindEventHandlerSites(
 	const FString& BlueprintPath, const FString& EventName)
 {

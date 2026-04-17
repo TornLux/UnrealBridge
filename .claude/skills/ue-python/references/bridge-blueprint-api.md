@@ -1198,6 +1198,95 @@ you can pipe Find* results into `remove_graph_node`, `set_node_enabled`,
 
 ---
 
+## Pin introspection
+
+Read any pin on any node — both its metadata (type, direction, flags)
+and its default value. Closes the Set/Get symmetry gap: `set_pin_default_value`
+existed already; these two are the read side. With both, an agent can
+**fully reconstruct** the logic of any node — including Select defaults,
+static-function CDO self pins, hidden pins, and unconnected literals.
+
+### get_pin_default_value(blueprint_path, graph_name, node_guid, pin_name) -> str
+
+Single-pin lookup. Returns the effective default as a string — object
+path for object refs, text contents for text pins, raw string for
+literals. Empty when the pin is connected (UE ignores the default in
+that case) or has no default set.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+bp = '/Game/Blueprints/SandboxCharacter_CMC.SandboxCharacter_CMC'
+fn = 'CalculateMaxAcceleration'
+map_node = '459D8CE64B09A309F667D7B744FE5A9A'  # MapRangeClamped node guid
+
+for p in ['InRangeA', 'InRangeB', 'OutRangeA', 'OutRangeB']:
+    print(p, '=', L.get_pin_default_value(bp, fn, map_node, p))
+# InRangeA  = '300.000000'
+# InRangeB  = '700.000000'
+# OutRangeA = '800.000000'
+# OutRangeB = '300.000000'
+```
+
+### get_node_pins(blueprint_path, graph_name, node_guid) -> list[FBridgePinInfo]
+
+Full pin surface — every pin including unconnected ones, hidden ones,
+and static-function self pins. Each entry carries type, direction,
+category, default, and connection state.
+
+```python
+select_node = 'C08E653441319F523B95C1B5D9A29EDE'   # Select node in CalculateMaxAcceleration
+for p in L.get_node_pins(bp, fn, select_node):
+    flags = []
+    if p.is_exec:      flags.append('exec')
+    if p.is_connected: flags.append(f'wired({p.link_count})')
+    if p.is_hidden:    flags.append('hidden')
+    if p.is_self_pin:  flags.append('self')
+    if p.is_array:     flags.append('array')
+    default = repr(p.default_value) if p.default_value else ''
+    print(f'[{p.direction}] {p.name} : {p.type}  {" ".join(flags)}  {default}')
+# [input]  NewEnumerator0 : Double              '800.000000'
+# [input]  NewEnumerator1 : Double              '800.000000'
+# [input]  NewEnumerator2 : Double   wired(1)   '0.0'
+# [input]  Index          : Enum<E_Gait>  wired(1)  'NewEnumerator0'
+# [output] ReturnValue    : Double   wired(1)
+```
+
+#### FBridgePinInfo fields
+
+| Field | Meaning |
+|-------|---------|
+| `name` | internal pin name (use with `connect_graph_pins`, `set_pin_default_value`, …) |
+| `display_name` | user-facing label shown in the editor (sometimes localised) |
+| `type` | human type — `Exec`, `Bool`, `Int`, `Double`, `Vector`, `Actor`, `Array of Int`, `Enum<E_Gait>`, `Class<PrimitiveComponent>`, `Map<Name, Int>` |
+| `direction` | `"input"` \| `"output"` |
+| `category` | raw `FEdGraphPinType::PinCategory` (e.g. `"exec"`, `"object"`) |
+| `sub_category` / `sub_category_object_path` | raw sub-category + path of the class / struct / enum object (empty for primitives) |
+| `default_value` | effective default as string (object path for object pins) |
+| `has_default_object` | true for object-ref defaults (distinct from literal defaults) |
+| `is_exec`, `is_connected`, `link_count` | exec wire flag + connection state |
+| `is_array` / `is_set` / `is_map` | container type flags |
+| `is_reference`, `is_const`, `is_hidden` | UE pin-type modifiers |
+| `is_self_pin` | true for the implicit target / self pin static-function calls carry (usually hidden) |
+
+**Interpreting `default_value` on a connected pin.** UE stores the last
+literal even after a wire is connected (it just ignores it at
+evaluation time). Treat `default_value` as meaningful **only when
+`is_connected == false`**.
+
+**Reading Select defaults.** The `Select` node (K2Node_Select) exposes
+`NewEnumerator0` / `NewEnumerator1` / ... as input pins — one per enum
+entry. Unconnected inputs keep their literal default; connected ones
+take precedence at runtime.
+
+**Reading static-function CDO self pins.** `KismetMathLibrary`,
+`KismetSystemLibrary`, `GameplayStatics` etc. are all static libraries.
+Their `self` pin is hidden by default and points to the class's CDO
+(e.g. `/Script/Engine.Default__KismetMathLibrary`) — `get_node_pins`
+surfaces this; `get_node_pin_connections` skips it because there's no
+wire.
+
+---
+
 ### End-to-end example — one node-graph build, one compile
 
 ```python

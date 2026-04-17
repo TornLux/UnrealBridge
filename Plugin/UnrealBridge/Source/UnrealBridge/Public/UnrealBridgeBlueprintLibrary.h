@@ -648,6 +648,65 @@ struct FBridgeFunctionSemantics
 	UPROPERTY(BlueprintReadOnly) FString Description;
 };
 
+/** Full pin description for one node pin (listed regardless of wire state). */
+USTRUCT(BlueprintType)
+struct FBridgePinInfo
+{
+	GENERATED_BODY()
+
+	/** Pin's internal name (e.g. "then", "Center", "InString", "Condition"). */
+	UPROPERTY(BlueprintReadOnly) FString Name;
+
+	/** User-facing pin label shown in the graph editor (sometimes differs). */
+	UPROPERTY(BlueprintReadOnly) FString DisplayName;
+
+	/** Human-readable type. Examples: "Exec", "Bool", "Int", "Float",
+	 *  "Vector", "String", "Actor", "Array of Int", "Class<PrimitiveComponent>",
+	 *  "Enum<EMovementMode>". */
+	UPROPERTY(BlueprintReadOnly) FString Type;
+
+	/** "input" or "output". */
+	UPROPERTY(BlueprintReadOnly) FString Direction;
+
+	/** Raw FEdGraphPinType::PinCategory (e.g. "exec", "int", "object"). */
+	UPROPERTY(BlueprintReadOnly) FString Category;
+
+	/** Raw FEdGraphPinType::PinSubCategory (rarely useful directly;
+	 *  see SubCategoryObjectPath for class/struct name). */
+	UPROPERTY(BlueprintReadOnly) FString SubCategory;
+
+	/** Path of the subcategory object (class for Object/SoftObject/Class
+	 *  pins, struct for Struct pins, enum for Enum pins). Empty otherwise. */
+	UPROPERTY(BlueprintReadOnly) FString SubCategoryObjectPath;
+
+	/** Effective default value as a string. For object pins this is the
+	 *  object path; for text pins the text contents; for literals the
+	 *  string form. Empty when the pin is connected (default is ignored)
+	 *  or when no default has been set. */
+	UPROPERTY(BlueprintReadOnly) FString DefaultValue;
+
+	/** True if the pin has an object reference default (distinct from
+	 *  a literal DefaultValue string). */
+	UPROPERTY(BlueprintReadOnly) bool bHasDefaultObject = false;
+
+	UPROPERTY(BlueprintReadOnly) bool bIsExec = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsConnected = false;
+
+	/** Number of currently-linked pins on the other side. */
+	UPROPERTY(BlueprintReadOnly) int32 LinkCount = 0;
+
+	UPROPERTY(BlueprintReadOnly) bool bIsArray = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsSet = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsMap = false;
+
+	UPROPERTY(BlueprintReadOnly) bool bIsReference = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsConst = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsHidden = false;
+
+	/** True for the implicit "self" / target pin most K2 CallFunction nodes carry. */
+	UPROPERTY(BlueprintReadOnly) bool bIsSelfPin = false;
+};
+
 /** A single reference site surfaced by Find* cross-reference queries. */
 USTRUCT(BlueprintType)
 struct FBridgeReference
@@ -1338,4 +1397,30 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgeReference> FindEventHandlerSites(
 		const FString& BlueprintPath, const FString& EventName);
+
+	// ─── Node pin introspection ────────────────────────────
+
+	/**
+	 * Read the default value of a specific pin on a specific node.
+	 * For object-ref pins returns the object's path name; for text pins
+	 * the text contents; for literals the string form. Returns empty
+	 * string when the pin is connected (default ignored) or has no
+	 * default set.
+	 *
+	 * Complements set_pin_default_value — the read half that was missing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString GetPinDefaultValue(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid, const FString& PinName);
+
+	/**
+	 * List every pin on a node — including unconnected ones — with its
+	 * type, direction, category, default value, and connection state.
+	 * Unlike get_node_pin_connections (which only surfaces wired pins),
+	 * this returns the full pin surface so an agent can see what's
+	 * available to wire against without opening the BP editor.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgePinInfo> GetNodePins(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid);
 };
