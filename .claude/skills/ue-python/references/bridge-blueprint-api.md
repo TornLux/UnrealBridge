@@ -1287,6 +1287,98 @@ wire.
 
 ---
 
+## Node layout (position / size / corners / pin coordinates)
+
+Read node geometry for layout purposes — placing new nodes adjacent to
+existing ones, wrapping regions with comment boxes, positioning reroute
+knots mid-wire.
+
+⚠️ **Size accuracy caveat.** `UEdGraphNode::NodeWidth/NodeHeight` is
+only authoritative for **Comment nodes** (user-authored, always
+correct). For regular K2 nodes the stored size stays 0 because Slate
+caches its own desired-size on the widget and doesn't write back. We
+fall back to an estimate from title length + visible pin count, good
+enough for relative placement but not pixel-perfect. The returned
+struct tells you which path was taken via `size_is_authoritative`.
+
+### get_node_layout(blueprint_path, graph_name, node_guid) -> FBridgeNodeLayout
+
+Origin, stored / estimated / effective dimensions, four corners, and
+centre in graph coordinates.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+bp = '/Game/Blueprints/SandboxCharacter_CMC.SandboxCharacter_CMC'
+fn = 'CalculateMaxAcceleration'
+select = 'C08E653441319F523B95C1B5D9A29EDE'
+
+lay = L.get_node_layout(bp, fn, select)
+print(f'({lay.pos_x}, {lay.pos_y})  {lay.effective_width}×{lay.effective_height}  auth={lay.size_is_authoritative}')
+# (896, 64)  180×140  auth=False    ← estimated (no Slate pass)
+
+print('TL', lay.top_left, 'BR', lay.bottom_right, 'centre', lay.center)
+```
+
+#### FBridgeNodeLayout fields
+
+| Field | Meaning |
+|-------|---------|
+| `pos_x`, `pos_y` | Node origin in graph coordinates (always accurate) |
+| `stored_width`, `stored_height` | Raw `NodeWidth/Height` from the UEdGraphNode. 0 for most nodes |
+| `estimated_width`, `estimated_height` | Synthesised from title + visible pins |
+| `effective_width`, `effective_height` | `stored_*` if nonzero, else `estimated_*` |
+| `top_left` / `top_right` / `bottom_left` / `bottom_right` / `center` | Corner + centre points, computed from `effective_*` |
+| `is_comment_box` | True for `UEdGraphNode_Comment` |
+| `size_is_authoritative` | True when Effective came from Stored (i.e. comment box or a node that has been rendered) |
+
+**Comment boxes are reliable.** `add_comment_box` sets Stored* explicitly,
+so `get_node_layout` on a comment immediately returns authoritative
+sizes. Use comments as "layout anchors" if you need exact dimensions.
+
+### get_node_pin_layouts(blueprint_path, graph_name, node_guid) -> list[FBridgePinLayout]
+
+Estimated coordinates for every visible pin on a node. Input pins sit
+~10 px inset from the left edge; outputs sit the same distance from
+the right edge; pin Y = header (40) + `direction_index` × row height
+(22). Hidden pins are surfaced with `direction_index = -1` and zero
+offset.
+
+```python
+for p in L.get_node_pin_layouts(bp, fn, select):
+    x, y = int(p.position.x), int(p.position.y)
+    print(f'[{p.direction}#{p.direction_index}] {p.name}  →  ({x}, {y})')
+# [input#0]  NewEnumerator0  →  (906, 104)
+# [input#1]  NewEnumerator1  →  (906, 126)
+# [input#2]  NewEnumerator2  →  (906, 148)
+# [input#3]  Index           →  (906, 170)
+# [output#0] ReturnValue     →  (1066, 104)
+```
+
+#### FBridgePinLayout fields
+
+| Field | Meaning |
+|-------|---------|
+| `name` | pin internal name |
+| `direction` | `"input"` / `"output"` |
+| `direction_index` | index among pins of same direction (0-based, hidden skipped; -1 for hidden pins) |
+| `local_offset` | position relative to node top-left origin |
+| `position` | absolute graph position (node pos + local offset) |
+| `is_exec` | exec-pin flag |
+| `is_hidden` | hidden pin (still surfaced; has `direction_index = -1`) |
+| `is_estimated` | always True for v1 — real Slate-computed coords aren't exposed without the graph panel active |
+
+**Layout recipes.**
+- **Midpoint of a wire**: `(src_pin.position + dst_pin.position) / 2` →
+  drop a reroute knot there with `add_reroute_node`.
+- **Place a node to the right of another**: `new_x = lay.top_right.x +
+  40; new_y = lay.pos_y` → call `add_call_function_node(..., new_x,
+  new_y)`.
+- **Wrap a region in a comment**: find min top-left / max bottom-right
+  across the target nodes' `get_node_layout` results, pad by 30, pass
+  as `add_comment_box(x, y, width, height)`.
+
+---
+
 ### End-to-end example — one node-graph build, one compile
 
 ```python

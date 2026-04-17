@@ -648,6 +648,82 @@ struct FBridgeFunctionSemantics
 	UPROPERTY(BlueprintReadOnly) FString Description;
 };
 
+/** Positioning + sizing data for a Blueprint graph node. Used for layout.
+ *
+ *  ⚠️ Size caveat: NodeWidth / NodeHeight on UEdGraphNode are only populated
+ *  after Slate has rendered the node at least once in an open graph panel.
+ *  For Comment nodes (UEdGraphNode_Comment) sizes are user-authored and
+ *  always authoritative. For everything else, expect StoredWidth/Height == 0
+ *  on a freshly-loaded BP that isn't open; fall back to EstimatedWidth/
+ *  Height (synthesised from title length + visible pin count).
+ *  EffectiveWidth/Height picks Stored when available, else Estimated.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeNodeLayout
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) int32 PosX = 0;
+	UPROPERTY(BlueprintReadOnly) int32 PosY = 0;
+
+	/** Width as stored on UEdGraphNode::NodeWidth.
+	 *  Authoritative for Comment nodes; 0 until Slate renders for others. */
+	UPROPERTY(BlueprintReadOnly) int32 StoredWidth = 0;
+	UPROPERTY(BlueprintReadOnly) int32 StoredHeight = 0;
+
+	/** Synthesised from title length + visible pin count when Stored is 0. */
+	UPROPERTY(BlueprintReadOnly) int32 EstimatedWidth = 0;
+	UPROPERTY(BlueprintReadOnly) int32 EstimatedHeight = 0;
+
+	/** Stored if nonzero, else Estimated. Used for corner calculations. */
+	UPROPERTY(BlueprintReadOnly) int32 EffectiveWidth = 0;
+	UPROPERTY(BlueprintReadOnly) int32 EffectiveHeight = 0;
+
+	/** All four corners in graph coordinates. TopLeft == (PosX, PosY). */
+	UPROPERTY(BlueprintReadOnly) FVector2D TopLeft      = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FVector2D TopRight     = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FVector2D BottomLeft   = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FVector2D BottomRight  = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly) FVector2D Center       = FVector2D::ZeroVector;
+
+	/** True if this is a UEdGraphNode_Comment (sizes always authoritative). */
+	UPROPERTY(BlueprintReadOnly) bool bIsCommentBox = false;
+
+	/** True when EffectiveWidth/Height came from StoredWidth/Height
+	 *  (reliable). False when we had to estimate because Stored was 0. */
+	UPROPERTY(BlueprintReadOnly) bool bSizeIsAuthoritative = false;
+};
+
+/** Estimated per-pin position for layout. Pin X is inset from node edges;
+ *  pin Y is derived from the pin's direction-specific index × row height. */
+USTRUCT(BlueprintType)
+struct FBridgePinLayout
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Name;
+
+	/** "input" or "output". */
+	UPROPERTY(BlueprintReadOnly) FString Direction;
+
+	/** Index among pins of the same direction on this node (0-based,
+	 *  hidden pins skipped). Used to drive pin Y. */
+	UPROPERTY(BlueprintReadOnly) int32 DirectionIndex = 0;
+
+	/** Position relative to the node's top-left origin. */
+	UPROPERTY(BlueprintReadOnly) FVector2D LocalOffset = FVector2D::ZeroVector;
+
+	/** Absolute position in graph coordinates (node pos + local offset). */
+	UPROPERTY(BlueprintReadOnly) FVector2D Position = FVector2D::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly) bool bIsExec = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsHidden = false;
+
+	/** Always true for now — pin coordinates are synthesised. A running
+	 *  Slate graph editor is required for pixel-accurate pin positions. */
+	UPROPERTY(BlueprintReadOnly) bool bIsEstimated = true;
+};
+
 /** Full pin description for one node pin (listed regardless of wire state). */
 USTRUCT(BlueprintType)
 struct FBridgePinInfo
@@ -1422,5 +1498,28 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgePinInfo> GetNodePins(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid);
+
+	// ─── Node layout (position / size / corners) ───────────
+
+	/**
+	 * Node origin, stored + estimated sizes, and all four corners in
+	 * graph coordinates. See FBridgeNodeLayout for the size caveat —
+	 * stored sizes require the BP to have been rendered in an open
+	 * graph panel at least once (Comment nodes always have authoritative
+	 * sizes because user authored them).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeNodeLayout GetNodeLayout(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid);
+
+	/**
+	 * Estimated local + absolute positions of every visible pin on a node.
+	 * Useful for placing reroute knots between two nodes, lining up new
+	 * nodes next to specific pins, or computing the "where does this wire
+	 * want to go" point.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgePinLayout> GetNodePinLayouts(const FString& BlueprintPath,
 		const FString& GraphName, const FString& NodeGuid);
 };

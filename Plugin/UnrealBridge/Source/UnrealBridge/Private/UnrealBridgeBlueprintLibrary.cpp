@@ -4321,6 +4321,156 @@ FString UUnrealBridgeBlueprintLibrary::GetPinDefaultValue(
 	return GetPinDefaultString(Pin);
 }
 
+// ─── Node layout ───────────────────────────────────────────────
+
+namespace BridgeBPSummaryImpl
+{
+	// Rough UE K2 node layout constants — match typical rendered sizes
+	// within ±20 px, enough for relative adjacency placement.
+	constexpr int32 HeaderHeight  = 40;  // title bar above pins
+	constexpr int32 PinRowHeight  = 22;
+	constexpr int32 FooterHeight  = 12;
+	constexpr int32 MinNodeWidth  = 180;
+	constexpr int32 MinNodeHeight = 60;
+	constexpr int32 MaxNodeWidth  = 520;
+	constexpr int32 PinInsetX     = 10;
+
+	struct FVisiblePinTally
+	{
+		int32 InputCount = 0;
+		int32 OutputCount = 0;
+		int32 LongestLabel = 0;
+	};
+
+	static FVisiblePinTally TallyVisiblePins(const UEdGraphNode* Node)
+	{
+		FVisiblePinTally Out;
+		if (!Node) return Out;
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->bHidden) continue;
+			if (Pin->Direction == EGPD_Input)  Out.InputCount  += 1;
+			else                                Out.OutputCount += 1;
+			const int32 Len = Pin->GetDisplayName().ToString().Len();
+			if (Len > Out.LongestLabel) Out.LongestLabel = Len;
+		}
+		return Out;
+	}
+
+	static void EstimateNodeSize(const UEdGraphNode* Node, int32& W, int32& H)
+	{
+		if (!Node) { W = MinNodeWidth; H = MinNodeHeight; return; }
+		const FVisiblePinTally Tally = TallyVisiblePins(Node);
+		const FString Title = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		// Char-width heuristic: ~7 px per char in default font. Title bar
+		// + longest pin label on either side plus padding drives width.
+		const int32 TitleWidth = Title.Len() * 7 + 40;
+		const int32 PinWidth   = Tally.LongestLabel * 7 + 80;  // both sides get padding
+		W = FMath::Clamp(FMath::Max(TitleWidth, PinWidth), MinNodeWidth, MaxNodeWidth);
+		// Height: header + max-rows per side * row height + footer.
+		const int32 RowCount = FMath::Max(Tally.InputCount, Tally.OutputCount);
+		H = FMath::Max(MinNodeHeight, HeaderHeight + RowCount * PinRowHeight + FooterHeight);
+	}
+}
+
+FBridgeNodeLayout UUnrealBridgeBlueprintLibrary::GetNodeLayout(
+	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	using namespace BridgeBPSummaryImpl;
+	FBridgeNodeLayout Out;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Out;
+	UEdGraph* Graph = FindSingleGraphByName(BP, GraphName);
+	if (!Graph) return Out;
+	UEdGraphNode* Node = FindNodeInGraphByGuid(Graph, NodeGuid);
+	if (!Node) return Out;
+
+	Out.PosX         = Node->NodePosX;
+	Out.PosY         = Node->NodePosY;
+	Out.StoredWidth  = Node->NodeWidth;
+	Out.StoredHeight = Node->NodeHeight;
+
+	Out.bIsCommentBox = Node->IsA<UEdGraphNode_Comment>();
+
+	int32 EstW = 0, EstH = 0;
+	EstimateNodeSize(Node, EstW, EstH);
+	Out.EstimatedWidth  = EstW;
+	Out.EstimatedHeight = EstH;
+
+	// Use stored if sane (>0). Comments always have authored dims.
+	const bool bStoredValid = (Out.StoredWidth > 0 && Out.StoredHeight > 0);
+	Out.bSizeIsAuthoritative = bStoredValid || Out.bIsCommentBox;
+	Out.EffectiveWidth  = bStoredValid ? Out.StoredWidth  : Out.EstimatedWidth;
+	Out.EffectiveHeight = bStoredValid ? Out.StoredHeight : Out.EstimatedHeight;
+
+	const float X = static_cast<float>(Out.PosX);
+	const float Y = static_cast<float>(Out.PosY);
+	const float W = static_cast<float>(Out.EffectiveWidth);
+	const float H = static_cast<float>(Out.EffectiveHeight);
+	Out.TopLeft     = FVector2D(X,     Y);
+	Out.TopRight    = FVector2D(X + W, Y);
+	Out.BottomLeft  = FVector2D(X,     Y + H);
+	Out.BottomRight = FVector2D(X + W, Y + H);
+	Out.Center      = FVector2D(X + W * 0.5f, Y + H * 0.5f);
+	return Out;
+}
+
+TArray<FBridgePinLayout> UUnrealBridgeBlueprintLibrary::GetNodePinLayouts(
+	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	using namespace BridgeBPSummaryImpl;
+	TArray<FBridgePinLayout> Out;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Out;
+	UEdGraph* Graph = FindSingleGraphByName(BP, GraphName);
+	if (!Graph) return Out;
+	UEdGraphNode* Node = FindNodeInGraphByGuid(Graph, NodeGuid);
+	if (!Node) return Out;
+
+	// Layout derived from EffectiveWidth for correct right-edge position.
+	int32 EstW = 0, EstH = 0;
+	EstimateNodeSize(Node, EstW, EstH);
+	const int32 EffWidth = (Node->NodeWidth > 0) ? Node->NodeWidth : EstW;
+
+	int32 InputIdx = 0;
+	int32 OutputIdx = 0;
+	const float Ox = static_cast<float>(Node->NodePosX);
+	const float Oy = static_cast<float>(Node->NodePosY);
+
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin) continue;
+		FBridgePinLayout L;
+		L.Name      = Pin->PinName.ToString();
+		L.Direction = (Pin->Direction == EGPD_Input) ? TEXT("input") : TEXT("output");
+		L.bIsExec   = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+		L.bIsHidden = Pin->bHidden;
+		L.bIsEstimated = true;
+
+		// Hidden pins keep index -1 and local offset = (0, 0) — they don't
+		// occupy a visible row. Still surfaced so callers see the full list.
+		if (Pin->bHidden)
+		{
+			L.DirectionIndex = -1;
+			L.LocalOffset    = FVector2D::ZeroVector;
+			L.Position       = FVector2D(Ox, Oy);
+			Out.Add(L);
+			continue;
+		}
+
+		const int32 DirIdx = (Pin->Direction == EGPD_Input) ? InputIdx++ : OutputIdx++;
+		L.DirectionIndex = DirIdx;
+		const float Lx = (Pin->Direction == EGPD_Input)
+			? static_cast<float>(PinInsetX)
+			: static_cast<float>(EffWidth - PinInsetX);
+		const float Ly = static_cast<float>(HeaderHeight + DirIdx * PinRowHeight);
+		L.LocalOffset = FVector2D(Lx, Ly);
+		L.Position    = FVector2D(Ox + Lx, Oy + Ly);
+		Out.Add(L);
+	}
+	return Out;
+}
+
 TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
 	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
 {
