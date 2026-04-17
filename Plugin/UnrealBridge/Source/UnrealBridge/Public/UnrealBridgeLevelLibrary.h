@@ -614,7 +614,28 @@ public:
 	 * @param Views             Subset of: "Front", "Back", "Side" (right), "SideLeft",
 	 *                          "ThreeQuarter" (front-right-elevated), "Top", "Bottom".
 	 *                          Unknown names are skipped.
-	 * @param bBoneOverlay      Reserved — not yet implemented; ignored.
+	 * @param bBoneOverlay      Overlay key bone chains (spine / arms / legs)
+	 *                          with coloured parent→child line segments and
+	 *                          joint dots, drawn into each cell before compositing.
+	 *                          Missing bones degrade gracefully (skipped).
+	 * @param bPerViewFraming   Each view computes its own target + distance from
+	 *                          the posed bone bbox in camera-space; a consensus
+	 *                          (max) distance is then applied across views so
+	 *                          character scale stays equal. Eliminates dead
+	 *                          space on asymmetric poses. Default false → legacy
+	 *                          pelvis-anchored framing.
+	 * @param bGroundGrid       Project a Z=GroundZ world-XY grid (50 cm spacing)
+	 *                          onto each cell so the agent can tell airborne vs
+	 *                          grounded at a glance. Centre auto-picked from
+	 *                          pelvis / trajectory extent.
+	 * @param bRootTrajectory   Densely sample the pelvis bone across the whole
+	 *                          anim, project the XY path to Z=GroundZ, draw as
+	 *                          a green polyline with tick markers. Tick spacing
+	 *                          reads as velocity profile (even=constant,
+	 *                          bunched=slow, spread=fast).
+	 * @param GroundZ           World-space Z of the ground plane. Default 0.0 —
+	 *                          matches the UE convention where the skeleton's
+	 *                          reference pose has feet at Z=0.
 	 * @param GridCols          Columns in the composite; rows = ceil(N/cols).
 	 * @param CellWidth         Pixel width of each view cell (e.g. 512).
 	 * @param CellHeight        Pixel height of each view cell (e.g. 512).
@@ -627,6 +648,10 @@ public:
 		const FString& SkeletalMeshPath,
 		const TArray<FString>& Views,
 		bool bBoneOverlay,
+		bool bPerViewFraming,
+		bool bGroundGrid,
+		bool bRootTrajectory,
+		float GroundZ,
 		int32 GridCols,
 		int32 CellWidth,
 		int32 CellHeight,
@@ -649,7 +674,19 @@ public:
 	 * @param NumTimeSamples    Rows; times = 0, L/(N-1), 2L/(N-1), ..., L.
 	 *                          N=1 → single row at t=0.
 	 * @param Views             Column views; same names as CaptureAnimPoseGrid.
-	 * @param bBoneOverlay      Reserved — not yet implemented; ignored.
+	 * @param bBoneOverlay      Overlay key bone chains (spine / arms / legs)
+	 *                          into each cell before compositing.
+	 * @param bPerViewFraming   Each view reframes on the union of bone
+	 *                          positions across the whole timeline; a consensus
+	 *                          distance is applied so scale stays equal across
+	 *                          both rows and columns.
+	 * @param bGroundGrid       Same as CaptureAnimPoseGrid — ground plane grid
+	 *                          at Z=GroundZ.
+	 * @param bRootTrajectory   Same as CaptureAnimPoseGrid — pelvis XY path,
+	 *                          per-row tick at the sample time, current-row
+	 *                          marker highlighted. Tick spacing reads as
+	 *                          velocity profile for the whole motion.
+	 * @param GroundZ           World-space Z of the ground plane. Default 0.0.
 	 * @param CellWidth,CellHeight  Pixel size per cell (e.g. 384).
 	 * @param FilePath          Output PNG path (parent dirs auto-created).
 	 */
@@ -660,6 +697,10 @@ public:
 		int32 NumTimeSamples,
 		const TArray<FString>& Views,
 		bool bBoneOverlay,
+		bool bPerViewFraming,
+		bool bGroundGrid,
+		bool bRootTrajectory,
+		float GroundZ,
 		int32 CellWidth,
 		int32 CellHeight,
 		const FString& FilePath);

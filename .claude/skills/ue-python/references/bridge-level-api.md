@@ -1289,7 +1289,7 @@ ok = Lv.capture_from_pose(
 fully written when the function returns. The transient SceneCapture2D
 actor is destroyed immediately after readback.
 
-### capture_anim_pose_grid(anim_path, time, skeletal_mesh_path, views, bone_overlay, grid_cols, cell_width, cell_height, file_path) -> bool
+### capture_anim_pose_grid(anim_path, time, skeletal_mesh_path, views, bone_overlay, per_view_framing, ground_grid, root_trajectory, ground_z, grid_cols, cell_width, cell_height, file_path) -> bool
 
 Render N views of a skeletal mesh posed at a specific time of an anim
 sequence / montage, composited into one PNG grid. Runs in an **isolated
@@ -1307,7 +1307,11 @@ without clicking the timeline frame-by-frame.
 | `time` | Seconds into the anim; clamped to `[0, play_length]` |
 | `skeletal_mesh_path` | Explicit mesh; empty → `USkeleton::GetPreviewMesh()` |
 | `views` | Subset of `"Front" / "Back" / "Side" (right) / "SideLeft" / "ThreeQuarter" / "Top" / "Bottom"`; unknown names skip |
-| `bone_overlay` | Reserved; currently ignored (logs a warning) |
+| `bone_overlay` | Draw colour-coded bone chains + joint dots on each cell. Spine=cyan, L-arm=yellow, R-arm=orange, L-leg=magenta, R-leg=purple |
+| `per_view_framing` | Each view reframes tight on bone bbox; consensus distance across views keeps scale equal. Eliminates dead space on asymmetric poses |
+| `ground_grid` | Project a Z=`ground_z` XY grid (50 cm cells) into each view. Instantly disambiguates airborne vs grounded poses — character clearly floats above the grid when in mid-jump. Axis lines (x=0, y=0) drawn darker |
+| `root_trajectory` | Densely sample pelvis XY across the whole anim (~30 Hz, capped 240 points), flatten to `ground_z`, draw as a bright-green polyline. White tick at the captured time, red marker at the current frame. Tick spacing = velocity profile: even = constant, bunched = slow, spread = fast |
+| `ground_z` | World-space Z of the ground plane. Default 0.0 — UE skeletons author the ref pose with feet at Z=0, so 0 is correct for most rigs |
 | `grid_cols` | Columns in the composite; rows = `ceil(N/cols)` |
 | `cell_width`, `cell_height` | Pixel size of each view cell (e.g. 512) |
 | `file_path` | Output PNG path (parent dirs auto-created) |
@@ -1316,38 +1320,52 @@ without clicking the timeline frame-by-frame.
 ok = Lv.capture_anim_pose_grid(
     anim_path='/Game/Animations/Punch_Montage',
     time=0.35,
-    skeletal_mesh_path='',   # empty → skeleton's preview mesh
+    skeletal_mesh_path='',            # empty → skeleton's preview mesh
     views=['Front', 'Side', 'ThreeQuarter', 'Top'],
-    bone_overlay=False,
+    bone_overlay=True,                # draw skeleton chains on top
+    per_view_framing=True,            # reframe per view for tight crop
+    ground_grid=True,                 # floor grid at Z=ground_z
+    root_trajectory=True,             # pelvis XY path + current-time marker
+    ground_z=0.0,
     grid_cols=2, cell_width=512, cell_height=512,
     file_path='G:/Claude/UnrealBridge/.captures/punch_0p35.png')
 ```
 
 Output: single 1024×1024 PNG (for 2×2 grid @ 512 cell). Figures against
-a clean white background (unlit base-color rendering — avoids dark
-output that would happen with scene lighting).
+a clean grey background (final-color render with three-point preview
+lighting).
 
 **Pose evaluation:** `PlayAnimation(anim, false)` +
 `SetPosition(time, false)` + `TickAnimation(0)` +
 `RefreshBoneTransforms()`. Works for both `UAnimSequence` and
 `UAnimMontage`.
 
-**Framing:** centre is the pelvis bone when one is found (tries
-`pelvis` / `Pelvis` / `hips` / `Hips` / `spine_01` / `spine` / `root` /
-`Root` in priority order), else the geometric AABB of posed bones.
-Distance auto-computed from the posed-bone AABB so the character
-fits comfortably in a 45° FOV.
+**Framing:**
+- `per_view_framing=False` (default): pelvis-anchored single radius, all
+  views share the same camera distance. Legacy behaviour — symmetric
+  poses centre fine, but a raised arm leaves dead space on the opposite
+  side.
+- `per_view_framing=True`: each view reprojects all bone world positions
+  into its own derived camera basis, finds the tight 2D bbox + mean
+  depth, and chooses its own target + required distance. A consensus
+  (max) distance is then applied across views so character scale stays
+  consistent between cells.
 
-**Perf:** ~200 ms for 4 views at 512×512. Cheap enough for
-on-demand analysis, don't loop thousands.
+Pelvis fallback candidates: `pelvis` / `Pelvis` / `hips` / `Hips` /
+`spine_01` / `spine` / `root` / `Root`.
 
-**Limitations:**
-- Bone overlay (draw key joint parent-child lines into the pixel
-  buffer) is not yet implemented; the param is accepted but ignored.
-- Asymmetric poses (e.g. one arm fully extended) leave the opposite
-  side of the frame empty — pelvis-anchored framing keeps the body
-  centred but doesn't chase outliers.
-### capture_anim_montage_timeline(anim_path, skeletal_mesh_path, num_time_samples, views, bone_overlay, cell_width, cell_height, file_path) -> bool
+**Bone overlay** chains cover UE Mannequin (`upperarm_l`, `spine_01`),
+Mixamo (`LeftArm`), and Naughty Dog (`l_shoulder`, `spinea`,
+`l_upper_leg`) naming. Missing bones degrade gracefully — a chain with
+fewer than 2 resolved bones is dropped. World→pixel projection uses
+`FRotationMatrix(CamRot)` axes so it matches UE's SceneCapture output
+including the implicit up-flip on Top/Bottom views.
+
+**Perf:** ~200 ms for 4 views at 512×512 without overlay; overlay adds
+a few ms for Bresenham drawing (negligible). Cheap enough for on-demand
+analysis, don't loop thousands.
+
+### capture_anim_montage_timeline(anim_path, skeletal_mesh_path, num_time_samples, views, bone_overlay, per_view_framing, ground_grid, root_trajectory, ground_z, cell_width, cell_height, file_path) -> bool
 
 Render the anim's timeline as a `NumTimeSamples × len(Views)` grid — rows
 are evenly spaced time samples, columns are view angles. Motion reads
@@ -1360,13 +1378,22 @@ that fits that union; so character scale stays consistent across rows
 even when the anim translates the pelvis, and you can directly compare
 silhouettes between frames.
 
+With `per_view_framing=True` the union set is fed through the same
+per-view reframer as `capture_anim_pose_grid`, so each column can zoom
+in on its own aspect of the motion while scale stays locked across the
+whole grid.
+
 | Param | Meaning |
 |-------|---------|
 | `anim_path` | `UAnimSequenceBase` soft path |
 | `skeletal_mesh_path` | Empty → skeleton's preview mesh |
 | `num_time_samples` | Rows. Times = `0, L/(N-1), 2L/(N-1), …, L`. `N=1` → single row at `t=0` |
 | `views` | Column views (same names as `capture_anim_pose_grid`) |
-| `bone_overlay` | Reserved; ignored today |
+| `bone_overlay` | Same as `capture_anim_pose_grid` — overlay drawn per cell |
+| `per_view_framing` | Same as `capture_anim_pose_grid` — each column reframes on union bones |
+| `ground_grid` | Floor grid at `ground_z`. Per-view framing automatically extends the bbox to include the grid + trajectory |
+| `root_trajectory` | Pelvis XY path. White ticks mark EACH row's sample time; the current row's time is highlighted red so motion across rows reads at a glance |
+| `ground_z` | World-space Z of the ground plane (default 0.0) |
 | `cell_width`, `cell_height` | Pixel size per cell (e.g. 384) |
 | `file_path` | Output PNG path |
 
@@ -1376,11 +1403,27 @@ ok = Lv.capture_anim_montage_timeline(
     skeletal_mesh_path='',
     num_time_samples=5,           # 0%, 25%, 50%, 75%, 100%
     views=['Front', 'Side', 'ThreeQuarter'],
-    bone_overlay=False,
+    bone_overlay=True,
+    per_view_framing=True,
+    ground_grid=True,
+    root_trajectory=True,         # velocity profile visible from tick spacing
+    ground_z=0.0,
     cell_width=384, cell_height=384,
     file_path='G:/Claude/UnrealBridge/.captures/attack_timeline.png')
 # → PNG is (3 × 384) × (5 × 384) = 1152 × 1920
 ```
+
+**Reading the trajectory tick pattern** (the key "what is this motion?"
+cue for an agent):
+- Even tick spacing along the line → constant speed (jog / steady run)
+- Ticks bunched at the **start**, spread at the **end** → accelerating
+  (sprint wind-up, dash)
+- Ticks spread at the **start**, bunched at the **end** → decelerating
+  (run → stop)
+- All ticks clustered at one point → stationary action (attack in place,
+  door push, reload)
+- Two distinct cluster spacings in one trajectory → phase change (run
+  → stop → attack; sprint → brake → swing)
 
 Use this to give an agent a single image from which to identify
 semantic beats (windup, impact frame, recovery end) across the whole

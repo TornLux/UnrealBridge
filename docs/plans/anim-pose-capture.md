@@ -1,8 +1,11 @@
 # Animation pose capture — multi-view grid
 
-Status: **`CaptureAnimPoseGrid` + `CaptureAnimMontageTimeline` landed**
-(2026-04-17). Both APIs work against any `UAnimSequenceBase` (sequence
-or montage). Bone overlay still deferred.
+Status: **Feature complete as of 2026-04-17.** `CaptureAnimPoseGrid`
++ `CaptureAnimMontageTimeline` both support five independent overlay
+axes: bone chains, per-view framing, ground grid, root trajectory, and
+customizable ground Z. All modes verified (Mannequin VaultOver —
+airborne + significant root motion, Naughty Dog Ellie 1079-bone rig
+door-push — stationary).
 
 Give an agent the ability to "watch" an `AnimSequence` / `AnimMontage`
 and identify semantic beats (windup start, impact frame, recovery end)
@@ -130,14 +133,55 @@ Key implementation choices that diverged from the original sketch:
   + `FindPelvisBoneIndex` helpers extracted; `CaptureAnimPoseGrid`
   refactored to share them.
 
-**Still deferred:**
-- **Bone overlay.** `bBoneOverlay` param is accepted but logs a warning
-  and proceeds without overlay on both functions.
-- **Asymmetric-pose framing bias.** When one limb extends far from
-  the pelvis, the opposite side of the frame is empty. Fix would be
-  per-view framing (project bone AABB into camera space and centre
-  the camera target accordingly) — not done; the current pose is
-  still clearly legible.
+**Bone overlay (shipped 2026-04-17):**
+- 5 colour-coded chains drawn per cell before composite: spine (cyan),
+  left arm (yellow), right arm (orange), left leg (magenta), right
+  leg (purple). Joint markers white.
+- World→pixel projection built manually from
+  `FRotationMatrix(CamRot).GetUnitAxis(X/Y/Z)` so the overlay matches
+  UE's SceneCapture orientation — including the implicit up-flip on
+  top/bottom views where roll is ambiguous.
+- Bresenham line at thickness 3 + 5×5 joint squares. Bounds-checked,
+  no blending; clear on grey background.
+- Canonical name candidates cover UE Mannequin (`upperarm_l`, `spine_01`),
+  Mixamo (`LeftArm`) and Naughty Dog (`l_shoulder`, `spinea`,
+  `l_upper_leg`). Missing bones degrade gracefully — chains shorter
+  than 2 are dropped.
+
+**Per-view framing (shipped 2026-04-17):**
+- New opt-in `per_view_framing` flag on both functions.
+- Each view reprojects all bone world positions into its derived
+  camera basis, computes a 2D bbox + mean depth, and picks a new
+  target + required distance to fit. Consensus-max distance applied
+  across views so character scale stays equal between cells; per-view
+  target centres each cell on its own pose extent.
+- Timeline version operates on the union bone set across all time
+  samples, so scale stays fixed across rows AND columns.
+- Fallback to legacy pelvis-anchored framing when bone list is empty
+  or direction vector is zero.
+
+**Ground grid + root trajectory (shipped 2026-04-17):**
+- `bGroundGrid` projects a Z=GroundZ world-XY grid (21×21 lines, 50 cm
+  cells, ~6 m square; auto-extended to cover trajectory extent when
+  trajectory is on). Axis lines through origin drawn darker so the
+  agent can read direction.
+- `bRootTrajectory` densely samples the pelvis bone across the whole
+  anim (30 Hz, capped at 240 points), flattens XY to Z=GroundZ, draws
+  as a bright-green polyline. White tick squares mark interesting
+  times (captured time for pose grid; every row's sample time for
+  timeline). Current frame's time gets a bigger red marker.
+- Tick spacing reads as a velocity profile: even = constant, bunched =
+  slow, spread = fast, cluster = stationary. Lets the agent
+  disambiguate "run then stop" vs "sprint then attack" from a single
+  composite image.
+- Per-view framing auto-extends its bbox with trajectory points +
+  ground centre so overlays stay in frame.
+- Near-plane clipping (D=5 cm) on world-line projection handles
+  lines that cross behind the camera cleanly.
+
+**Still deferred:** nothing load-bearing. Possible future refinement:
+smarter Z-up selection for top/bottom views (currently relies on
+`(Target - CamLoc).Rotation()` which chooses the implicit up).
 
 ---
 

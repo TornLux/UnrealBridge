@@ -2078,6 +2078,605 @@ namespace BridgeLevelImpl
 		RimLight->SetLightColor(FLinearColor(0.95f, 0.95f, 1.0f));
 		Scene.AddComponent(RimLight, FTransform(FRotator(-20.0f, 180.0f, 0.0f)));
 	}
+
+	// ─── Bone overlay + per-view framing helpers ─────────────────
+
+	struct FBoneChainDef
+	{
+		TArray<int32> BoneIndices;
+		FColor Color = FColor::White;
+	};
+
+	static int32 FindFirstBone(
+		const FReferenceSkeleton& RefSkel,
+		const TCHAR* const* Names, int32 Count, int32 ValidBoneCount)
+	{
+		for (int32 i = 0; i < Count; ++i)
+		{
+			const int32 Idx = RefSkel.FindBoneIndex(FName(Names[i]));
+			if (Idx != INDEX_NONE && Idx < ValidBoneCount) return Idx;
+		}
+		return INDEX_NONE;
+	}
+
+	/**
+	 * Resolve canonical bone names on the skeleton (pelvis/spine/arms/legs),
+	 * producing ordered parent→child chains with a colour per group. Missing
+	 * bones are skipped — a chain shorter than 2 is dropped so the overlay
+	 * degrades gracefully on non-humanoid rigs.
+	 */
+	static void BuildBoneChains(
+		const FReferenceSkeleton& RefSkel, int32 ValidBoneCount,
+		TArray<FBoneChainDef>& OutChains)
+	{
+		// Canonical name candidates with priority order. Covers UE Mannequin
+		// (`spine_01`/`upperarm_l`), Mixamo (`LeftArm`), and Naughty Dog
+		// naming (`spinea`, `l_shoulder`, `l_upper_leg`) seen in TLOU rigs.
+		static const TCHAR* SpineSeg1[] = { TEXT("pelvis"), TEXT("Pelvis"), TEXT("hips"), TEXT("Hips"), TEXT("root"), TEXT("Root") };
+		static const TCHAR* SpineSeg2[] = { TEXT("spine_01"), TEXT("Spine_01"), TEXT("spinea"), TEXT("SpineA"), TEXT("spine"), TEXT("Spine") };
+		static const TCHAR* SpineSeg3[] = { TEXT("spine_03"), TEXT("Spine_03"), TEXT("spined"), TEXT("SpineD"), TEXT("spine_02"), TEXT("Spine_02"), TEXT("spinec"), TEXT("SpineC") };
+		static const TCHAR* SpineSeg4[] = { TEXT("neck_01"), TEXT("Neck_01"), TEXT("neck"), TEXT("Neck") };
+		static const TCHAR* SpineSeg5[] = { TEXT("head"), TEXT("Head"), TEXT("heada"), TEXT("HeadA") };
+
+		static const TCHAR* LClav[]  = { TEXT("clavicle_l"), TEXT("Clavicle_L"), TEXT("l_clavicle"), TEXT("L_Clavicle") };
+		static const TCHAR* LUpper[] = { TEXT("upperarm_l"), TEXT("UpperArm_L"), TEXT("l_shoulder"), TEXT("L_Shoulder"), TEXT("shoulder_l"), TEXT("Shoulder_L"), TEXT("LeftArm") };
+		static const TCHAR* LLower[] = { TEXT("lowerarm_l"), TEXT("LowerArm_L"), TEXT("l_elbow"), TEXT("L_Elbow"), TEXT("forearm_l"), TEXT("Forearm_L"), TEXT("LeftForeArm") };
+		static const TCHAR* LHand[]  = { TEXT("hand_l"), TEXT("Hand_L"), TEXT("l_wrist"), TEXT("L_Wrist"), TEXT("LeftHand") };
+
+		static const TCHAR* RClav[]  = { TEXT("clavicle_r"), TEXT("Clavicle_R"), TEXT("r_clavicle"), TEXT("R_Clavicle") };
+		static const TCHAR* RUpper[] = { TEXT("upperarm_r"), TEXT("UpperArm_R"), TEXT("r_shoulder"), TEXT("R_Shoulder"), TEXT("shoulder_r"), TEXT("Shoulder_R"), TEXT("RightArm") };
+		static const TCHAR* RLower[] = { TEXT("lowerarm_r"), TEXT("LowerArm_R"), TEXT("r_elbow"), TEXT("R_Elbow"), TEXT("forearm_r"), TEXT("Forearm_R"), TEXT("RightForeArm") };
+		static const TCHAR* RHand[]  = { TEXT("hand_r"), TEXT("Hand_R"), TEXT("r_wrist"), TEXT("R_Wrist"), TEXT("RightHand") };
+
+		static const TCHAR* PelvisAlias[] = { TEXT("pelvis"), TEXT("Pelvis"), TEXT("hips"), TEXT("Hips") };
+		static const TCHAR* LThigh[] = { TEXT("thigh_l"), TEXT("Thigh_L"), TEXT("l_upper_leg"), TEXT("L_Upper_Leg"), TEXT("LeftUpLeg") };
+		static const TCHAR* LCalf[]  = { TEXT("calf_l"), TEXT("Calf_L"), TEXT("l_knee"), TEXT("L_Knee"), TEXT("LeftLeg"), TEXT("shin_l"), TEXT("Shin_L") };
+		static const TCHAR* LFoot[]  = { TEXT("foot_l"), TEXT("Foot_L"), TEXT("l_ankle"), TEXT("L_Ankle"), TEXT("LeftFoot") };
+
+		static const TCHAR* RThigh[] = { TEXT("thigh_r"), TEXT("Thigh_R"), TEXT("r_upper_leg"), TEXT("R_Upper_Leg"), TEXT("RightUpLeg") };
+		static const TCHAR* RCalf[]  = { TEXT("calf_r"), TEXT("Calf_R"), TEXT("r_knee"), TEXT("R_Knee"), TEXT("RightLeg"), TEXT("shin_r"), TEXT("Shin_R") };
+		static const TCHAR* RFoot[]  = { TEXT("foot_r"), TEXT("Foot_R"), TEXT("r_ankle"), TEXT("R_Ankle"), TEXT("RightFoot") };
+
+		#define BRIDGE_FIND(arr) FindFirstBone(RefSkel, arr, UE_ARRAY_COUNT(arr), ValidBoneCount)
+
+		auto AppendBone = [&](FBoneChainDef& Chain, int32 Idx)
+		{
+			if (Idx != INDEX_NONE) Chain.BoneIndices.Add(Idx);
+		};
+		auto Finalise = [&](FBoneChainDef& Chain)
+		{
+			if (Chain.BoneIndices.Num() >= 2) OutChains.Add(MoveTemp(Chain));
+		};
+
+		// Spine — cyan
+		{
+			FBoneChainDef C; C.Color = FColor(0, 220, 255, 255);
+			AppendBone(C, BRIDGE_FIND(SpineSeg1));
+			AppendBone(C, BRIDGE_FIND(SpineSeg2));
+			AppendBone(C, BRIDGE_FIND(SpineSeg3));
+			AppendBone(C, BRIDGE_FIND(SpineSeg4));
+			AppendBone(C, BRIDGE_FIND(SpineSeg5));
+			Finalise(C);
+		}
+		// Left arm — yellow
+		{
+			FBoneChainDef C; C.Color = FColor(255, 220, 0, 255);
+			AppendBone(C, BRIDGE_FIND(LClav));
+			AppendBone(C, BRIDGE_FIND(LUpper));
+			AppendBone(C, BRIDGE_FIND(LLower));
+			AppendBone(C, BRIDGE_FIND(LHand));
+			Finalise(C);
+		}
+		// Right arm — orange (distinguishable from left under vision analysis)
+		{
+			FBoneChainDef C; C.Color = FColor(255, 140, 0, 255);
+			AppendBone(C, BRIDGE_FIND(RClav));
+			AppendBone(C, BRIDGE_FIND(RUpper));
+			AppendBone(C, BRIDGE_FIND(RLower));
+			AppendBone(C, BRIDGE_FIND(RHand));
+			Finalise(C);
+		}
+		// Left leg — magenta
+		{
+			FBoneChainDef C; C.Color = FColor(255, 60, 220, 255);
+			AppendBone(C, BRIDGE_FIND(PelvisAlias));
+			AppendBone(C, BRIDGE_FIND(LThigh));
+			AppendBone(C, BRIDGE_FIND(LCalf));
+			AppendBone(C, BRIDGE_FIND(LFoot));
+			Finalise(C);
+		}
+		// Right leg — purple
+		{
+			FBoneChainDef C; C.Color = FColor(160, 60, 255, 255);
+			AppendBone(C, BRIDGE_FIND(PelvisAlias));
+			AppendBone(C, BRIDGE_FIND(RThigh));
+			AppendBone(C, BRIDGE_FIND(RCalf));
+			AppendBone(C, BRIDGE_FIND(RFoot));
+			Finalise(C);
+		}
+
+		#undef BRIDGE_FIND
+	}
+
+	/** World-space position of every bone in the skel mesh component, appended. */
+	static void CollectBoneWorldPositions(
+		USkeletalMeshComponent* SkelComp, TArray<FVector>& Out)
+	{
+		if (!SkelComp) return;
+		const TArray<FTransform>& CS = SkelComp->GetComponentSpaceTransforms();
+		const FTransform CompToWorld = SkelComp->GetComponentTransform();
+		Out.Reserve(Out.Num() + CS.Num());
+		for (const FTransform& T : CS)
+		{
+			Out.Add(CompToWorld.TransformPosition(T.GetLocation()));
+		}
+	}
+
+	/** Fill a filled square (axis-aligned) centred on (CX, CY). */
+	static void DrawFilledSquareFColor(
+		FColor* Pixels, int32 W, int32 H,
+		int32 CX, int32 CY, int32 HalfSize, const FColor& Color)
+	{
+		for (int32 dy = -HalfSize; dy <= HalfSize; ++dy)
+		{
+			for (int32 dx = -HalfSize; dx <= HalfSize; ++dx)
+			{
+				const int32 px = CX + dx;
+				const int32 py = CY + dy;
+				if (px >= 0 && px < W && py >= 0 && py < H)
+				{
+					Pixels[py * W + px] = Color;
+				}
+			}
+		}
+	}
+
+	/**
+	 * Bresenham line into a BGRA pixel buffer (FColor). Thickness ≥ 1 is
+	 * approximated by painting a square brush of (2·T+1)² at each step.
+	 * Pixel writes are bounds-checked; no blending.
+	 */
+	static void DrawLineFColor(
+		FColor* Pixels, int32 W, int32 H,
+		int32 X0, int32 Y0, int32 X1, int32 Y1,
+		const FColor& Color, int32 Thickness)
+	{
+		const int32 dx = FMath::Abs(X1 - X0);
+		const int32 dy = FMath::Abs(Y1 - Y0);
+		const int32 sx = X0 < X1 ? 1 : -1;
+		const int32 sy = Y0 < Y1 ? 1 : -1;
+		int32 err = dx - dy;
+		int32 x = X0, y = Y0;
+		const int32 T = FMath::Max(0, Thickness / 2);
+		const int32 MaxIter = (dx + dy + 2);
+		for (int32 Guard = 0; Guard <= MaxIter; ++Guard)
+		{
+			for (int32 ty = -T; ty <= T; ++ty)
+			{
+				for (int32 tx = -T; tx <= T; ++tx)
+				{
+					const int32 px = x + tx;
+					const int32 py = y + ty;
+					if (px >= 0 && px < W && py >= 0 && py < H)
+					{
+						Pixels[py * W + px] = Color;
+					}
+				}
+			}
+			if (x == X1 && y == Y1) break;
+			const int32 e2 = 2 * err;
+			if (e2 > -dy) { err -= dy; x += sx; }
+			if (e2 <  dx) { err += dx; y += sy; }
+		}
+	}
+
+	/**
+	 * Draw the bone chains on one cell's pixel buffer, projecting bone world
+	 * positions through the SceneCapture's derived camera basis. Using
+	 * FRotationMatrix(CamRot) to pull axes ensures the overlay matches UE's
+	 * actual scene-capture orientation (including the implicit up-flip on
+	 * top/bottom views where roll is ambiguous).
+	 */
+	static void DrawBoneOverlayOnCell(
+		FColor* Pixels, int32 CellW, int32 CellH,
+		USkeletalMeshComponent* SkelComp,
+		const TArray<FBoneChainDef>& Chains,
+		const FVector& CamLoc, const FRotator& CamRot, float FOVDeg)
+	{
+		if (!SkelComp || Chains.Num() == 0) return;
+		const FRotationMatrix RotMat(CamRot);
+		const FVector Forward = RotMat.GetUnitAxis(EAxis::X);
+		const FVector Right   = RotMat.GetUnitAxis(EAxis::Y);
+		const FVector Up      = RotMat.GetUnitAxis(EAxis::Z);
+		const float HalfFovRadH = FMath::DegreesToRadians(FOVDeg * 0.5f);
+		const float TanH = FMath::Tan(HalfFovRadH);
+		const float TanV = TanH * static_cast<float>(CellH) / FMath::Max(1.0f, static_cast<float>(CellW));
+		const TArray<FTransform>& CS = SkelComp->GetComponentSpaceTransforms();
+		const FTransform CompToWorld = SkelComp->GetComponentTransform();
+
+		auto Project = [&](const FVector& W, float& OX, float& OY) -> bool
+		{
+			const FVector Rel = W - CamLoc;
+			const float D = FVector::DotProduct(Rel, Forward);
+			if (D <= 1.0f) return false;  // behind / too close
+			const float U = FVector::DotProduct(Rel, Right);
+			const float V = FVector::DotProduct(Rel, Up);
+			const float NdcX = U / (D * TanH);
+			const float NdcY = V / (D * TanV);
+			OX = (NdcX * 0.5f + 0.5f) * static_cast<float>(CellW);
+			OY = (0.5f - NdcY * 0.5f) * static_cast<float>(CellH);
+			return true;
+		};
+
+		for (const FBoneChainDef& Chain : Chains)
+		{
+			const int32 N = Chain.BoneIndices.Num();
+			TArray<FVector2D> Pts;  Pts.SetNum(N);
+			TArray<uint8>     Ok;   Ok.SetNum(N);
+			for (int32 i = 0; i < N; ++i)
+			{
+				const int32 BoneIdx = Chain.BoneIndices[i];
+				Ok[i] = 0;
+				if (BoneIdx < 0 || BoneIdx >= CS.Num()) continue;
+				const FVector WPos = CompToWorld.TransformPosition(CS[BoneIdx].GetLocation());
+				float X, Y;
+				if (Project(WPos, X, Y)) { Pts[i] = FVector2D(X, Y); Ok[i] = 1; }
+			}
+			// Chain segments (thicker so lines survive PNG compression).
+			for (int32 i = 1; i < N; ++i)
+			{
+				if (!Ok[i - 1] || !Ok[i]) continue;
+				DrawLineFColor(Pixels, CellW, CellH,
+					FMath::RoundToInt(Pts[i - 1].X), FMath::RoundToInt(Pts[i - 1].Y),
+					FMath::RoundToInt(Pts[i].X),     FMath::RoundToInt(Pts[i].Y),
+					Chain.Color, /*Thickness=*/ 3);
+			}
+			// Joint dots (white, slightly larger than line thickness).
+			for (int32 i = 0; i < N; ++i)
+			{
+				if (!Ok[i]) continue;
+				DrawFilledSquareFColor(Pixels, CellW, CellH,
+					FMath::RoundToInt(Pts[i].X), FMath::RoundToInt(Pts[i].Y),
+					/*HalfSize=*/ 2, FColor(255, 255, 255, 255));
+			}
+		}
+	}
+
+	/**
+	 * Per-view framing. For each requested direction, project all supplied
+	 * bone world positions into the view's derived camera basis, compute a
+	 * tight 2D bounding box + mean depth, then recentre the camera target
+	 * and compute a distance that fits the bbox within the FOV. A consensus
+	 * (max) distance is applied across all views so character scale stays
+	 * equal between cells. Invalid directions (zero-vector) are left with
+	 * fallback cam pose so the caller can skip them later without special
+	 * handling.
+	 */
+	static void ComputePerViewFraming(
+		const TArray<FVector>& BoneWorldPositions,
+		const TArray<FVector>& ViewDirs,
+		const FVector& FallbackCentre,
+		float FallbackRadius,
+		float FOVDeg, int32 CellW, int32 CellH,
+		TArray<FVector>& OutCamLocs,
+		TArray<FRotator>& OutCamRots)
+	{
+		const int32 NumViews = ViewDirs.Num();
+		OutCamLocs.SetNum(NumViews);
+		OutCamRots.SetNum(NumViews);
+		if (NumViews == 0) return;
+
+		const float HalfFovRadH = FMath::DegreesToRadians(FOVDeg * 0.5f);
+		const float TanH = FMath::Tan(HalfFovRadH);
+		const float TanV = TanH * static_cast<float>(CellH) / FMath::Max(1.0f, static_cast<float>(CellW));
+
+		// Fallback distance for the legacy-style framing when no bones are given.
+		const float FallbackDistance = FallbackRadius / FMath::Max(0.01f, TanH);
+
+		if (BoneWorldPositions.Num() == 0)
+		{
+			for (int32 i = 0; i < NumViews; ++i)
+			{
+				const FVector Dir = ViewDirs[i].GetSafeNormal();
+				OutCamLocs[i] = FallbackCentre + Dir * FallbackDistance;
+				OutCamRots[i] = (FallbackCentre - OutCamLocs[i]).Rotation();
+			}
+			return;
+		}
+
+		struct FViewState { FVector Target; FVector Forward; float ReqDist; bool bValid; };
+		TArray<FViewState> States; States.SetNum(NumViews);
+		float Consensus = 0.0f;
+
+		for (int32 i = 0; i < NumViews; ++i)
+		{
+			FVector Dir = ViewDirs[i];
+			if (Dir.IsNearlyZero())
+			{
+				States[i].bValid = false;
+				continue;
+			}
+			Dir = Dir.GetSafeNormal();
+
+			// Seed camera far enough out that every bone lies in front of it.
+			const float SeedDist = FMath::Max(500.0f, FallbackRadius * 4.0f);
+			const FVector SeedCamLoc = FallbackCentre + Dir * SeedDist;
+			const FRotator SeedRot = (FallbackCentre - SeedCamLoc).Rotation();
+			const FRotationMatrix RotMat(SeedRot);
+			const FVector Forward = RotMat.GetUnitAxis(EAxis::X);
+			const FVector Right   = RotMat.GetUnitAxis(EAxis::Y);
+			const FVector Up      = RotMat.GetUnitAxis(EAxis::Z);
+
+			float MinU = FLT_MAX, MaxU = -FLT_MAX;
+			float MinV = FLT_MAX, MaxV = -FLT_MAX;
+			double SumD = 0.0;
+			for (const FVector& P : BoneWorldPositions)
+			{
+				const FVector Rel = P - SeedCamLoc;
+				const float U = FVector::DotProduct(Rel, Right);
+				const float V = FVector::DotProduct(Rel, Up);
+				const float D = FVector::DotProduct(Rel, Forward);
+				MinU = FMath::Min(MinU, U); MaxU = FMath::Max(MaxU, U);
+				MinV = FMath::Min(MinV, V); MaxV = FMath::Max(MaxV, V);
+				SumD += D;
+			}
+			const float MeanD = static_cast<float>(SumD / BoneWorldPositions.Num());
+			const float MidU  = 0.5f * (MinU + MaxU);
+			const float MidV  = 0.5f * (MinV + MaxV);
+			// Target lies at the bbox centre, projected from the seed cam basis.
+			const FVector Target = SeedCamLoc + MeanD * Forward + MidU * Right + MidV * Up;
+
+			const float HalfU = 0.5f * (MaxU - MinU);
+			const float HalfV = 0.5f * (MaxV - MinV);
+			const float DistU = HalfU / FMath::Max(0.001f, TanH);
+			const float DistV = HalfV / FMath::Max(0.001f, TanV);
+			const float ReqDist = FMath::Max(50.0f, FMath::Max(DistU, DistV) * 1.15f);
+
+			States[i].Target = Target;
+			States[i].Forward = Forward;
+			States[i].ReqDist = ReqDist;
+			States[i].bValid = true;
+			if (ReqDist > Consensus) Consensus = ReqDist;
+		}
+		Consensus = FMath::Max(Consensus, 100.0f);
+
+		for (int32 i = 0; i < NumViews; ++i)
+		{
+			if (!States[i].bValid)
+			{
+				OutCamLocs[i] = FallbackCentre;
+				OutCamRots[i] = FRotator::ZeroRotator;
+				continue;
+			}
+			OutCamLocs[i] = States[i].Target - States[i].Forward * Consensus;
+			OutCamRots[i] = States[i].Forward.Rotation();
+		}
+	}
+
+	// ─── Ground grid + root trajectory helpers ───────────────────
+
+	/**
+	 * Derive the camera basis + vertical FOV tangent once, so line projection
+	 * doesn't repeat the work per call. Kept lightweight (raw struct) since
+	 * these helpers are tight loops.
+	 */
+	struct FCellProjector
+	{
+		FVector  CamLoc;
+		FVector  Forward;
+		FVector  Right;
+		FVector  Up;
+		float    TanH;
+		float    TanV;
+		float    CellW;
+		float    CellH;
+		float    NearDist;  // forward-distance threshold for "in front of camera"
+
+		FCellProjector(const FVector& InCamLoc, const FRotator& InCamRot,
+			float FOVDeg, int32 InCellW, int32 InCellH)
+		{
+			CamLoc = InCamLoc;
+			const FRotationMatrix RotMat(InCamRot);
+			Forward = RotMat.GetUnitAxis(EAxis::X);
+			Right   = RotMat.GetUnitAxis(EAxis::Y);
+			Up      = RotMat.GetUnitAxis(EAxis::Z);
+			const float HalfFovRadH = FMath::DegreesToRadians(FOVDeg * 0.5f);
+			TanH = FMath::Tan(HalfFovRadH);
+			TanV = TanH * static_cast<float>(InCellH) / FMath::Max(1.0f, static_cast<float>(InCellW));
+			CellW = static_cast<float>(InCellW);
+			CellH = static_cast<float>(InCellH);
+			NearDist = 5.0f;  // clip anything within 5 cm of camera plane
+		}
+
+		bool Project(const FVector& W, float& OX, float& OY, float& OutDepth) const
+		{
+			const FVector Rel = W - CamLoc;
+			OutDepth = FVector::DotProduct(Rel, Forward);
+			if (OutDepth <= NearDist) return false;
+			const float U = FVector::DotProduct(Rel, Right);
+			const float V = FVector::DotProduct(Rel, Up);
+			const float NdcX = U / (OutDepth * TanH);
+			const float NdcY = V / (OutDepth * TanV);
+			OX = (NdcX * 0.5f + 0.5f) * CellW;
+			OY = (0.5f - NdcY * 0.5f) * CellH;
+			return true;
+		}
+	};
+
+	/**
+	 * Draw a world-space line segment into a cell buffer.
+	 * Near-plane clipping: if exactly one endpoint is behind the camera,
+	 * the segment is clipped to NearDist so the visible half still draws;
+	 * if both are behind, the line is dropped entirely.
+	 */
+	static void DrawWorldLineOnCell(
+		FColor* Pixels, const FCellProjector& P,
+		int32 CellW, int32 CellH,
+		const FVector& WA, const FVector& WB,
+		const FColor& Color, int32 Thickness)
+	{
+		FVector A = WA;
+		FVector B = WB;
+		const float DA = FVector::DotProduct(A - P.CamLoc, P.Forward);
+		const float DB = FVector::DotProduct(B - P.CamLoc, P.Forward);
+		if (DA <= P.NearDist && DB <= P.NearDist) return;
+		if (DA <= P.NearDist)
+		{
+			const float t = (P.NearDist - DA) / FMath::Max(0.0001f, (DB - DA));
+			A = A + t * (B - A);
+		}
+		else if (DB <= P.NearDist)
+		{
+			const float t = (P.NearDist - DB) / FMath::Max(0.0001f, (DA - DB));
+			B = B + t * (A - B);
+		}
+		float XA, YA, XB, YB, _d;
+		if (!P.Project(A, XA, YA, _d)) return;
+		if (!P.Project(B, XB, YB, _d)) return;
+		DrawLineFColor(Pixels, CellW, CellH,
+			FMath::RoundToInt(XA), FMath::RoundToInt(YA),
+			FMath::RoundToInt(XB), FMath::RoundToInt(YB),
+			Color, Thickness);
+	}
+
+	/**
+	 * Project a Z-constant XY grid into the cell. Grid is centred on
+	 * (Center.X, Center.Y) at height Center.Z, with 2·HalfExtent span
+	 * and fixed Spacing cm between lines. Axis lines (through Center)
+	 * drawn with a slightly brighter colour so the agent can tell
+	 * origin/direction.
+	 */
+	static void DrawGroundGridOnCell(
+		FColor* Pixels, int32 CellW, int32 CellH,
+		const FVector& Center, float HalfExtent, float Spacing,
+		const FVector& CamLoc, const FRotator& CamRot, float FOVDeg,
+		const FColor& LineColor, const FColor& AxisColor)
+	{
+		if (HalfExtent <= 0.0f || Spacing <= 0.0f) return;
+		const FCellProjector P(CamLoc, CamRot, FOVDeg, CellW, CellH);
+		// Round HalfExtent up to nearest spacing multiple so lines are symmetric.
+		const int32 NumSteps = FMath::CeilToInt(HalfExtent / Spacing);
+		const float AdjHalf = NumSteps * Spacing;
+		const float Z = Center.Z;
+
+		// Lines parallel to Y axis (X varies)
+		for (int32 i = -NumSteps; i <= NumSteps; ++i)
+		{
+			const float X = Center.X + i * Spacing;
+			const FVector A(X, Center.Y - AdjHalf, Z);
+			const FVector B(X, Center.Y + AdjHalf, Z);
+			const FColor& C = (i == 0) ? AxisColor : LineColor;
+			DrawWorldLineOnCell(Pixels, P, CellW, CellH, A, B, C, /*Thickness=*/ 1);
+		}
+		// Lines parallel to X axis (Y varies)
+		for (int32 j = -NumSteps; j <= NumSteps; ++j)
+		{
+			const float Y = Center.Y + j * Spacing;
+			const FVector A(Center.X - AdjHalf, Y, Z);
+			const FVector B(Center.X + AdjHalf, Y, Z);
+			const FColor& C = (j == 0) ? AxisColor : LineColor;
+			DrawWorldLineOnCell(Pixels, P, CellW, CellH, A, B, C, /*Thickness=*/ 1);
+		}
+	}
+
+	/**
+	 * Sample the pelvis bone's world position across the whole anim
+	 * duration. Caller MUST re-apply the desired display pose via
+	 * ApplyPoseAtTime after this returns — sampling leaves the skel
+	 * mesh at the last sampled time. Ground path is the XY of the
+	 * pelvis flattened to Z=GroundZ, so overlays draw the "shadow"
+	 * of the motion on the floor.
+	 */
+	static void SampleRootTrajectory(
+		USkeletalMeshComponent* SkelComp, UAnimSequenceBase* Anim,
+		int32 PelvisIdx, float GroundZ, int32 NumSamples,
+		TArray<FVector>& OutGroundPath,
+		TArray<FVector>& OutPelvisPath,
+		TArray<float>& OutTimes)
+	{
+		if (!SkelComp || !Anim || NumSamples <= 0) return;
+		OutGroundPath.Reset(NumSamples);
+		OutPelvisPath.Reset(NumSamples);
+		OutTimes.Reset(NumSamples);
+		const float PlayLength = Anim->GetPlayLength();
+		for (int32 i = 0; i < NumSamples; ++i)
+		{
+			const float t = (NumSamples == 1) ? 0.0f
+				: (i * PlayLength / static_cast<float>(NumSamples - 1));
+			ApplyPoseAtTime(SkelComp, Anim, t);
+			const TArray<FTransform>& CS = SkelComp->GetComponentSpaceTransforms();
+			const FTransform CompToWorld = SkelComp->GetComponentTransform();
+			FVector PelvisWorld = CompToWorld.GetLocation();
+			if (PelvisIdx >= 0 && PelvisIdx < CS.Num())
+			{
+				PelvisWorld = CompToWorld.TransformPosition(CS[PelvisIdx].GetLocation());
+			}
+			OutGroundPath.Add(FVector(PelvisWorld.X, PelvisWorld.Y, GroundZ));
+			OutPelvisPath.Add(PelvisWorld);
+			OutTimes.Add(t);
+		}
+	}
+
+	/**
+	 * Draw the trajectory polyline + tick markers on a cell. Line connects
+	 * consecutive GroundPath points; ticks are filled squares at path
+	 * indices whose time matches a HighlightTime (nearest-time lookup).
+	 * The current-frame marker (CurrentTime) gets a larger filled circle.
+	 */
+	static void DrawTrajectoryOnCell(
+		FColor* Pixels, int32 CellW, int32 CellH,
+		const TArray<FVector>& GroundPath,
+		const TArray<float>&   PathTimes,
+		const TArray<float>&   HighlightTimes,
+		float                   CurrentTime,
+		const FVector& CamLoc, const FRotator& CamRot, float FOVDeg,
+		const FColor& LineColor, const FColor& TickColor, const FColor& CurrentColor)
+	{
+		if (GroundPath.Num() < 2) return;
+		const FCellProjector P(CamLoc, CamRot, FOVDeg, CellW, CellH);
+
+		// Polyline.
+		for (int32 i = 1; i < GroundPath.Num(); ++i)
+		{
+			DrawWorldLineOnCell(Pixels, P, CellW, CellH,
+				GroundPath[i - 1], GroundPath[i],
+				LineColor, /*Thickness=*/ 2);
+		}
+
+		auto NearestIndex = [&](float T) -> int32
+		{
+			int32 Best = 0;
+			float BestDiff = FMath::Abs(PathTimes[0] - T);
+			for (int32 i = 1; i < PathTimes.Num(); ++i)
+			{
+				const float Diff = FMath::Abs(PathTimes[i] - T);
+				if (Diff < BestDiff) { BestDiff = Diff; Best = i; }
+			}
+			return Best;
+		};
+
+		auto DrawMarker = [&](const FVector& World, const FColor& C, int32 HalfSize)
+		{
+			float X, Y, D;
+			if (!P.Project(World, X, Y, D)) return;
+			DrawFilledSquareFColor(Pixels, CellW, CellH,
+				FMath::RoundToInt(X), FMath::RoundToInt(Y), HalfSize, C);
+		};
+
+		// Tick at each highlight time.
+		for (float Ht : HighlightTimes)
+		{
+			const int32 Idx = NearestIndex(Ht);
+			DrawMarker(GroundPath[Idx], TickColor, /*HalfSize=*/ 3);
+		}
+
+		// Current-frame marker (slightly larger, different colour).
+		if (CurrentTime >= 0.0f)
+		{
+			const int32 Idx = NearestIndex(CurrentTime);
+			DrawMarker(GroundPath[Idx], CurrentColor, /*HalfSize=*/ 5);
+		}
+	}
 }
 
 bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
@@ -2086,16 +2685,15 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	const FString& SkeletalMeshPath,
 	const TArray<FString>& Views,
 	bool bBoneOverlay,
+	bool bPerViewFraming,
+	bool bGroundGrid,
+	bool bRootTrajectory,
+	float GroundZ,
 	int32 GridCols,
 	int32 CellWidth,
 	int32 CellHeight,
 	const FString& FilePath)
 {
-	if (bBoneOverlay)
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("CaptureAnimPoseGrid: bBoneOverlay is not yet implemented — proceeding without overlay."));
-	}
 	if (AnimPath.IsEmpty() || FilePath.IsEmpty() ||
 		Views.Num() == 0 || GridCols <= 0 || CellWidth <= 0 || CellHeight <= 0)
 	{
@@ -2155,25 +2753,130 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	// 4c. Enhance lighting for proper shading.
 	BridgeLevelImpl::EnhancePreviewLighting(PreviewScene);
 
-	// 5. Drive the pose to the requested time.
+	// 5. Determine pelvis index up-front — used for ground-grid centring and
+	//    root-motion trajectory sampling. Safe to call before first pose eval
+	//    because ref-skeleton indices are pose-independent.
+	const FReferenceSkeleton& RefSkel = Mesh->GetRefSkeleton();
+	// A temp pose eval at t=0 gives us a populated CSBones array sized right.
+	BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, 0.0f);
+	const int32 PelvisIdx = BridgeLevelImpl::FindPelvisBoneIndex(
+		RefSkel, SkelComp->GetComponentSpaceTransforms().Num());
+
+	// 5b. Sample root trajectory BEFORE the display-pose application — sampling
+	//     overrides pose state. We re-apply the display pose afterwards.
+	TArray<FVector> TrajGround;
+	TArray<FVector> TrajPelvis;
+	TArray<float>   TrajTimes;
+	if (bRootTrajectory && PelvisIdx != INDEX_NONE)
+	{
+		const float PlayLength = Anim->GetPlayLength();
+		const int32 NumTrajSamples = FMath::Clamp(
+			FMath::RoundToInt(PlayLength * 30.0f), 16, 240);
+		BridgeLevelImpl::SampleRootTrajectory(
+			SkelComp, Anim, PelvisIdx, GroundZ, NumTrajSamples,
+			TrajGround, TrajPelvis, TrajTimes);
+	}
+
+	// 6. Drive the pose to the requested display time.
 	BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, Time);
 	BridgeLevelImpl::FlushPoseToRenderProxy(SkelComp);
 
-	// 6. Framing anchored on pelvis (or bone AABB fallback).
+	// 7. Framing. Legacy path: pelvis-anchored single radius + distance; per-view:
+	//    project bones into each view basis then apply consensus distance so scale
+	//    stays consistent across cells.
 	constexpr float FOVDeg = 45.0f;
-	FVector Centre;
-	float Radius;
-	BridgeLevelImpl::ComputePoseFraming(Mesh, SkelComp, Centre, Radius);
+	FVector LegacyCentre;
+	float LegacyRadius;
+	BridgeLevelImpl::ComputePoseFraming(Mesh, SkelComp, LegacyCentre, LegacyRadius);
 	const float HalfFovRad = FMath::DegreesToRadians(FOVDeg * 0.5f);
-	const float Distance = Radius / FMath::Max(0.01f, FMath::Tan(HalfFovRad));
+	const float LegacyDistance = LegacyRadius / FMath::Max(0.01f, FMath::Tan(HalfFovRad));
+
+	const int32 NumViews = Views.Num();
+	TArray<FVector>  ViewDirs; ViewDirs.SetNum(NumViews);
+	TArray<bool>     ViewOk;   ViewOk.SetNum(NumViews);
+	for (int32 i = 0; i < NumViews; ++i)
+	{
+		ViewOk[i] = BridgeLevelImpl::ResolveViewDirection(Views[i], ViewDirs[i]);
+		if (!ViewOk[i])
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("CaptureAnimPoseGrid: unknown view '%s' — skipping"), *Views[i]);
+			ViewDirs[i] = FVector::ZeroVector;
+		}
+	}
+
+	TArray<FVector>  CamLocs;  CamLocs.SetNum(NumViews);
+	TArray<FRotator> CamRots;  CamRots.SetNum(NumViews);
+	if (bPerViewFraming)
+	{
+		TArray<FVector> BonePositions;
+		BridgeLevelImpl::CollectBoneWorldPositions(SkelComp, BonePositions);
+		// Include trajectory path in the framing bbox so the full motion
+		// stays visible; include ground-centre point so the grid doesn't
+		// fall off the edge on airborne poses.
+		if (bRootTrajectory) BonePositions.Append(TrajGround);
+		if (bGroundGrid)
+		{
+			const FVector GroundCentre = TrajGround.Num() > 0
+				? FVector(TrajGround[0].X, TrajGround[0].Y, GroundZ)
+				: FVector(LegacyCentre.X, LegacyCentre.Y, GroundZ);
+			BonePositions.Add(GroundCentre);
+		}
+		BridgeLevelImpl::ComputePerViewFraming(
+			BonePositions, ViewDirs, LegacyCentre, LegacyRadius,
+			FOVDeg, CellWidth, CellHeight, CamLocs, CamRots);
+	}
+	else
+	{
+		for (int32 i = 0; i < NumViews; ++i)
+		{
+			if (!ViewOk[i]) continue;
+			CamLocs[i] = LegacyCentre + ViewDirs[i].GetSafeNormal() * LegacyDistance;
+			CamRots[i] = (LegacyCentre - CamLocs[i]).Rotation();
+		}
+	}
 
 	UE_LOG(LogTemp, Verbose,
-		TEXT("CaptureAnimPoseGrid: mesh=%s bone_count=%d centre=%s radius=%.1f distance=%.1f"),
+		TEXT("CaptureAnimPoseGrid: mesh=%s bone_count=%d centre=%s radius=%.1f per_view=%d overlay=%d ground=%d traj=%d"),
 		*Mesh->GetName(), SkelComp->GetComponentSpaceTransforms().Num(),
-		*Centre.ToString(), Radius, Distance);
+		*LegacyCentre.ToString(), LegacyRadius,
+		bPerViewFraming ? 1 : 0, bBoneOverlay ? 1 : 0,
+		bGroundGrid ? 1 : 0, bRootTrajectory ? 1 : 0);
 
-	// 7. Allocate composite image.
-	const int32 NumViews = Views.Num();
+	// 8. Bone chains (built once — skeleton is stable for the whole call).
+	TArray<BridgeLevelImpl::FBoneChainDef> BoneChains;
+	if (bBoneOverlay)
+	{
+		BridgeLevelImpl::BuildBoneChains(
+			RefSkel, SkelComp->GetComponentSpaceTransforms().Num(),
+			BoneChains);
+	}
+
+	// 8b. Pre-compute ground-grid centre + extent.
+	//     Centre on pelvis XY at display time; if trajectory present, use the
+	//     bbox mid of the trajectory so the grid stays centred on the motion.
+	FVector GroundCenter(0, 0, GroundZ);
+	float GroundHalfExtent = 300.0f;  // cm; 6 m square by default
+	if (bGroundGrid)
+	{
+		const TArray<FTransform>& CS = SkelComp->GetComponentSpaceTransforms();
+		const FTransform CompToWorld = SkelComp->GetComponentTransform();
+		FVector PelvisWorld = (PelvisIdx != INDEX_NONE && PelvisIdx < CS.Num())
+			? CompToWorld.TransformPosition(CS[PelvisIdx].GetLocation())
+			: LegacyCentre;
+		GroundCenter = FVector(PelvisWorld.X, PelvisWorld.Y, GroundZ);
+		if (TrajGround.Num() >= 2)
+		{
+			FBox XYBox(ForceInit);
+			for (const FVector& P : TrajGround) XYBox += P;
+			GroundCenter = FVector(XYBox.GetCenter().X, XYBox.GetCenter().Y, GroundZ);
+			const float TrajHalf = 0.5f * FMath::Max(
+				XYBox.Max.X - XYBox.Min.X, XYBox.Max.Y - XYBox.Min.Y);
+			GroundHalfExtent = FMath::Max(300.0f, TrajHalf + 150.0f);
+		}
+	}
+
+	// 9. Allocate composite image.
 	const int32 Rows = FMath::DivideAndRoundUp(NumViews, GridCols);
 	const int32 CompW = GridCols * CellWidth;
 	const int32 CompH = Rows * CellHeight;
@@ -2181,39 +2884,65 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	FImage Composite;
 	Composite.Init(CompW, CompH, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
 	FColor* CompDst = reinterpret_cast<FColor*>(Composite.RawData.GetData());
-	// Fill with the same neutral grey as per-view clear so unused cells match.
 	for (int32 i = 0; i < CompW * CompH; ++i)
 	{
 		CompDst[i] = FColor(217, 217, 222, 255);
 	}
 
-	// 8. Render each view + copy into its grid cell (flipping rows on the way).
+	// Overlay colours — consistent across pose-grid and timeline.
+	const FColor GridColor(150, 150, 160, 255);
+	const FColor GridAxisColor(90, 90, 110, 255);
+	const FColor TrajColor(40, 210, 80, 255);
+	const FColor TrajTickColor(255, 255, 255, 255);
+	const FColor TrajCurrentColor(255, 60, 60, 255);
+
+	// 10. Render each view + optional overlays + copy into cell.
 	for (int32 ViewIdx = 0; ViewIdx < NumViews; ++ViewIdx)
 	{
-		FVector Dir;
-		if (!BridgeLevelImpl::ResolveViewDirection(Views[ViewIdx], Dir))
-		{
-			UE_LOG(LogTemp, Warning,
-				TEXT("CaptureAnimPoseGrid: unknown view '%s' — skipping"), *Views[ViewIdx]);
-			continue;
-		}
-		const FVector CamLoc = Centre + Dir * Distance;
-		const FRotator CamRot = (Centre - CamLoc).Rotation();
+		if (!ViewOk[ViewIdx]) continue;
 
 		TArray<FColor> Pixels;
 		if (!BridgeLevelImpl::CaptureViewToPixels(
-				PreviewWorld, CamLoc, CamRot, FOVDeg, CellWidth, CellHeight, Pixels))
+				PreviewWorld, CamLocs[ViewIdx], CamRots[ViewIdx],
+				FOVDeg, CellWidth, CellHeight, Pixels))
 		{
 			UE_LOG(LogTemp, Warning,
 				TEXT("CaptureAnimPoseGrid: capture for view '%s' failed"), *Views[ViewIdx]);
 			continue;
 		}
 
+		// Overlay order: ground grid (context) → trajectory → bones (foreground).
+		if (bGroundGrid)
+		{
+			BridgeLevelImpl::DrawGroundGridOnCell(
+				Pixels.GetData(), CellWidth, CellHeight,
+				GroundCenter, GroundHalfExtent, /*Spacing=*/ 50.0f,
+				CamLocs[ViewIdx], CamRots[ViewIdx], FOVDeg,
+				GridColor, GridAxisColor);
+		}
+		if (bRootTrajectory && TrajGround.Num() >= 2)
+		{
+			// For pose grid there's one "current" time (Time).
+			TArray<float> Highlights;
+			Highlights.Add(Time);
+			BridgeLevelImpl::DrawTrajectoryOnCell(
+				Pixels.GetData(), CellWidth, CellHeight,
+				TrajGround, TrajTimes, Highlights, Time,
+				CamLocs[ViewIdx], CamRots[ViewIdx], FOVDeg,
+				TrajColor, TrajTickColor, TrajCurrentColor);
+		}
+		if (bBoneOverlay)
+		{
+			BridgeLevelImpl::DrawBoneOverlayOnCell(
+				Pixels.GetData(), CellWidth, CellHeight,
+				SkelComp, BoneChains,
+				CamLocs[ViewIdx], CamRots[ViewIdx], FOVDeg);
+		}
+
 		const int32 Col = ViewIdx % GridCols;
 		const int32 Row = ViewIdx / GridCols;
 		const int32 DstX = Col * CellWidth;
 		const int32 DstY = Row * CellHeight;
-		// Readback in FPreviewScene arrives top-down — straight memcpy.
 		for (int32 Y = 0; Y < CellHeight; ++Y)
 		{
 			FMemory::Memcpy(
@@ -2237,15 +2966,14 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 	int32 NumTimeSamples,
 	const TArray<FString>& Views,
 	bool bBoneOverlay,
+	bool bPerViewFraming,
+	bool bGroundGrid,
+	bool bRootTrajectory,
+	float GroundZ,
 	int32 CellWidth,
 	int32 CellHeight,
 	const FString& FilePath)
 {
-	if (bBoneOverlay)
-	{
-		UE_LOG(LogTemp, Warning,
-			TEXT("CaptureAnimMontageTimeline: bBoneOverlay is not yet implemented — proceeding without overlay."));
-	}
 	if (AnimPath.IsEmpty() || FilePath.IsEmpty() ||
 		Views.Num() == 0 || NumTimeSamples <= 0 ||
 		CellWidth <= 0 || CellHeight <= 0)
@@ -2317,29 +3045,57 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 	}
 
 	// 4. Motion-aware framing: evaluate each sample once to build a union
-	//    bone AABB covering the entire timeline's pose envelope. Camera
-	//    then stays fixed across rows so motion reads cleanly and scale
-	//    is consistent between frames.
+	//    of bone positions (legacy: AABB only; per-view: full position set
+	//    for camera-basis reprojection). Camera then stays fixed across
+	//    rows so motion reads cleanly and scale is consistent between frames.
 	constexpr float FOVDeg = 45.0f;
 	FBox MotionAABB(ForceInit);
+	TArray<FVector> UnionBoneWorldPositions;
+	if (bPerViewFraming)
+	{
+		UnionBoneWorldPositions.Reserve(N * SkelComp->GetComponentSpaceTransforms().Num());
+	}
 	for (float T : SampleTimes)
 	{
 		BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, T);
 		const TArray<FTransform>& CSBones = SkelComp->GetComponentSpaceTransforms();
+		const FTransform CompToWorld = SkelComp->GetComponentTransform();
 		for (const FTransform& Tr : CSBones)
 		{
-			MotionAABB += Tr.GetLocation();
+			const FVector W = CompToWorld.TransformPosition(Tr.GetLocation());
+			MotionAABB += W;
+			if (bPerViewFraming)
+			{
+				UnionBoneWorldPositions.Add(W);
+			}
 		}
 	}
+	const FReferenceSkeleton& RefSkel = Mesh->GetRefSkeleton();
+	const int32 PelvisIdx = BridgeLevelImpl::FindPelvisBoneIndex(
+		RefSkel, SkelComp->GetComponentSpaceTransforms().Num());
+
+	// 4b. Dense trajectory sampling (independent of the row samples so the
+	//     path reads smoothly). Uses ApplyPoseAtTime — done BEFORE setting
+	//     the mid-sample display pose below.
+	TArray<FVector> TrajGround;
+	TArray<FVector> TrajPelvis;
+	TArray<float>   TrajTimes;
+	if (bRootTrajectory && PelvisIdx != INDEX_NONE)
+	{
+		const int32 NumTrajSamples = FMath::Clamp(
+			FMath::RoundToInt(PlayLength * 30.0f), 16, 240);
+		BridgeLevelImpl::SampleRootTrajectory(
+			SkelComp, Anim, PelvisIdx, GroundZ, NumTrajSamples,
+			TrajGround, TrajPelvis, TrajTimes);
+	}
+
 	// Centre on pelvis at the middle sample (stable visual anchor); fall
 	// back to motion AABB centre.
 	const int32 MidIdx = N / 2;
 	BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, SampleTimes[MidIdx]);
-	const FReferenceSkeleton& RefSkel = Mesh->GetRefSkeleton();
-	const int32 PelvisIdx = BridgeLevelImpl::FindPelvisBoneIndex(
-		RefSkel, SkelComp->GetComponentSpaceTransforms().Num());
 	FVector Centre = (PelvisIdx != INDEX_NONE)
-		? SkelComp->GetComponentSpaceTransforms()[PelvisIdx].GetLocation()
+		? SkelComp->GetComponentTransform().TransformPosition(
+			SkelComp->GetComponentSpaceTransforms()[PelvisIdx].GetLocation())
 		: MotionAABB.GetCenter();
 	const FVector ToMin = (MotionAABB.Min - Centre).GetAbs();
 	const FVector ToMax = (MotionAABB.Max - Centre).GetAbs();
@@ -2349,28 +3105,70 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 	const float Distance = Radius / FMath::Max(0.01f, FMath::Tan(HalfFovRad));
 
 	UE_LOG(LogTemp, Verbose,
-		TEXT("CaptureAnimMontageTimeline: mesh=%s N=%d centre=%s motion_radius=%.1f distance=%.1f"),
-		*Mesh->GetName(), N, *Centre.ToString(), Radius, Distance);
+		TEXT("CaptureAnimMontageTimeline: mesh=%s N=%d centre=%s radius=%.1f per_view=%d overlay=%d ground=%d traj=%d"),
+		*Mesh->GetName(), N, *Centre.ToString(), Radius,
+		bPerViewFraming ? 1 : 0, bBoneOverlay ? 1 : 0,
+		bGroundGrid ? 1 : 0, bRootTrajectory ? 1 : 0);
 
 	// 5. Pre-compute camera poses per view (fixed across rows).
 	const int32 NumViews = Views.Num();
-	TArray<FVector>  CamLocs;  CamLocs.SetNum(NumViews);
-	TArray<FRotator> CamRots;  CamRots.SetNum(NumViews);
+	TArray<FVector>  ViewDirs; ViewDirs.SetNum(NumViews);
 	TArray<bool>     ViewOk;   ViewOk.SetNum(NumViews);
 	for (int32 c = 0; c < NumViews; ++c)
 	{
-		FVector Dir;
-		ViewOk[c] = BridgeLevelImpl::ResolveViewDirection(Views[c], Dir);
-		if (ViewOk[c])
-		{
-			CamLocs[c] = Centre + Dir * Distance;
-			CamRots[c] = (Centre - CamLocs[c]).Rotation();
-		}
-		else
+		ViewOk[c] = BridgeLevelImpl::ResolveViewDirection(Views[c], ViewDirs[c]);
+		if (!ViewOk[c])
 		{
 			UE_LOG(LogTemp, Warning,
 				TEXT("CaptureAnimMontageTimeline: unknown view '%s' — skipping"), *Views[c]);
+			ViewDirs[c] = FVector::ZeroVector;
 		}
+	}
+	TArray<FVector>  CamLocs;  CamLocs.SetNum(NumViews);
+	TArray<FRotator> CamRots;  CamRots.SetNum(NumViews);
+	if (bPerViewFraming)
+	{
+		// Include trajectory path + ground centre in framing so the
+		// per-view bbox captures those overlays too.
+		TArray<FVector> FramingPoints = UnionBoneWorldPositions;
+		if (bRootTrajectory) FramingPoints.Append(TrajGround);
+		if (bGroundGrid)
+		{
+			FramingPoints.Add(FVector(Centre.X, Centre.Y, GroundZ));
+		}
+		BridgeLevelImpl::ComputePerViewFraming(
+			FramingPoints, ViewDirs, Centre, Radius,
+			FOVDeg, CellWidth, CellHeight, CamLocs, CamRots);
+	}
+	else
+	{
+		for (int32 c = 0; c < NumViews; ++c)
+		{
+			if (!ViewOk[c]) continue;
+			CamLocs[c] = Centre + ViewDirs[c].GetSafeNormal() * Distance;
+			CamRots[c] = (Centre - CamLocs[c]).Rotation();
+		}
+	}
+
+	// 5b. Bone chains (built once — skeleton is stable across time samples).
+	TArray<BridgeLevelImpl::FBoneChainDef> BoneChains;
+	if (bBoneOverlay)
+	{
+		BridgeLevelImpl::BuildBoneChains(
+			RefSkel, SkelComp->GetComponentSpaceTransforms().Num(), BoneChains);
+	}
+
+	// 5c. Ground-grid centre + extent (covers motion path).
+	FVector GroundCenter(Centre.X, Centre.Y, GroundZ);
+	float GroundHalfExtent = 300.0f;
+	if (bGroundGrid && TrajGround.Num() >= 2)
+	{
+		FBox XYBox(ForceInit);
+		for (const FVector& P : TrajGround) XYBox += P;
+		GroundCenter = FVector(XYBox.GetCenter().X, XYBox.GetCenter().Y, GroundZ);
+		const float TrajHalf = 0.5f * FMath::Max(
+			XYBox.Max.X - XYBox.Min.X, XYBox.Max.Y - XYBox.Min.Y);
+		GroundHalfExtent = FMath::Max(300.0f, TrajHalf + 150.0f);
 	}
 
 	// 6. Allocate composite: rows = N (time), cols = NumViews.
@@ -2384,7 +3182,14 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 		CompDst[i] = FColor(217, 217, 222, 255);
 	}
 
-	// 7. For each row (time), set pose + capture each view.
+	// Overlay colours — consistent across pose-grid and timeline.
+	const FColor GridColor(150, 150, 160, 255);
+	const FColor GridAxisColor(90, 90, 110, 255);
+	const FColor TrajColor(40, 210, 80, 255);
+	const FColor TrajTickColor(255, 255, 255, 255);
+	const FColor TrajCurrentColor(255, 60, 60, 255);
+
+	// 7. For each row (time), set pose + capture each view + overlays.
 	for (int32 Row = 0; Row < N; ++Row)
 	{
 		BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, SampleTimes[Row]);
@@ -2400,6 +3205,33 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 			{
 				continue;
 			}
+
+			// Ground grid (context) → trajectory → bones (foreground).
+			if (bGroundGrid)
+			{
+				BridgeLevelImpl::DrawGroundGridOnCell(
+					Pixels.GetData(), CellWidth, CellHeight,
+					GroundCenter, GroundHalfExtent, /*Spacing=*/ 50.0f,
+					CamLocs[Col], CamRots[Col], FOVDeg,
+					GridColor, GridAxisColor);
+			}
+			if (bRootTrajectory && TrajGround.Num() >= 2)
+			{
+				// Ticks on every row time; current-row time highlighted.
+				BridgeLevelImpl::DrawTrajectoryOnCell(
+					Pixels.GetData(), CellWidth, CellHeight,
+					TrajGround, TrajTimes, SampleTimes, SampleTimes[Row],
+					CamLocs[Col], CamRots[Col], FOVDeg,
+					TrajColor, TrajTickColor, TrajCurrentColor);
+			}
+			if (bBoneOverlay)
+			{
+				BridgeLevelImpl::DrawBoneOverlayOnCell(
+					Pixels.GetData(), CellWidth, CellHeight,
+					SkelComp, BoneChains,
+					CamLocs[Col], CamRots[Col], FOVDeg);
+			}
+
 			const int32 DstX = Col * CellWidth;
 			const int32 DstY = Row * CellHeight;
 			for (int32 Y = 0; Y < CellHeight; ++Y)
