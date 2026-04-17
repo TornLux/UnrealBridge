@@ -3488,3 +3488,735 @@ FString UUnrealBridgeBlueprintLibrary::AddEnumLiteralNode(
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);
 }
+
+// ═════════════════════════════════════════════════════════════════
+// Semantic summary layer (agent-understanding helpers)
+// ═════════════════════════════════════════════════════════════════
+
+namespace BridgeBPSummaryImpl
+{
+	/** Classify a graph against a loaded BP. */
+	static FString ClassifyGraph(const UBlueprint* BP, const UEdGraph* Graph)
+	{
+		if (!BP || !Graph) return TEXT("Unknown");
+		UEdGraph* G = const_cast<UEdGraph*>(Graph);
+		if (BP->UbergraphPages.Contains(G)) return TEXT("EventGraph");
+		if (BP->FunctionGraphs.Contains(G))  return TEXT("Function");
+		if (BP->MacroGraphs.Contains(G))     return TEXT("Macro");
+		return TEXT("Unknown");
+	}
+
+	struct FAllGraphs { UEdGraph* Graph; FString Type; };
+	static TArray<FAllGraphs> CollectAllGraphs(UBlueprint* BP)
+	{
+		TArray<FAllGraphs> Out;
+		for (UEdGraph* G : BP->UbergraphPages) if (G) Out.Add({G, TEXT("EventGraph")});
+		for (UEdGraph* G : BP->FunctionGraphs)  if (G) Out.Add({G, TEXT("Function")});
+		for (UEdGraph* G : BP->MacroGraphs)     if (G) Out.Add({G, TEXT("Macro")});
+		return Out;
+	}
+
+	/** Pull an object-ref asset path out of a pin's default value if it's an
+	 *  asset reference; returns empty if not an object pin or unset. */
+	static FString PinAssetReference(const UEdGraphPin* Pin)
+	{
+		if (!Pin) return FString();
+		if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Object &&
+			Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_SoftObject &&
+			Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Class &&
+			Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_SoftClass)
+		{
+			return FString();
+		}
+		if (Pin->DefaultObject)
+		{
+			return Pin->DefaultObject->GetPathName();
+		}
+		// Plain path defaults (soft refs etc.)
+		if (!Pin->DefaultValue.IsEmpty() &&
+			(Pin->DefaultValue.StartsWith(TEXT("/")) || Pin->DefaultValue.Contains(TEXT("."))))
+		{
+			return Pin->DefaultValue;
+		}
+		return FString();
+	}
+
+	/** Sort a name→count map into a TArray of names by descending count, cap N. */
+	static TArray<FString> TopN(const TMap<FString, int32>& Counter, int32 N)
+	{
+		TArray<TPair<FString, int32>> Pairs;
+		for (const auto& Pair : Counter) { Pairs.Add({Pair.Key, Pair.Value}); }
+		Pairs.Sort([](const TPair<FString, int32>& A, const TPair<FString, int32>& B)
+		{
+			return A.Value > B.Value;
+		});
+		TArray<FString> Out;
+		for (int32 i = 0; i < FMath::Min(N, Pairs.Num()); ++i) { Out.Add(Pairs[i].Key); }
+		return Out;
+	}
+}
+
+bool UUnrealBridgeBlueprintLibrary::GetBlueprintSummary(
+	const FString& BlueprintPath, FBridgeBlueprintSummary& OutSummary)
+{
+	using namespace BridgeBPSummaryImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP || !BP->GeneratedClass) return false;
+
+	const UClass* GenClass = BP->GeneratedClass;
+	const UClass* Super = GenClass->GetSuperClass();
+
+	OutSummary.Name = BP->GetName();
+	OutSummary.Path = BP->GetPathName();
+	if (Super)
+	{
+		OutSummary.ParentClass = Super->GetName();
+		OutSummary.ParentClassPath = Super->GetPathName();
+	}
+
+	// First native ancestor.
+	const UClass* NativeBase = Super;
+	while (NativeBase
+		&& (NativeBase->IsChildOf<UBlueprintGeneratedClass>()
+			|| NativeBase->HasAnyClassFlags(CLASS_CompiledFromBlueprint)))
+	{
+		NativeBase = NativeBase->GetSuperClass();
+	}
+	OutSummary.BlueprintType = NativeBase ? NativeBase->GetName() : TEXT("Object");
+
+	// Variables.
+	TSet<FString> CategorySet;
+	for (const FBPVariableDescription& Var : BP->NewVariables)
+	{
+		const FProperty* Prop = GenClass->FindPropertyByName(Var.VarName);
+		if (Prop && CastField<FMulticastDelegateProperty>(Prop)) continue;
+
+		OutSummary.VariableCount += 1;
+		if (Prop && Prop->HasAnyPropertyFlags(CPF_BlueprintVisible | CPF_Edit))
+		{
+			OutSummary.InstanceEditableCount += 1;
+		}
+		if (Var.ReplicationCondition != COND_None || (Prop && Prop->HasAnyPropertyFlags(CPF_Net)))
+		{
+			OutSummary.ReplicatedVariableCount += 1;
+		}
+		const FString Cat = Var.Category.ToString();
+		if (!Cat.IsEmpty() && Cat != TEXT("Default")) CategorySet.Add(Cat);
+	}
+	OutSummary.VariableCategories = CategorySet.Array();
+	OutSummary.VariableCategories.Sort();
+
+	// Functions + events handled.
+	TSet<FString> EventsSet;
+	for (TFieldIterator<UFunction> It(GenClass, EFieldIteratorFlags::ExcludeSuper); It; ++It)
+	{
+		const UFunction* Func = *It;
+		if (!Func) continue;
+		const FString FuncName = Func->GetName();
+		if (FuncName.StartsWith(TEXT("ExecuteUbergraph"))) continue;
+		if (FuncName.Contains(TEXT("__DelegateSignature"))) continue;
+		OutSummary.FunctionCount += 1;
+
+		const bool bIsEventOrOverride = Func->HasAnyFunctionFlags(FUNC_Event | FUNC_BlueprintEvent);
+		const bool bIsOverride = Super && Super->FindFunctionByName(Func->GetFName()) != nullptr;
+		if (bIsEventOrOverride && bIsOverride) EventsSet.Add(FuncName);
+
+		OutSummary.PublicFunctions.Add(FuncName);
+	}
+
+	// Event nodes in Ubergraph are another source of "events handled".
+	for (UEdGraph* G : BP->UbergraphPages)
+	{
+		if (!G) continue;
+		for (UEdGraphNode* N : G->Nodes)
+		{
+			if (const UK2Node_Event* Evt = Cast<UK2Node_Event>(N))
+			{
+				EventsSet.Add(Evt->GetFunctionName().ToString());
+			}
+		}
+	}
+	OutSummary.EventsHandled = EventsSet.Array();
+	OutSummary.EventsHandled.Sort();
+	OutSummary.PublicFunctions.Sort();
+
+	// Macros.
+	for (UEdGraph* G : BP->MacroGraphs)
+	{
+		if (G) OutSummary.MacroCount += 1;
+	}
+
+	// Components.
+	if (USimpleConstructionScript* SCS = BP->SimpleConstructionScript)
+	{
+		for (const USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (Node && Node->ComponentClass) OutSummary.ComponentCount += 1;
+		}
+	}
+
+	// Timelines.
+	OutSummary.TimelineCount = BP->Timelines.Num();
+
+	// Event dispatchers.
+	for (UEdGraph* SigGraph : BP->DelegateSignatureGraphs)
+	{
+		if (!SigGraph) continue;
+		FString Name = SigGraph->GetName();
+		static const FString DelegateSuffix = TEXT("__DelegateSignature");
+		if (Name.EndsWith(DelegateSuffix)) Name = Name.LeftChop(DelegateSuffix.Len());
+		OutSummary.EventDispatchers.Add(Name);
+	}
+
+	// Interfaces.
+	for (const FBPInterfaceDescription& Iface : BP->ImplementedInterfaces)
+	{
+		if (Iface.Interface) OutSummary.Interfaces.Add(Iface.Interface->GetName());
+	}
+
+	// Walk every node across every graph once.
+	TMap<FString, int32> ClassCallFreq;
+	TMap<FString, int32> AssetRefFreq;
+	for (const FAllGraphs& Entry : CollectAllGraphs(BP))
+	{
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
+		{
+			if (!Node) continue;
+			OutSummary.TotalNodeCount += 1;
+
+			if (const UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
+			{
+				if (UFunction* Func = CallNode->GetTargetFunction())
+				{
+					if (UClass* Own = Func->GetOwnerClass())
+					{
+						// Exclude self-class calls — agent cares about "what other systems does this BP talk to".
+						if (Own != GenClass)
+						{
+							ClassCallFreq.FindOrAdd(Own->GetName()) += 1;
+						}
+					}
+				}
+			}
+			for (const UEdGraphPin* Pin : Node->Pins)
+			{
+				const FString Ref = PinAssetReference(Pin);
+				if (!Ref.IsEmpty()) AssetRefFreq.FindOrAdd(Ref) += 1;
+			}
+		}
+	}
+	// Component class refs are "references" too.
+	if (USimpleConstructionScript* SCS = BP->SimpleConstructionScript)
+	{
+		for (const USCS_Node* Node : SCS->GetAllNodes())
+		{
+			if (Node && Node->ComponentClass)
+			{
+				AssetRefFreq.FindOrAdd(Node->ComponentClass->GetPathName()) += 1;
+			}
+		}
+	}
+
+	OutSummary.KeyReferencedClasses = TopN(ClassCallFreq, 10);
+	OutSummary.KeyReferencedAssets  = TopN(AssetRefFreq, 10);
+
+	return true;
+}
+
+// ─── GetFunctionSummary ─────────────────────────────────────────
+
+namespace BridgeBPSummaryImpl
+{
+	/** Cap on emitted outline lines; prevents blow-up on 500-node event graphs. */
+	constexpr int32 MaxOutlineLines = 200;
+	constexpr int32 MaxOutlineDepth = 8;
+
+	/** Short human-readable describe of a node for one outline line, no indent. */
+	static FString DescribeNodeOneLine(const UEdGraphNode* Node)
+	{
+		if (const UK2Node_IfThenElse* /*Branch*/ _ = Cast<UK2Node_IfThenElse>(Node))
+		{
+			return TEXT("Branch");
+		}
+		if (const UK2Node_ExecutionSequence* Seq = Cast<UK2Node_ExecutionSequence>(Node))
+		{
+			int32 Count = 0;
+			for (const UEdGraphPin* P : Seq->Pins)
+			{
+				if (P->Direction == EGPD_Output && P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) ++Count;
+			}
+			return FString::Printf(TEXT("Sequence (%d outputs)"), Count);
+		}
+		if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+		{
+			UFunction* Func = Call->GetTargetFunction();
+			FString FuncName = Func ? Func->GetName() : Call->GetFunctionName().ToString();
+			FString ClassName = (Func && Func->GetOwnerClass()) ? Func->GetOwnerClass()->GetName() : TEXT("?");
+			return FString::Printf(TEXT("Call %s.%s"), *ClassName, *FuncName);
+		}
+		if (const UK2Node_VariableSet* Set = Cast<UK2Node_VariableSet>(Node))
+		{
+			return FString::Printf(TEXT("Set %s"), *Set->GetVarNameString());
+		}
+		if (const UK2Node_VariableGet* Get = Cast<UK2Node_VariableGet>(Node))
+		{
+			return FString::Printf(TEXT("Get %s"), *Get->GetVarNameString());
+		}
+		if (const UK2Node_DynamicCast* CastN = Cast<UK2Node_DynamicCast>(Node))
+		{
+			FString T = CastN->TargetType ? CastN->TargetType->GetName() : TEXT("?");
+			return FString::Printf(TEXT("Cast to %s"), *T);
+		}
+		if (const UK2Node_MacroInstance* Mac = Cast<UK2Node_MacroInstance>(Node))
+		{
+			UEdGraph* MG = Mac->GetMacroGraph();
+			return FString::Printf(TEXT("Macro %s"), MG ? *MG->GetName() : TEXT("?"));
+		}
+		if (const UK2Node_SpawnActorFromClass* Spawn = Cast<UK2Node_SpawnActorFromClass>(Node))
+		{
+			if (const UEdGraphPin* ClassPin = Spawn->GetClassPin())
+			{
+				FString C = ClassPin->DefaultObject ? ClassPin->DefaultObject->GetName() : TEXT("?");
+				return FString::Printf(TEXT("Spawn %s"), *C);
+			}
+			return TEXT("Spawn ?");
+		}
+		if (const UK2Node_CallDelegate* CD = Cast<UK2Node_CallDelegate>(Node))
+		{
+			return FString::Printf(TEXT("Fire dispatcher %s"), *CD->GetPropertyName().ToString());
+		}
+		if (const UK2Node_AddDelegate* AD = Cast<UK2Node_AddDelegate>(Node))
+		{
+			return FString::Printf(TEXT("Bind dispatcher %s"), *AD->GetPropertyName().ToString());
+		}
+		if (const UK2Node_RemoveDelegate* RD = Cast<UK2Node_RemoveDelegate>(Node))
+		{
+			return FString::Printf(TEXT("Unbind dispatcher %s"), *RD->GetPropertyName().ToString());
+		}
+		if (const UK2Node_CustomEvent* CE = Cast<UK2Node_CustomEvent>(Node))
+		{
+			return FString::Printf(TEXT("Event %s (custom)"), *CE->CustomFunctionName.ToString());
+		}
+		if (const UK2Node_Event* Ev = Cast<UK2Node_Event>(Node))
+		{
+			return FString::Printf(TEXT("Event %s"), *Ev->GetFunctionName().ToString());
+		}
+		if (Cast<UK2Node_FunctionEntry>(Node))
+		{
+			return TEXT("Entry");
+		}
+		if (Cast<UK2Node_FunctionResult>(Node))
+		{
+			return TEXT("Return");
+		}
+		if (Cast<UK2Node_Message>(Node))
+		{
+			return FString::Printf(TEXT("Interface msg %s"),
+				*Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+		}
+		// Skip reroute knots in outline.
+		if (Cast<UK2Node_Knot>(Node)) return FString();
+		return Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+	}
+
+	/** Detect loop macros by name match. */
+	static bool IsLoopMacro(const UK2Node_MacroInstance* Mac)
+	{
+		if (!Mac) return false;
+		UEdGraph* G = Mac->GetMacroGraph();
+		if (!G) return false;
+		const FString N = G->GetName();
+		return N.Contains(TEXT("ForEachLoop")) || N.Contains(TEXT("ForLoop"))
+			|| N.Contains(TEXT("WhileLoop")) || N.Contains(TEXT("ReverseForEachLoop"));
+	}
+
+	/** Exec-output pins of a node, in declaration order, labelled with pin name. */
+	struct FExecOut { FName PinName; UEdGraphNode* Target = nullptr; };
+	static TArray<FExecOut> GetExecOutputs(const UEdGraphNode* Node)
+	{
+		TArray<FExecOut> Out;
+		if (!Node) return Out;
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (Pin->Direction != EGPD_Output) continue;
+			if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+			for (const UEdGraphPin* Linked : Pin->LinkedTo)
+			{
+				if (Linked)
+				{
+					// Follow through knot (reroute) nodes transparently.
+					UEdGraphNode* T = Linked->GetOwningNode();
+					while (const UK2Node_Knot* Knot = Cast<UK2Node_Knot>(T))
+					{
+						const UEdGraphPin* Next = Knot->GetOutputPin();
+						if (!Next || Next->LinkedTo.Num() == 0) { T = nullptr; break; }
+						T = Next->LinkedTo[0]->GetOwningNode();
+					}
+					Out.Add({ Pin->PinName, T });
+				}
+			}
+		}
+		return Out;
+	}
+
+	/** Recursive outline builder. */
+	static void BuildOutline(
+		const UEdGraphNode* Node,
+		int32 Depth,
+		TSet<const UEdGraphNode*>& Visited,
+		TArray<FString>& OutLines)
+	{
+		if (!Node) return;
+		if (OutLines.Num() >= MaxOutlineLines) return;
+		if (Depth > MaxOutlineDepth) return;
+		if (Visited.Contains(Node)) return;
+		Visited.Add(Node);
+
+		const FString Line = DescribeNodeOneLine(Node);
+		if (!Line.IsEmpty())
+		{
+			FString Indent;
+			for (int32 i = 0; i < Depth; ++i) Indent += TEXT("  ");
+			OutLines.Add(Indent + Line);
+		}
+
+		// Stop recursion at Return — nothing follows.
+		if (Cast<UK2Node_FunctionResult>(Node)) return;
+
+		const TArray<FExecOut> Outputs = GetExecOutputs(Node);
+		if (Outputs.Num() == 0) return;
+		// Single linear path: recurse without extra indent.
+		if (Outputs.Num() == 1)
+		{
+			BuildOutline(Outputs[0].Target, Depth, Visited, OutLines);
+			return;
+		}
+		// Multiple outputs: label each and recurse at +1 indent.
+		for (const FExecOut& Out : Outputs)
+		{
+			if (OutLines.Num() >= MaxOutlineLines) return;
+			FString Label = Out.PinName.ToString();
+			// Prettify common pin names.
+			if (Label.Equals(TEXT("then"), ESearchCase::IgnoreCase))         Label = TEXT("True");
+			else if (Label.Equals(TEXT("else"), ESearchCase::IgnoreCase))    Label = TEXT("False");
+			FString Indent;
+			for (int32 i = 0; i <= Depth; ++i) Indent += TEXT("  ");
+			OutLines.Add(Indent + Label + TEXT(" →"));
+			BuildOutline(Out.Target, Depth + 2, Visited, OutLines);
+		}
+	}
+
+	/** Find the entry node in a graph for exec outline purposes. */
+	static UEdGraphNode* FindEntry(const UEdGraph* Graph, const FString& FunctionName)
+	{
+		if (!Graph) return nullptr;
+		// Prefer FunctionEntry (present in user function graphs).
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (Cast<UK2Node_FunctionEntry>(N)) return N;
+		}
+		// For event graphs, look for a specific event by name; else first event.
+		UEdGraphNode* FirstEvent = nullptr;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (UK2Node_Event* E = Cast<UK2Node_Event>(N))
+			{
+				if (!FirstEvent) FirstEvent = E;
+				if (E->GetFunctionName().ToString() == FunctionName) return E;
+			}
+			else if (UK2Node_CustomEvent* CE = Cast<UK2Node_CustomEvent>(N))
+			{
+				if (CE->CustomFunctionName.ToString() == FunctionName) return CE;
+			}
+		}
+		return FirstEvent;
+	}
+}
+
+bool UUnrealBridgeBlueprintLibrary::GetFunctionSummary(
+	const FString& BlueprintPath, const FString& FunctionName,
+	FBridgeFunctionSemantics& OutSemantics)
+{
+	using namespace BridgeBPSummaryImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP || !BP->GeneratedClass) return false;
+
+	OutSemantics.Name = FunctionName;
+
+	const UClass* GenClass = BP->GeneratedClass;
+	const UClass* Super = GenClass->GetSuperClass();
+
+	// Try to find the UFunction first (normal function or event).
+	const UFunction* UFunc = GenClass->FindFunctionByName(FName(*FunctionName));
+	if (UFunc)
+	{
+		// Kind + flags.
+		if (UFunc->HasAnyFunctionFlags(FUNC_Event | FUNC_BlueprintEvent))
+		{
+			OutSemantics.Kind = (Super && Super->FindFunctionByName(UFunc->GetFName()))
+				? TEXT("Override") : TEXT("Event");
+			OutSemantics.bIsOverride = (Super && Super->FindFunctionByName(UFunc->GetFName()) != nullptr);
+		}
+		else
+		{
+			OutSemantics.Kind = TEXT("Function");
+		}
+		OutSemantics.bIsPure = UFunc->HasAnyFunctionFlags(FUNC_BlueprintPure);
+		OutSemantics.Access  = UFunc->HasAnyFunctionFlags(FUNC_Public)    ? TEXT("Public")
+							  : UFunc->HasAnyFunctionFlags(FUNC_Protected) ? TEXT("Protected")
+							  : UFunc->HasAnyFunctionFlags(FUNC_Private)   ? TEXT("Private")
+							  : TEXT("Public");
+		// Tooltip / description.
+		OutSemantics.Description = UFunc->GetMetaData(TEXT("ToolTip"));
+
+		// Params.
+		for (TFieldIterator<FProperty> PIt(UFunc); PIt; ++PIt)
+		{
+			const FProperty* Param = *PIt;
+			if (!Param->HasAnyPropertyFlags(CPF_Parm)) continue;
+			FBridgeFunctionParam P;
+			P.Name = Param->GetName();
+			P.Type = PropertyTypeToString(Param);
+			P.bIsOutput = Param->HasAnyPropertyFlags(CPF_OutParm | CPF_ReturnParm);
+			OutSemantics.Params.Add(P);
+		}
+	}
+
+	// Locate graph (function / event / macro / ubergraph entry).
+	TArray<UEdGraph*> Graphs = FindGraphs(BP, FunctionName);
+	// If FindGraphs returned nothing but the name matches an event, fall back
+	// to searching UbergraphPages for an event node by that name.
+	if (Graphs.Num() == 0)
+	{
+		for (UEdGraph* G : BP->UbergraphPages)
+		{
+			if (!G) continue;
+			for (UEdGraphNode* N : G->Nodes)
+			{
+				if (UK2Node_Event* E = Cast<UK2Node_Event>(N))
+				{
+					if (E->GetFunctionName().ToString() == FunctionName)
+					{
+						Graphs.AddUnique(G);
+					}
+				}
+			}
+		}
+	}
+	if (Graphs.Num() == 0)
+	{
+		// Macro?
+		for (UEdGraph* G : BP->MacroGraphs)
+		{
+			if (G && G->GetName() == FunctionName) { Graphs.Add(G); OutSemantics.Kind = TEXT("Macro"); break; }
+		}
+	}
+	if (Graphs.Num() == 0) return false;
+
+	if (OutSemantics.Kind.IsEmpty())
+	{
+		OutSemantics.Kind = ClassifyGraph(BP, Graphs[0]);
+	}
+
+	// Aggregates + outline across the matching graph(s).
+	TSet<FString> ReadsSet, WritesSet, CallsSet, FiresSet, SpawnsSet;
+	for (UEdGraph* Graph : Graphs)
+	{
+		if (!Graph) continue;
+		for (UEdGraphNode* Node : Graph->Nodes)
+		{
+			if (!Node) continue;
+			OutSemantics.NodeCount += 1;
+
+			if (const UK2Node_VariableGet* VG = Cast<UK2Node_VariableGet>(Node)) ReadsSet.Add(VG->GetVarNameString());
+			else if (const UK2Node_VariableSet* VS = Cast<UK2Node_VariableSet>(Node)) WritesSet.Add(VS->GetVarNameString());
+			else if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+			{
+				UFunction* TF = Call->GetTargetFunction();
+				const FString Name = TF ? TF->GetName() : Call->GetFunctionName().ToString();
+				const FString Own  = (TF && TF->GetOwnerClass()) ? TF->GetOwnerClass()->GetName() : TEXT("?");
+				CallsSet.Add(FString::Printf(TEXT("%s.%s"), *Own, *Name));
+			}
+			else if (const UK2Node_CallDelegate* CD = Cast<UK2Node_CallDelegate>(Node)) FiresSet.Add(CD->GetPropertyName().ToString());
+			else if (const UK2Node_SpawnActorFromClass* SP = Cast<UK2Node_SpawnActorFromClass>(Node))
+			{
+				if (const UEdGraphPin* CP = SP->GetClassPin())
+				{
+					if (CP->DefaultObject) SpawnsSet.Add(CP->DefaultObject->GetName());
+				}
+			}
+			else if (const UK2Node_IfThenElse* /*Branch*/ _ = Cast<UK2Node_IfThenElse>(Node))
+			{
+				OutSemantics.bHasBranches = true;
+			}
+			else if (const UK2Node_MacroInstance* Mac = Cast<UK2Node_MacroInstance>(Node))
+			{
+				if (IsLoopMacro(Mac)) OutSemantics.bHasLoops = true;
+			}
+			else if (const UEdGraphNode_Comment* Comment = Cast<UEdGraphNode_Comment>(Node))
+			{
+				if (!Comment->NodeComment.IsEmpty())
+					OutSemantics.CommentBlocks.Add(Comment->NodeComment);
+			}
+		}
+	}
+	OutSemantics.ReadsVariables    = ReadsSet.Array();  OutSemantics.ReadsVariables.Sort();
+	OutSemantics.WritesVariables   = WritesSet.Array(); OutSemantics.WritesVariables.Sort();
+	OutSemantics.CallsFunctions    = CallsSet.Array();  OutSemantics.CallsFunctions.Sort();
+	OutSemantics.FiresDispatchers  = FiresSet.Array();  OutSemantics.FiresDispatchers.Sort();
+	OutSemantics.SpawnsClasses     = SpawnsSet.Array(); OutSemantics.SpawnsClasses.Sort();
+
+	// Outline: start from the entry node of the first matching graph.
+	UEdGraphNode* Entry = FindEntry(Graphs[0], FunctionName);
+	if (Entry)
+	{
+		TSet<const UEdGraphNode*> Visited;
+		BuildOutline(Entry, 0, Visited, OutSemantics.ExecOutline);
+	}
+
+	return true;
+}
+
+// ─── Find* cross-reference queries ──────────────────────────────
+
+namespace BridgeBPSummaryImpl
+{
+	static FBridgeReference MakeRefFromNode(
+		const UEdGraph* Graph, const FString& GraphType,
+		const UEdGraphNode* Node, const FString& Kind)
+	{
+		FBridgeReference Ref;
+		Ref.GraphName = Graph ? Graph->GetName() : FString();
+		Ref.GraphType = GraphType;
+		Ref.NodeGuid  = Node ? Node->NodeGuid.ToString(EGuidFormats::Digits) : FString();
+		Ref.NodeTitle = Node ? Node->GetNodeTitle(ENodeTitleType::ListView).ToString() : FString();
+		Ref.Kind      = Kind;
+		return Ref;
+	}
+}
+
+TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindVariableReferences(
+	const FString& BlueprintPath, const FString& VariableName)
+{
+	using namespace BridgeBPSummaryImpl;
+	TArray<FBridgeReference> Result;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP || VariableName.IsEmpty()) return Result;
+
+	for (const FAllGraphs& Entry : CollectAllGraphs(BP))
+	{
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
+		{
+			if (!Node) continue;
+			if (const UK2Node_VariableGet* VG = Cast<UK2Node_VariableGet>(Node))
+			{
+				if (VG->GetVarNameString() == VariableName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("read")));
+				}
+			}
+			else if (const UK2Node_VariableSet* VS = Cast<UK2Node_VariableSet>(Node))
+			{
+				if (VS->GetVarNameString() == VariableName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("write")));
+				}
+			}
+		}
+	}
+	return Result;
+}
+
+TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindFunctionCallSites(
+	const FString& BlueprintPath, const FString& FunctionName)
+{
+	using namespace BridgeBPSummaryImpl;
+	TArray<FBridgeReference> Result;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP || FunctionName.IsEmpty()) return Result;
+
+	for (const FAllGraphs& Entry : CollectAllGraphs(BP))
+	{
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
+		{
+			if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+			{
+				UFunction* TF = Call->GetTargetFunction();
+				const FString Name = TF ? TF->GetName() : Call->GetFunctionName().ToString();
+				if (Name == FunctionName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("call")));
+				}
+			}
+			else if (const UK2Node_Message* Msg = Cast<UK2Node_Message>(Node))
+			{
+				// Interface messages: match by message function name too.
+				if (Msg->GetNodeTitle(ENodeTitleType::ListView).ToString().Contains(FunctionName))
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("call")));
+				}
+			}
+			else if (const UK2Node_MacroInstance* Mac = Cast<UK2Node_MacroInstance>(Node))
+			{
+				UEdGraph* MG = Mac->GetMacroGraph();
+				if (MG && MG->GetName() == FunctionName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("call")));
+				}
+			}
+		}
+	}
+	return Result;
+}
+
+TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindEventHandlerSites(
+	const FString& BlueprintPath, const FString& EventName)
+{
+	using namespace BridgeBPSummaryImpl;
+	TArray<FBridgeReference> Result;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP || EventName.IsEmpty()) return Result;
+
+	for (const FAllGraphs& Entry : CollectAllGraphs(BP))
+	{
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
+		{
+			if (const UK2Node_Event* E = Cast<UK2Node_Event>(Node))
+			{
+				if (E->GetFunctionName().ToString() == EventName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("event")));
+				}
+			}
+			else if (const UK2Node_CustomEvent* CE = Cast<UK2Node_CustomEvent>(Node))
+			{
+				if (CE->CustomFunctionName.ToString() == EventName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("event")));
+				}
+			}
+			else if (const UK2Node_CallDelegate* CD = Cast<UK2Node_CallDelegate>(Node))
+			{
+				if (CD->GetPropertyName().ToString() == EventName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("call")));
+				}
+			}
+			else if (const UK2Node_AddDelegate* AD = Cast<UK2Node_AddDelegate>(Node))
+			{
+				if (AD->GetPropertyName().ToString() == EventName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("bind")));
+				}
+			}
+			else if (const UK2Node_RemoveDelegate* RD = Cast<UK2Node_RemoveDelegate>(Node))
+			{
+				if (RD->GetPropertyName().ToString() == EventName)
+				{
+					Result.Add(MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("unbind")));
+				}
+			}
+		}
+	}
+	return Result;
+}

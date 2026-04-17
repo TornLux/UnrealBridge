@@ -1049,6 +1049,155 @@ lit = lib.add_enum_literal_node(bp, g,
 
 ---
 
+## Semantic summary (understanding layer)
+
+Agents reading an unfamiliar BP typically end up chaining 5–6 of the
+granular queries above (overview + variables + functions + components +
+interfaces + dispatchers) and stitching the results together. The three
+calls below pre-digest that work into LLM-friendly output so "what does
+this BP do?" becomes one round-trip.
+
+### get_blueprint_summary(blueprint_path) -> FBridgeBlueprintSummary
+
+One-call high-level digest — aggregates parent class, interfaces, events
+handled, public functions, dispatchers, variable stats, component /
+timeline / macro counts, total node count across every graph, the
+variable categories in use, the most-called external classes (top 10
+by call frequency, self-class excluded), and the top referenced assets.
+
+```python
+s = unreal.UnrealBridgeBlueprintLibrary.get_blueprint_summary(
+    '/Game/Blueprints/SandboxCharacter_CMC.SandboxCharacter_CMC')
+
+# High-level shape
+print(s.parent_class, '(native:', s.blueprint_type, ')')   # Character (native: Character)
+print('events:', list(s.events_handled))                   # ReceiveBeginPlay, ReceiveTick, OnJumped, …
+print('public_funcs:', len(list(s.public_functions)))      # 49
+print('dispatchers:', list(s.event_dispatchers))           # ['On Request Interact']
+
+# State
+print(s.variable_count, 'vars,',
+      s.instance_editable_count, 'instance-editable,',
+      s.replicated_variable_count, 'replicated')            # 19 / 19 / 1
+
+# Complexity
+print('total nodes:', s.total_node_count)                   # 427
+print('categories:', list(s.variable_categories))           # ['Camera', 'Input', 'Movement', ...]
+
+# Dependencies
+print('calls classes:', list(s.key_referenced_classes))     # KismetMathLibrary, Character, KismetSystemLibrary, …
+print('assets:', list(s.key_referenced_assets))             # IA_Sprint, IA_Walk, IA_Jump, …
+```
+
+**What persists in the output:** short names (`ParentClass`), full paths
+where disambiguation matters (`ParentClassPath`, asset entries), and
+aggregate counts. No node guids, no raw graph data — use the granular
+queries for those.
+
+### get_function_summary(blueprint_path, function_name) -> FBridgeFunctionSemantics
+
+Per-function / per-event semantic digest. Walks the graph's exec chain
+from its entry node to produce an indented human-readable outline, plus
+aggregates: variables read / written, functions called, dispatchers
+fired, classes spawned, loop / branch flags, comment text.
+
+Accepts function names, event names (searches `UbergraphPages` for a
+matching `K2Node_Event`), or macro names.
+
+```python
+s = unreal.UnrealBridgeBlueprintLibrary.get_function_summary(
+    '/Game/Blueprints/SandboxCharacter_CMC.SandboxCharacter_CMC',
+    'GetDesiredGait')
+
+print(s.kind, s.access, 'pure=', s.is_pure)        # Event Public pure=True
+print('params:', [(p.name, p.type) for p in s.params])   # [('ReturnValue', 'E_Gait')]
+print('reads:', list(s.reads_variables))            # ['CharacterInputState', 'FullMovementInput', ...]
+print('writes:', list(s.writes_variables))
+print('calls:', list(s.calls_functions))            # ['KismetMathLibrary.BooleanOR', 'SKEL_SandboxCharacter_CMC_C.CanSprint', ...]
+print('branches:', s.has_branches, 'loops:', s.has_loops)
+
+for line in list(s.exec_outline):
+    print(line)
+# Entry
+# Set FullMovementInput
+# Branch
+#   True →
+#     Branch
+#       True →
+#         Return
+#       False →
+#         Return
+#   False →
+#     Branch
+#       True →
+#         Return
+#       False →
+#         Branch
+#           True →
+#             Return
+#           False →
+#             Return
+```
+
+**Outline conventions:**
+- 2-space indent per nesting level
+- Multi-output nodes (Branch, Sequence, Cast, ForEach) render each
+  exec-output as a labelled child branch; single-output chains stay
+  at the same indent
+- "then" / "else" pin names are prettified to "True" / "False"
+- Reroute knot nodes are followed through but not rendered
+- Capped at 200 lines + depth 8 to bound large graphs
+- Cycle-safe: a visited set prevents loops from recursing forever
+
+**Aggregates are computed by full-graph walk** (not just exec chain) —
+so a purely-data-flow variable read inside a loop body still shows up
+in `reads_variables`.
+
+### find_variable_references(blueprint_path, variable_name) -> list[FBridgeReference]
+### find_function_call_sites(blueprint_path, function_name) -> list[FBridgeReference]
+### find_event_handler_sites(blueprint_path, event_name) -> list[FBridgeReference]
+
+Cross-reference queries that walk every graph (`UbergraphPages` +
+`FunctionGraphs` + `MacroGraphs`) and return one entry per matched
+node. Core refactor / impact-analysis tool: "where is this variable
+written?", "which graph calls this function?", "where is this dispatcher
+bound vs fired?".
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+bp = '/Game/Blueprints/SandboxCharacter_CMC.SandboxCharacter_CMC'
+
+for r in L.find_variable_references(bp, 'CharacterInputState'):
+    print(f'  [{r.kind}] {r.graph_type}/{r.graph_name}: {r.node_title}')
+# [read]  EventGraph/EventGraph: Get CharacterInputState
+# [read]  EventGraph/EventGraph: Get CharacterInputState
+# [write] EventGraph/EventGraph: Set CharacterInputState
+# [read]  Function/UpdateRotation_PreCMC: Get CharacterInputState
+# [read]  Function/GetDesiredGait: Get CharacterInputState
+# [read]  Function/CanSprint: Get CharacterInputState
+
+for r in L.find_function_call_sites(bp, 'CanSprint'):
+    print(r.graph_name, r.node_guid)
+# GetDesiredGait  <guid>
+
+for r in L.find_event_handler_sites(bp, 'OnCharacterMovementUpdated'):
+    print(r.kind, r.graph_name, r.node_title)
+# bind  EventGraph  "Assign On Character Movement Updated"
+```
+
+**Kind field semantics:**
+- `"read"` — `K2Node_VariableGet` for the named variable
+- `"write"` — `K2Node_VariableSet`
+- `"call"` — `K2Node_CallFunction` / `K2Node_MacroInstance` / `K2Node_Message`
+- `"event"` — `K2Node_Event` / `K2Node_CustomEvent` entry
+- `"bind"` / `"unbind"` — `K2Node_AddDelegate` / `K2Node_RemoveDelegate`
+
+The returned `NodeGuid` matches what `get_function_nodes` reports, so
+you can pipe Find* results into `remove_graph_node`, `set_node_enabled`,
+`set_node_comment`, etc. for bulk edits.
+
+---
+
 ### End-to-end example — one node-graph build, one compile
 
 ```python

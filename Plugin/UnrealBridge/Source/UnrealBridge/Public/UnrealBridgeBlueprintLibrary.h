@@ -534,6 +534,140 @@ struct FBridgeBreakpointInfo
 	bool bEnabled = false;
 };
 
+// ─── Semantic summary structs (understanding layer) ──────────
+
+/**
+ * LLM-ready high-level digest of a Blueprint. Replaces the 5-6 round-trips
+ * an agent would otherwise need (overview + variables + functions +
+ * components + interfaces + dispatchers) with a single call that also
+ * adds aggregate stats (variable categories, key referenced classes,
+ * referenced assets) not available anywhere else.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeBlueprintSummary
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Name;
+	UPROPERTY(BlueprintReadOnly) FString Path;
+
+	/** Short name of immediate superclass. */
+	UPROPERTY(BlueprintReadOnly) FString ParentClass;
+	UPROPERTY(BlueprintReadOnly) FString ParentClassPath;
+
+	/** First native ancestor ("Actor", "Character", "UserWidget", etc.). */
+	UPROPERTY(BlueprintReadOnly) FString BlueprintType;
+
+	/** Interface class short names. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> Interfaces;
+
+	/** Names of events this BP actually overrides / handles
+	 *  (entry nodes found in UbergraphPages + AnimGraph). */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> EventsHandled;
+
+	/** Non-internal function names defined on this BP. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> PublicFunctions;
+
+	/** Event dispatcher names declared on this BP. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> EventDispatchers;
+
+	UPROPERTY(BlueprintReadOnly) int32 VariableCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 InstanceEditableCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 ReplicatedVariableCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 FunctionCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 MacroCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 ComponentCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 TimelineCount = 0;
+
+	/** Sum of nodes across every graph (ubergraph + functions + macros). */
+	UPROPERTY(BlueprintReadOnly) int32 TotalNodeCount = 0;
+
+	/** Deduped variable categories across all variables. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> VariableCategories;
+
+	/** Most-called external classes (e.g. "KismetSystemLibrary",
+	 *  "GameplayStatics"), sorted by call-site frequency, top 10. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> KeyReferencedClasses;
+
+	/** Asset paths referenced by pin defaults + component class refs,
+	 *  deduped, top 10. Gives a sense of what content this BP "uses". */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> KeyReferencedAssets;
+};
+
+/** Per-function semantic digest — pre-formatted exec outline + aggregate
+ *  reads/writes/calls/fires. Replaces GetFunctionNodes +
+ *  GetFunctionExecutionFlow + GetNodePinConnections + manual assembly. */
+USTRUCT(BlueprintType)
+struct FBridgeFunctionSemantics
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Name;
+
+	/** "Function" | "Event" | "Override" | "Macro" | "EventGraph". */
+	UPROPERTY(BlueprintReadOnly) FString Kind;
+
+	/** "Public" | "Protected" | "Private". */
+	UPROPERTY(BlueprintReadOnly) FString Access;
+
+	UPROPERTY(BlueprintReadOnly) bool bIsPure = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsOverride = false;
+
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeFunctionParam> Params;
+
+	/** Indented human-readable outline of the exec flow. Each entry is
+	 *  one line, two-space indent per nesting level. e.g.
+	 *    "Branch (IsValid(Target))"
+	 *    "  True → Call GameplayStatics.ApplyDamage"
+	 *    "  False → Log 'no target'" */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> ExecOutline;
+
+	/** Variable names read in this function body (deduped). */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> ReadsVariables;
+
+	/** Variable names written (Set) in this function body. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> WritesVariables;
+
+	/** Functions called (formatted "ClassName.FuncName", deduped). */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> CallsFunctions;
+
+	/** Event dispatchers fired (Call). */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> FiresDispatchers;
+
+	/** Classes spawned via SpawnActorFromClass / similar. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> SpawnsClasses;
+
+	UPROPERTY(BlueprintReadOnly) int32 NodeCount = 0;
+	UPROPERTY(BlueprintReadOnly) bool bHasLoops = false;
+	UPROPERTY(BlueprintReadOnly) bool bHasBranches = false;
+
+	/** Text from UEdGraphNode_Comment boxes inside this graph. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> CommentBlocks;
+
+	/** One-line tooltip / metadata description if any. */
+	UPROPERTY(BlueprintReadOnly) FString Description;
+};
+
+/** A single reference site surfaced by Find* cross-reference queries. */
+USTRUCT(BlueprintType)
+struct FBridgeReference
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString GraphName;
+
+	/** "EventGraph" | "Function" | "Macro". */
+	UPROPERTY(BlueprintReadOnly) FString GraphType;
+
+	/** NodeGuid (digits). */
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+
+	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+
+	/** "read" | "write" | "call" | "bind" | "unbind" | "event". */
+	UPROPERTY(BlueprintReadOnly) FString Kind;
+};
+
 // ─── Function Library ────────────────────────────────────────
 
 UCLASS()
@@ -1151,4 +1285,57 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static FString AddEnumLiteralNode(const FString& BlueprintPath, const FString& GraphName,
 		const FString& EnumPath, const FString& ValueName, int32 NodePosX, int32 NodePosY);
+
+	// ─── Understanding / semantic summary ──────────────────
+
+	/**
+	 * One-call high-level digest of a Blueprint. Aggregates parent class,
+	 * interfaces, events handled, public functions, dispatchers, variable
+	 * stats, component / timeline / macro counts, total node count, the
+	 * variable categories in use, the most-called external classes, and the
+	 * top referenced assets. Replaces 5-6 separate queries with ~500 bytes
+	 * of structured output — the first thing an agent should call to "read"
+	 * an unfamiliar BP.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool GetBlueprintSummary(const FString& BlueprintPath, FBridgeBlueprintSummary& OutSummary);
+
+	/**
+	 * Per-function / per-event semantic digest. Walks the graph's exec chain
+	 * from its entry node to produce an indented human-readable outline,
+	 * plus aggregates: variables read/written, functions called, dispatchers
+	 * fired, classes spawned, loop/branch flags, comment text. For event
+	 * graphs, pass the event name (e.g. "ReceiveBeginPlay"); for functions,
+	 * pass the function name; for macros, the macro name.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool GetFunctionSummary(const FString& BlueprintPath,
+		const FString& FunctionName, FBridgeFunctionSemantics& OutSemantics);
+
+	/**
+	 * All sites (graph + node guid) where `VariableName` is read or written
+	 * in this Blueprint. Walks UbergraphPages + FunctionGraphs + MacroGraphs.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeReference> FindVariableReferences(
+		const FString& BlueprintPath, const FString& VariableName);
+
+	/**
+	 * All sites where `FunctionName` is called in this Blueprint.
+	 * Matches any CallFunction node whose target function's name equals
+	 * `FunctionName`, regardless of owning class.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeReference> FindFunctionCallSites(
+		const FString& BlueprintPath, const FString& FunctionName);
+
+	/**
+	 * All event-handler / dispatcher bind sites matching `EventName`.
+	 * Covers K2Node_Event / K2Node_CustomEvent entries (kind="event"),
+	 * K2Node_CallDelegate (kind="call"), K2Node_AddDelegate (kind="bind"),
+	 * K2Node_RemoveDelegate (kind="unbind").
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeReference> FindEventHandlerSites(
+		const FString& BlueprintPath, const FString& EventName);
 };
