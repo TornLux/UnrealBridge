@@ -1,18 +1,17 @@
 # Reactive Python handlers — unified event-to-script framework
 
-Status: **P1, P2, P3, P4 all done** (as of 2026-04-17). Seven adapters
-total: GameplayEvent, AttributeChanged, ActorLifecycle,
-MovementModeChanged, AnimNotify, InputAction, **Timer**. All edge paths
-verified: WorldCleanup on PIE stop, re-entrancy depth guard,
-LogUnregister, throttle, WhilePIE, ASC walker, **WhileSubjectAlive**
-(verified via global-dispatch cleanup path), **defer_to_next_tick
-stress** (50 rapid fires, all drained in FIFO order). Sticky-input's
-FTSTicker migrated to `UBridgeReactiveSubsystem::RegisterPersistentTicker`.
-`bridge-reactive.md` reference doc shipped with Timer section + two
-worked examples; `bridge-anim-api.md` + `bridge-gameplayability-api.md`
-cross-link back to it. Still build-only: AnimNotify + InputAction
-adapters (fixture-blocked — no AnimBP w/ notify or IA asset in the
-project). P5 editor adapters + P6 JSON persistence remain.
+Status: **P1–P5 all done** (as of 2026-04-17). Ten adapters: seven
+runtime (GameplayEvent, AttributeChanged, ActorLifecycle,
+MovementModeChanged, AnimNotify, InputAction, Timer) + three editor
+(AssetEvent, PieEvent, BpCompiled). Editor-scope handlers get
+`ed_<seq>_<rand4>` ids and filter via `register_editor_*` entry points.
+All edge paths verified including `WhileSubjectAlive` (via
+global-dispatch cleanup) and `defer_to_next_tick` stress (50-fire FIFO).
+`bridge-reactive.md` reference doc covers every trigger with worked
+examples; `bridge-anim-api.md` + `bridge-gameplayability-api.md`
+cross-link back. Still build-only at runtime: AnimNotify + InputAction
+(fixture-blocked — no AnimBP w/ notify or IA asset in the project).
+P6 JSON persistence remains.
 
 Let an agent register Python scripts that fire when UE events occur
 (GameplayEvent, AnimNotify, MovementMode change, attribute crossed
@@ -324,7 +323,7 @@ unreal.UnrealBridgeReactiveLibrary.describe_trigger_context(trigger_name) -> Dic
 | **P2** | ✅ done | `FGameplayEventAdapter` + `register_runtime_gameplay_event` + unregister/list/get/stats/pause/resume/clear_all + `defer_to_next_tick`, `describe_trigger_context`. Added `EnsureAbilitySystemComponent` + `SendGameplayEventByName` test helpers to GameplayAbilityLibrary. ASC walker now traverses Pawn→PlayerState→Controller→PC.PlayerState. | 15 assertions green: register→list→fire(3x)→stats→pause→resume→Once auto-unregister→unregister. **ASC walker path not yet exercised** (test used direct `FindComponentByClass`). |
 | **P3** | ✅ done | Adapters: `AttributeChanged`, `ActorLifecycle` (Destroyed+EndPlay), `MovementModeChanged`, `AnimNotify`, `InputAction`. All 5 `register_runtime_*` entry points. `AdapterPayload` field added to `FBridgeHandlerRecord` so InputAction can pass UInputAction path without a fragile side-channel. Listener UClasses (`UBridgeMovementModeListener`, `UBridgeAnimNotifyListener`, `UBridgeActorLifecycleListener`, `UBridgeInputActionListener`) for the 4 dynamic-delegate triggers. | ActorLifecycle (Destroyed + EndPlay-Once), MovementModeChanged runtime-verified on player pawn (Walking→Flying→Falling→Walking, 3 fires). describe_trigger_context returns proper specs for all 6 triggers. list_all_handlers filter_trigger works. **AttributeChanged/AnimNotify/InputAction runtime-untested** (need UAttributeSet / AnimBP / possessed pawn fixtures). |
 | **P4** | ✅ done | `defer_to_next_tick` 50-fire stress (FIFO preserved), `WhileSubjectAlive` cleanup verified via null-subject dispatch path, re-entrancy depth guard capped at 16, LogUnregister + throttle already verified 2026-04-16, `bridge-reactive.md` shipped with Timer / GameplayEvent / cross-handler examples, bridge-anim-api.md + bridge-gameplayability-api.md cross-link back. | Agent can read `bridge-reactive.md` cold and register a working handler in one exec. ✓ |
-| **P5** | pending | 2–3 editor adapters (asset event, PIE state, BP compiled). Editor-scope `register_editor_*` entry points. | Editor-only: rename an asset, watch a registered handler fire. |
+| **P5** | ✅ done | 3 editor adapters (`AssetEvent` refcount + 4 AR delegates; `PieState` refcount + 8 FEditorDelegates; `BpCompiled` per-subject `UBlueprint::OnCompiled()` + global `GEditor->OnBlueprintCompiled()`). 3 `register_editor_*` entry points in `UnrealBridgeReactiveLibrary` with scope='editor' so HandlerIds prefix `ed_`. | Renamed material captured with correct old/new path + class. PIE start+stop produces 5 phases in correct order (PreBegin→Begin→PostStarted, then PrePIE→End). BP compile fires both per-subject (with payload) and global (empty payload). ✓ |
 | P6 (optional) | partial | B1 ✅ tag wildcard matching (2026-04-17, `MatchesWildcard` in `ListAllHandlers`). B2 ✅ global GameplayEvent listener (2026-04-17, `target_actor_name=""` registers handler with `Subject=null`; adapter snapshots live PIE-world ASCs + watches `OnActorSpawned` with 1-tick deferred re-resolve for PlayerState ASCs). B3 (JSON persistence) still pending. | B1+B2: 8 wildcard cases pass; 4 fires recorded with correct `source_asc` paths; per-subject regression handler still fires once (no double-fire). |
 
 ## Untested paths (carried forward from P1–P3)
@@ -352,7 +351,16 @@ Flagged so a future session can close the gap:
 - ✅ Sticky-input ticker not migrated for now.
 - ✅ Cross-handler shared state via `bridge_state`; per-handler private state via `state`. Both injected to preamble.
 
-## P5 implementation strategy (drafted 2026-04-17)
+## P5 implementation strategy (shipped 2026-04-17)
+
+> **Status: ✅ done.** Three adapters implemented as designed below,
+> three `RegisterEditor*` library entry points, smoke-tested end-to-end.
+> Notable deviation from the sketch: `BpCompiled` global mode has to
+> tolerate a **no-payload** broadcast (`GEditor->OnBlueprintCompiled()`
+> is param-less) — ctx reports `blueprint_path=''` + `parent_class=''`
+> for global fires. Per-subject mode via `UBlueprint::OnCompiled()`
+> retains the full payload.
+
 
 Three new adapters; all three trigger sources are non-dynamic
 multicasts, so **no listener UClasses needed** — adapters can bind

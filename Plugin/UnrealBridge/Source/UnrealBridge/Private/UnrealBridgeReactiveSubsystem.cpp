@@ -21,6 +21,9 @@ namespace BridgeReactiveAdapters
 	TUniquePtr<IBridgeReactiveAdapter> MakeAnimNotifyAdapter();
 	TUniquePtr<IBridgeReactiveAdapter> MakeInputActionAdapter();
 	TUniquePtr<IBridgeReactiveAdapter> MakeTimerAdapter();
+	TUniquePtr<IBridgeReactiveAdapter> MakeAssetEventAdapter();
+	TUniquePtr<IBridgeReactiveAdapter> MakePieStateAdapter();
+	TUniquePtr<IBridgeReactiveAdapter> MakeBpCompiledAdapter();
 }
 
 namespace BridgeReactiveImpl
@@ -201,6 +204,10 @@ void UBridgeReactiveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	RegisterAdapter(BridgeReactiveAdapters::MakeAnimNotifyAdapter());
 	RegisterAdapter(BridgeReactiveAdapters::MakeInputActionAdapter());
 	RegisterAdapter(BridgeReactiveAdapters::MakeTimerAdapter());
+	// Editor-scope adapters (P5).
+	RegisterAdapter(BridgeReactiveAdapters::MakeAssetEventAdapter());
+	RegisterAdapter(BridgeReactiveAdapters::MakePieStateAdapter());
+	RegisterAdapter(BridgeReactiveAdapters::MakeBpCompiledAdapter());
 
 	UE_LOG(LogUnrealBridgeReactive, Log,
 		TEXT("UBridgeReactiveSubsystem initialized (%d adapter(s))."), Adapters.Num());

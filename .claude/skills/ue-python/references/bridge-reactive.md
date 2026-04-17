@@ -303,6 +303,100 @@ hid = unreal.UnrealBridgeReactiveLibrary.register_runtime_input_action(
 
 ---
 
+## Editor-domain triggers (P5)
+
+These fire on editor-only events — asset changes, PIE state transitions, Blueprint compiles — and return handler ids prefixed `ed_<seq>_<rand4>`. Use `register_editor_*` (not `register_runtime_*`). Filtering works the same way the runtime surface does.
+
+### register_editor_asset_event
+
+Fire when the AssetRegistry reports a lifecycle event.
+
+```python
+hid = unreal.UnrealBridgeReactiveLibrary.register_editor_asset_event(
+    task_name="material_rename_tracker",
+    description="Log every material rename so downstream references can be updated",
+    event_filter="Renamed",            # "", "Added", "Removed", "Renamed", "Updated"
+    script="""
+        if ctx['asset_class'] != 'Material':
+            return
+        log(f"material {ctx['old_path']} → {ctx['asset_path']}")
+        bridge_state.setdefault('renames', []).append(
+            (ctx['old_path'], ctx['asset_path']))
+    """,
+    script_path="", tags=["pipeline"],
+    lifetime="Permanent", error_policy="LogContinue", throttle_ms=0,
+)
+```
+
+**ctx keys:** `trigger` ('asset_event'), `event` ('Added' | 'Removed' | 'Renamed' | 'Updated'), `asset_path` (object path like `/Game/Foo/Bar.Bar`), `asset_class` (short class name), `package_name`, `old_path` (empty unless `event=='Renamed'`).
+
+**Subject is always null** (global). Per-asset filtering is done inside the script via `ctx['asset_class']` / `ctx['package_name']`.
+
+**Startup scan caveat:** during editor boot AssetRegistry fires `OnAssetAdded` for every asset in the project. Agent sessions start long after this scan completes, so v1 doesn't gate. If you register during startup, expect a flood of Added events and either ignore them or gate on `unreal.AssetRegistryHelpers.get_asset_registry().is_loading_assets() == False`.
+
+### register_editor_pie_event
+
+Fire on Play-in-Editor phase transitions.
+
+```python
+hid = unreal.UnrealBridgeReactiveLibrary.register_editor_pie_event(
+    task_name="pie_begin_probe",
+    description="Spawn debug observers every time PIE starts",
+    phase_filter="BeginPIE",           # "" for any phase
+    script="""
+        log(f"PIE begin (simulating={ctx['is_simulating']}) — spawn observers")
+        # ... spawn your observers here ...
+    """,
+    script_path="", tags=["debug"],
+    lifetime="Permanent", error_policy="LogContinue", throttle_ms=0,
+)
+```
+
+**Phases** (use one of these in `phase_filter` or pass `""` for all): `PreBeginPIE` → `BeginPIE` → `PostPIEStarted` → … → `PrePIEEnded` → `EndPIE`. `PausePIE` / `ResumePIE` / `SingleStepPIE` also fire when applicable.
+
+**ctx keys:** `trigger` ('pie_event'), `phase` (one of the names above), `is_simulating` (bool — True for Simulate-in-Editor, False for normal Play).
+
+**Subject is always null.** Selector is the phase name — the adapter filters per handler automatically.
+
+⚠️ **Ordering gotcha with WhilePIE lifetime.** The subsystem's core EndPIE hook purges `WhilePIE` handlers BEFORE this adapter fires its `EndPIE` dispatch. So a handler registered with `phase_filter="EndPIE"` + `lifetime="WhilePIE"` gets removed before its own event fires. If you need to observe EndPIE, use `lifetime="Permanent"` — or register for `PrePIEEnded`, which fires before the purge.
+
+### register_editor_bp_compiled
+
+Fire when a Blueprint is compiled.
+
+```python
+# Mode A: per-blueprint — binds to a specific UBlueprint's OnCompiled()
+hid = unreal.UnrealBridgeReactiveLibrary.register_editor_bp_compiled(
+    task_name="enemy_bp_recompile",
+    description="Re-validate enemy BP references after every compile",
+    blueprint_path_filter="/Game/AI/BP_Enemy",
+    script="""
+        log(f"compiled {ctx['blueprint_path']} (parent={ctx['parent_class']})")
+        # revalidate downstream data-assets that reference this BP
+    """,
+    script_path="", tags=["pipeline"],
+    lifetime="Permanent", error_policy="LogContinue", throttle_ms=0,
+)
+
+# Mode B: global — hooks GEditor->OnBlueprintCompiled() for any BP compile
+hid_any = unreal.UnrealBridgeReactiveLibrary.register_editor_bp_compiled(
+    task_name="bp_compile_counter",
+    description="Count total compiles across the session",
+    blueprint_path_filter="",          # empty → global
+    script="bridge_state['n_compiles'] = bridge_state.get('n_compiles', 0) + 1",
+    script_path="", tags=["telemetry"],
+    lifetime="Permanent", error_policy="LogContinue", throttle_ms=0,
+)
+```
+
+**ctx keys:** `trigger` ('bp_compiled'), `blueprint_path` (object path like `/Game/Foo/BP_Bar.BP_Bar`; **empty** for global-mode fires), `parent_class` (short class name; **empty** for global-mode fires).
+
+**Mode difference.** Per-subject mode binds `UBlueprint::OnCompiled()`, which carries the compiled `UBlueprint*` — so ctx gets the full path + parent class. Global mode binds `GEditor->OnBlueprintCompiled()`, which is a no-param broadcast — ctx has `blueprint_path=''` / `parent_class=''`. If you need per-BP payload for multiple BPs, register one per-subject handler per target rather than one global one.
+
+**Selector is always NAME_None** — no sub-events. Agents scope by Subject (path filter) or in-script checks.
+
+---
+
 ## Management
 
 ```python

@@ -186,6 +186,98 @@ public:
 		const FString& ErrorPolicy,
 		int32 ThrottleMs);
 
+	// ─── Editor-domain registration (P5) ────────────────────────
+
+	/**
+	 * Fire when the AssetRegistry reports an asset-lifecycle event.
+	 *
+	 * @param EventFilter  "" matches any of the four events; otherwise must be
+	 *                     one of "Added", "Removed", "Renamed", "Updated".
+	 *                     A bad filter string is refused (returns "").
+	 *
+	 * Subject: always null (global). Script can filter further via
+	 * ctx['asset_class'] / ctx['package_name'] — e.g. only react to Material
+	 * renames, or ignore everything outside a folder.
+	 *
+	 * Context keys: trigger ('asset_event'), event ('Added'|'Removed'|'Renamed'
+	 *   |'Updated'), asset_path, asset_class, package_name, old_path (empty
+	 *   unless event=='Renamed').
+	 *
+	 * Startup scan: during the initial discovery scan at editor startup the
+	 * AssetRegistry fires OnAssetAdded for every asset in the project. Agents
+	 * that register this handler DURING startup will see that flood — v1
+	 * doesn't gate. Register after IsLoadingAssets() returns false if that's
+	 * a problem (it usually isn't, because agent sessions start long after
+	 * the scan completes).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive")
+	static FString RegisterEditorAssetEvent(
+		const FString& TaskName,
+		const FString& Description,
+		const FString& EventFilter,
+		const FString& Script,
+		const FString& ScriptPath,
+		const TArray<FString>& Tags,
+		const FString& Lifetime,
+		const FString& ErrorPolicy,
+		int32 ThrottleMs);
+
+	/**
+	 * Fire on Play-in-Editor phase transitions.
+	 *
+	 * @param PhaseFilter  "" matches any phase; otherwise one of
+	 *                     "PreBeginPIE", "BeginPIE", "PostPIEStarted",
+	 *                     "PrePIEEnded", "EndPIE", "PausePIE", "ResumePIE",
+	 *                     "SingleStepPIE". Bad filter is refused.
+	 *
+	 * Subject: always null. Context keys: trigger ('pie_event'), phase,
+	 *   is_simulating (True for Simulate-in-Editor, False for Play).
+	 *
+	 * ⚠️ Ordering gotcha: the subsystem core EndPIE hook (which purges
+	 * WhilePIE handlers) runs BEFORE this adapter's EndPIE dispatch. So
+	 * WhilePIE-lifetime handlers listening for "EndPIE" get removed before
+	 * their own event fires. To observe EndPIE, use Permanent lifetime — or
+	 * use "PrePIEEnded" which fires before the purge.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive")
+	static FString RegisterEditorPieEvent(
+		const FString& TaskName,
+		const FString& Description,
+		const FString& PhaseFilter,
+		const FString& Script,
+		const FString& ScriptPath,
+		const TArray<FString>& Tags,
+		const FString& Lifetime,
+		const FString& ErrorPolicy,
+		int32 ThrottleMs);
+
+	/**
+	 * Fire when a Blueprint is compiled.
+	 *
+	 * @param BlueprintPathFilter  "" → global (hooks GEditor->OnBlueprintCompiled,
+	 *                             but no BP payload — ctx['blueprint_path'] is
+	 *                             empty). Otherwise an asset path like
+	 *                             "/Game/.../BP_MyActor" resolves a specific
+	 *                             UBlueprint and binds its OnCompiled() event;
+	 *                             ctx exposes blueprint_path + parent_class.
+	 *
+	 * Selector: always NAME_None (no sub-types). Agents scope per-BP by
+	 * providing a path, or listen globally with "".
+	 *
+	 * Context keys: trigger ('bp_compiled'), blueprint_path, parent_class.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive")
+	static FString RegisterEditorBpCompiled(
+		const FString& TaskName,
+		const FString& Description,
+		const FString& BlueprintPathFilter,
+		const FString& Script,
+		const FString& ScriptPath,
+		const TArray<FString>& Tags,
+		const FString& Lifetime,
+		const FString& ErrorPolicy,
+		int32 ThrottleMs);
+
 	// ─── Common management ──────────────────────────────────────
 
 	/** Remove a handler by id. Returns true when the id was known. */

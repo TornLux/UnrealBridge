@@ -584,6 +584,154 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeTimer(
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
+// ─── Editor-domain registration (P5) ─────────────────────────────
+
+namespace BridgeReactiveLibImpl
+{
+	bool ValidateAssetEventFilter(const FString& EventFilter, FName& OutSelector)
+	{
+		if (EventFilter.IsEmpty())
+		{
+			OutSelector = NAME_None;
+			return true;
+		}
+		static const TCHAR* kEvents[] = {
+			TEXT("Added"), TEXT("Removed"), TEXT("Renamed"), TEXT("Updated") };
+		for (const TCHAR* E : kEvents)
+		{
+			if (EventFilter.Equals(E, ESearchCase::IgnoreCase))
+			{
+				OutSelector = FName(E);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool ValidatePieEventFilter(const FString& PhaseFilter, FName& OutSelector)
+	{
+		if (PhaseFilter.IsEmpty())
+		{
+			OutSelector = NAME_None;
+			return true;
+		}
+		static const TCHAR* kPhases[] = {
+			TEXT("PreBeginPIE"), TEXT("BeginPIE"), TEXT("PostPIEStarted"),
+			TEXT("PrePIEEnded"), TEXT("EndPIE"),
+			TEXT("PausePIE"), TEXT("ResumePIE"), TEXT("SingleStepPIE") };
+		for (const TCHAR* P : kPhases)
+		{
+			if (PhaseFilter.Equals(P, ESearchCase::IgnoreCase))
+			{
+				OutSelector = FName(P);
+				return true;
+			}
+		}
+		return false;
+	}
+}
+
+FString UUnrealBridgeReactiveLibrary::RegisterEditorAssetEvent(
+	const FString& TaskName, const FString& Description,
+	const FString& EventFilter, const FString& Script,
+	const FString& ScriptPath, const TArray<FString>& Tags,
+	const FString& Lifetime, const FString& ErrorPolicy, int32 ThrottleMs)
+{
+	UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get();
+	if (!Sub) return FString();
+
+	FName Selector;
+	if (!BridgeReactiveLibImpl::ValidateAssetEventFilter(EventFilter, Selector))
+	{
+		UE_LOG(LogUnrealBridgeReactiveLib, Warning,
+			TEXT("RegisterEditorAssetEvent: unknown EventFilter '%s' (expected '', 'Added', 'Removed', 'Renamed', or 'Updated')"),
+			*EventFilter);
+		return FString();
+	}
+
+	FBridgeHandlerRecord Record;
+	if (!BridgeReactiveLibImpl::FillCommonRecordFields(Record, TaskName, Description,
+		Script, ScriptPath, Tags, Lifetime, ErrorPolicy, ThrottleMs,
+		TEXT("RegisterEditorAssetEvent")))
+	{
+		return FString();
+	}
+	Record.Scope = TEXT("editor");
+	Record.TriggerType = EBridgeTrigger::AssetEvent;
+	Record.Subject = TWeakObjectPtr<UObject>();   // global
+	Record.Selector = Selector;
+	return Sub->RegisterHandler(MoveTemp(Record));
+}
+
+FString UUnrealBridgeReactiveLibrary::RegisterEditorPieEvent(
+	const FString& TaskName, const FString& Description,
+	const FString& PhaseFilter, const FString& Script,
+	const FString& ScriptPath, const TArray<FString>& Tags,
+	const FString& Lifetime, const FString& ErrorPolicy, int32 ThrottleMs)
+{
+	UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get();
+	if (!Sub) return FString();
+
+	FName Selector;
+	if (!BridgeReactiveLibImpl::ValidatePieEventFilter(PhaseFilter, Selector))
+	{
+		UE_LOG(LogUnrealBridgeReactiveLib, Warning,
+			TEXT("RegisterEditorPieEvent: unknown PhaseFilter '%s' (expected '', or one of PreBeginPIE/BeginPIE/PostPIEStarted/PrePIEEnded/EndPIE/PausePIE/ResumePIE/SingleStepPIE)"),
+			*PhaseFilter);
+		return FString();
+	}
+
+	FBridgeHandlerRecord Record;
+	if (!BridgeReactiveLibImpl::FillCommonRecordFields(Record, TaskName, Description,
+		Script, ScriptPath, Tags, Lifetime, ErrorPolicy, ThrottleMs,
+		TEXT("RegisterEditorPieEvent")))
+	{
+		return FString();
+	}
+	Record.Scope = TEXT("editor");
+	Record.TriggerType = EBridgeTrigger::PieEvent;
+	Record.Subject = TWeakObjectPtr<UObject>();
+	Record.Selector = Selector;
+	return Sub->RegisterHandler(MoveTemp(Record));
+}
+
+FString UUnrealBridgeReactiveLibrary::RegisterEditorBpCompiled(
+	const FString& TaskName, const FString& Description,
+	const FString& BlueprintPathFilter, const FString& Script,
+	const FString& ScriptPath, const TArray<FString>& Tags,
+	const FString& Lifetime, const FString& ErrorPolicy, int32 ThrottleMs)
+{
+	UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get();
+	if (!Sub) return FString();
+
+	TWeakObjectPtr<UObject> Subject;   // default: explicit null → global mode
+	if (!BlueprintPathFilter.IsEmpty())
+	{
+		UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *BlueprintPathFilter);
+		if (!BP)
+		{
+			UE_LOG(LogUnrealBridgeReactiveLib, Warning,
+				TEXT("RegisterEditorBpCompiled: blueprint '%s' did not load"),
+				*BlueprintPathFilter);
+			return FString();
+		}
+		Subject = BP;
+	}
+
+	FBridgeHandlerRecord Record;
+	if (!BridgeReactiveLibImpl::FillCommonRecordFields(Record, TaskName, Description,
+		Script, ScriptPath, Tags, Lifetime, ErrorPolicy, ThrottleMs,
+		TEXT("RegisterEditorBpCompiled")))
+	{
+		return FString();
+	}
+	Record.Scope = TEXT("editor");
+	Record.TriggerType = EBridgeTrigger::BpCompiled;
+	Record.Subject = Subject;
+	Record.Selector = NAME_None;
+	return Sub->RegisterHandler(MoveTemp(Record));
+}
+
 // ────────────────────────────────────────────────────────────────
 
 bool UUnrealBridgeReactiveLibrary::Unregister(const FString& HandlerId)
