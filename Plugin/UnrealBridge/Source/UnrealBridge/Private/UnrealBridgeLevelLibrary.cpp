@@ -42,6 +42,7 @@
 #include "Animation/Skeleton.h"
 #include "Engine/SkeletalMesh.h"
 #include "PreviewScene.h"
+#include "Components/DirectionalLightComponent.h"
 #include "RenderingThread.h"
 #include "ImageCore.h"
 #include "ImageUtils.h"
@@ -1867,10 +1868,36 @@ namespace BridgeLevelImpl
 	{
 		if (!SkelComp || !Anim) return;
 		const float ClampedTime = FMath::Clamp(Time, 0.0f, Anim->GetPlayLength());
+
+		// Only create the AnimInstance once; reuse it for subsequent poses.
+		// Calling PlayAnimation in a loop creates a new AnimSingleNodeInstance
+		// each time, and the fresh instance's update counter/state may cause
+		// RefreshBoneTransforms to evaluate stale data.
+		if (!SkelComp->GetAnimInstance())
+		{
+			SkelComp->PlayAnimation(Anim, /*bLooping=*/ false);
+		}
 		SkelComp->SetPosition(ClampedTime, /*bFireNotifies=*/ false);
-		SkelComp->TickAnimation(0.0f, /*bNeedsValidRootMotion=*/ false);
+
+		++GFrameCounter;
+		// TickAnimation propagates SetPosition into the AnimInstance's
+		// evaluation state and marks it as needing a new evaluation.
+		SkelComp->TickAnimation(0.f, /*bNeedsValidRootMotion=*/ false);
 		SkelComp->RefreshBoneTransforms();
+		SkelComp->UpdateChildTransforms();
 		SkelComp->UpdateBounds();
+	}
+
+	/** Flush bone transforms to the render proxy so CaptureScene sees them. */
+	static void FlushPoseToRenderProxy(USkeletalMeshComponent* SkelComp)
+	{
+		if (!SkelComp) return;
+		SkelComp->MarkRenderDynamicDataDirty();
+		if (UWorld* World = SkelComp->GetWorld())
+		{
+			World->SendAllEndOfFrameUpdates();
+		}
+		FlushRenderingCommands();
 	}
 
 	/** Index of a pelvis-equivalent bone in the ref skeleton, or INDEX_NONE. */
@@ -1942,7 +1969,7 @@ namespace BridgeLevelImpl
 
 		UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(GetTransientPackage(),
 			MakeUniqueObjectName(GetTransientPackage(), UTextureRenderTarget2D::StaticClass(), TEXT("BridgeAnimPoseRT")));
-		RT->ClearColor = FLinearColor(0.12f, 0.12f, 0.14f, 1.0f); // soft neutral grey so the mesh silhouette reads cleanly
+		RT->ClearColor = FLinearColor(0.85f, 0.85f, 0.87f, 1.0f); // light grey background for contrast
 		RT->bAutoGenerateMips = false;
 		RT->InitCustomFormat(PixelWidth, PixelHeight, PF_B8G8R8A8, /*bForceLinearGamma=*/ false);
 		RT->UpdateResourceImmediate(true);
@@ -1950,12 +1977,9 @@ namespace BridgeLevelImpl
 		USceneCaptureComponent2D* SCC = CaptureActor->GetCaptureComponent2D();
 		SCC->ProjectionType = ECameraProjectionMode::Perspective;
 		SCC->FOVAngle = FOVDeg;
-		// Base-color capture — renders mesh albedo without lighting, yielding
-		// consistent output across views and pose times regardless of the
-		// preview scene's light placement. Much more legible for agent vision
-		// analysis than SCS_FinalColorLDR, which tends to read very dark when
-		// a skylight has no cubemap.
-		SCC->CaptureSource = ESceneCaptureSource::SCS_BaseColor;
+		// Final color with enhanced preview lighting — gives depth,
+		// specular highlights and readable silhouettes.
+		SCC->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
 		SCC->bCaptureEveryFrame = false;
 		SCC->bCaptureOnMovement = false;
 		SCC->ShowFlags.SetFog(false);
@@ -1982,6 +2006,77 @@ namespace BridgeLevelImpl
 		FixZeroAlphaWhenRgbVisible(OutPixels.GetData(), OutPixels.Num());
 		CaptureActor->Destroy();
 		return true;
+	}
+
+	// ─── Preview-asset attachment helper ──────────────────────────
+	//
+	// Skeleton assets carry a PreviewAttachedAssetContainer that tells
+	// Persona which meshes (weapons, shields, etc.) to mount on which
+	// sockets during animation preview. We replicate that here so the
+	// offline capture shows the same equipment the artist sees.
+
+	static void AttachPreviewAssets(
+		USkeletalMeshComponent* SkelComp,
+		USkeleton* Skel,
+		FPreviewScene& Scene)
+	{
+		if (!Skel || !SkelComp) return;
+
+		for (auto It = Skel->PreviewAttachedAssetContainer.CreateConstIterator(); It; ++It)
+		{
+			UObject* Asset = It->GetAttachedObject();
+			if (!Asset) continue;
+			FName SocketOrBone = It->AttachedTo;
+
+			if (UStaticMesh* SM = Cast<UStaticMesh>(Asset))
+			{
+				UStaticMeshComponent* Comp = NewObject<UStaticMeshComponent>(
+					GetTransientPackage(), UStaticMeshComponent::StaticClass());
+				Comp->SetStaticMesh(SM);
+				Scene.AddComponent(Comp, FTransform::Identity);
+				Comp->AttachToComponent(SkelComp,
+					FAttachmentTransformRules::SnapToTargetIncludingScale, SocketOrBone);
+			}
+			else if (USkeletalMesh* AttachMesh = Cast<USkeletalMesh>(Asset))
+			{
+				USkeletalMeshComponent* Comp = NewObject<USkeletalMeshComponent>(
+					GetTransientPackage(), USkeletalMeshComponent::StaticClass());
+				Comp->SetSkeletalMesh(AttachMesh);
+				Scene.AddComponent(Comp, FTransform::Identity);
+				Comp->AttachToComponent(SkelComp,
+					FAttachmentTransformRules::SnapToTargetIncludingScale, SocketOrBone);
+			}
+		}
+	}
+
+	// ─── Lighting enhancement helper ─────────────────────────────
+	//
+	// FPreviewScene's default lighting is a single weak directional
+	// light + skylight without cubemap. We add a proper 3-point setup
+	// so SCS_FinalColorLDR produces readable, well-lit captures.
+
+	static void EnhancePreviewLighting(FPreviewScene& Scene)
+	{
+		// Key light — strong top-front-right for main shading.
+		UDirectionalLightComponent* KeyLight = NewObject<UDirectionalLightComponent>(
+			GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+		KeyLight->SetIntensity(4.0f);
+		KeyLight->SetLightColor(FLinearColor(1.0f, 0.98f, 0.95f));
+		Scene.AddComponent(KeyLight, FTransform(FRotator(-45.0f, 30.0f, 0.0f)));
+
+		// Fill light — softer from opposite side to reduce harsh shadows.
+		UDirectionalLightComponent* FillLight = NewObject<UDirectionalLightComponent>(
+			GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+		FillLight->SetIntensity(1.5f);
+		FillLight->SetLightColor(FLinearColor(0.85f, 0.9f, 1.0f));
+		Scene.AddComponent(FillLight, FTransform(FRotator(-30.0f, -150.0f, 0.0f)));
+
+		// Rim/back light — subtle edge highlight for silhouette readability.
+		UDirectionalLightComponent* RimLight = NewObject<UDirectionalLightComponent>(
+			GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+		RimLight->SetIntensity(2.0f);
+		RimLight->SetLightColor(FLinearColor(0.95f, 0.95f, 1.0f));
+		Scene.AddComponent(RimLight, FTransform(FRotator(-20.0f, 180.0f, 0.0f)));
 	}
 }
 
@@ -2054,9 +2149,15 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	SkelComp->bForceRefpose = false;
 	PreviewScene.AddComponent(SkelComp, FTransform::Identity);
 
+	// 4b. Attach preview assets (weapons, etc.) from Skeleton.
+	BridgeLevelImpl::AttachPreviewAssets(SkelComp, Anim->GetSkeleton(), PreviewScene);
+
+	// 4c. Enhance lighting for proper shading.
+	BridgeLevelImpl::EnhancePreviewLighting(PreviewScene);
+
 	// 5. Drive the pose to the requested time.
-	SkelComp->PlayAnimation(Anim, /*bLooping=*/ false);
 	BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, Time);
+	BridgeLevelImpl::FlushPoseToRenderProxy(SkelComp);
 
 	// 6. Framing anchored on pelvis (or bone AABB fallback).
 	constexpr float FOVDeg = 45.0f;
@@ -2083,7 +2184,7 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	// Fill with the same neutral grey as per-view clear so unused cells match.
 	for (int32 i = 0; i < CompW * CompH; ++i)
 	{
-		CompDst[i] = FColor(31, 31, 36, 255);
+		CompDst[i] = FColor(217, 217, 222, 255);
 	}
 
 	// 8. Render each view + copy into its grid cell (flipping rows on the way).
@@ -2112,9 +2213,7 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 		const int32 Row = ViewIdx / GridCols;
 		const int32 DstX = Col * CellWidth;
 		const int32 DstY = Row * CellHeight;
-		// SCS_BaseColor readback in a FPreviewScene already arrives top-down —
-		// unlike SCS_FinalColorLDR in the game world where it's bottom-up and
-		// we'd need to flip rows. Straight memcpy here.
+		// Readback in FPreviewScene arrives top-down — straight memcpy.
 		for (int32 Y = 0; Y < CellHeight; ++Y)
 		{
 			FMemory::Memcpy(
@@ -2193,7 +2292,12 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 	SkelComp->SetUpdateAnimationInEditor(true);
 	SkelComp->bForceRefpose = false;
 	PreviewScene.AddComponent(SkelComp, FTransform::Identity);
-	SkelComp->PlayAnimation(Anim, /*bLooping=*/ false);
+
+	// 2b. Attach preview assets (weapons, etc.) from Skeleton.
+	BridgeLevelImpl::AttachPreviewAssets(SkelComp, Anim->GetSkeleton(), PreviewScene);
+
+	// 2c. Enhance lighting for proper shading.
+	BridgeLevelImpl::EnhancePreviewLighting(PreviewScene);
 
 	// 3. Generate time samples across [0, PlayLength].
 	const int32 N = FMath::Max(1, NumTimeSamples);
@@ -2277,13 +2381,15 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 	FColor* CompDst = reinterpret_cast<FColor*>(Composite.RawData.GetData());
 	for (int32 i = 0; i < CompW * CompH; ++i)
 	{
-		CompDst[i] = FColor(31, 31, 36, 255);
+		CompDst[i] = FColor(217, 217, 222, 255);
 	}
 
 	// 7. For each row (time), set pose + capture each view.
 	for (int32 Row = 0; Row < N; ++Row)
 	{
 		BridgeLevelImpl::ApplyPoseAtTime(SkelComp, Anim, SampleTimes[Row]);
+		BridgeLevelImpl::FlushPoseToRenderProxy(SkelComp);
+
 		for (int32 Col = 0; Col < NumViews; ++Col)
 		{
 			if (!ViewOk[Col]) continue;
