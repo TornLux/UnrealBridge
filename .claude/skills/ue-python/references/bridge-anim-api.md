@@ -2,6 +2,15 @@
 
 Module: `unreal.UnrealBridgeAnimLibrary`
 
+> **Reactive framework:** this library *inspects* animations statically.
+> To run a Python script **when** an `AnimNotify` plays or a montage
+> section triggers during PIE, use
+> `UnrealBridgeReactiveLibrary.register_runtime_anim_notify` — see
+> `bridge-reactive.md` for the full registration shape. Pair
+> `get_anim_sequence_info(...)` / `get_montage_info(...)` here with
+> reactive registration to discover notify names first, then bind
+> handlers to the ones you care about.
+
 ## State Machine Info
 
 ### get_anim_graph_info(anim_blueprint_path) -> list[FBridgeStateMachineInfo]
@@ -126,6 +135,11 @@ for c in curves:
 
 Get animation sequence details: length, frames, notifies, curves, root motion.
 
+> **Pairs with reactive:** the `notifies` list here surfaces every
+> `notify_name` on the sequence. Feed those names straight into
+> `register_runtime_anim_notify(notify_name=...)` from `bridge-reactive.md`
+> to run Python when a notify plays during PIE.
+
 ```python
 info = unreal.UnrealBridgeAnimLibrary.get_anim_sequence_info('/Game/Anim/Run_Fwd')
 print(f'{info.name}: {info.play_length}s, {info.num_frames} frames, rate={info.rate_scale}')
@@ -157,6 +171,12 @@ for c in info.curves:
 ### get_montage_info(montage_path) -> FBridgeMontageInfo
 
 Get montage details: sections, slot, blend settings, notifies.
+
+> **Pairs with reactive:** the returned `notifies` list enumerates
+> montage notifies at their trigger times. Same registration pattern as
+> `get_anim_sequence_info` — bind each interesting `notify_name` via
+> `register_runtime_anim_notify` in `bridge-reactive.md` to react to
+> frame-perfect events (impact, SFX cue, combo window).
 
 ```python
 info = unreal.UnrealBridgeAnimLibrary.get_montage_info('/Game/Anim/AM_Attack')
