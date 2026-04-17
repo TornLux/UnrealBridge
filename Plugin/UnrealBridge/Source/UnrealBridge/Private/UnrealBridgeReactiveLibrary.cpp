@@ -6,6 +6,7 @@
 #include "Components/SkeletalMeshComponent.h"
 #include "Editor.h"
 #include "EnhancedInputComponent.h"
+#include "Engine/Blueprint.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Actor.h"
@@ -242,6 +243,9 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeGameplayEvent(
 	Record.ErrorPolicy = ParsedPolicy;
 	Record.ThrottleMs = FMath::Max(0, ThrottleMs);
 
+	Record.RegistrationContext.Add(TEXT("target_actor_name"), TargetActorName);
+	Record.RegistrationContext.Add(TEXT("event_tag"),         EventTag);
+
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -353,6 +357,8 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeAttributeChanged(
 	Record.TriggerType = EBridgeTrigger::AttributeChanged;
 	Record.Subject = TWeakObjectPtr<UObject>(ASC);
 	Record.Selector = FName(*AttributeName);
+	Record.RegistrationContext.Add(TEXT("target_actor_name"), TargetActorName);
+	Record.RegistrationContext.Add(TEXT("attribute_name"),    AttributeName);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -394,6 +400,8 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeActorLifecycle(
 	Record.Subject = TWeakObjectPtr<UObject>(Actor);
 	Record.Selector = FName(EventType.Equals(TEXT("Destroyed"), ESearchCase::IgnoreCase)
 		? TEXT("Destroyed") : TEXT("EndPlay"));
+	Record.RegistrationContext.Add(TEXT("target_actor_name"), TargetActorName);
+	Record.RegistrationContext.Add(TEXT("event_type"),        EventType);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -433,6 +441,7 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeMovementModeChanged(
 	Record.TriggerType = EBridgeTrigger::MovementModeChanged;
 	Record.Subject = TWeakObjectPtr<UObject>(Char);
 	Record.Selector = NAME_None;
+	Record.RegistrationContext.Add(TEXT("target_actor_name"), TargetActorName);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -488,6 +497,8 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeAnimNotify(
 	Record.TriggerType = EBridgeTrigger::AnimNotify;
 	Record.Subject = TWeakObjectPtr<UObject>(AI);
 	Record.Selector = FName(*NotifyName);
+	Record.RegistrationContext.Add(TEXT("target_actor_name"), TargetActorName);
+	Record.RegistrationContext.Add(TEXT("notify_name"),       NotifyName);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -549,6 +560,9 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeInputAction(
 	Record.Subject = TWeakObjectPtr<UObject>(Comp);
 	Record.Selector = FName(*FString::Printf(TEXT("%s:%s"), *IA->GetName(), *TriggerEvent));
 	Record.AdapterPayload = InputActionPath;
+	Record.RegistrationContext.Add(TEXT("target_actor_name"),  TargetActorName);
+	Record.RegistrationContext.Add(TEXT("input_action_path"),  InputActionPath);
+	Record.RegistrationContext.Add(TEXT("trigger_event"),      TriggerEvent);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -581,6 +595,8 @@ FString UUnrealBridgeReactiveLibrary::RegisterRuntimeTimer(
 	Record.Subject = TWeakObjectPtr<UObject>();   // global — no subject
 	Record.Selector = NAME_None;
 	Record.AdapterPayload = FString::SanitizeFloat(IntervalSeconds);
+	Record.RegistrationContext.Add(TEXT("interval_seconds"),
+		FString::SanitizeFloat(IntervalSeconds));
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -660,6 +676,7 @@ FString UUnrealBridgeReactiveLibrary::RegisterEditorAssetEvent(
 	Record.TriggerType = EBridgeTrigger::AssetEvent;
 	Record.Subject = TWeakObjectPtr<UObject>();   // global
 	Record.Selector = Selector;
+	Record.RegistrationContext.Add(TEXT("event_filter"), EventFilter);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -692,6 +709,7 @@ FString UUnrealBridgeReactiveLibrary::RegisterEditorPieEvent(
 	Record.TriggerType = EBridgeTrigger::PieEvent;
 	Record.Subject = TWeakObjectPtr<UObject>();
 	Record.Selector = Selector;
+	Record.RegistrationContext.Add(TEXT("phase_filter"), PhaseFilter);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -729,6 +747,7 @@ FString UUnrealBridgeReactiveLibrary::RegisterEditorBpCompiled(
 	Record.TriggerType = EBridgeTrigger::BpCompiled;
 	Record.Subject = Subject;
 	Record.Selector = NAME_None;
+	Record.RegistrationContext.Add(TEXT("blueprint_path_filter"), BlueprintPathFilter);
 	return Sub->RegisterHandler(MoveTemp(Record));
 }
 
@@ -803,4 +822,184 @@ TMap<FString, FString> UUnrealBridgeReactiveLibrary::DescribeTriggerContext(cons
 		return Sub->DescribeTriggerContext(TriggerType);
 	}
 	return TMap<FString, FString>();
+}
+
+// ─── Persistence (P6.B3) ─────────────────────────────────────────
+
+bool UUnrealBridgeReactiveLibrary::SaveAllHandlers()
+{
+	UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get();
+	return Sub ? Sub->SaveAllHandlers() : false;
+}
+
+int32 UUnrealBridgeReactiveLibrary::LoadAllHandlers()
+{
+	UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get();
+	return Sub ? Sub->LoadAllHandlers() : 0;
+}
+
+FString UUnrealBridgeReactiveLibrary::GetPersistencePath()
+{
+	return UBridgeReactiveSubsystem::GetPersistencePath();
+}
+
+int32 UUnrealBridgeReactiveLibrary::GetDeferredHandlerCount()
+{
+	UBridgeReactiveSubsystem* Sub = UBridgeReactiveSubsystem::Get();
+	return Sub ? Sub->GetDeferredHandlerCount() : 0;
+}
+
+bool UUnrealBridgeReactiveLibrary::ResolveForRestore(FBridgeHandlerRecord& Record)
+{
+	// Returns false when subject resolution fails in a way the caller should
+	// defer (e.g. PIE-tied actor not yet spawned). Returns false permanently
+	// for bad data (missing required params) — caller treats that same as a
+	// deferred resolution attempt; a subsequent save will prune it.
+
+	using namespace BridgeReactiveLibImpl;
+	const TMap<FString, FString>& Ctx = Record.RegistrationContext;
+
+	auto GetOrEmpty = [&Ctx](const TCHAR* Key) -> FString
+	{
+		if (const FString* V = Ctx.Find(Key)) return *V;
+		return FString();
+	};
+
+	switch (Record.TriggerType)
+	{
+	case EBridgeTrigger::GameplayEvent:
+	{
+		const FString Target = GetOrEmpty(TEXT("target_actor_name"));
+		const FString Tag    = GetOrEmpty(TEXT("event_tag"));
+		if (Tag.IsEmpty()) return false;
+		Record.Selector = FName(*Tag);
+		if (Target.IsEmpty())
+		{
+			// Global — no subject needed.
+			Record.Subject = TWeakObjectPtr<UObject>();
+			Record.AdapterPayload = TEXT("global");
+			return true;
+		}
+		AActor* Actor = FindActorByName(Target);
+		if (!Actor) return false;
+		UAbilitySystemComponent* ASC = ResolveActorASC(Actor);
+		if (!ASC) return false;
+		Record.Subject = TWeakObjectPtr<UObject>(ASC);
+		Record.AdapterPayload = FString();
+		return true;
+	}
+	case EBridgeTrigger::AttributeChanged:
+	{
+		const FString Target = GetOrEmpty(TEXT("target_actor_name"));
+		const FString Attr   = GetOrEmpty(TEXT("attribute_name"));
+		if (Target.IsEmpty() || Attr.IsEmpty()) return false;
+		AActor* Actor = FindActorByName(Target);
+		if (!Actor) return false;
+		UAbilitySystemComponent* ASC = ResolveActorASC(Actor);
+		if (!ASC) return false;
+		Record.Subject = TWeakObjectPtr<UObject>(ASC);
+		Record.Selector = FName(*Attr);
+		return true;
+	}
+	case EBridgeTrigger::ActorLifecycle:
+	{
+		const FString Target = GetOrEmpty(TEXT("target_actor_name"));
+		const FString Event  = GetOrEmpty(TEXT("event_type"));
+		if (Target.IsEmpty() || Event.IsEmpty()) return false;
+		AActor* Actor = FindActorByName(Target);
+		if (!Actor) return false;
+		Record.Subject = TWeakObjectPtr<UObject>(Actor);
+		Record.Selector = FName(Event.Equals(TEXT("Destroyed"), ESearchCase::IgnoreCase)
+			? TEXT("Destroyed") : TEXT("EndPlay"));
+		return true;
+	}
+	case EBridgeTrigger::MovementModeChanged:
+	{
+		const FString Target = GetOrEmpty(TEXT("target_actor_name"));
+		if (Target.IsEmpty()) return false;
+		AActor* Actor = FindActorByName(Target);
+		if (!Actor) return false;
+		ACharacter* Char = Cast<ACharacter>(Actor);
+		if (!Char) return false;
+		Record.Subject = TWeakObjectPtr<UObject>(Char);
+		Record.Selector = NAME_None;
+		return true;
+	}
+	case EBridgeTrigger::AnimNotify:
+	{
+		const FString Target = GetOrEmpty(TEXT("target_actor_name"));
+		const FString Notify = GetOrEmpty(TEXT("notify_name"));
+		if (Target.IsEmpty() || Notify.IsEmpty()) return false;
+		AActor* Actor = FindActorByName(Target);
+		if (!Actor) return false;
+		USkeletalMeshComponent* Mesh = Actor->FindComponentByClass<USkeletalMeshComponent>();
+		if (!Mesh) return false;
+		UAnimInstance* AI = Mesh->GetAnimInstance();
+		if (!AI) return false;
+		Record.Subject = TWeakObjectPtr<UObject>(AI);
+		Record.Selector = FName(*Notify);
+		return true;
+	}
+	case EBridgeTrigger::InputAction:
+	{
+		const FString Target   = GetOrEmpty(TEXT("target_actor_name"));
+		const FString IAPath   = GetOrEmpty(TEXT("input_action_path"));
+		const FString Trigger  = GetOrEmpty(TEXT("trigger_event"));
+		if (Target.IsEmpty() || IAPath.IsEmpty() || Trigger.IsEmpty()) return false;
+		AActor* Actor = FindActorByName(Target);
+		if (!Actor) return false;
+		UEnhancedInputComponent* Comp = ResolveInputComponent(Actor);
+		if (!Comp) return false;
+		UInputAction* IA = Cast<UInputAction>(StaticLoadObject(
+			UInputAction::StaticClass(), nullptr, *IAPath));
+		if (!IA) return false;
+		Record.Subject = TWeakObjectPtr<UObject>(Comp);
+		Record.Selector = FName(*FString::Printf(TEXT("%s:%s"), *IA->GetName(), *Trigger));
+		Record.AdapterPayload = IAPath;
+		return true;
+	}
+	case EBridgeTrigger::Timer:
+	{
+		const FString Interval = GetOrEmpty(TEXT("interval_seconds"));
+		if (Interval.IsEmpty()) return false;
+		const double Secs = FCString::Atod(*Interval);
+		if (!(Secs > 0.0)) return false;
+		Record.Subject = TWeakObjectPtr<UObject>();
+		Record.Selector = NAME_None;
+		Record.AdapterPayload = Interval;
+		return true;
+	}
+	case EBridgeTrigger::AssetEvent:
+	{
+		const FString Filter = GetOrEmpty(TEXT("event_filter"));
+		Record.Subject = TWeakObjectPtr<UObject>();
+		Record.Selector = Filter.IsEmpty() ? NAME_None : FName(*Filter);
+		return true;
+	}
+	case EBridgeTrigger::PieEvent:
+	{
+		const FString Filter = GetOrEmpty(TEXT("phase_filter"));
+		Record.Subject = TWeakObjectPtr<UObject>();
+		Record.Selector = Filter.IsEmpty() ? NAME_None : FName(*Filter);
+		return true;
+	}
+	case EBridgeTrigger::BpCompiled:
+	{
+		const FString Path = GetOrEmpty(TEXT("blueprint_path_filter"));
+		if (Path.IsEmpty())
+		{
+			// Global mode — leave Subject explicit-null.
+			Record.Subject = TWeakObjectPtr<UObject>();
+			Record.Selector = NAME_None;
+			return true;
+		}
+		UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *Path);
+		if (!BP) return false;
+		Record.Subject = TWeakObjectPtr<UObject>(BP);
+		Record.Selector = NAME_None;
+		return true;
+	}
+	default:
+		return false;
+	}
 }

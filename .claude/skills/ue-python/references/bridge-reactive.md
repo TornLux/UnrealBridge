@@ -531,13 +531,48 @@ Note: the two handlers are independent registrations, but share `bridge_state['c
 
 ---
 
+## Persistence (P6.B3)
+
+Handlers **survive editor restarts automatically.** The subsystem auto-saves the registry to `<ProjectSaved>/UnrealBridge/reactive-handlers.json` ~100 ms after any Register/Unregister/Clear, and auto-loads on editor startup. HandlerIds are preserved so agents can stash an id in their context and `unregister(id)` / `get_handler_stats(id)` after a restart.
+
+**What persists:**
+- Task name, description, tags, script source, lifetime, error policy, throttle, `RegistrationContext` (user-provided `target_actor_name` / `event_tag` / `interval_seconds` / etc.).
+- Seq counters so new post-restart ids don't collide with old ones.
+
+**What doesn't persist:**
+- `WhilePIE` lifetime handlers (session-bound by definition).
+- Stats (`calls`, `max_microseconds`, …) — reset on load.
+- Pause state — restored handlers are unpaused.
+- Live `Subject` weak ptr (it's ephemeral). Subject gets re-resolved from `RegistrationContext` at load.
+
+**Deferred restoration.** Editor-world subjects (a `UBlueprint` path, Timer, global triggers) resolve immediately at startup. **PIE-world subjects** (`ACharacter`, `UAbilitySystemComponent`, `UAnimInstance`, the player pawn, etc.) can't resolve until PIE starts — those records go into `DeferredHandlers` and retry on `FEditorDelegates::PostPIEStarted`. Check the queue size via `get_deferred_handler_count()`; inspect entries via `list_all_handlers()` (they surface with `subject_path = "<unresolved>"` until resolved).
+
+**WorldCleanup behaviour.** When PIE stops, handlers whose Subject lived in the PIE world are moved to `DeferredHandlers` (not deleted), so they survive the session gap and re-bind on next `start_pie`. Only `WhilePIE`-lifetime handlers are fully deleted on PIE end (matching their declared semantics).
+
+```python
+# Explicit flush (e.g. right before a known-risky action):
+unreal.UnrealBridgeReactiveLibrary.save_all_handlers()
+
+# Force reload from disk (e.g. after hand-editing the JSON):
+n = unreal.UnrealBridgeReactiveLibrary.load_all_handlers()
+
+# Where does the JSON live?
+path = unreal.UnrealBridgeReactiveLibrary.get_persistence_path()
+
+# How many handlers are waiting for PIE to restore their subject?
+pending = unreal.UnrealBridgeReactiveLibrary.get_deferred_handler_count()
+```
+
+**Schema version = 1.** Files with a different version are logged-and-skipped (don't destroy user data). Corrupt JSON is logged and skipped likewise — if that happens, delete the file manually to start fresh.
+
+---
+
 ## Gotchas
 
 - **Handler scripts run on the GameThread inside UE's event dispatch.** Slow scripts hitch the frame. For heavy work (asset loads, wide queries), call `defer_to_next_tick("<your script>")` and do it next tick.
 - **`Once` / `Count:N` removal is deferred to after the current dispatch.** So `get_handler(id).summary.handler_id == ''` is the test that a Once handler already fired.
-- **Registry is wiped on editor restart.** Handlers do NOT persist across sessions. If you need session-survivable reactives, re-register on startup from a script file.
 - **Re-registration with the same `handler_id` is not supported** (the system issues ids; don't try to reuse them). Agent-level uniqueness is enforced by the server.
-- **`bridge_state` and `state` are Python dicts in the UE process** — serialise any data you want to keep beyond an editor restart.
+- **`bridge_state` and `state` are Python dicts in the UE process** — the Python module survives bridge reconnects but NOT editor restart. If you need session-survivable data outside the handler registry, write it to a file yourself.
 - **Handler depth guard.** If a handler fires a GameplayEvent that triggers another handler, nested execution is allowed up to depth 8 (warn) / 16 (abort). Recursive chains get logged as Warning / Error.
 
 ---

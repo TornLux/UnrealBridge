@@ -5,6 +5,8 @@
 #include "UnrealBridgeReactiveTypes.h"
 #include "UnrealBridgeReactiveLibrary.generated.h"
 
+struct FBridgeHandlerRecord;
+
 
 /**
  * Python-facing entry points for the reactive-handler framework. Agents
@@ -332,4 +334,43 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive")
 	static TMap<FString, FString> DescribeTriggerContext(const FString& TriggerType);
+
+	// ─── Persistence (P6.B3) ────────────────────────────────────
+	//
+	// The subsystem auto-saves ~100 ms after any Register/Unregister/Clear
+	// and auto-loads at editor startup. These entry points are for agents
+	// who want explicit control — e.g. force a flush before quitting, or
+	// reload after hand-editing the JSON on disk.
+
+	/** Force an immediate save, bypassing the 100ms debounce. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive|Persistence")
+	static bool SaveAllHandlers();
+
+	/** Reload the registry from disk, replacing current in-memory state.
+	 *  Returns the number of handlers restored (excluding deferred). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive|Persistence")
+	static int32 LoadAllHandlers();
+
+	/** Absolute path of the persistence JSON file (defaults to
+	 *  <ProjectSaved>/UnrealBridge/reactive-handlers.json). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive|Persistence")
+	static FString GetPersistencePath();
+
+	/** How many restored handlers are still waiting for their PIE-tied
+	 *  subject to resolve. Retried on PostPIEStarted. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Reactive|Persistence")
+	static int32 GetDeferredHandlerCount();
+
+	// ─── Restore resolver (internal; invoked by the subsystem) ──────
+	//
+	// NOT a UFUNCTION — called from the persistence layer to rebuild
+	// Subject / Selector / AdapterPayload on a restored record from its
+	// RegistrationContext. Subject resolution may fail (PIE not running
+	// yet) — returning false pushes the record onto DeferredHandlers
+	// for a PostPIEStarted retry.
+
+	/** Populate Record.Subject / Selector / AdapterPayload from
+	 *  Record.RegistrationContext. Returns false when the subject can't
+	 *  be resolved right now (caller should defer). */
+	static bool ResolveForRestore(FBridgeHandlerRecord& Record);
 };

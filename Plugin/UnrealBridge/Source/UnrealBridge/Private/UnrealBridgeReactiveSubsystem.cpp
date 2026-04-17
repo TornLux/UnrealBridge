@@ -1,5 +1,6 @@
 #include "UnrealBridgeReactiveSubsystem.h"
 #include "UnrealBridgeReactiveAdapter.h"
+#include "UnrealBridgeReactiveLibrary.h"
 #include "IPythonScriptPlugin.h"
 #include "PythonScriptTypes.h"
 #include "Editor.h"
@@ -7,7 +8,15 @@
 #include "Engine/World.h"
 #include "Misc/DateTime.h"
 #include "Misc/Guid.h"
+#include "Misc/Paths.h"
+#include "Misc/FileHelper.h"
 #include "HAL/PlatformTime.h"
+#include "HAL/PlatformFileManager.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridgeReactive, Log, All);
 
@@ -176,6 +185,24 @@ void UBridgeReactiveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 	PieEndedHandle = FEditorDelegates::EndPIE.AddUObject(
 		this, &UBridgeReactiveSubsystem::HandlePieEnded);
 
+	// PIE start: retry any DeferredHandlers whose Subject needs a live PIE world.
+	PostPIEStartedHandle = FEditorDelegates::PostPIEStarted.AddUObject(
+		this, &UBridgeReactiveSubsystem::HandlePostPIEStarted);
+
+	// Persistence debounce ticker: saves ~100 ms after the last mutation.
+	PersistenceDebounceHandle = FTSTicker::GetCoreTicker().AddTicker(
+		TEXT("UnrealBridgeReactive.PersistenceDebounce"),
+		0.1f,
+		[this](float /*Dt*/) -> bool
+		{
+			if (bPersistenceDirty)
+			{
+				bPersistenceDirty = false;
+				SaveAllHandlers();
+			}
+			return true;
+		});
+
 	// Deferred-exec ticker drains any snippets queued via DeferToNextTick.
 	DeferTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 		TEXT("UnrealBridgeReactive.DeferTicker"),
@@ -211,13 +238,27 @@ void UBridgeReactiveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 
 	UE_LOG(LogUnrealBridgeReactive, Log,
 		TEXT("UBridgeReactiveSubsystem initialized (%d adapter(s))."), Adapters.Num());
+
+	// Load persisted handlers AFTER adapters register so re-register's
+	// OnHandlerAdded call lands on a live adapter. PIE-tied subjects that
+	// don't resolve yet are parked in DeferredHandlers.
+	LoadAllHandlers();
 }
 
 void UBridgeReactiveSubsystem::Deinitialize()
 {
+	// Flush any pending save so we don't lose the last mutation on quit.
+	if (bPersistenceDirty)
+	{
+		bPersistenceDirty = false;
+		SaveAllHandlers();
+	}
+
 	FWorldDelegates::OnWorldCleanup.Remove(WorldCleanupHandle);
 	FEditorDelegates::EndPIE.Remove(PieEndedHandle);
+	FEditorDelegates::PostPIEStarted.Remove(PostPIEStartedHandle);
 	FTSTicker::GetCoreTicker().RemoveTicker(DeferTickerHandle);
+	FTSTicker::GetCoreTicker().RemoveTicker(PersistenceDebounceHandle);
 
 	// Unregister all persistent tickers (sticky-input, Timer adapter's multiplexer, …).
 	for (FTSTicker::FDelegateHandle& H : PersistentTickers)
@@ -346,6 +387,7 @@ FString UBridgeReactiveSubsystem::RegisterHandler(FBridgeHandlerRecord&& Record)
 		TEXT("registered handler %s '%s' (%s)"),
 		*Id, *Shared->TaskName,
 		*BridgeReactiveImpl::BuildSummaryTrigger(Shared->TriggerType, Shared->Selector));
+	MarkDirty();
 	return Id;
 }
 
@@ -363,6 +405,7 @@ bool UBridgeReactiveSubsystem::UnregisterHandler(const FString& HandlerId)
 	}
 	Handlers.Remove(HandlerId);
 	UE_LOG(LogUnrealBridgeReactive, Log, TEXT("unregistered handler %s"), *HandlerId);
+	MarkDirty();
 	return true;
 }
 
@@ -870,30 +913,57 @@ void UBridgeReactiveSubsystem::HandleWorldCleanup(UWorld* World, bool /*bSession
 	{
 		return;
 	}
-	TArray<FString> ToRemove;
+	TArray<FString> ToDelete;     // WhilePIE: purge entirely (user declared ephemeral)
+	TArray<FString> ToDefer;      // Others: move to DeferredHandlers so they survive the session gap
 	for (const auto& Pair : Handlers)
 	{
 		const FBridgeHandlerRecord& R = *Pair.Value;
 		UObject* Subj = R.Subject.Get();
-		if (!Subj)
+		if (!Subj) continue;
+		if (Subj->GetWorld() != World) continue;
+		if (R.Lifetime == EBridgeHandlerLifetime::WhilePIE)
 		{
-			continue;
+			ToDelete.Add(Pair.Key);
 		}
-		if (Subj->GetWorld() == World)
+		else
 		{
-			ToRemove.Add(Pair.Key);
+			ToDefer.Add(Pair.Key);
 		}
 	}
-	for (const FString& Id : ToRemove)
+	for (const FString& Id : ToDelete)
 	{
 		UnregisterHandler(Id);
 	}
-	if (ToRemove.Num() > 0)
+	for (const FString& Id : ToDefer)
+	{
+		MoveHandlerToDeferred(Id);
+	}
+	if (ToDelete.Num() > 0 || ToDefer.Num() > 0)
 	{
 		UE_LOG(LogUnrealBridgeReactive, Log,
-			TEXT("world cleanup: removed %d handler(s) tied to %s"),
-			ToRemove.Num(), *World->GetName());
+			TEXT("world cleanup on %s: deleted %d ephemeral, deferred %d for next session"),
+			*World->GetName(), ToDelete.Num(), ToDefer.Num());
 	}
+}
+
+void UBridgeReactiveSubsystem::MoveHandlerToDeferred(const FString& HandlerId)
+{
+	TSharedRef<FBridgeHandlerRecord>* Found = Handlers.Find(HandlerId);
+	if (!Found) return;
+	TSharedRef<FBridgeHandlerRecord> Ref = *Found;
+	if (IBridgeReactiveAdapter* Adapter = FindAdapter(Ref->TriggerType))
+	{
+		Adapter->OnHandlerRemoved(*Ref);
+	}
+	// Copy the record for the deferred queue. Stale Subject weak ptr is cleared
+	// so ResolveForRestore rebinds fresh from RegistrationContext.
+	FBridgeHandlerRecord Copy = *Ref;
+	Copy.Subject.Reset();
+	DeferredHandlers.Add(MoveTemp(Copy));
+	Handlers.Remove(HandlerId);
+	// Intentionally no MarkDirty: the record is still persisted via
+	// DeferredHandlers (BuildPersistenceJson iterates both sets), so nothing
+	// on disk needs to change.
 }
 
 void UBridgeReactiveSubsystem::HandlePieEnded(bool /*bIsSimulating*/)
@@ -915,4 +985,341 @@ void UBridgeReactiveSubsystem::HandlePieEnded(bool /*bIsSimulating*/)
 		UE_LOG(LogUnrealBridgeReactive, Log,
 			TEXT("PIE ended: removed %d WhilePIE handler(s)"), ToRemove.Num());
 	}
+}
+
+// ─── Persistence (P6.B3) ──────────────────────────────────────────
+
+void UBridgeReactiveSubsystem::MarkDirty()
+{
+	bPersistenceDirty = true;
+}
+
+FString UBridgeReactiveSubsystem::GetPersistencePath()
+{
+	return FPaths::Combine(FPaths::ProjectSavedDir(),
+		TEXT("UnrealBridge"), TEXT("reactive-handlers.json"));
+}
+
+int32 UBridgeReactiveSubsystem::GetDeferredHandlerCount() const
+{
+	return DeferredHandlers.Num();
+}
+
+FString UBridgeReactiveSubsystem::RestoreSingleRecord(FBridgeHandlerRecord&& Record)
+{
+	if (Record.HandlerId.IsEmpty())
+	{
+		UE_LOG(LogUnrealBridgeReactive, Warning,
+			TEXT("RestoreSingleRecord refused: empty HandlerId"));
+		return FString();
+	}
+	IBridgeReactiveAdapter* Adapter = FindAdapter(Record.TriggerType);
+	if (!Adapter)
+	{
+		UE_LOG(LogUnrealBridgeReactive, Warning,
+			TEXT("RestoreSingleRecord refused: no adapter for trigger '%s'"),
+			*BridgeReactiveImpl::TriggerTypeName(Record.TriggerType));
+		return FString();
+	}
+	// Caller is expected to have preserved HandlerId + pre-resolved Subject/
+	// Selector/AdapterPayload. CreatedAt is preserved from JSON; fall back
+	// to now() if it wasn't serialised (older schemas).
+	if (Record.CreatedAt.GetTicks() == 0)
+	{
+		Record.CreatedAt = FDateTime::UtcNow();
+	}
+	TSharedRef<FBridgeHandlerRecord> Shared = MakeShared<FBridgeHandlerRecord>(MoveTemp(Record));
+	const FString Id = Shared->HandlerId;
+	// Sanity: reject if the id is already live (double-restore).
+	if (Handlers.Contains(Id))
+	{
+		UE_LOG(LogUnrealBridgeReactive, Warning,
+			TEXT("RestoreSingleRecord refused: HandlerId '%s' already present"), *Id);
+		return FString();
+	}
+	Handlers.Add(Id, Shared);
+	Adapter->OnHandlerAdded(*Shared);
+	return Id;
+}
+
+void UBridgeReactiveSubsystem::HandlePostPIEStarted(bool /*bIsSimulating*/)
+{
+	if (DeferredHandlers.Num() > 0)
+	{
+		RetryDeferredHandlers();
+	}
+}
+
+void UBridgeReactiveSubsystem::RetryDeferredHandlers()
+{
+	TArray<FBridgeHandlerRecord> StillDeferred;
+	int32 Restored = 0;
+	for (FBridgeHandlerRecord& R : DeferredHandlers)
+	{
+		if (UUnrealBridgeReactiveLibrary::ResolveForRestore(R))
+		{
+			if (!RestoreSingleRecord(MoveTemp(R)).IsEmpty())
+			{
+				++Restored;
+				continue;
+			}
+		}
+		StillDeferred.Add(MoveTemp(R));
+	}
+	DeferredHandlers = MoveTemp(StillDeferred);
+	if (Restored > 0)
+	{
+		UE_LOG(LogUnrealBridgeReactive, Log,
+			TEXT("PostPIEStarted: restored %d deferred handler(s); %d still waiting"),
+			Restored, DeferredHandlers.Num());
+	}
+}
+
+// JSON helpers — build a JSON handler array + seq counters.
+namespace BridgeReactivePersistenceImpl
+{
+	TSharedPtr<FJsonObject> RecordToJson(const FBridgeHandlerRecord& R)
+	{
+		TSharedPtr<FJsonObject> O = MakeShared<FJsonObject>();
+		O->SetStringField(TEXT("handler_id"),     R.HandlerId);
+		O->SetStringField(TEXT("scope"),          R.Scope);
+		O->SetStringField(TEXT("task_name"),      R.TaskName);
+		O->SetStringField(TEXT("description"),    R.Description);
+		TArray<TSharedPtr<FJsonValue>> TagsJson;
+		for (const FString& T : R.Tags) TagsJson.Add(MakeShared<FJsonValueString>(T));
+		O->SetArrayField(TEXT("tags"), TagsJson);
+		O->SetStringField(TEXT("script"),         R.Script);
+		O->SetStringField(TEXT("script_path"),    R.ScriptPath);
+		O->SetStringField(TEXT("trigger_type"),   BridgeReactiveImpl::TriggerTypeName(R.TriggerType));
+		TSharedPtr<FJsonObject> Reg = MakeShared<FJsonObject>();
+		for (const auto& Pair : R.RegistrationContext)
+		{
+			Reg->SetStringField(Pair.Key, Pair.Value);
+		}
+		O->SetObjectField(TEXT("registration_context"), Reg);
+		O->SetStringField(TEXT("lifetime"),       BridgeReactiveImpl::LifetimeName(R.Lifetime));
+		O->SetNumberField(TEXT("remaining_calls"), R.RemainingCalls);
+		O->SetStringField(TEXT("error_policy"),   BridgeReactiveImpl::ErrorPolicyName(R.ErrorPolicy));
+		O->SetNumberField(TEXT("throttle_ms"),    R.ThrottleMs);
+		O->SetStringField(TEXT("created_at"),     R.CreatedAt.ToIso8601());
+		return O;
+	}
+
+	EBridgeTrigger ParseTriggerType(const FString& S)
+	{
+		if (S == TEXT("GameplayEvent"))       return EBridgeTrigger::GameplayEvent;
+		if (S == TEXT("AttributeChanged"))    return EBridgeTrigger::AttributeChanged;
+		if (S == TEXT("ActorLifecycle"))      return EBridgeTrigger::ActorLifecycle;
+		if (S == TEXT("MovementModeChanged")) return EBridgeTrigger::MovementModeChanged;
+		if (S == TEXT("AnimNotify"))          return EBridgeTrigger::AnimNotify;
+		if (S == TEXT("InputAction"))         return EBridgeTrigger::InputAction;
+		if (S == TEXT("Timer"))               return EBridgeTrigger::Timer;
+		if (S == TEXT("AssetEvent"))          return EBridgeTrigger::AssetEvent;
+		if (S == TEXT("PieEvent"))            return EBridgeTrigger::PieEvent;
+		if (S == TEXT("BpCompiled"))          return EBridgeTrigger::BpCompiled;
+		return EBridgeTrigger::None;
+	}
+
+	EBridgeHandlerLifetime ParseLifetime(const FString& S)
+	{
+		if (S == TEXT("Permanent"))         return EBridgeHandlerLifetime::Permanent;
+		if (S == TEXT("Once"))              return EBridgeHandlerLifetime::Once;
+		if (S == TEXT("Count"))             return EBridgeHandlerLifetime::Count;
+		if (S == TEXT("WhilePIE"))          return EBridgeHandlerLifetime::WhilePIE;
+		if (S == TEXT("WhileSubjectAlive")) return EBridgeHandlerLifetime::WhileSubjectAlive;
+		return EBridgeHandlerLifetime::Permanent;
+	}
+
+	EBridgeErrorPolicy ParseErrorPolicy(const FString& S)
+	{
+		if (S == TEXT("LogContinue"))   return EBridgeErrorPolicy::LogContinue;
+		if (S == TEXT("LogUnregister")) return EBridgeErrorPolicy::LogUnregister;
+		if (S == TEXT("Throw"))         return EBridgeErrorPolicy::Throw;
+		return EBridgeErrorPolicy::LogContinue;
+	}
+
+	bool JsonToRecord(const TSharedPtr<FJsonObject>& O, FBridgeHandlerRecord& Out)
+	{
+		if (!O.IsValid()) return false;
+		Out.HandlerId     = O->GetStringField(TEXT("handler_id"));
+		Out.Scope         = O->GetStringField(TEXT("scope"));
+		Out.TaskName      = O->GetStringField(TEXT("task_name"));
+		Out.Description   = O->GetStringField(TEXT("description"));
+		const TArray<TSharedPtr<FJsonValue>>* TagsArr = nullptr;
+		if (O->TryGetArrayField(TEXT("tags"), TagsArr) && TagsArr)
+		{
+			for (const TSharedPtr<FJsonValue>& V : *TagsArr)
+			{
+				if (V.IsValid()) Out.Tags.Add(V->AsString());
+			}
+		}
+		Out.Script        = O->GetStringField(TEXT("script"));
+		Out.ScriptPath    = O->GetStringField(TEXT("script_path"));
+		Out.TriggerType   = ParseTriggerType(O->GetStringField(TEXT("trigger_type")));
+		const TSharedPtr<FJsonObject>* RegObj = nullptr;
+		if (O->TryGetObjectField(TEXT("registration_context"), RegObj) && RegObj && RegObj->IsValid())
+		{
+			for (const auto& Pair : (*RegObj)->Values)
+			{
+				if (Pair.Value.IsValid() && Pair.Value->Type == EJson::String)
+				{
+					Out.RegistrationContext.Add(Pair.Key, Pair.Value->AsString());
+				}
+			}
+		}
+		Out.Lifetime      = ParseLifetime(O->GetStringField(TEXT("lifetime")));
+		Out.RemainingCalls = static_cast<int32>(O->GetNumberField(TEXT("remaining_calls")));
+		Out.ErrorPolicy   = ParseErrorPolicy(O->GetStringField(TEXT("error_policy")));
+		Out.ThrottleMs    = static_cast<int32>(O->GetNumberField(TEXT("throttle_ms")));
+		FString Created;
+		if (O->TryGetStringField(TEXT("created_at"), Created) && !Created.IsEmpty())
+		{
+			FDateTime::ParseIso8601(*Created, Out.CreatedAt);
+		}
+		return !Out.HandlerId.IsEmpty() && Out.TriggerType != EBridgeTrigger::None;
+	}
+}
+
+FString UBridgeReactiveSubsystem::BuildPersistenceJson() const
+{
+	using namespace BridgeReactivePersistenceImpl;
+	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetNumberField(TEXT("version"), 1);
+	Root->SetNumberField(TEXT("runtime_seq"), RuntimeSeq);
+	Root->SetNumberField(TEXT("editor_seq"),  EditorSeq);
+
+	TArray<TSharedPtr<FJsonValue>> HandlersArr;
+	// Live handlers: persist non-WhilePIE.
+	for (const auto& Pair : Handlers)
+	{
+		const FBridgeHandlerRecord& R = *Pair.Value;
+		if (R.Lifetime == EBridgeHandlerLifetime::WhilePIE) continue;
+		HandlersArr.Add(MakeShared<FJsonValueObject>(RecordToJson(R)));
+	}
+	// Deferred handlers: keep them persisted too, so a session that never
+	// starts PIE doesn't lose its pending restore records.
+	for (const FBridgeHandlerRecord& R : DeferredHandlers)
+	{
+		if (R.Lifetime == EBridgeHandlerLifetime::WhilePIE) continue;
+		HandlersArr.Add(MakeShared<FJsonValueObject>(RecordToJson(R)));
+	}
+	Root->SetArrayField(TEXT("handlers"), HandlersArr);
+
+	FString Out;
+	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Out, 0);
+	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
+	return Out;
+}
+
+bool UBridgeReactiveSubsystem::SaveAllHandlers()
+{
+	const FString Path = GetPersistencePath();
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+	PF.CreateDirectoryTree(*FPaths::GetPath(Path));
+	const FString Content = BuildPersistenceJson();
+	if (!FFileHelper::SaveStringToFile(Content, *Path, FFileHelper::EEncodingOptions::ForceUTF8))
+	{
+		UE_LOG(LogUnrealBridgeReactive, Warning,
+			TEXT("SaveAllHandlers: write failed (%s)"), *Path);
+		return false;
+	}
+	UE_LOG(LogUnrealBridgeReactive, Verbose,
+		TEXT("SaveAllHandlers: wrote %d handler(s) to %s"),
+		Handlers.Num() + DeferredHandlers.Num(), *Path);
+	return true;
+}
+
+int32 UBridgeReactiveSubsystem::RestoreFromJson(const FString& JsonText)
+{
+	using namespace BridgeReactivePersistenceImpl;
+
+	TSharedPtr<FJsonObject> Root;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+	{
+		UE_LOG(LogUnrealBridgeReactive, Warning,
+			TEXT("RestoreFromJson: invalid JSON — renaming file and starting fresh"));
+		return 0;
+	}
+
+	const int32 Version = static_cast<int32>(Root->GetNumberField(TEXT("version")));
+	if (Version != 1)
+	{
+		UE_LOG(LogUnrealBridgeReactive, Warning,
+			TEXT("RestoreFromJson: unsupported schema version %d (expected 1); skipping"),
+			Version);
+		return 0;
+	}
+
+	// Seq counters: keep whichever is larger so new IDs never collide.
+	const int32 SavedRuntimeSeq = static_cast<int32>(Root->GetNumberField(TEXT("runtime_seq")));
+	const int32 SavedEditorSeq  = static_cast<int32>(Root->GetNumberField(TEXT("editor_seq")));
+	RuntimeSeq = FMath::Max(RuntimeSeq, SavedRuntimeSeq);
+	EditorSeq  = FMath::Max(EditorSeq,  SavedEditorSeq);
+
+	const TArray<TSharedPtr<FJsonValue>>* HandlersArr = nullptr;
+	if (!Root->TryGetArrayField(TEXT("handlers"), HandlersArr) || !HandlersArr)
+	{
+		return 0;
+	}
+
+	int32 RestoredNow = 0;
+	int32 Deferred = 0;
+	for (const TSharedPtr<FJsonValue>& V : *HandlersArr)
+	{
+		if (!V.IsValid() || V->Type != EJson::Object) continue;
+		FBridgeHandlerRecord R;
+		if (!JsonToRecord(V->AsObject(), R)) continue;
+		if (R.Lifetime == EBridgeHandlerLifetime::WhilePIE) continue;
+
+		if (UUnrealBridgeReactiveLibrary::ResolveForRestore(R))
+		{
+			if (!RestoreSingleRecord(MoveTemp(R)).IsEmpty())
+			{
+				++RestoredNow;
+				continue;
+			}
+		}
+		DeferredHandlers.Add(MoveTemp(R));
+		++Deferred;
+	}
+
+	if (RestoredNow > 0 || Deferred > 0)
+	{
+		UE_LOG(LogUnrealBridgeReactive, Log,
+			TEXT("RestoreFromJson: restored %d handler(s); %d deferred (await PIE start)"),
+			RestoredNow, Deferred);
+	}
+	return RestoredNow;
+}
+
+int32 UBridgeReactiveSubsystem::LoadAllHandlers()
+{
+	const FString Path = GetPersistencePath();
+	IPlatformFile& PF = FPlatformFileManager::Get().GetPlatformFile();
+	if (!PF.FileExists(*Path))
+	{
+		return 0;
+	}
+	FString Text;
+	if (!FFileHelper::LoadFileToString(Text, *Path))
+	{
+		UE_LOG(LogUnrealBridgeReactive, Warning,
+			TEXT("LoadAllHandlers: read failed (%s)"), *Path);
+		return 0;
+	}
+	// Clear existing registry first so load is idempotent.
+	if (Handlers.Num() > 0)
+	{
+		TArray<FString> Existing;
+		Handlers.GetKeys(Existing);
+		for (const FString& Id : Existing) { UnregisterHandler(Id); }
+	}
+	DeferredHandlers.Reset();
+
+	const int32 Restored = RestoreFromJson(Text);
+
+	// Don't let this pre-existing-file load trigger an immediate re-save.
+	bPersistenceDirty = false;
+	return Restored;
 }

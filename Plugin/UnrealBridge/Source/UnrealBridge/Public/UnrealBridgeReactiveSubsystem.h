@@ -29,6 +29,17 @@ struct FBridgeHandlerRecord
 	 *  InputAction stores the UInputAction path here; other adapters ignore it. */
 	FString AdapterPayload;
 
+	/**
+	 * User-provided registration params captured by the library entry point
+	 * (target_actor_name, event_tag, interval_seconds, attribute_name, …).
+	 * Used by the persistence layer to re-resolve Subject / Selector /
+	 * AdapterPayload across editor restarts, since the raw Subject pointer
+	 * is a PIE-tied weak ref that won't survive a session boundary.
+	 * Consequently this map is the load-bearing identity of the handler —
+	 * not Subject/Selector on their own.
+	 */
+	TMap<FString, FString> RegistrationContext;
+
 	EBridgeHandlerLifetime Lifetime = EBridgeHandlerLifetime::Permanent;
 	int32 RemainingCalls = -1;
 	EBridgeErrorPolicy ErrorPolicy = EBridgeErrorPolicy::LogContinue;
@@ -152,6 +163,41 @@ public:
 	/** Queue a Python snippet to run next GameThread tick (not in the event frame). */
 	void DeferToNextTick(const FString& Script);
 
+	// ─── Persistence (P6.B3) ────────────────────────────────────
+	//
+	// All non-WhilePIE handlers auto-persist to a JSON file in the
+	// project's Saved/UnrealBridge/ folder. Save is debounced 100 ms after
+	// any registry mutation (Register / Unregister / Clear). Load runs
+	// once at subsystem Initialize. PIE-tied subjects that can't resolve
+	// at editor startup get parked in DeferredHandlers and retried on
+	// FEditorDelegates::PostPIEStarted.
+
+	/** Write the current registry to disk immediately (bypassing the debounce). */
+	bool SaveAllHandlers();
+
+	/** Replace the in-memory registry with the on-disk file contents.
+	 *  Returns the number of handlers restored (excludes deferred). */
+	int32 LoadAllHandlers();
+
+	/** Absolute path used for save/load. Default: <ProjectSaved>/UnrealBridge/reactive-handlers.json */
+	static FString GetPersistencePath();
+
+	/** Number of handlers waiting for their PIE-tied subject to resolve.
+	 *  Retries on PostPIEStarted; surfaces via list_all_handlers for
+	 *  agent introspection (with subject_path = "<unresolved>"). */
+	int32 GetDeferredHandlerCount() const;
+
+	/** Internal: restore a single record without reissuing its HandlerId.
+	 *  Used by LoadAllHandlers + deferred-retry paths. Caller must have
+	 *  populated Subject / Selector / AdapterPayload already. */
+	FString RestoreSingleRecord(FBridgeHandlerRecord&& Record);
+
+	/** Flag the registry as modified so the debounce ticker saves in ~100ms.
+	 *  Called internally from Register / Unregister / Clear. Public so
+	 *  external mutators (e.g. BpCompiled adapter's per-subject binding
+	 *  state) can re-persist if they ever mutate Record fields. */
+	void MarkDirty();
+
 private:
 	void RegisterAdapter(TUniquePtr<IBridgeReactiveAdapter> Adapter);
 
@@ -202,4 +248,28 @@ private:
 	int32 RuntimeSeq = 0;
 	int32 EditorSeq = 0;
 	int32 DispatchDepth = 0;
+
+	// ─── Persistence state ──────────────────────────────────────
+	bool bPersistenceDirty = false;
+	FTSTicker::FDelegateHandle PersistenceDebounceHandle;
+	FDelegateHandle PostPIEStartedHandle;
+	/** Handlers whose Subject didn't resolve at load time; retried on PostPIEStarted. */
+	TArray<FBridgeHandlerRecord> DeferredHandlers;
+
+	void HandlePostPIEStarted(bool bIsSimulating);
+	/** Try to re-resolve every DeferredHandler via the library's resolver;
+	 *  successful ones are inserted into Handlers and removed from the queue. */
+	void RetryDeferredHandlers();
+
+	/** Move a live handler into DeferredHandlers without marking the
+	 *  persistence layer dirty. Used by world-cleanup: the record is still
+	 *  persisted (save walks both Handlers + DeferredHandlers), but no
+	 *  longer bound to any UE delegate. PostPIEStarted retries restore. */
+	void MoveHandlerToDeferred(const FString& HandlerId);
+
+	/** Serialize the current registry to a JSON string. */
+	FString BuildPersistenceJson() const;
+	/** Parse JSON + populate fresh registry. Handlers whose subject can't
+	 *  be resolved yet get pushed to DeferredHandlers. */
+	int32 RestoreFromJson(const FString& JsonText);
 };
