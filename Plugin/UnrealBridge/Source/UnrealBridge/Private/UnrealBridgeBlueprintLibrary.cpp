@@ -3106,9 +3106,11 @@ FString UUnrealBridgeBlueprintLibrary::AddCommentBox(
 		Comment->NodeWidth  = Width  > 0 ? Width  : 400;
 		Comment->NodeHeight = Height > 0 ? Height : 200;
 	}
-	Comment->NodeComment = Text;
 	Graph->AddNode(Comment, /*bFromUI*/false, /*bSelectNewNode*/false);
 	Comment->PostPlacedNewNode();
+	// NodeComment must be assigned AFTER PostPlacedNewNode — that call resets it
+	// to the localized default "Comment" string, clobbering the caller's text.
+	Comment->NodeComment = Text;
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return Comment->NodeGuid.ToString(EGuidFormats::Digits);
