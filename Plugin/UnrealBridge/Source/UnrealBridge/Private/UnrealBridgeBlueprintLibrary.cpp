@@ -3070,6 +3070,39 @@ bool UUnrealBridgeBlueprintLibrary::AlignNodes(
 	return true;
 }
 
+namespace BridgeBPCommentImpl
+{
+	/** Compute the bounding box of the given nodes and size the comment to
+	 *  enclose them with a standard padding + 32 px title strip on top.
+	 *  Returns true if any guid resolved to a node. Live-rendered sizes
+	 *  (Node->NodeWidth / NodeHeight) are used when available, else a
+	 *  conservative (200, 80) fallback — matches pre-refactor behaviour. */
+	static bool FitCommentToNodes(UEdGraphNode_Comment* Comment,
+		const TArray<FString>& NodeGuids, UEdGraph* Graph)
+	{
+		if (!Comment || !Graph) return false;
+		int32 MinX = MAX_int32, MinY = MAX_int32, MaxX = MIN_int32, MaxY = MIN_int32;
+		bool bHit = false;
+		for (const FString& G : NodeGuids)
+		{
+			UEdGraphNode* N = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, G);
+			if (!N) continue;
+			MinX = FMath::Min(MinX, N->NodePosX);
+			MinY = FMath::Min(MinY, N->NodePosY);
+			MaxX = FMath::Max(MaxX, N->NodePosX + FMath::Max(N->NodeWidth, 200));
+			MaxY = FMath::Max(MaxY, N->NodePosY + FMath::Max(N->NodeHeight, 80));
+			bHit = true;
+		}
+		if (!bHit) return false;
+		const int32 Pad = 32;
+		Comment->NodePosX  = MinX - Pad;
+		Comment->NodePosY  = MinY - Pad - 32;
+		Comment->NodeWidth  = (MaxX - MinX) + Pad * 2;
+		Comment->NodeHeight = (MaxY - MinY) + Pad * 2 + 32;
+		return true;
+	}
+}
+
 FString UUnrealBridgeBlueprintLibrary::AddCommentBox(
 	const FString& BlueprintPath, const FString& GraphName,
 	const TArray<FString>& NodeGuids, const FString& Text,
@@ -3082,33 +3115,9 @@ FString UUnrealBridgeBlueprintLibrary::AddCommentBox(
 	UEdGraphNode_Comment* Comment = NewObject<UEdGraphNode_Comment>(Graph);
 	Comment->CreateNewGuid();
 
-	// If node GUIDs were provided, fit around them.
-	if (NodeGuids.Num() > 0)
+	if (NodeGuids.Num() == 0 || !BridgeBPCommentImpl::FitCommentToNodes(Comment, NodeGuids, Graph))
 	{
-		int32 MinX = MAX_int32, MinY = MAX_int32, MaxX = MIN_int32, MaxY = MIN_int32;
-		bool bHit = false;
-		for (const FString& G : NodeGuids)
-		{
-			if (UEdGraphNode* N = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, G))
-			{
-				MinX = FMath::Min(MinX, N->NodePosX);
-				MinY = FMath::Min(MinY, N->NodePosY);
-				MaxX = FMath::Max(MaxX, N->NodePosX + FMath::Max(N->NodeWidth, 200));
-				MaxY = FMath::Max(MaxY, N->NodePosY + FMath::Max(N->NodeHeight, 80));
-				bHit = true;
-			}
-		}
-		if (bHit)
-		{
-			const int32 Pad = 32;
-			Comment->NodePosX = MinX - Pad;
-			Comment->NodePosY = MinY - Pad - 32;
-			Comment->NodeWidth  = (MaxX - MinX) + Pad * 2;
-			Comment->NodeHeight = (MaxY - MinY) + Pad * 2 + 32;
-		}
-	}
-	else
-	{
+		// No nodes given (or none resolved): use manual X/Y/W/H placement.
 		Comment->NodePosX = X; Comment->NodePosY = Y;
 		Comment->NodeWidth  = Width  > 0 ? Width  : 400;
 		Comment->NodeHeight = Height > 0 ? Height : 200;
@@ -3121,6 +3130,57 @@ FString UUnrealBridgeBlueprintLibrary::AddCommentBox(
 
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return Comment->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::WrapNodesInCommentBox(
+	const FString& BlueprintPath, const FString& GraphName,
+	const TArray<FString>& NodeGuids, const FString& Text)
+{
+	if (NodeGuids.Num() == 0) return FString();
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
+
+	Graph->Modify(); BP->Modify();
+	UEdGraphNode_Comment* Comment = NewObject<UEdGraphNode_Comment>(Graph);
+	Comment->CreateNewGuid();
+	if (!BridgeBPCommentImpl::FitCommentToNodes(Comment, NodeGuids, Graph))
+	{
+		// None of the guids resolved — no box worth creating.
+		Comment->MarkAsGarbage();
+		return FString();
+	}
+	Graph->AddNode(Comment, /*bFromUI*/false, /*bSelectNewNode*/false);
+	Comment->PostPlacedNewNode();
+	Comment->NodeComment = Text;
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Comment->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+bool UUnrealBridgeBlueprintLibrary::UpdateCommentBox(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& CommentGuid, const TArray<FString>& NodeGuids,
+	const FString& Text)
+{
+	if (NodeGuids.Num() == 0 && Text.IsEmpty()) return false;
+
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, CommentGuid); if (!Node) return false;
+	UEdGraphNode_Comment* Comment = Cast<UEdGraphNode_Comment>(Node); if (!Comment) return false;
+
+	Graph->Modify(); BP->Modify(); Comment->Modify();
+	bool bChanged = false;
+	if (NodeGuids.Num() > 0)
+	{
+		if (BridgeBPCommentImpl::FitCommentToNodes(Comment, NodeGuids, Graph)) bChanged = true;
+	}
+	if (!Text.IsEmpty())
+	{
+		Comment->NodeComment = Text;
+		bChanged = true;
+	}
+	if (bChanged) FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return bChanged;
 }
 
 FString UUnrealBridgeBlueprintLibrary::AddRerouteNode(

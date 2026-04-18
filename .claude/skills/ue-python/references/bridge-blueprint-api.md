@@ -878,6 +878,41 @@ Align or distribute 2+ selected nodes. `axis` ∈ `Left`, `Right`, `Top`, `Botto
 
 Create a comment frame. If `guids` is non-empty, the frame auto-sizes to fit those nodes (x/y/width/height ignored); otherwise places at (x,y) with size (width,height) (defaults 400×200 if zero). Returns the comment's GUID.
 
+### wrap_nodes_in_comment_box(blueprint_path, graph_name, node_guids, text) -> str
+
+Declarative sibling of `add_comment_box`: always sizes to fit the given
+nodes, no manual (x, y, width, height) fallback. `node_guids` must be
+non-empty; returns `""` if none of the guids resolve. Prefer this when
+the intent is "box around these nodes"; use `add_comment_box` when you
+want a free-floating section header with manual placement.
+
+```python
+guids = [hdr_set_guid, cond_branch_guid, print_guid]
+box = L.wrap_nodes_in_comment_box(bp, 'MyFunction', guids, '1. Validate inputs')
+L.set_comment_box_color(bp, 'MyFunction', box, 'Validation')
+```
+
+### update_comment_box(blueprint_path, graph_name, comment_guid, node_guids, text) -> bool
+
+Update an existing comment box in place. Both `node_guids` and `text`
+are "optional":
+
+- Empty `node_guids` → leave position/size alone.
+- Empty `text`       → leave comment string alone.
+- Non-empty both     → reshape AND rename in one call.
+
+Returns `True` when the comment was found and at least one field was
+changed. Useful when the set of nodes under a section grew/shrunk
+after a refactor, or when you want to rename a section without
+re-creating the box (preserves GUID, color, bubble-pinned state).
+
+```python
+# Section now covers two more nodes; tighten the frame.
+L.update_comment_box(bp, g, section_guid, [*originals, new_a, new_b], '')
+# Just rename; don't touch the frame.
+L.update_comment_box(bp, g, section_guid, [], '2. Apply damage (v2)')
+```
+
 ### add_reroute_node(blueprint_path, graph_name, x, y) -> str
 
 Insert a `K2Node_Knot` pass-through. Wire pins yourself with `connect_graph_pins` — Knot input pin is `0`, output pin is `1`.

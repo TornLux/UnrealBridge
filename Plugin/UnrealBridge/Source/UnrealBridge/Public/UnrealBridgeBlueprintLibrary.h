@@ -1525,6 +1525,38 @@ public:
 		const TArray<FString>& NodeGuids, const FString& Text,
 		int32 X, int32 Y, int32 Width, int32 Height);
 
+	/**
+	 * Create a comment box that wraps the given set of nodes with the given
+	 * comment text. Declarative sibling of AddCommentBox: no manual
+	 * X/Y/Width/Height — the box is always sized to fit the nodes with a
+	 * standard padding + title strip. NodeGuids must be non-empty (returns
+	 * "" if empty, or if none of the guids resolve to a node in the graph).
+	 *
+	 * Use this when you know WHICH nodes you want wrapped and just want a
+	 * box around them; use AddCommentBox when you need manual placement
+	 * without any nodes (e.g. a free-floating section header).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString WrapNodesInCommentBox(const FString& BlueprintPath,
+		const FString& GraphName, const TArray<FString>& NodeGuids,
+		const FString& Text);
+
+	/**
+	 * Update an existing comment box in place: reshape it to wrap a new set
+	 * of nodes and/or change its text. Both inputs are "optional" — pass an
+	 * empty NodeGuids array to leave the box's position/size unchanged;
+	 * pass an empty Text to leave the comment string unchanged. Pass both
+	 * to change both in one go.
+	 *
+	 * Returns true when the comment was found and at least one field was
+	 * updated; false if the guid didn't resolve to a comment box, or if
+	 * both inputs were empty (nothing to do).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool UpdateCommentBox(const FString& BlueprintPath,
+		const FString& GraphName, const FString& CommentGuid,
+		const TArray<FString>& NodeGuids, const FString& Text);
+
 	/** Insert a reroute (knot) node. Caller wires pins afterwards via ConnectGraphPins. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static FString AddRerouteNode(const FString& BlueprintPath, const FString& GraphName,
