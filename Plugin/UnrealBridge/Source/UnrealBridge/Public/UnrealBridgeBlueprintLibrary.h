@@ -781,6 +781,64 @@ struct FBridgePinInfo
 
 	/** True for the implicit "self" / target pin most K2 CallFunction nodes carry. */
 	UPROPERTY(BlueprintReadOnly) bool bIsSelfPin = false;
+
+	/** "None" | "Array" | "Set" | "Map". Mirrors PinType.ContainerType so
+	 *  callers don't have to read the bIsArray/bIsSet/bIsMap booleans above. */
+	UPROPERTY(BlueprintReadOnly) FString ContainerKind;
+
+	/** For Map pins: human-readable value-type (the V in Map<K, V>). Empty for
+	 *  non-map pins. The Type field above already shows "Map<K, V>" combined;
+	 *  these fields let callers see the V side without string surgery. */
+	UPROPERTY(BlueprintReadOnly) FString MapValueType;
+
+	UPROPERTY(BlueprintReadOnly) FString MapValueCategory;
+
+	UPROPERTY(BlueprintReadOnly) FString MapValueSubCategory;
+
+	UPROPERTY(BlueprintReadOnly) FString MapValueSubCategoryObjectPath;
+};
+
+/**
+ * One entry in the Blueprint action database — represents a node that *could*
+ * be spawned in a graph. Returned by ListSpawnableActions; the Key field is
+ * what SpawnNodeByActionKey takes to materialize the node.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeSpawnableAction
+{
+	GENERATED_BODY()
+
+	/** Opaque, stable-within-an-editor-session identifier. Pass to
+	 *  SpawnNodeByActionKey to spawn this exact node. Built from the spawner's
+	 *  FBlueprintNodeSignature so it survives across registry walks but not
+	 *  across editor restarts (re-list then re-spawn after restart). */
+	UPROPERTY(BlueprintReadOnly) FString Key;
+
+	/** User-facing menu name (e.g. "Get Player Controller", "Print String",
+	 *  "Set MyVariable"). */
+	UPROPERTY(BlueprintReadOnly) FString Title;
+
+	/** Editor menu category (e.g. "Math|Float", "Utilities|String", "Variables").
+	 *  Pipe-separated for nested categories. */
+	UPROPERTY(BlueprintReadOnly) FString Category;
+
+	UPROPERTY(BlueprintReadOnly) FString Tooltip;
+
+	/** Searchable keyword text the editor surfaces in palette search. */
+	UPROPERTY(BlueprintReadOnly) FString Keywords;
+
+	/** K2Node class short name this spawner produces (e.g. "K2Node_CallFunction",
+	 *  "K2Node_VariableGet", "K2Node_IfThenElse"). Useful for filtering. */
+	UPROPERTY(BlueprintReadOnly) FString NodeType;
+
+	/** Owning class / asset short name — for function spawners this is the class
+	 *  declaring the function; for variable spawners the var-owner; for engine
+	 *  intrinsics like Branch/Sequence this may be the node class itself. */
+	UPROPERTY(BlueprintReadOnly) FString OwningClass;
+
+	/** Full path of the owning class/asset when resolvable (e.g.
+	 *  "/Script/Engine.KismetSystemLibrary"). Empty when not derivable. */
+	UPROPERTY(BlueprintReadOnly) FString OwningClassPath;
 };
 
 /** A single reference site surfaced by Find* cross-reference queries. */
@@ -1522,4 +1580,69 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgePinLayout> GetNodePinLayouts(const FString& BlueprintPath,
 		const FString& GraphName, const FString& NodeGuid);
+
+	// ─── Universal node spawner (FBlueprintActionDatabase) ─────────
+
+	/**
+	 * List nodes that *could* be spawned in the given graph, with palette
+	 * search/filter applied. Walks the editor's FBlueprintActionDatabase —
+	 * the same source the right-click "All Actions" menu uses — so any node
+	 * the user could pick from the editor can be enumerated here, including
+	 * function calls, variable get/set, control flow (Branch/Sequence/Switch/
+	 * loops), spawn / cast / message, async / latent nodes, MakeArray /
+	 * MakeStruct, custom-event templates, etc.
+	 *
+	 * Filters are AND'd together (all non-empty must match):
+	 * @param Keyword            Case-insensitive substring matched against
+	 *                           Title + Tooltip + Keywords + Category.
+	 * @param CategoryContains   Case-insensitive substring on the menu category
+	 *                           (e.g. "Math" picks "Math|Float", "Math|Int").
+	 * @param OwningClassPath    Exact path filter, e.g.
+	 *                           "/Script/Engine.KismetSystemLibrary" — keeps
+	 *                           only spawners owned by that class/asset.
+	 * @param NodeType           Exact K2Node class short name filter
+	 *                           (e.g. "K2Node_CallFunction").
+	 * @param MaxResults         Hard cap on returned entries (clamped to >= 1).
+	 *                           Walk stops once this many matches accumulate.
+	 *
+	 * Returns the matched actions; pass FBridgeSpawnableAction.Key into
+	 * SpawnNodeByActionKey to materialize one.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeSpawnableAction> ListSpawnableActions(
+		const FString& BlueprintPath, const FString& GraphName,
+		const FString& Keyword, const FString& CategoryContains,
+		const FString& OwningClassPath, const FString& NodeType,
+		int32 MaxResults);
+
+	/**
+	 * Spawn a node in the graph by its action key (from ListSpawnableActions).
+	 * Walks the action database, finds the matching spawner by signature, and
+	 * invokes it at (X, Y). Returns the new node's GUID, or "" on failure
+	 * (key not found, graph missing, spawner rejected the target graph).
+	 *
+	 * No auto-compile; call CompileBlueprint after a batch of edits.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString SpawnNodeByActionKey(const FString& BlueprintPath,
+		const FString& GraphName, const FString& ActionKey,
+		int32 NodePosX, int32 NodePosY);
+
+	// ─── Fine-grained pin link control ─────────────────────────────
+
+	/**
+	 * Break exactly one link between (SourceNode.SourcePin) and
+	 * (TargetNode.TargetPin). Unlike DisconnectGraphPin (which clears every
+	 * link on a pin), this leaves other links on the same pin intact —
+	 * essential when a single output drives multiple consumers and you only
+	 * want to disconnect one.
+	 *
+	 * Direction is symmetric: order of (Source, Target) doesn't matter as long
+	 * as the two pins are linked. Returns true if the link existed and was
+	 * broken; false if either pin was missing or the two weren't linked.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool DisconnectPinLink(const FString& BlueprintPath, const FString& GraphName,
+		const FString& SourceNodeGuid, const FString& SourcePinName,
+		const FString& TargetNodeGuid, const FString& TargetPinName);
 };

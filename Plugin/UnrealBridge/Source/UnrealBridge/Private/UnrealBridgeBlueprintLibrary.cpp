@@ -45,6 +45,14 @@
 #include "K2Node_BreakStruct.h"
 #include "K2Node_MakeArray.h"
 #include "K2Node_EnumLiteral.h"
+#include "BlueprintActionDatabase.h"
+#include "BlueprintNodeSpawner.h"
+#include "BlueprintNodeSignature.h"
+#include "BlueprintNodeBinder.h"
+#include "BlueprintFunctionNodeSpawner.h"
+#include "BlueprintVariableNodeSpawner.h"
+#include "BlueprintEventNodeSpawner.h"
+#include "K2Node.h"
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -4277,20 +4285,16 @@ namespace BridgeBPSummaryImpl
 		if (PT.ContainerType == EPinContainerType::Set)   return FString::Printf(TEXT("Set of %s"),   *BaseType);
 		if (PT.ContainerType == EPinContainerType::Map)
 		{
-			// Value-type key side is BaseType; value side lives in PinValueType.
-			FString ValType = TEXT("?");
-			const FName VCat = PT.PinValueType.TerminalCategory;
-			if (VCat == UEdGraphSchema_K2::PC_Int)    ValType = TEXT("Int");
-			else if (VCat == UEdGraphSchema_K2::PC_Boolean) ValType = TEXT("Bool");
-			else if (VCat == UEdGraphSchema_K2::PC_String)  ValType = TEXT("String");
-			else if (VCat == UEdGraphSchema_K2::PC_Double)  ValType = TEXT("Double");
-			else if (VCat == UEdGraphSchema_K2::PC_Float)   ValType = TEXT("Float");
-			else if (VCat == UEdGraphSchema_K2::PC_Object)
-			{
-				if (UClass* C = Cast<UClass>(PT.PinValueType.TerminalSubCategoryObject.Get()))
-					ValType = C->GetName();
-			}
-			return FString::Printf(TEXT("Map<%s, %s>"), *BaseType, *ValType);
+			// Recurse on a non-container proxy of the value-side terminal so
+			// the V-side runs through the full BaseType matrix (handles
+			// PC_Real → Float/Double, PC_Struct, PC_Enum, PC_Class, etc.)
+			// instead of a hand-maintained whitelist.
+			FEdGraphPinType ValueProxy;
+			ValueProxy.PinCategory          = PT.PinValueType.TerminalCategory;
+			ValueProxy.PinSubCategory       = PT.PinValueType.TerminalSubCategory;
+			ValueProxy.PinSubCategoryObject = PT.PinValueType.TerminalSubCategoryObject;
+			ValueProxy.ContainerType        = EPinContainerType::None;
+			return FString::Printf(TEXT("Map<%s, %s>"), *BaseType, *PinTypeToHuman(ValueProxy));
 		}
 		return BaseType;
 	}
@@ -4511,6 +4515,34 @@ TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
 		Info.bIsConst         = Pin->PinType.bIsConst;
 		Info.bIsHidden        = Pin->bHidden;
 		Info.bIsSelfPin       = (K2 && K2->IsSelfPin(*Pin));
+
+		switch (Pin->PinType.ContainerType)
+		{
+			case EPinContainerType::Array: Info.ContainerKind = TEXT("Array"); break;
+			case EPinContainerType::Set:   Info.ContainerKind = TEXT("Set");   break;
+			case EPinContainerType::Map:   Info.ContainerKind = TEXT("Map");   break;
+			default:                        Info.ContainerKind = TEXT("None");  break;
+		}
+
+		// Map V-side: only meaningful when this is a Map pin. PinValueType
+		// holds the value-side terminal info (key side lives in regular
+		// PinSubCategory*). Re-use PinTypeToHuman by faking a non-container
+		// FEdGraphPinType built from the value terminal.
+		if (Pin->PinType.ContainerType == EPinContainerType::Map)
+		{
+			FEdGraphPinType ValueProxy;
+			ValueProxy.PinCategory          = Pin->PinType.PinValueType.TerminalCategory;
+			ValueProxy.PinSubCategory       = Pin->PinType.PinValueType.TerminalSubCategory;
+			ValueProxy.PinSubCategoryObject = Pin->PinType.PinValueType.TerminalSubCategoryObject;
+			ValueProxy.ContainerType        = EPinContainerType::None;
+			Info.MapValueType        = PinTypeToHuman(ValueProxy);
+			Info.MapValueCategory    = ValueProxy.PinCategory.ToString();
+			Info.MapValueSubCategory = ValueProxy.PinSubCategory.ToString();
+			if (UObject* VObj = ValueProxy.PinSubCategoryObject.Get())
+			{
+				Info.MapValueSubCategoryObjectPath = VObj->GetPathName();
+			}
+		}
 		Result.Add(Info);
 	}
 	return Result;
@@ -4566,4 +4598,252 @@ TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindEventHandlerSites(
 		}
 	}
 	return Result;
+}
+
+// ─── Universal node spawner (FBlueprintActionDatabase) ─────────
+
+namespace BridgeBPActionDBImpl
+{
+	/** Resolve the spawner's owning class/asset path for filtering + reporting.
+	 *  Function spawners report the function's owning class; variable spawners
+	 *  the variable's owner; for everything else we use the action-DB key
+	 *  (typically the K2Node class itself or the asset that registered it). */
+	static void ResolveOwner(const UBlueprintNodeSpawner* Spawner, UObject* RegistryKey,
+		FString& OutOwnerName, FString& OutOwnerPath)
+	{
+		if (const UBlueprintFunctionNodeSpawner* FS = Cast<UBlueprintFunctionNodeSpawner>(Spawner))
+		{
+			if (const UFunction* Fn = FS->GetFunction())
+			{
+				if (UClass* OwnerCls = Fn->GetOwnerClass())
+				{
+					OutOwnerName = OwnerCls->GetName();
+					OutOwnerPath = OwnerCls->GetPathName();
+					return;
+				}
+			}
+		}
+		if (RegistryKey)
+		{
+			OutOwnerName = RegistryKey->GetName();
+			OutOwnerPath = RegistryKey->GetPathName();
+		}
+	}
+
+	/** Build a UI signature for a spawner without touching the template-node
+	 *  cache. PrimeDefaultUiSpec() is unsafe to call in a loop because it
+	 *  spawns a transient template node and asserts when the spawner's
+	 *  NodeClass has no schema-compatible cached graph (e.g. AnimGraph,
+	 *  SoundCue, Niagara nodes registered alongside K2 ones).
+	 *
+	 *  Strategy:
+	 *    1. Use DefaultMenuSignature if a registrar already populated it.
+	 *    2. Otherwise synthesise from the spawner subtype:
+	 *       - Function spawners → reflect on the UFunction (DisplayName,
+	 *         Category, Tooltip, Keywords metadata).
+	 *       - Anything else → use NodeClass display name as the title and
+	 *         leave the rest blank. Caller can still spawn by Key.
+	 */
+	static FBlueprintActionUiSpec BuildUiSpecSafe(const UBlueprintNodeSpawner* Spawner)
+	{
+		FBlueprintActionUiSpec Out = Spawner->DefaultMenuSignature;
+		if (!Out.MenuName.IsEmpty())
+		{
+			return Out;
+		}
+
+		if (const UBlueprintFunctionNodeSpawner* FS = Cast<UBlueprintFunctionNodeSpawner>(Spawner))
+		{
+			if (const UFunction* Fn = FS->GetFunction())
+			{
+				const FString DisplayName = Fn->HasMetaData(TEXT("DisplayName"))
+					? Fn->GetMetaData(TEXT("DisplayName")) : Fn->GetName();
+				Out.MenuName = FText::FromString(DisplayName);
+				Out.Category = FText::FromString(Fn->GetMetaData(TEXT("Category")));
+				Out.Tooltip  = Fn->GetToolTipText();
+				Out.Keywords = FText::FromString(Fn->GetMetaData(TEXT("Keywords")));
+				return Out;
+			}
+		}
+
+		if (Spawner->NodeClass)
+		{
+			Out.MenuName = Spawner->NodeClass->GetDisplayNameText();
+		}
+		return Out;
+	}
+}
+
+TArray<FBridgeSpawnableAction> UUnrealBridgeBlueprintLibrary::ListSpawnableActions(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& Keyword, const FString& CategoryContains,
+	const FString& OwningClassPath, const FString& NodeType,
+	int32 MaxResults)
+{
+	TArray<FBridgeSpawnableAction> Out;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Out;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return Out;
+
+	const int32 Cap = FMath::Max(1, MaxResults);
+
+	FBlueprintActionDatabase& Database = FBlueprintActionDatabase::Get();
+	// Make sure asset-defined actions for this BP are present (custom events,
+	// user functions etc.). Cheap if already cached.
+	Database.RefreshAssetActions(BP);
+	const FBlueprintActionDatabase::FActionRegistry& Registry = Database.GetAllActions();
+
+	for (const TPair<FObjectKey, FBlueprintActionDatabase::FActionList>& Pair : Registry)
+	{
+		UObject* RegistryKey = Pair.Key.ResolveObjectPtr();
+
+		// Per-key OwningClassPath fast-path: skip the whole bucket when the
+		// filter is set and the bucket's key doesn't match. (Function spawners
+		// override the owner with the function's owning class, so we only
+		// short-circuit here when both the bucket key and any function-owner
+		// would also miss — to stay correct, just compare on RegistryKey.)
+		if (!OwningClassPath.IsEmpty() && RegistryKey
+			&& RegistryKey->GetPathName() != OwningClassPath)
+		{
+			// Function spawners may still match via their function owner;
+			// fall through and let the per-spawner check decide.
+		}
+
+		for (UBlueprintNodeSpawner* Spawner : Pair.Value)
+		{
+			if (!Spawner || !Spawner->NodeClass) continue;
+
+			// Skip non-K2 spawners (anim/niagara/sound graph nodes etc.).
+			// They share the database but their template-node lookup asserts
+			// when probed against a K2 graph; keeping them out also prevents
+			// the resulting Spawn from ever succeeding on a BP graph.
+			if (!Spawner->NodeClass->IsChildOf(UK2Node::StaticClass())) continue;
+
+			// NodeType filter
+			if (!NodeType.IsEmpty() && Spawner->NodeClass->GetName() != NodeType) continue;
+
+			// Owner resolution + OwningClassPath filter
+			FString OwnerName, OwnerPath;
+			BridgeBPActionDBImpl::ResolveOwner(Spawner, RegistryKey, OwnerName, OwnerPath);
+			if (!OwningClassPath.IsEmpty() && OwnerPath != OwningClassPath) continue;
+
+			// Pull the UI signature without touching the template-node cache.
+			const FBlueprintActionUiSpec UiSpec = BridgeBPActionDBImpl::BuildUiSpecSafe(Spawner);
+
+			const FString TitleStr    = UiSpec.MenuName.ToString();
+			const FString CategoryStr = UiSpec.Category.ToString();
+			const FString TooltipStr  = UiSpec.Tooltip.ToString();
+			const FString KeywordsStr = UiSpec.Keywords.ToString();
+
+			if (!CategoryContains.IsEmpty()
+				&& !CategoryStr.Contains(CategoryContains, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+
+			if (!Keyword.IsEmpty())
+			{
+				const bool bHit =
+					   TitleStr.Contains(Keyword,    ESearchCase::IgnoreCase)
+					|| TooltipStr.Contains(Keyword,  ESearchCase::IgnoreCase)
+					|| KeywordsStr.Contains(Keyword, ESearchCase::IgnoreCase)
+					|| CategoryStr.Contains(Keyword, ESearchCase::IgnoreCase);
+				if (!bHit) continue;
+			}
+
+			FBridgeSpawnableAction Action;
+			Action.Key             = Spawner->GetSpawnerSignature().ToString();
+			Action.Title           = TitleStr;
+			Action.Category        = CategoryStr;
+			Action.Tooltip         = TooltipStr;
+			Action.Keywords        = KeywordsStr;
+			Action.NodeType        = Spawner->NodeClass ? Spawner->NodeClass->GetName() : FString();
+			Action.OwningClass     = OwnerName;
+			Action.OwningClassPath = OwnerPath;
+			Out.Add(MoveTemp(Action));
+
+			if (Out.Num() >= Cap) return Out;
+		}
+	}
+	return Out;
+}
+
+FString UUnrealBridgeBlueprintLibrary::SpawnNodeByActionKey(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& ActionKey, int32 NodePosX, int32 NodePosY)
+{
+	if (ActionKey.IsEmpty()) return FString();
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+
+	FBlueprintActionDatabase& Database = FBlueprintActionDatabase::Get();
+	Database.RefreshAssetActions(BP);
+	const FBlueprintActionDatabase::FActionRegistry& Registry = Database.GetAllActions();
+
+	UBlueprintNodeSpawner* Found = nullptr;
+	for (const TPair<FObjectKey, FBlueprintActionDatabase::FActionList>& Pair : Registry)
+	{
+		for (UBlueprintNodeSpawner* Spawner : Pair.Value)
+		{
+			if (!Spawner || !Spawner->NodeClass) continue;
+			if (!Spawner->NodeClass->IsChildOf(UK2Node::StaticClass())) continue;
+			if (Spawner->GetSpawnerSignature().ToString() == ActionKey)
+			{
+				Found = Spawner;
+				break;
+			}
+		}
+		if (Found) break;
+	}
+	if (!Found) return FString();
+
+	Graph->Modify();
+	BP->Modify();
+
+	IBlueprintNodeBinder::FBindingSet Bindings;
+	UEdGraphNode* NewNode = Found->Invoke(Graph, Bindings,
+		FVector2D(static_cast<float>(NodePosX), static_cast<float>(NodePosY)));
+	if (!NewNode) return FString();
+
+	// Spawner::Invoke usually adds + allocates pins itself, but a few spawners
+	// rely on the schema's PostPlacedNewNode hook — call it defensively.
+	NewNode->NodePosX = NodePosX;
+	NewNode->NodePosY = NodePosY;
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return NewNode->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── Fine-grained pin link control ─────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::DisconnectPinLink(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& SourceNodeGuid, const FString& SourcePinName,
+	const FString& TargetNodeGuid, const FString& TargetPinName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+
+	UEdGraphNode* SrcNode = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, SourceNodeGuid);
+	UEdGraphNode* DstNode = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, TargetNodeGuid);
+	if (!SrcNode || !DstNode) return false;
+
+	UEdGraphPin* SrcPin = SrcNode->FindPin(SourcePinName);
+	UEdGraphPin* DstPin = DstNode->FindPin(TargetPinName);
+	if (!SrcPin || !DstPin) return false;
+
+	if (!SrcPin->LinkedTo.Contains(DstPin)) return false;
+
+	Graph->Modify();
+	BP->Modify();
+
+	// BreakLinkTo is symmetric — removes the edge from both pins' LinkedTo lists.
+	SrcPin->BreakLinkTo(DstPin);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
 }
