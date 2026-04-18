@@ -93,10 +93,11 @@ When you **author or modify a Blueprint graph** (spawn / connect / remove nodes,
 ```
 1. plan        — list events, functions, local vars as text before touching the bridge
 2. build       — add_*_node / connect_graph_pins / add_blueprint_variable …
-3. auto_layout — auto_layout_graph(bp, graph, 'exec_flow', '', 80, 40)
+3. auto_layout — auto_layout_graph(bp, graph, 'pin_aligned', '', 100, 48)
+                 # or 'exec_flow' for bulk tidy when pin-level alignment is not required
 4. lint        — lint_blueprint(bp, '', -1, -1, -1) and resolve every finding
 5. collapse    — for any LongExecChain finding, collapse_nodes_to_function
-6. straighten  — straighten_exec_chain for each main exec rail
+6. straighten  — straighten_exec_chain for each main exec rail (only needed after 'exec_flow')
 7. reroute     — auto_insert_reroutes to break wires that cross nodes
 8. comment     — add_comment_box + set_comment_box_color for each section
 9. compile     — confirm compile_blueprints returns clean
@@ -105,7 +106,7 @@ When you **author or modify a Blueprint graph** (spawn / connect / remove nodes,
 - **Lint is non-optional.** If `lint_blueprint` returns any `warning` or `error`, fix or explicitly accept each one (write a justification in a comment box). Do not hand the BP back with unresolved warnings.
 - **Name things.** `UnnamedCustomEvent` / `UnnamedFunction` findings mean the agent left a placeholder — always rename to describe intent (`OnHealthChanged`, not `CustomEvent_0`).
 - **Comment boxes are section titles.** Any graph > 10 nodes must have at least one comment box with a meaningful title (e.g. `"1. Validate inputs"`, `"2. Apply damage"`) and an appropriate preset color via `set_comment_box_color` (`Section`, `Validation`, `Danger`, `Network`, `UI`, `Debug`, `Setup`).
-- **Straighten before you ship.** `auto_layout_graph` places nodes in layers but doesn't guarantee pin-level alignment on the main exec rail. Call `straighten_exec_chain` on the primary event's exec output last — it's the single biggest visual quality signal.
+- **Pick the right layout strategy.** `auto_layout_graph` with `'pin_aligned'` makes exec wires pin-to-pin horizontal and pulls data nodes in from the right; this is the default for human-readable output. Use `'exec_flow'` (Sugiyama-lite, layer-center Y) when you have many crossing data wires and want barycentric crossing minimization — then follow with `straighten_exec_chain` on the main rail because `exec_flow` does not pin-align on its own.
 - **Size predict before spawning.** If you're placing several nodes in a row by hand, call `predict_node_size` for each kind first so your X offsets don't overlap.
 
 ## Safety Rules

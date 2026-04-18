@@ -1786,17 +1786,31 @@ public:
 		const FString& ParamA, const FString& ParamB, int32 ParamInt);
 
 	/**
-	 * Reflow the graph with a layered, exec-flow-driven auto-layout. Classic
-	 * Sugiyama: topologically layer nodes by exec dependency, position each
-	 * layer left-to-right with H_SPACING gaps, stack nodes vertically within
-	 * a layer with V_SPACING between them, then barycentrically re-order each
-	 * layer to reduce wire crossings. Pure / data-only nodes are attached to
-	 * their first exec consumer's layer − 1 so they render immediately upstream.
+	 * Reflow the graph with a layered, exec-flow-driven auto-layout.
+	 *
+	 * Strategies:
+	 *   - "exec_flow" (default): Sugiyama-lite. Topologically layer nodes by
+	 *     exec dependency, position each layer left-to-right with H_SPACING
+	 *     gaps, stack nodes vertically within a layer with V_SPACING between
+	 *     them, then barycentrically re-order each layer to reduce wire
+	 *     crossings. Pure / data-only nodes attach to their first exec
+	 *     consumer's layer − 1. Positions nodes at layer-center Y — exec pins
+	 *     are not pixel-aligned; follow up with StraightenExecChain for that.
+	 *
+	 *   - "pin_aligned": exec backbone placed pin-to-pin (each node's input
+	 *     exec pin Y matches its primary predecessor's output exec pin Y, so
+	 *     exec wires render perfectly horizontal), then data producers pulled
+	 *     right-to-left into the exec nodes they feed, aligning their output
+	 *     pin Y to the consumer's input pin Y. Chained data nodes cascade
+	 *     further left. Matches the "polished BP" look without requiring a
+	 *     separate straightening pass.
+	 *
+	 *   Reserved: "data_flow", "event_grouped".
 	 *
 	 * Doesn't modify wires — positions only. Safe to call multiple times;
 	 * idempotent on stable topology. Doesn't compile the Blueprint.
+	 * Comment boxes are skipped (moving them breaks their enclose-intent).
 	 *
-	 * @param Strategy  "exec_flow" (v1). Reserved: "data_flow", "event_grouped".
 	 * @param AnchorNodeGuid  Optional. If set, the anchor node's position is
 	 *   preserved and everything else is translated so the anchor lands where
 	 *   it was. Otherwise the layout origin defaults to the current top-left

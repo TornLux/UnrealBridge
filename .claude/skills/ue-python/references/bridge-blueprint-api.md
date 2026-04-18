@@ -1505,12 +1505,26 @@ Unknown kind returns a 180×60 fallback with `resolved=False`.
 
 ### auto_layout_graph(blueprint_path, graph_name, strategy, anchor_node_guid, h_spacing, v_spacing) -> FBridgeLayoutResult
 
-Re-flow a graph with layered exec-flow auto-layout (Sugiyama-lite).
-Topologically layers nodes by exec dependency, places each layer
-left-to-right, stacks nodes vertically within a layer, then
-barycentrically re-orders within layers to reduce wire crossings. Pure
-/ data-only nodes attach to their first exec consumer's layer − 1 so
-they sit immediately upstream.
+Re-flow a graph with an exec-flow-driven auto-layout. Choose a strategy
+by passing its name:
+
+- **`"exec_flow"`** (Sugiyama-lite, default): topologically layer nodes
+  by exec dependency, place each layer left-to-right, stack vertically
+  within a layer, then barycentrically re-order each layer to reduce
+  wire crossings. Pure / data nodes attach to their first exec
+  consumer's layer − 1. **Positions nodes at layer-center Y** — exec
+  pins are not pixel-aligned; follow up with `straighten_exec_chain`
+  for that. Fast, crossings-minimal; the right choice for bulk tidy.
+
+- **`"pin_aligned"`**: exec backbone placed pin-to-pin — each node's
+  input exec pin Y matches its primary predecessor's output exec pin Y,
+  so exec wires render **perfectly horizontal**. Data producers are
+  then pulled right-to-left into the exec consumers they feed, aligning
+  each producer's output pin Y to its consumer's input pin Y. Chained
+  pure nodes cascade further left; each exec layer reserves X-budget
+  for the deepest data chain that terminates in it, so the function
+  entry sits at the leftmost column and data never overlaps it. The
+  "polished BP" look without a separate straightening pass.
 
 **Only moves nodes — wires, comments, and pin defaults are untouched.**
 Safe to call repeatedly; idempotent on stable topology. Doesn't
@@ -1525,6 +1539,15 @@ print(f'layers={r.layer_count}  positioned={r.nodes_positioned}  bounds={r.bound
 for w in r.warnings: print(' !', w)
 ```
 
+Pin-aligned polish (recommended for human-readable output):
+
+```python
+# Exec backbone pin-to-pin, data nodes cascading from the right.
+L.auto_layout_graph(bp, 'DetermineGait', 'pin_aligned', '', 100, 48)
+# Then knot up any wires that still pass through nodes:
+L.auto_insert_reroutes(bp, 'DetermineGait')
+```
+
 Pin anchor mode — keep one node in place (handy when integrating auto-
 layout into a larger edit session where you've already placed a known-
 good anchor):
@@ -1534,14 +1557,21 @@ good anchor):
 r = L.auto_layout_graph(bp, 'EventGraph', 'exec_flow', begin_guid, 100, 50)
 ```
 
-**Strategy**: only `"exec_flow"` in v1. Reserved values: `"data_flow"`,
-`"event_grouped"`.
+**Strategies**: `"exec_flow"`, `"pin_aligned"`. Reserved (not yet
+implemented): `"data_flow"`, `"event_grouped"`.
 
 **Spacing**: pass 0 or negative to get defaults (H=80, V=40).
 
 **Comment boxes** are detected and skipped (moving the box breaks the
 "encloses these specific nodes" intent). Comments stay where they are;
-the nodes inside may shift out of them.
+the nodes inside may shift out of them — re-enclose or resize the box
+afterward if needed.
+
+**Caveat for `pin_aligned`**: when a single exec node fans out to
+multiple downstream branches whose total height exceeds the predecessor,
+collision resolution pushes later siblings below pure pin alignment.
+Insert reroute knots via `auto_insert_reroutes` (or manually) to keep
+those branch wires readable.
 
 #### FBridgeLayoutResult fields
 

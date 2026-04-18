@@ -5193,12 +5193,420 @@ namespace BridgeBPAutoLayoutImpl
 	}
 }
 
+// ─── PinAligned strategy: pin-to-pin exec backbone + data pull ─────
+
+namespace BridgeBPPinAlignedImpl
+{
+	using namespace BridgeBPSummaryImpl;
+
+	/** Direction-index of a pin among its own side's visible pins. Mirrors the
+	 *  convention used by StraightenExecChain / AutoInsertReroutes so pin Y
+	 *  estimates stay consistent across tools. Returns -1 if not found. */
+	static int32 PinDirIndex(const UEdGraphNode* N, const UEdGraphPin* P)
+	{
+		if (!N || !P) return -1;
+		int32 Idx = 0;
+		for (const UEdGraphPin* Q : N->Pins)
+		{
+			if (!Q || Q->bHidden) continue;
+			if (Q->Direction != P->Direction) continue;
+			if (Q == P) return Idx;
+			Idx += 1;
+		}
+		return -1;
+	}
+
+	struct FPALayoutNode
+	{
+		UEdGraphNode* Node = nullptr;
+		int32 Width = MinNodeWidth;
+		int32 Height = MinNodeHeight;
+		int32 Layer = -1;         // exec layer; -1 until assigned
+		int32 NewX = 0;
+		int32 NewY = 0;
+		bool bHasExecPins = false;
+		bool bPlaced = false;
+
+		// Primary exec predecessor (for pin-alignment propagation).
+		int32 PrimaryExecPredIdx = INDEX_NONE;
+		// Dir-index of the exec-OUT pin on the primary predecessor connecting to us.
+		int32 PredExecOutDirIdx = -1;
+		// Dir-index of our own exec-IN pin receiving from the primary pred.
+		int32 MyExecInDirIdx = -1;
+
+		TArray<int32> ExecPredecessors;
+		TArray<int32> ExecSuccessors;
+
+		// Data-flow: producers feeding this node's input pins.
+		// (producer_idx, this_node's_input_pin_dir_idx)
+		TArray<TPair<int32, int32>> DataProducers;
+	};
+
+	static void BuildGraph(UEdGraph* Graph, TArray<FPALayoutNode>& Out,
+		TMap<UEdGraphNode*, int32>& IndexOf)
+	{
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (!N) continue;
+			// Comment boxes: snapshot but never place (kept at original XY).
+			FPALayoutNode LN;
+			LN.Node = N;
+			int32 EstW = 0, EstH = 0;
+			EstimateNodeSize(N, EstW, EstH);
+			LN.Width  = (N->NodeWidth  > 0) ? N->NodeWidth  : EstW;
+			LN.Height = (N->NodeHeight > 0) ? N->NodeHeight : EstH;
+			IndexOf.Add(N, Out.Num());
+			Out.Add(LN);
+		}
+
+		for (int32 i = 0; i < Out.Num(); ++i)
+		{
+			FPALayoutNode& LN = Out[i];
+			for (UEdGraphPin* Pin : LN.Node->Pins)
+			{
+				if (!Pin || Pin->bHidden) continue;
+				const bool bExec = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+				if (bExec) LN.bHasExecPins = true;
+				for (UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					if (!Linked) continue;
+					UEdGraphNode* Other = Linked->GetOwningNode();
+					if (!Other) continue;
+					const int32* J = IndexOf.Find(Other);
+					if (!J) continue;
+					if (bExec)
+					{
+						// exec-out on us → that's a successor
+						if (Pin->Direction == EGPD_Output)
+						{
+							LN.ExecSuccessors.AddUnique(*J);
+							Out[*J].ExecPredecessors.AddUnique(i);
+						}
+					}
+					else
+					{
+						// data-in on us → Other is a producer
+						if (Pin->Direction == EGPD_Input)
+						{
+							const int32 MyInDirIdx = PinDirIndex(LN.Node, Pin);
+							LN.DataProducers.Add(TPair<int32,int32>(*J, MyInDirIdx));
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/** Longest-path layering on exec-only subgraph. */
+	static int32 AssignExecLayers(TArray<FPALayoutNode>& Nodes,
+		TArray<FString>& Warnings)
+	{
+		for (FPALayoutNode& LN : Nodes) LN.Layer = -1;
+
+		// Seed: exec sources (have exec pins, no exec predecessors) → layer 0.
+		for (FPALayoutNode& LN : Nodes)
+		{
+			if (LN.bHasExecPins && LN.ExecPredecessors.Num() == 0) LN.Layer = 0;
+		}
+
+		const int32 Cap = Nodes.Num() * 8 + 16;
+		int32 Iter = 0;
+		bool bChanged = true;
+		while (bChanged && Iter++ < Cap)
+		{
+			bChanged = false;
+			for (FPALayoutNode& LN : Nodes)
+			{
+				if (!LN.bHasExecPins) continue;
+				int32 Best = LN.Layer;
+				for (int32 P : LN.ExecPredecessors)
+				{
+					if (Nodes[P].Layer >= 0) Best = FMath::Max(Best, Nodes[P].Layer + 1);
+				}
+				if (Best > LN.Layer) { LN.Layer = Best; bChanged = true; }
+			}
+		}
+		if (Iter >= Cap)
+		{
+			Warnings.Add(TEXT("pin_aligned: exec layer assignment hit iter cap — exec cycle suspected"));
+		}
+		// Unlayered exec nodes (cycle island): park at 0.
+		for (FPALayoutNode& LN : Nodes)
+		{
+			if (LN.bHasExecPins && LN.Layer < 0) LN.Layer = 0;
+		}
+
+		int32 MaxLayer = 0;
+		for (const FPALayoutNode& LN : Nodes)
+		{
+			if (LN.Layer > MaxLayer) MaxLayer = LN.Layer;
+		}
+		return MaxLayer + 1;
+	}
+
+	/** Recursive pixel-width of the data chain feeding this node. Returns the
+	 *  widest "horizontal footprint" of upstream pure/data nodes before hitting
+	 *  any exec boundary (exec nodes are handled by their own layer). Used to
+	 *  reserve X-budget between exec layers so data producers aren't crammed
+	 *  into the entry node's column. */
+	static int32 ComputeDataBudget(int32 NodeIdx, const TArray<FPALayoutNode>& Nodes,
+		TMap<int32, int32>& Cache, int32 HSpace)
+	{
+		if (int32* Cached = Cache.Find(NodeIdx)) return *Cached;
+		Cache.Add(NodeIdx, 0);  // sentinel against data cycles
+
+		int32 MaxBudget = 0;
+		const FPALayoutNode& LN = Nodes[NodeIdx];
+		for (const TPair<int32, int32>& Prod : LN.DataProducers)
+		{
+			const int32 PIdx = Prod.Key;
+			if (Nodes[PIdx].bHasExecPins) continue;  // exec producer has own layer
+			const int32 Sub = ComputeDataBudget(PIdx, Nodes, Cache, HSpace);
+			const int32 Budget = Nodes[PIdx].Width + HSpace + Sub;
+			if (Budget > MaxBudget) MaxBudget = Budget;
+		}
+		Cache[NodeIdx] = MaxBudget;
+		return MaxBudget;
+	}
+
+	/** Pick the primary exec predecessor for each exec node; record the exact
+	 *  pins on both sides for Y alignment. Preference: leftmost layer; tie
+	 *  break by lowest original Y (matches "main rail" intuition). */
+	static void SelectPrimaryExecPreds(TArray<FPALayoutNode>& Nodes)
+	{
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			FPALayoutNode& LN = Nodes[i];
+			if (!LN.bHasExecPins || LN.ExecPredecessors.Num() == 0) continue;
+
+			int32 Best = LN.ExecPredecessors[0];
+			for (int32 P : LN.ExecPredecessors)
+			{
+				const FPALayoutNode& Cand = Nodes[P];
+				const FPALayoutNode& Cur  = Nodes[Best];
+				if (Cand.Layer < Cur.Layer ||
+					(Cand.Layer == Cur.Layer && Cand.Node->NodePosY < Cur.Node->NodePosY))
+				{
+					Best = P;
+				}
+			}
+			LN.PrimaryExecPredIdx = Best;
+
+			// Find exec pin pair (pred.out → me.in).
+			const FPALayoutNode& Pred = Nodes[Best];
+			bool bResolved = false;
+			for (UEdGraphPin* OutPin : Pred.Node->Pins)
+			{
+				if (!OutPin || OutPin->bHidden) continue;
+				if (OutPin->Direction != EGPD_Output) continue;
+				if (OutPin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+				for (UEdGraphPin* Linked : OutPin->LinkedTo)
+				{
+					if (Linked && Linked->GetOwningNode() == LN.Node)
+					{
+						LN.PredExecOutDirIdx = PinDirIndex(Pred.Node, OutPin);
+						LN.MyExecInDirIdx    = PinDirIndex(LN.Node, Linked);
+						bResolved = true;
+						break;
+					}
+				}
+				if (bResolved) break;
+			}
+		}
+	}
+
+	/** Layer 0 exec nodes stacked vertically (original-Y order), then each
+	 *  later layer placed pin-aligned to its primary predecessor. Within each
+	 *  layer, nodes that share a tentative Y are pushed down to clear overlaps. */
+	static void PlaceExecBackbone(TArray<FPALayoutNode>& Nodes, int32 LayerCount,
+		const TArray<int32>& LayerX, int32 VSpace)
+	{
+		// Layer 0: original-Y order, stacked from Y=0.
+		TArray<int32> Layer0;
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			if (Nodes[i].bHasExecPins && Nodes[i].Layer == 0) Layer0.Add(i);
+		}
+		Layer0.Sort([&](int32 A, int32 B) {
+			return Nodes[A].Node->NodePosY < Nodes[B].Node->NodePosY;
+		});
+		int32 Cursor = 0;
+		for (int32 Idx : Layer0)
+		{
+			Nodes[Idx].NewX = LayerX[0];
+			Nodes[Idx].NewY = Cursor;
+			Nodes[Idx].bPlaced = true;
+			Cursor += Nodes[Idx].Height + VSpace;
+		}
+
+		// Later layers: propagate pin alignment.
+		for (int32 L = 1; L < LayerCount; ++L)
+		{
+			TArray<int32> ThisLayer;
+			for (int32 i = 0; i < Nodes.Num(); ++i)
+			{
+				if (Nodes[i].bHasExecPins && Nodes[i].Layer == L) ThisLayer.Add(i);
+			}
+
+			for (int32 Idx : ThisLayer)
+			{
+				FPALayoutNode& LN = Nodes[Idx];
+				LN.NewX = LayerX[L];
+				if (LN.PrimaryExecPredIdx != INDEX_NONE &&
+					Nodes[LN.PrimaryExecPredIdx].bPlaced &&
+					LN.PredExecOutDirIdx >= 0 && LN.MyExecInDirIdx >= 0)
+				{
+					const FPALayoutNode& Pred = Nodes[LN.PrimaryExecPredIdx];
+					const int32 PredPinY = Pred.NewY + HeaderHeight
+						+ LN.PredExecOutDirIdx * PinRowHeight;
+					const int32 MyInLocalY = HeaderHeight
+						+ LN.MyExecInDirIdx * PinRowHeight;
+					LN.NewY = PredPinY - MyInLocalY;
+				}
+				else
+				{
+					// No placeable primary pred: keep original Y (rare — cycle
+					// island or disconnected source).
+					LN.NewY = LN.Node->NodePosY;
+				}
+				LN.bPlaced = true;
+			}
+
+			// Collision resolution (preserve order, push overlaps down by VSpace).
+			ThisLayer.Sort([&](int32 A, int32 B) { return Nodes[A].NewY < Nodes[B].NewY; });
+			for (int32 k = 1; k < ThisLayer.Num(); ++k)
+			{
+				const FPALayoutNode& Prev = Nodes[ThisLayer[k-1]];
+				FPALayoutNode& Curr = Nodes[ThisLayer[k]];
+				const int32 MinY = Prev.NewY + Prev.Height + VSpace;
+				if (Curr.NewY < MinY) Curr.NewY = MinY;
+			}
+		}
+	}
+
+	/** Walk each placed node's data producers right-to-left; place each pure
+	 *  producer pin-aligned to its consumer's input pin. Shared producers
+	 *  (multiple consumers) are placed once, by the first consumer we visit.
+	 *  Recurse: each producer's own data inputs form the next column left. */
+	static void PlaceDataProducers(TArray<FPALayoutNode>& Nodes, int32 HSpace, int32 VSpace)
+	{
+		// BFS from placed nodes outward through data inputs.
+		TArray<int32> Queue;
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			if (Nodes[i].bPlaced) Queue.Add(i);
+		}
+		int32 Head = 0;
+
+		// Per-column (x-bucket) stack to resolve overlaps between data nodes
+		// pulled in by different exec consumers.
+		TMap<int32, TArray<int32>> ColumnOccupancy;
+		auto ResolveColumnOverlap = [&](int32 Idx)
+		{
+			FPALayoutNode& LN = Nodes[Idx];
+			TArray<int32>& Column = ColumnOccupancy.FindOrAdd(LN.NewX);
+			// Find any already-placed node in this column overlapping my Y band.
+			int32 Attempts = 0;
+			while (Attempts++ < 64)
+			{
+				bool bClash = false;
+				for (int32 Other : Column)
+				{
+					const FPALayoutNode& O = Nodes[Other];
+					if (LN.NewY + LN.Height + VSpace <= O.NewY) continue;
+					if (O.NewY + O.Height + VSpace <= LN.NewY) continue;
+					LN.NewY = O.NewY + O.Height + VSpace;
+					bClash = true;
+					break;
+				}
+				if (!bClash) break;
+			}
+			Column.Add(Idx);
+		};
+
+		while (Head < Queue.Num())
+		{
+			const int32 ConsumerIdx = Queue[Head++];
+			FPALayoutNode& Consumer = Nodes[ConsumerIdx];
+
+			for (const TPair<int32,int32>& Prod : Consumer.DataProducers)
+			{
+				const int32 PIdx = Prod.Key;
+				FPALayoutNode& P = Nodes[PIdx];
+				if (P.bPlaced) continue;
+
+				// Resolve Consumer's input pin by dir-index.
+				UEdGraphPin* ConsumerInPin = nullptr;
+				{
+					int32 DirIdx = 0;
+					for (UEdGraphPin* Q : Consumer.Node->Pins)
+					{
+						if (!Q || Q->bHidden) continue;
+						if (Q->Direction != EGPD_Input) continue;
+						if (DirIdx == Prod.Value) { ConsumerInPin = Q; break; }
+						++DirIdx;
+					}
+				}
+				if (!ConsumerInPin) continue;
+
+				// Find the producer's output pin actually connected to this input.
+				UEdGraphPin* ProdOutPin = nullptr;
+				for (UEdGraphPin* Linked : ConsumerInPin->LinkedTo)
+				{
+					if (Linked && Linked->GetOwningNode() == P.Node)
+					{
+						ProdOutPin = Linked; break;
+					}
+				}
+				if (!ProdOutPin) continue;
+
+				const int32 ProdOutDirIdx = PinDirIndex(P.Node, ProdOutPin);
+				if (ProdOutDirIdx < 0) continue;
+
+				// Align producer's output pin Y to consumer's input pin Y.
+				const int32 ConsumerPinY = Consumer.NewY + HeaderHeight
+					+ Prod.Value * PinRowHeight;
+				const int32 ProdOutLocalY = HeaderHeight
+					+ ProdOutDirIdx * PinRowHeight;
+
+				P.NewX = Consumer.NewX - P.Width - HSpace;
+				P.NewY = ConsumerPinY - ProdOutLocalY;
+				P.bPlaced = true;
+				ResolveColumnOverlap(PIdx);
+				Queue.Add(PIdx);
+			}
+		}
+	}
+
+	/** Park any still-unplaced, non-comment nodes (disconnected islands, etc.)
+	 *  in a spillover strip below the main layout so they don't get lost. */
+	static void ParkUnplacedNodes(TArray<FPALayoutNode>& Nodes, int32 MinX, int32 MaxY,
+		int32 VSpace)
+	{
+		int32 SpillX = MinX;
+		int32 SpillY = MaxY + VSpace * 3;
+		for (FPALayoutNode& LN : Nodes)
+		{
+			if (LN.bPlaced) continue;
+			if (LN.Node && LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+			LN.NewX = SpillX;
+			LN.NewY = SpillY;
+			LN.bPlaced = true;
+			SpillX += LN.Width + 40;
+			if (SpillX > MinX + 2000)
+			{
+				SpillX = MinX;
+				SpillY += LN.Height + VSpace;
+			}
+		}
+	}
+}
+
 FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 	const FString& BlueprintPath, const FString& GraphName,
 	const FString& Strategy, const FString& AnchorNodeGuid,
 	int32 HorizontalSpacing, int32 VerticalSpacing)
 {
-	using namespace BridgeBPAutoLayoutImpl;
 	using namespace BridgeBPSummaryImpl;
 
 	FBridgeLayoutResult Result;
@@ -5208,14 +5616,160 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 	if (!Graph) { Result.Warnings.Add(TEXT("graph not found")); return Result; }
 
 	const FString LowerStrat = Strategy.IsEmpty() ? TEXT("exec_flow") : Strategy.ToLower();
-	if (LowerStrat != TEXT("exec_flow"))
+	if (LowerStrat != TEXT("exec_flow") && LowerStrat != TEXT("pin_aligned"))
 	{
-		Result.Warnings.Add(FString::Printf(TEXT("unknown strategy '%s' — only 'exec_flow' supported"), *Strategy));
+		Result.Warnings.Add(FString::Printf(
+			TEXT("unknown strategy '%s' — supported: 'exec_flow', 'pin_aligned'"), *Strategy));
 		return Result;
 	}
 
 	const int32 HSpace = HorizontalSpacing > 0 ? HorizontalSpacing : 80;
 	const int32 VSpace = VerticalSpacing   > 0 ? VerticalSpacing   : 40;
+
+	// ─── pin_aligned strategy ─────────────────────────────────
+	if (LowerStrat == TEXT("pin_aligned"))
+	{
+		using namespace BridgeBPPinAlignedImpl;
+
+		TArray<FPALayoutNode> Nodes;
+		TMap<UEdGraphNode*, int32> IndexOf;
+		BuildGraph(Graph, Nodes, IndexOf);
+		if (Nodes.Num() == 0) { Result.bSucceeded = true; return Result; }
+
+		const int32 LayerCount = AssignExecLayers(Nodes, Result.Warnings);
+		SelectPrimaryExecPreds(Nodes);
+
+		// Per-layer widest width (exec nodes only).
+		TArray<int32> LayerMaxW; LayerMaxW.SetNumZeroed(LayerCount);
+		for (const FPALayoutNode& LN : Nodes)
+		{
+			if (!LN.bHasExecPins) continue;
+			if (LN.Layer < 0 || LN.Layer >= LayerCount) continue;
+			if (LN.Width > LayerMaxW[LN.Layer]) LayerMaxW[LN.Layer] = LN.Width;
+		}
+		// Per-layer max data-chain budget (reserve X for nodes pulled in from
+		// the right by layer L's exec consumers).
+		TArray<int32> LayerDataBudget; LayerDataBudget.SetNumZeroed(LayerCount);
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			const FPALayoutNode& LN = Nodes[i];
+			if (!LN.bHasExecPins) continue;
+			if (LN.Layer < 0 || LN.Layer >= LayerCount) continue;
+			TMap<int32, int32> Cache;
+			const int32 Budget = ComputeDataBudget(i, Nodes, Cache, HSpace);
+			if (Budget > LayerDataBudget[LN.Layer]) LayerDataBudget[LN.Layer] = Budget;
+		}
+		// Layer X positions (cumulative). Layer 0 gets no data budget (there's
+		// no preceding layer to feed it). Each later layer starts at previous
+		// layer's right edge + that layer's data budget + spacing.
+		TArray<int32> LayerX; LayerX.SetNumZeroed(LayerCount);
+		int32 Cur = 0;
+		for (int32 L = 0; L < LayerCount; ++L)
+		{
+			LayerX[L] = Cur;
+			Cur += LayerMaxW[L] + HSpace;
+			if (L + 1 < LayerCount) Cur += LayerDataBudget[L + 1];
+		}
+
+		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace);
+		PlaceDataProducers(Nodes, HSpace, VSpace);
+
+		// Compute current-layout bounds, then park anything still unplaced.
+		int32 MinNewX = INT32_MAX, MinNewY = INT32_MAX, MaxNewX = INT32_MIN, MaxNewY = INT32_MIN;
+		for (const FPALayoutNode& LN : Nodes)
+		{
+			if (!LN.bPlaced) continue;
+			if (LN.Node && LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+			MinNewX = FMath::Min(MinNewX, LN.NewX);
+			MinNewY = FMath::Min(MinNewY, LN.NewY);
+			MaxNewX = FMath::Max(MaxNewX, LN.NewX + LN.Width);
+			MaxNewY = FMath::Max(MaxNewY, LN.NewY + LN.Height);
+		}
+		if (MinNewX == INT32_MAX) { MinNewX = MinNewY = MaxNewX = MaxNewY = 0; }
+		ParkUnplacedNodes(Nodes, MinNewX, MaxNewY, VSpace);
+
+		// Anchor origin: preserve anchor node's current graph position, else
+		// reuse the graph's original bounding-box top-left.
+		int32 OriginX = 0, OriginY = 0;
+		const FPALayoutNode* Anchor = nullptr;
+		if (!AnchorNodeGuid.IsEmpty())
+		{
+			for (const FPALayoutNode& LN : Nodes)
+			{
+				if (LN.Node && LN.Node->NodeGuid.ToString(EGuidFormats::Digits) == AnchorNodeGuid)
+				{
+					Anchor = &LN; break;
+				}
+			}
+			if (!Anchor)
+			{
+				Result.Warnings.Add(FString::Printf(
+					TEXT("anchor node %s not found"), *AnchorNodeGuid));
+			}
+			else
+			{
+				OriginX = Anchor->Node->NodePosX;
+				OriginY = Anchor->Node->NodePosY;
+			}
+		}
+		if (!Anchor)
+		{
+			int32 MinX = INT32_MAX, MinY = INT32_MAX;
+			for (const FPALayoutNode& LN : Nodes)
+			{
+				if (!LN.Node) continue;
+				if (LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+				MinX = FMath::Min(MinX, LN.Node->NodePosX);
+				MinY = FMath::Min(MinY, LN.Node->NodePosY);
+			}
+			if (MinX != INT32_MAX) { OriginX = MinX; OriginY = MinY; }
+		}
+
+		int32 DeltaX, DeltaY;
+		if (Anchor)
+		{
+			DeltaX = OriginX - Anchor->NewX;
+			DeltaY = OriginY - Anchor->NewY;
+		}
+		else
+		{
+			DeltaX = OriginX - MinNewX;
+			DeltaY = OriginY - MinNewY;
+		}
+
+		Graph->Modify();
+		BP->Modify();
+
+		int32 MaxXOut = INT32_MIN, MaxYOut = INT32_MIN;
+		int32 MinXOut = INT32_MAX, MinYOut = INT32_MAX;
+		for (FPALayoutNode& LN : Nodes)
+		{
+			if (!LN.bPlaced) continue;
+			if (!LN.Node) continue;
+			if (LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+			const int32 NX = LN.NewX + DeltaX;
+			const int32 NY = LN.NewY + DeltaY;
+			LN.Node->Modify();
+			LN.Node->NodePosX = NX;
+			LN.Node->NodePosY = NY;
+			MinXOut = FMath::Min(MinXOut, NX);
+			MinYOut = FMath::Min(MinYOut, NY);
+			MaxXOut = FMath::Max(MaxXOut, NX + LN.Width);
+			MaxYOut = FMath::Max(MaxYOut, NY + LN.Height);
+			Result.NodesPositioned += 1;
+		}
+
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+
+		Result.bSucceeded = true;
+		Result.LayerCount = LayerCount;
+		Result.BoundsWidth  = (MaxXOut == INT32_MIN) ? 0 : (MaxXOut - MinXOut);
+		Result.BoundsHeight = (MaxYOut == INT32_MIN) ? 0 : (MaxYOut - MinYOut);
+		return Result;
+	}
+
+	// ─── exec_flow strategy (original) ────────────────────────
+	using namespace BridgeBPAutoLayoutImpl;
 
 	TArray<FLayoutNode> Nodes;
 	TMap<UEdGraphNode*, int32> IndexOf;
