@@ -2282,6 +2282,22 @@ bool UUnrealBridgeBlueprintLibrary::SetPinDefaultValue(
 
 namespace BridgeBpP0Impl
 {
+	// Close any open SGraphEditor tab that the BP editor is currently showing
+	// for `Graph`. MUST be called before FBlueprintEditorUtils::RemoveGraph —
+	// RemoveGraph does not dismiss editor tabs, so a subsequent CompileBlueprint
+	// walks the zombie nodes Slate is still holding references to and hits
+	// `FindBlueprintForNodeChecked` → fatal assert → editor crash.
+	inline void CloseOpenGraphTabs(UBlueprint* BP, UEdGraph* Graph)
+	{
+		if (!BP || !Graph) return;
+		UAssetEditorSubsystem* Sub = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+		if (!Sub) return;
+		IAssetEditorInstance* Inst = Sub->FindEditorForAsset(BP, /*bFocusIfOpen*/false);
+		if (!Inst) return;
+		FBlueprintEditor* BPEd = static_cast<FBlueprintEditor*>(Inst);
+		BPEd->CloseDocumentTab(Graph);
+	}
+
 	// Shared helper: finalize a newly-constructed K2Node and add it to Graph.
 	//
 	// Mirrors FGraphNodeCreator::Finalize: only call AllocateDefaultPins ourselves
@@ -2458,6 +2474,7 @@ bool UUnrealBridgeBlueprintLibrary::RemoveFunctionGraph(
 	{
 		if (G && G->GetFName() == FnName)
 		{
+			BridgeBpP0Impl::CloseOpenGraphTabs(BP, G);
 			FBlueprintEditorUtils::RemoveGraph(BP, G, EGraphRemoveFlags::Recompile);
 			return true;
 		}
@@ -2603,6 +2620,7 @@ bool UUnrealBridgeBlueprintLibrary::RemoveEventDispatcher(
 	BP->Modify();
 	if (SigGraph)
 	{
+		BridgeBpP0Impl::CloseOpenGraphTabs(BP, SigGraph);
 		BP->DelegateSignatureGraphs.Remove(SigGraph);
 		FBlueprintEditorUtils::RemoveGraph(BP, SigGraph, EGraphRemoveFlags::Recompile);
 	}
@@ -3702,6 +3720,7 @@ bool UUnrealBridgeBlueprintLibrary::RemoveMacroGraph(
 	}
 	if (!Target) return false;
 	BP->Modify();
+	BridgeBpP0Impl::CloseOpenGraphTabs(BP, Target);
 	FBlueprintEditorUtils::RemoveGraph(BP, Target, EGraphRemoveFlags::Recompile);
 	return true;
 }
