@@ -2283,6 +2283,13 @@ bool UUnrealBridgeBlueprintLibrary::SetPinDefaultValue(
 namespace BridgeBpP0Impl
 {
 	// Shared helper: finalize a newly-constructed K2Node and add it to Graph.
+	//
+	// Mirrors FGraphNodeCreator::Finalize: only call AllocateDefaultPins ourselves
+	// when PostPlacedNewNode did not already populate them. Most K2 nodes leave
+	// Pins empty after PostPlacedNewNode, but a few — notably UK2Node_FunctionResult,
+	// whose PostPlacedNewNode runs SyncWithEntryNode → ReconstructNode → allocate —
+	// ship with a full pin set already. Calling AllocateDefaultPins again there
+	// duplicates the default `execute` exec pin.
 	template<typename TNode>
 	TNode* FinalizeNewNode(UEdGraph* Graph, TNode* Node, int32 X, int32 Y)
 	{
@@ -2291,7 +2298,10 @@ namespace BridgeBpP0Impl
 		Node->NodePosY = Y;
 		Graph->AddNode(Node, /*bFromUI*/false, /*bSelectNewNode*/false);
 		Node->PostPlacedNewNode();
-		Node->AllocateDefaultPins();
+		if (Node->Pins.Num() == 0)
+		{
+			Node->AllocateDefaultPins();
+		}
 		return Node;
 	}
 
