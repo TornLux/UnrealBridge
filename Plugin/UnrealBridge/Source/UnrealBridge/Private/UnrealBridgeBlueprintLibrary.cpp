@@ -5997,18 +5997,17 @@ namespace BridgeBPPinAlignedImpl
 	{
 		if (!Graph) return 0;
 
+		// Single-knot routing: place ONE knot near the destination at the
+		// destination pin's Y so the final segment is horizontal and the
+		// first segment is a natural diagonal Bezier. Matches the way UE's
+		// auto-routed wires look — cleaner than stacking two knots in an
+		// L-shape for every diagonal.
 		struct FSpec { UEdGraphNode* SrcNode; FName SrcPin; UEdGraphNode* DstNode; FName DstPin;
-			int32 KnotAX, KnotAY, KnotBX, KnotBY; };
+			int32 KnotX, KnotY; };
 		TArray<FSpec> Specs;
 
-		// K2Node_Knot visual geometry (from SGraphNodeKnot::UpdateGraphNode):
-		//   NodeSpacerSize = (42, 24). Input pin sits at left edge (X = NodePosX),
-		//   output pin at right edge (X = NodePosX + 42), both vertically centered
-		//   (Y = NodePosY + 12). GetNodePinLayouts' generic HeaderHeight=40 math
-		//   is wrong for knots — always use these knot-specific constants.
 		constexpr int32 KnotWidth = 42;
 		constexpr int32 KnotPinCenterOffset = 12;
-		constexpr int32 HalfKnotWidth = KnotWidth / 2;
 
 		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
@@ -6053,21 +6052,24 @@ namespace BridgeBPPinAlignedImpl
 
 			const int32 PredRight = Pred.Node->NodePosX + Pred.Width;
 			const int32 DstLeft = LN.Node->NodePosX;
-			// Need at least 2 × KnotWidth of gap to fit both knots plus margin
-			// on either side; otherwise skip (diagonal stays, but a too-tight
-			// L-route looks worse than a small diagonal).
-			if (DstLeft - PredRight < 2 * KnotWidth) continue;
-			// Center the knot pair so that KnotA.in sits just right of Pred
-			// and KnotB.out sits just left of Dst. Both outer segments get
-			// symmetric margins; the middle is purely vertical.
-			const int32 GapMid = (PredRight + DstLeft - KnotWidth) / 2;
+			// Needs room for the knot itself + a margin either side; otherwise
+			// skip and let the bare diagonal render.
+			if (DstLeft - PredRight < KnotWidth + 40) continue;
+
+			// Place the knot near the destination, at the destination pin's
+			// Y. The final leg (knot.out → dst.in) is then horizontal; the
+			// first leg (src.out → knot.in) bends as a natural Bezier curve.
+			// Bias X toward the destination (~70%) so the horizontal tail
+			// stays short relative to the curved approach.
+			const int32 GapRange = DstLeft - PredRight;
+			const int32 KnotX = PredRight + (GapRange * 70) / 100 - KnotWidth / 2;
+			const int32 KnotY = MyPinY - KnotPinCenterOffset;
+
 			FSpec S;
 			S.SrcNode = Pred.Node; S.SrcPin = SrcPin->PinName;
 			S.DstNode = LN.Node;   S.DstPin = DstPin->PinName;
-			S.KnotAX = GapMid - HalfKnotWidth;
-			S.KnotAY = PredPinY - KnotPinCenterOffset;
-			S.KnotBX = GapMid + HalfKnotWidth;  // = KnotAX + KnotWidth
-			S.KnotBY = MyPinY - KnotPinCenterOffset;
+			S.KnotX = KnotX;
+			S.KnotY = KnotY;
 			Specs.Add(S);
 		}
 
@@ -6079,36 +6081,25 @@ namespace BridgeBPPinAlignedImpl
 			if (!SrcPin || !DstPin) continue;
 			if (!SrcPin->LinkedTo.Contains(DstPin)) continue;
 
-			UK2Node_Knot* K1 = NewObject<UK2Node_Knot>(Graph);
-			K1->CreateNewGuid();
-			K1->NodePosX = S.KnotAX;
-			K1->NodePosY = S.KnotAY;
-			Graph->AddNode(K1, false, false);
-			K1->PostPlacedNewNode();
-			K1->AllocateDefaultPins();
+			UK2Node_Knot* K = NewObject<UK2Node_Knot>(Graph);
+			K->CreateNewGuid();
+			K->NodePosX = S.KnotX;
+			K->NodePosY = S.KnotY;
+			Graph->AddNode(K, false, false);
+			K->PostPlacedNewNode();
+			K->AllocateDefaultPins();
 
-			UK2Node_Knot* K2 = NewObject<UK2Node_Knot>(Graph);
-			K2->CreateNewGuid();
-			K2->NodePosX = S.KnotBX;
-			K2->NodePosY = S.KnotBY;
-			Graph->AddNode(K2, false, false);
-			K2->PostPlacedNewNode();
-			K2->AllocateDefaultPins();
-
-			UEdGraphPin* K1In  = K1->GetInputPin();
-			UEdGraphPin* K1Out = K1->GetOutputPin();
-			UEdGraphPin* K2In  = K2->GetInputPin();
-			UEdGraphPin* K2Out = K2->GetOutputPin();
-			if (!K1In || !K1Out || !K2In || !K2Out)
+			UEdGraphPin* KIn  = K->GetInputPin();
+			UEdGraphPin* KOut = K->GetOutputPin();
+			if (!KIn || !KOut)
 			{
-				K1->DestroyNode(); K2->DestroyNode();
+				K->DestroyNode();
 				continue;
 			}
 
 			SrcPin->BreakLinkTo(DstPin);
-			SrcPin->MakeLinkTo(K1In);
-			K1Out->MakeLinkTo(K2In);
-			K2Out->MakeLinkTo(DstPin);
+			SrcPin->MakeLinkTo(KIn);
+			KOut->MakeLinkTo(DstPin);
 			Inserted += 1;
 		}
 		return Inserted;
@@ -6130,7 +6121,6 @@ namespace BridgeBPPinAlignedImpl
 
 		constexpr int32 KnotWidth = 42;
 		constexpr int32 KnotPinCenterOffset = 12;
-		constexpr int32 HalfKnotWidth = KnotWidth / 2;
 
 		auto DirIndex = [](const UEdGraphNode* N, const UEdGraphPin* P) -> int32
 		{
@@ -6202,47 +6192,34 @@ namespace BridgeBPPinAlignedImpl
 			// Need at least 2 × KnotWidth of horizontal gap to fit both knots.
 			// Without that, the second knot would overshoot the destination's
 			// left edge and the outbound wire would curl backwards.
-			if (E.DstNodeLeft - E.SrcNodeRight < 2 * KnotWidth) continue;
+			if (E.DstNodeLeft - E.SrcNodeRight < KnotWidth + 40) continue;
 
-			const int32 GapMid = (E.SrcNodeRight + E.DstNodeLeft - KnotWidth) / 2;
-			const int32 KnotAX = GapMid - HalfKnotWidth;
-			const int32 KnotAY = E.SrcPinY - KnotPinCenterOffset;
-			const int32 KnotBX = GapMid + HalfKnotWidth;
-			const int32 KnotBY = E.DstPinY - KnotPinCenterOffset;
+			// Single knot near the destination at the destination pin's Y —
+			// final leg horizontal, first leg a natural Bezier curve.
+			const int32 GapRange = E.DstNodeLeft - E.SrcNodeRight;
+			const int32 KnotX = E.SrcNodeRight + (GapRange * 70) / 100 - KnotWidth / 2;
+			const int32 KnotY = E.DstPinY - KnotPinCenterOffset;
 
-			UK2Node_Knot* K1 = NewObject<UK2Node_Knot>(Graph);
-			K1->CreateNewGuid();
-			K1->NodePosX = KnotAX;
-			K1->NodePosY = KnotAY;
-			Graph->AddNode(K1, false, false);
-			K1->PostPlacedNewNode();
-			K1->AllocateDefaultPins();
+			UK2Node_Knot* K = NewObject<UK2Node_Knot>(Graph);
+			K->CreateNewGuid();
+			K->NodePosX = KnotX;
+			K->NodePosY = KnotY;
+			Graph->AddNode(K, false, false);
+			K->PostPlacedNewNode();
+			K->AllocateDefaultPins();
 
-			UK2Node_Knot* K2 = NewObject<UK2Node_Knot>(Graph);
-			K2->CreateNewGuid();
-			K2->NodePosX = KnotBX;
-			K2->NodePosY = KnotBY;
-			Graph->AddNode(K2, false, false);
-			K2->PostPlacedNewNode();
-			K2->AllocateDefaultPins();
+			UEdGraphPin* KIn  = K->GetInputPin();
+			UEdGraphPin* KOut = K->GetOutputPin();
+			if (!KIn || !KOut) { K->DestroyNode(); continue; }
 
-			UEdGraphPin* K1In  = K1->GetInputPin();
-			UEdGraphPin* K1Out = K1->GetOutputPin();
-			UEdGraphPin* K2In  = K2->GetInputPin();
-			UEdGraphPin* K2Out = K2->GetOutputPin();
-			if (!K1In || !K1Out || !K2In || !K2Out) { K1->DestroyNode(); K2->DestroyNode(); continue; }
-
-			// Make the knots carry the edge's actual value type (default is
+			// Make the knot carry the edge's actual value type (default is
 			// wildcard). Without this, compile errors may appear on save.
-			K1In->PinType  = E.PinType;
-			K1Out->PinType = E.PinType;
-			K2In->PinType  = E.PinType;
-			K2Out->PinType = E.PinType;
+			KIn->PinType  = E.PinType;
+			KOut->PinType = E.PinType;
 
 			SrcPin->BreakLinkTo(DstPin);
-			SrcPin->MakeLinkTo(K1In);
-			K1Out->MakeLinkTo(K2In);
-			K2Out->MakeLinkTo(DstPin);
+			SrcPin->MakeLinkTo(KIn);
+			KOut->MakeLinkTo(DstPin);
 			Inserted += 1;
 		}
 		return Inserted;
@@ -6490,12 +6467,12 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		if (LKnotsExec > 0)
 		{
 			Result.Warnings.Add(FString::Printf(
-				TEXT("pin_aligned: inserted %d L-route knots for diagonal exec edges"), LKnotsExec));
+				TEXT("pin_aligned: inserted %d reroute knots for diagonal exec edges"), LKnotsExec));
 		}
 		if (LKnotsData > 0)
 		{
 			Result.Warnings.Add(FString::Printf(
-				TEXT("pin_aligned: inserted %d L-route knots for diagonal data edges"), LKnotsData));
+				TEXT("pin_aligned: inserted %d reroute knots for diagonal data edges"), LKnotsData));
 		}
 		return Result;
 	}
