@@ -4647,6 +4647,47 @@ namespace BridgeBPSummaryImpl
 		const int32 RowCount = FMath::Max(Tally.InputCount, Tally.OutputCount);
 		H = FMath::Max(MinNodeHeight, HeaderHeight + RowCount * PinRowHeight + FooterHeight);
 	}
+
+	/** True if the node renders as a compact K2 node (e.g. `>=`, `OR`, `+`).
+	 *  Compact nodes have no standalone title bar and lay out their pins
+	 *  differently from standard nodes — specifically, the direction with
+	 *  fewer pins is vertically centered inside the node body. */
+	static bool IsCompactK2Node(const UEdGraphNode* Node)
+	{
+		const UK2Node* K2 = Cast<const UK2Node>(Node);
+		return K2 && K2->ShouldDrawCompact();
+	}
+
+	/** Local Y offset (relative to NodePosY) of a visible pin. For standard
+	 *  nodes this is the straightforward `HeaderHeight + DirIdx * PinRowHeight`.
+	 *  For compact nodes: the minority-side pins are centered in the node
+	 *  body, so e.g. a compact `>=` with 2 inputs + 1 output puts the output
+	 *  at (InputA.Y + InputB.Y) / 2 rather than at InputA.Y. Matches what
+	 *  UE renders visually — critical for pin-aligned layout to actually
+	 *  align in the editor.
+	 *
+	 *  @param DirIdx  Zero-based index of this pin among visible pins of its
+	 *                 own direction (input or output), same convention as
+	 *                 BridgeBPPinAlignedImpl::PinDirIndex. */
+	static int32 ComputePinLocalY(const UEdGraphNode* Node,
+		EEdGraphPinDirection Dir, int32 DirIdx)
+	{
+		int32 Y = HeaderHeight + DirIdx * PinRowHeight;
+		if (IsCompactK2Node(Node))
+		{
+			const FVisiblePinTally Tally = TallyVisiblePins(Node);
+			const int32 MyCount    = (Dir == EGPD_Input) ? Tally.InputCount : Tally.OutputCount;
+			const int32 OtherCount = (Dir == EGPD_Input) ? Tally.OutputCount : Tally.InputCount;
+			const int32 MaxCount   = FMath::Max(MyCount, OtherCount);
+			if (MyCount > 0 && MyCount < MaxCount)
+			{
+				// Center this direction's pin column inside the taller one:
+				// shift down by (MaxCount - MyCount) * PinRowHeight / 2.
+				Y += (MaxCount - MyCount) * PinRowHeight / 2;
+			}
+		}
+		return Y;
+	}
 }
 
 FBridgeNodeLayout UUnrealBridgeBlueprintLibrary::GetNodeLayout(
@@ -4739,7 +4780,7 @@ TArray<FBridgePinLayout> UUnrealBridgeBlueprintLibrary::GetNodePinLayouts(
 		const float Lx = (Pin->Direction == EGPD_Input)
 			? static_cast<float>(PinInsetX)
 			: static_cast<float>(EffWidth - PinInsetX);
-		const float Ly = static_cast<float>(HeaderHeight + DirIdx * PinRowHeight);
+		const float Ly = static_cast<float>(ComputePinLocalY(Node, Pin->Direction, DirIdx));
 		L.LocalOffset = FVector2D(Lx, Ly);
 		L.Position    = FVector2D(Ox + Lx, Oy + Ly);
 		Out.Add(L);
@@ -5549,10 +5590,10 @@ namespace BridgeBPPinAlignedImpl
 					LN.PredExecOutDirIdx >= 0 && LN.MyExecInDirIdx >= 0)
 				{
 					const FPALayoutNode& Pred = Nodes[LN.PrimaryExecPredIdx];
-					const int32 PredPinY = Pred.NewY + HeaderHeight
-						+ LN.PredExecOutDirIdx * PinRowHeight;
-					const int32 MyInLocalY = HeaderHeight
-						+ LN.MyExecInDirIdx * PinRowHeight;
+					const int32 PredPinY = Pred.NewY + ComputePinLocalY(
+						Pred.Node, EGPD_Output, LN.PredExecOutDirIdx);
+					const int32 MyInLocalY = ComputePinLocalY(
+						LN.Node, EGPD_Input, LN.MyExecInDirIdx);
 					LN.NewY = PredPinY - MyInLocalY;
 				}
 				else
@@ -5621,10 +5662,10 @@ namespace BridgeBPPinAlignedImpl
 			LN.NewX = Cons.NewX - HSpace - LN.Width;
 			if (LN.PrimaryConsumerInDirIdx >= 0 && LN.MyOutDirIdxToPrimary >= 0)
 			{
-				const int32 ConsPinY = Cons.NewY + HeaderHeight
-					+ LN.PrimaryConsumerInDirIdx * PinRowHeight;
-				const int32 MyOutLocalY = HeaderHeight
-					+ LN.MyOutDirIdxToPrimary * PinRowHeight;
+				const int32 ConsPinY = Cons.NewY + ComputePinLocalY(
+					Cons.Node, EGPD_Input, LN.PrimaryConsumerInDirIdx);
+				const int32 MyOutLocalY = ComputePinLocalY(
+					LN.Node, EGPD_Output, LN.MyOutDirIdxToPrimary);
 				LN.NewY = ConsPinY - MyOutLocalY;
 			}
 			else
@@ -5735,8 +5776,10 @@ namespace BridgeBPPinAlignedImpl
 			const FPALayoutNode& Pred = Nodes[LN.PrimaryExecPredIdx];
 			if (!Pred.bPlaced) continue;
 
-			const int32 PredPinY = Pred.Node->NodePosY + HeaderHeight + LN.PredExecOutDirIdx * PinRowHeight;
-			const int32 MyPinY   = LN.Node->NodePosY   + HeaderHeight + LN.MyExecInDirIdx   * PinRowHeight;
+			const int32 PredPinY = Pred.Node->NodePosY + ComputePinLocalY(
+				Pred.Node, EGPD_Output, LN.PredExecOutDirIdx);
+			const int32 MyPinY   = LN.Node->NodePosY + ComputePinLocalY(
+				LN.Node, EGPD_Input, LN.MyExecInDirIdx);
 			if (FMath::Abs(PredPinY - MyPinY) < YThreshold) continue;
 
 			UEdGraphPin* SrcPin = nullptr;
@@ -5888,7 +5931,7 @@ namespace BridgeBPPinAlignedImpl
 				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
 				const int32 SrcDirIdx = DirIndex(N, Pin);
 				if (SrcDirIdx < 0) continue;
-				const int32 SrcPinY = N->NodePosY + HeaderHeight + SrcDirIdx * PinRowHeight;
+				const int32 SrcPinY = N->NodePosY + ComputePinLocalY(N, EGPD_Output, SrcDirIdx);
 				const int32 SrcRight = N->NodePosX + NodeWidth(N);
 				for (UEdGraphPin* Linked : Pin->LinkedTo)
 				{
@@ -5899,7 +5942,7 @@ namespace BridgeBPPinAlignedImpl
 					if (Dst->IsA<UK2Node_Knot>()) continue;
 					const int32 DstDirIdx = DirIndex(Dst, Linked);
 					if (DstDirIdx < 0) continue;
-					const int32 DstPinY = Dst->NodePosY + HeaderHeight + DstDirIdx * PinRowHeight;
+					const int32 DstPinY = Dst->NodePosY + ComputePinLocalY(Dst, EGPD_Input, DstDirIdx);
 					if (FMath::Abs(SrcPinY - DstPinY) < YThreshold) continue;
 					FEdge E;
 					E.SrcNode = N; E.SrcPin = Pin->PinName;
@@ -7420,8 +7463,8 @@ int32 UUnrealBridgeBlueprintLibrary::StraightenExecChain(
 		};
 		const int32 OutIdx = PinRowIndex(Current, CurrentOutPin);
 		const int32 InIdx  = PinRowIndex(Next, NextInPin);
-		const int32 OutPinY = Current->NodePosY + HeaderHeight + OutIdx * PinRowHeight;
-		const int32 DesiredNextY = OutPinY - (HeaderHeight + InIdx * PinRowHeight);
+		const int32 OutPinY = Current->NodePosY + ComputePinLocalY(Current, EGPD_Output, OutIdx);
+		const int32 DesiredNextY = OutPinY - ComputePinLocalY(Next, EGPD_Input, InIdx);
 		if (Next->NodePosY != DesiredNextY)
 		{
 			Next->Modify();
@@ -7678,7 +7721,7 @@ int32 UUnrealBridgeBlueprintLibrary::AutoInsertReroutes(
 		UEdGraphPin* DstPin = W.DstNode->FindPin(W.DstPin);
 		if (!SrcPin || !DstPin) continue;
 
-		// Current endpoint positions (pin Y = node Y + header + index*row).
+		// Current endpoint positions (pin Y = node Y + compact-aware local Y).
 		auto PinLocalY = [](const UEdGraphNode* N, const UEdGraphPin* P) -> int32
 		{
 			int32 Idx = 0;
@@ -7689,7 +7732,7 @@ int32 UUnrealBridgeBlueprintLibrary::AutoInsertReroutes(
 				if (Q == P) break;
 				Idx += 1;
 			}
-			return HeaderHeight + Idx * PinRowHeight;
+			return ComputePinLocalY(N, P->Direction, Idx);
 		};
 		int32 SrcW = 0, SrcH = 0, DstW = 0, DstH = 0;
 		EstimateNodeSize(W.SrcNode, SrcW, SrcH);
