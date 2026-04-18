@@ -5823,6 +5823,144 @@ namespace BridgeBPPinAlignedImpl
 		return Inserted;
 	}
 
+	/** Iterate every non-exec wire in the graph. For each one whose source
+	 *  pin Y doesn't match destination pin Y (|Δ| >= YThreshold), insert
+	 *  two reroute knots to convert the diagonal into a src-horizontal /
+	 *  vertical / horizontal-to-dst L. Skips wires that already pass
+	 *  through a knot, wires that involve comments/knots, and wires whose
+	 *  endpoints aren't placed. Handles primary AND fan-out edges — e.g.
+	 *  a single output feeding two pins of the same consumer at different
+	 *  Y, where one wire aligns pin-to-pin but the other needs a knot. */
+	static int32 InsertLRouteKnotsForAllDataWires(
+		UEdGraph* Graph, int32 YThreshold)
+	{
+		if (!Graph) return 0;
+
+		constexpr int32 KnotWidth = 42;
+		constexpr int32 KnotPinCenterOffset = 12;
+		constexpr int32 HalfKnotWidth = KnotWidth / 2;
+
+		auto DirIndex = [](const UEdGraphNode* N, const UEdGraphPin* P) -> int32
+		{
+			if (!N || !P) return -1;
+			int32 Idx = 0;
+			for (const UEdGraphPin* Q : N->Pins)
+			{
+				if (!Q || Q->bHidden) continue;
+				if (Q->Direction != P->Direction) continue;
+				if (Q == P) return Idx;
+				Idx += 1;
+			}
+			return -1;
+		};
+
+		auto NodeWidth = [](UEdGraphNode* N) -> int32
+		{
+			if (!N) return 0;
+			if (N->NodeWidth > 0) return N->NodeWidth;
+			int32 W = 0, H = 0;
+			EstimateNodeSize(N, W, H);
+			return W;
+		};
+
+		// Snapshot edges first — we'll mutate the graph and don't want
+		// iteration to include the knots we just inserted.
+		struct FEdge { UEdGraphNode* SrcNode; FName SrcPin; UEdGraphNode* DstNode; FName DstPin;
+			FEdGraphPinType PinType;
+			int32 SrcPinY; int32 DstPinY;
+			int32 SrcNodeRight; int32 DstNodeLeft; };
+		TArray<FEdge> Edges;
+
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (!N) continue;
+			if (N->IsA<UEdGraphNode_Comment>()) continue;
+			if (N->IsA<UK2Node_Knot>()) continue;
+			for (UEdGraphPin* Pin : N->Pins)
+			{
+				if (!Pin || Pin->bHidden) continue;
+				if (Pin->Direction != EGPD_Output) continue;
+				// Data-only: skip exec category (exec uses its own L-route pass).
+				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+				const int32 SrcDirIdx = DirIndex(N, Pin);
+				if (SrcDirIdx < 0) continue;
+				const int32 SrcPinY = N->NodePosY + HeaderHeight + SrcDirIdx * PinRowHeight;
+				const int32 SrcRight = N->NodePosX + NodeWidth(N);
+				for (UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					if (!Linked) continue;
+					UEdGraphNode* Dst = Linked->GetOwningNode();
+					if (!Dst) continue;
+					if (Dst->IsA<UEdGraphNode_Comment>()) continue;
+					if (Dst->IsA<UK2Node_Knot>()) continue;
+					const int32 DstDirIdx = DirIndex(Dst, Linked);
+					if (DstDirIdx < 0) continue;
+					const int32 DstPinY = Dst->NodePosY + HeaderHeight + DstDirIdx * PinRowHeight;
+					if (FMath::Abs(SrcPinY - DstPinY) < YThreshold) continue;
+					FEdge E;
+					E.SrcNode = N; E.SrcPin = Pin->PinName;
+					E.DstNode = Dst; E.DstPin = Linked->PinName;
+					E.PinType = Pin->PinType;
+					E.SrcPinY = SrcPinY; E.DstPinY = DstPinY;
+					E.SrcNodeRight = SrcRight; E.DstNodeLeft = Dst->NodePosX;
+					Edges.Add(E);
+				}
+			}
+		}
+
+		int32 Inserted = 0;
+		for (const FEdge& E : Edges)
+		{
+			UEdGraphPin* SrcPin = E.SrcNode->FindPin(E.SrcPin);
+			UEdGraphPin* DstPin = E.DstNode->FindPin(E.DstPin);
+			if (!SrcPin || !DstPin) continue;
+			if (!SrcPin->LinkedTo.Contains(DstPin)) continue;
+			if (E.DstNodeLeft <= E.SrcNodeRight) continue;  // wire goes right-to-left, skip
+
+			const int32 GapMid = E.SrcNodeRight + (E.DstNodeLeft - E.SrcNodeRight) / 2;
+			const int32 KnotAX = GapMid - HalfKnotWidth;
+			const int32 KnotAY = E.SrcPinY - KnotPinCenterOffset;
+			const int32 KnotBX = GapMid + HalfKnotWidth;
+			const int32 KnotBY = E.DstPinY - KnotPinCenterOffset;
+
+			UK2Node_Knot* K1 = NewObject<UK2Node_Knot>(Graph);
+			K1->CreateNewGuid();
+			K1->NodePosX = KnotAX;
+			K1->NodePosY = KnotAY;
+			Graph->AddNode(K1, false, false);
+			K1->PostPlacedNewNode();
+			K1->AllocateDefaultPins();
+
+			UK2Node_Knot* K2 = NewObject<UK2Node_Knot>(Graph);
+			K2->CreateNewGuid();
+			K2->NodePosX = KnotBX;
+			K2->NodePosY = KnotBY;
+			Graph->AddNode(K2, false, false);
+			K2->PostPlacedNewNode();
+			K2->AllocateDefaultPins();
+
+			UEdGraphPin* K1In  = K1->GetInputPin();
+			UEdGraphPin* K1Out = K1->GetOutputPin();
+			UEdGraphPin* K2In  = K2->GetInputPin();
+			UEdGraphPin* K2Out = K2->GetOutputPin();
+			if (!K1In || !K1Out || !K2In || !K2Out) { K1->DestroyNode(); K2->DestroyNode(); continue; }
+
+			// Make the knots carry the edge's actual value type (default is
+			// wildcard). Without this, compile errors may appear on save.
+			K1In->PinType  = E.PinType;
+			K1Out->PinType = E.PinType;
+			K2In->PinType  = E.PinType;
+			K2Out->PinType = E.PinType;
+
+			SrcPin->BreakLinkTo(DstPin);
+			SrcPin->MakeLinkTo(K1In);
+			K1Out->MakeLinkTo(K2In);
+			K2Out->MakeLinkTo(DstPin);
+			Inserted += 1;
+		}
+		return Inserted;
+	}
+
 	/** Park any still-unplaced, non-comment nodes (disconnected islands, etc.)
 	 *  in a spillover strip below the main layout so they don't get lost. */
 	static void ParkUnplacedNodes(TArray<FPALayoutNode>& Nodes, int32 MinX, int32 MaxY,
@@ -6034,11 +6172,13 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 			Result.NodesPositioned += 1;
 		}
 
-		// Post-placement: L-route any exec edge whose pin alignment was broken
-		// by collision resolution (e.g. sibling branches pushed far below the
-		// predecessor's False pin). Uses two knots for a clean rectilinear
-		// turn instead of a long diagonal Bezier.
-		const int32 LKnots = InsertLRouteKnotsForDiagonalExec(Graph, Nodes, 30);
+		// Post-placement: L-route any wire whose pin alignment was broken by
+		// collision resolution. Two reroute knots turn a diagonal into a
+		// rectilinear horizontal-vertical-horizontal turn. Run for exec
+		// first, then data; each uses the same pattern with side-specific
+		// pin lookup.
+		const int32 LKnotsExec = InsertLRouteKnotsForDiagonalExec(Graph, Nodes, 30);
+		const int32 LKnotsData = InsertLRouteKnotsForAllDataWires(Graph, 30);
 
 		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 
@@ -6046,10 +6186,15 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		Result.LayerCount = LayerCount;
 		Result.BoundsWidth  = (MaxXOut == INT32_MIN) ? 0 : (MaxXOut - MinXOut);
 		Result.BoundsHeight = (MaxYOut == INT32_MIN) ? 0 : (MaxYOut - MinYOut);
-		if (LKnots > 0)
+		if (LKnotsExec > 0)
 		{
 			Result.Warnings.Add(FString::Printf(
-				TEXT("pin_aligned: inserted %d L-route knots for diagonal exec edges"), LKnots));
+				TEXT("pin_aligned: inserted %d L-route knots for diagonal exec edges"), LKnotsExec));
+		}
+		if (LKnotsData > 0)
+		{
+			Result.Warnings.Add(FString::Printf(
+				TEXT("pin_aligned: inserted %d L-route knots for diagonal data edges"), LKnotsData));
 		}
 		return Result;
 	}
