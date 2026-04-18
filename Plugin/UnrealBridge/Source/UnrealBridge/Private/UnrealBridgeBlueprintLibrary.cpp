@@ -5376,6 +5376,129 @@ namespace BridgeBPPinAlignedImpl
 		return -1;
 	}
 
+	/** Ground-truth geometry for a single node, queried from the live Slate
+	 *  widget. Populated by BuildRenderedCache when the graph is open in BP
+	 *  editor and has ticked at least once. Width/Height come from
+	 *  SGraphNode::GetDesiredSize; InputPinLocalYs[i] / OutputPinLocalYs[i]
+	 *  come from SGraphPin::GetNodeOffset for the i-th visible input/output
+	 *  pin. When the cache has no entry for a node, placement falls back to
+	 *  the EstimateNodeSize + ComputePinLocalY formula. */
+	struct FRenderedGeom
+	{
+		int32 Width = 0;
+		int32 Height = 0;
+		TArray<int32> InputPinLocalYs;
+		TArray<int32> OutputPinLocalYs;
+		TArray<int32> InputPinLocalXs;
+		TArray<int32> OutputPinLocalXs;
+		bool bValid = false;
+	};
+
+	/** Query the live SGraphPanel for each node's desired size and each pin's
+	 *  node-offset. Requires the graph to already be open in a Blueprint
+	 *  editor AND to have been ticked by Slate at least once (this function
+	 *  runs on the game thread, so call `open_function_graph_for_render`
+	 *  in a previous exec and wait a moment before calling the layout). */
+	static void BuildRenderedCache(UEdGraph* Graph, TMap<UEdGraphNode*, FRenderedGeom>& OutCache)
+	{
+		if (!Graph || !GEditor) return;
+		UAssetEditorSubsystem* Sub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>();
+		if (!Sub) return;
+		UBlueprint* OwningBP = Cast<UBlueprint>(Graph->GetOutermostObject());
+		// Walk up the outer chain to find the Blueprint (functions sit below UFunction).
+		UObject* Outer = Graph->GetOuter();
+		while (Outer && !OwningBP)
+		{
+			OwningBP = Cast<UBlueprint>(Outer);
+			Outer = Outer->GetOuter();
+		}
+		if (!OwningBP) return;
+		IAssetEditorInstance* Inst = Sub->FindEditorForAsset(OwningBP, false);
+		if (!Inst) return;
+		FBlueprintEditor* BPEd = static_cast<FBlueprintEditor*>(Inst);
+		TSharedPtr<SGraphEditor> GraphEd = BPEd->OpenGraphAndBringToFront(Graph);
+		if (!GraphEd.IsValid()) return;
+		SGraphPanel* Panel = GraphEd->GetGraphPanel();
+		if (!Panel) return;
+
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (!N) continue;
+			TSharedPtr<SGraphNode> NW = Panel->GetNodeWidgetFromGuid(N->NodeGuid);
+			if (!NW.IsValid()) continue;
+			FRenderedGeom G;
+			const FVector2D Size = FVector2D(NW->GetDesiredSize());
+			G.Width  = int32(Size.X);
+			G.Height = int32(Size.Y);
+			if (G.Width <= 0 && G.Height <= 0) continue;  // widget not yet ticked
+
+			// Collect visible pins in two parallel arrays — the i-th visible
+			// input pin's offset goes at InputPinLocalYs[i].
+			for (UEdGraphPin* Pin : N->Pins)
+			{
+				if (!Pin || Pin->bHidden) continue;
+				TSharedPtr<SGraphPin> PW = NW->FindWidgetForPin(Pin);
+				if (!PW.IsValid()) continue;
+				const FVector2D Off = FVector2D(PW->GetNodeOffset());
+				if (Pin->Direction == EGPD_Input)
+				{
+					G.InputPinLocalXs.Add(int32(Off.X));
+					G.InputPinLocalYs.Add(int32(Off.Y));
+				}
+				else
+				{
+					G.OutputPinLocalXs.Add(int32(Off.X));
+					G.OutputPinLocalYs.Add(int32(Off.Y));
+				}
+			}
+			G.bValid = true;
+			OutCache.Add(N, G);
+		}
+	}
+
+	/** Fetch the local-Y of a visible pin (direction-indexed). Uses the
+	 *  live-rendered cache if populated for this node, falls back to the
+	 *  EstimateNodeSize formula otherwise. */
+	static int32 PinLocalYFor(UEdGraphNode* Node, EEdGraphPinDirection Dir, int32 DirIdx,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
+	{
+		if (const FRenderedGeom* G = Cache.Find(Node))
+		{
+			if (G->bValid)
+			{
+				const TArray<int32>& Arr = (Dir == EGPD_Input) ? G->InputPinLocalYs : G->OutputPinLocalYs;
+				if (DirIdx >= 0 && DirIdx < Arr.Num()) return Arr[DirIdx];
+			}
+		}
+		return ComputePinLocalY(Node, Dir, DirIdx);
+	}
+
+	/** Node width from live cache, else from EstimateNodeSize. */
+	static int32 NodeWidthFor(UEdGraphNode* Node,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
+	{
+		if (const FRenderedGeom* G = Cache.Find(Node))
+		{
+			if (G->bValid && G->Width > 0) return G->Width;
+		}
+		int32 W = 0, H = 0;
+		EstimateNodeSize(Node, W, H);
+		return (Node->NodeWidth > 0) ? Node->NodeWidth : W;
+	}
+
+	/** Node height from live cache, else from EstimateNodeSize. */
+	static int32 NodeHeightFor(UEdGraphNode* Node,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
+	{
+		if (const FRenderedGeom* G = Cache.Find(Node))
+		{
+			if (G->bValid && G->Height > 0) return G->Height;
+		}
+		int32 W = 0, H = 0;
+		EstimateNodeSize(Node, W, H);
+		return (Node->NodeHeight > 0) ? Node->NodeHeight : H;
+	}
+
 	struct FPALayoutNode
 	{
 		UEdGraphNode* Node = nullptr;
@@ -5412,7 +5535,8 @@ namespace BridgeBPPinAlignedImpl
 	};
 
 	static void BuildGraph(UEdGraph* Graph, TArray<FPALayoutNode>& Out,
-		TMap<UEdGraphNode*, int32>& IndexOf)
+		TMap<UEdGraphNode*, int32>& IndexOf,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
 	{
 		for (UEdGraphNode* N : Graph->Nodes)
 		{
@@ -5420,10 +5544,8 @@ namespace BridgeBPPinAlignedImpl
 			// Comment boxes: snapshot but never place (kept at original XY).
 			FPALayoutNode LN;
 			LN.Node = N;
-			int32 EstW = 0, EstH = 0;
-			EstimateNodeSize(N, EstW, EstH);
-			LN.Width  = (N->NodeWidth  > 0) ? N->NodeWidth  : EstW;
-			LN.Height = (N->NodeHeight > 0) ? N->NodeHeight : EstH;
+			LN.Width  = NodeWidthFor(N, Cache);
+			LN.Height = NodeHeightFor(N, Cache);
 			IndexOf.Add(N, Out.Num());
 			Out.Add(LN);
 		}
@@ -5671,7 +5793,8 @@ namespace BridgeBPPinAlignedImpl
 	 *  later layer placed pin-aligned to its primary predecessor. Within each
 	 *  layer, nodes that share a tentative Y are pushed down to clear overlaps. */
 	static void PlaceExecBackbone(TArray<FPALayoutNode>& Nodes, int32 LayerCount,
-		const TArray<int32>& LayerX, int32 VSpace)
+		const TArray<int32>& LayerX, int32 VSpace,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
 	{
 		// Layer 0: original-Y order, stacked from Y=0.
 		TArray<int32> Layer0;
@@ -5709,10 +5832,10 @@ namespace BridgeBPPinAlignedImpl
 					LN.PredExecOutDirIdx >= 0 && LN.MyExecInDirIdx >= 0)
 				{
 					const FPALayoutNode& Pred = Nodes[LN.PrimaryExecPredIdx];
-					const int32 PredPinY = Pred.NewY + ComputePinLocalY(
-						Pred.Node, EGPD_Output, LN.PredExecOutDirIdx);
-					const int32 MyInLocalY = ComputePinLocalY(
-						LN.Node, EGPD_Input, LN.MyExecInDirIdx);
+					const int32 PredPinY = Pred.NewY + PinLocalYFor(
+						Pred.Node, EGPD_Output, LN.PredExecOutDirIdx, Cache);
+					const int32 MyInLocalY = PinLocalYFor(
+						LN.Node, EGPD_Input, LN.MyExecInDirIdx, Cache);
 					LN.NewY = PredPinY - MyInLocalY;
 				}
 				else
@@ -5749,7 +5872,8 @@ namespace BridgeBPPinAlignedImpl
 	 *  downward bump. Shallowest depth first so deeper producers align to
 	 *  already-placed intermediates. */
 	static void PlaceDataProducersPerConsumer(TArray<FPALayoutNode>& Nodes,
-		int32 HSpace, int32 VSpace)
+		int32 HSpace, int32 VSpace,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
 	{
 		// Gather pure data nodes, bucket by DataDepth ascending so we process
 		// shallowest (depth 1) first — their consumers are exec nodes already
@@ -5781,10 +5905,10 @@ namespace BridgeBPPinAlignedImpl
 			LN.NewX = Cons.NewX - HSpace - LN.Width;
 			if (LN.PrimaryConsumerInDirIdx >= 0 && LN.MyOutDirIdxToPrimary >= 0)
 			{
-				const int32 ConsPinY = Cons.NewY + ComputePinLocalY(
-					Cons.Node, EGPD_Input, LN.PrimaryConsumerInDirIdx);
-				const int32 MyOutLocalY = ComputePinLocalY(
-					LN.Node, EGPD_Output, LN.MyOutDirIdxToPrimary);
+				const int32 ConsPinY = Cons.NewY + PinLocalYFor(
+					Cons.Node, EGPD_Input, LN.PrimaryConsumerInDirIdx, Cache);
+				const int32 MyOutLocalY = PinLocalYFor(
+					LN.Node, EGPD_Output, LN.MyOutDirIdxToPrimary, Cache);
 				LN.NewY = ConsPinY - MyOutLocalY;
 			}
 			else
@@ -5868,7 +5992,8 @@ namespace BridgeBPPinAlignedImpl
 	 *  Must be called AFTER final Node positions (NodePosX/Y) are applied —
 	 *  reads those directly. Returns the number of L-route edges knotted. */
 	static int32 InsertLRouteKnotsForDiagonalExec(
-		UEdGraph* Graph, const TArray<FPALayoutNode>& Nodes, int32 YThreshold)
+		UEdGraph* Graph, const TArray<FPALayoutNode>& Nodes, int32 YThreshold,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
 	{
 		if (!Graph) return 0;
 
@@ -5895,10 +6020,10 @@ namespace BridgeBPPinAlignedImpl
 			const FPALayoutNode& Pred = Nodes[LN.PrimaryExecPredIdx];
 			if (!Pred.bPlaced) continue;
 
-			const int32 PredPinY = Pred.Node->NodePosY + ComputePinLocalY(
-				Pred.Node, EGPD_Output, LN.PredExecOutDirIdx);
-			const int32 MyPinY   = LN.Node->NodePosY + ComputePinLocalY(
-				LN.Node, EGPD_Input, LN.MyExecInDirIdx);
+			const int32 PredPinY = Pred.Node->NodePosY + PinLocalYFor(
+				Pred.Node, EGPD_Output, LN.PredExecOutDirIdx, Cache);
+			const int32 MyPinY   = LN.Node->NodePosY + PinLocalYFor(
+				LN.Node, EGPD_Input, LN.MyExecInDirIdx, Cache);
 			if (FMath::Abs(PredPinY - MyPinY) < YThreshold) continue;
 
 			UEdGraphPin* SrcPin = nullptr;
@@ -5998,7 +6123,8 @@ namespace BridgeBPPinAlignedImpl
 	 *  a single output feeding two pins of the same consumer at different
 	 *  Y, where one wire aligns pin-to-pin but the other needs a knot. */
 	static int32 InsertLRouteKnotsForAllDataWires(
-		UEdGraph* Graph, int32 YThreshold)
+		UEdGraph* Graph, int32 YThreshold,
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
 	{
 		if (!Graph) return 0;
 
@@ -6018,15 +6144,6 @@ namespace BridgeBPPinAlignedImpl
 				Idx += 1;
 			}
 			return -1;
-		};
-
-		auto NodeWidth = [](UEdGraphNode* N) -> int32
-		{
-			if (!N) return 0;
-			if (N->NodeWidth > 0) return N->NodeWidth;
-			int32 W = 0, H = 0;
-			EstimateNodeSize(N, W, H);
-			return W;
 		};
 
 		// Snapshot edges first — we'll mutate the graph and don't want
@@ -6050,8 +6167,8 @@ namespace BridgeBPPinAlignedImpl
 				if (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
 				const int32 SrcDirIdx = DirIndex(N, Pin);
 				if (SrcDirIdx < 0) continue;
-				const int32 SrcPinY = N->NodePosY + ComputePinLocalY(N, EGPD_Output, SrcDirIdx);
-				const int32 SrcRight = N->NodePosX + NodeWidth(N);
+				const int32 SrcPinY = N->NodePosY + PinLocalYFor(N, EGPD_Output, SrcDirIdx, Cache);
+				const int32 SrcRight = N->NodePosX + NodeWidthFor(N, Cache);
 				for (UEdGraphPin* Linked : Pin->LinkedTo)
 				{
 					if (!Linked) continue;
@@ -6061,7 +6178,7 @@ namespace BridgeBPPinAlignedImpl
 					if (Dst->IsA<UK2Node_Knot>()) continue;
 					const int32 DstDirIdx = DirIndex(Dst, Linked);
 					if (DstDirIdx < 0) continue;
-					const int32 DstPinY = Dst->NodePosY + ComputePinLocalY(Dst, EGPD_Input, DstDirIdx);
+					const int32 DstPinY = Dst->NodePosY + PinLocalYFor(Dst, EGPD_Input, DstDirIdx, Cache);
 					if (FMath::Abs(SrcPinY - DstPinY) < YThreshold) continue;
 					FEdge E;
 					E.SrcNode = N; E.SrcPin = Pin->PinName;
@@ -6184,9 +6301,20 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 	{
 		using namespace BridgeBPPinAlignedImpl;
 
+		// Query live Slate widgets for accurate node sizes + pin offsets.
+		// Requires the graph to already be open + ticked; if not, Cache is
+		// empty and all helpers fall back to EstimateNodeSize/ComputePinLocalY.
+		TMap<UEdGraphNode*, FRenderedGeom> Cache;
+		BuildRenderedCache(Graph, Cache);
+		if (Cache.Num() > 0)
+		{
+			Result.Warnings.Add(FString::Printf(
+				TEXT("pin_aligned: using live Slate geometry for %d nodes"), Cache.Num()));
+		}
+
 		TArray<FPALayoutNode> Nodes;
 		TMap<UEdGraphNode*, int32> IndexOf;
-		BuildGraph(Graph, Nodes, IndexOf);
+		BuildGraph(Graph, Nodes, IndexOf, Cache);
 		if (Nodes.Num() == 0) { Result.bSucceeded = true; return Result; }
 
 		const int32 LayerCount = AssignExecLayers(Nodes, Result.Warnings);
@@ -6254,8 +6382,8 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 			}
 		}
 
-		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace);
-		PlaceDataProducersPerConsumer(Nodes, HSpace, VSpace);
+		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace, Cache);
+		PlaceDataProducersPerConsumer(Nodes, HSpace, VSpace, Cache);
 
 		// Compute current-layout bounds, then park anything still unplaced.
 		int32 MinNewX = INT32_MAX, MinNewY = INT32_MAX, MaxNewX = INT32_MIN, MaxNewY = INT32_MIN;
@@ -6350,7 +6478,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		// every small Y offset just creates visual clutter. Keep the data
 		// layout pin-aligned at the node level (which PlaceDataProducersPerConsumer
 		// already does) and let UE's bezier render the unavoidable diagonals.
-		const int32 LKnotsExec = InsertLRouteKnotsForDiagonalExec(Graph, Nodes, 30);
+		const int32 LKnotsExec = InsertLRouteKnotsForDiagonalExec(Graph, Nodes, 30, Cache);
 		const int32 LKnotsData = 0;
 
 		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
