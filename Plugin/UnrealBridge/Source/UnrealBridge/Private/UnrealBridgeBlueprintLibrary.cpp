@@ -5234,6 +5234,15 @@ namespace BridgeBPPinAlignedImpl
 		// Dir-index of our own exec-IN pin receiving from the primary pred.
 		int32 MyExecInDirIdx = -1;
 
+		// Data-slot assignment (for pure/data nodes only).
+		int32 DataConsumerLayer = INT32_MAX;  // exec layer of nearest exec consumer
+		int32 DataDepth = INT32_MAX;          // 1 = direct producer, 2 = two hops, ...
+		// Primary consumer for Y alignment (any node — exec or pure — whose input
+		// pin this node feeds; picked by closest DataConsumerLayer/Depth).
+		int32 PrimaryConsumerIdx = INDEX_NONE;
+		int32 PrimaryConsumerInDirIdx = -1;  // which of consumer's input pins we feed
+		int32 MyOutDirIdxToPrimary = -1;     // which of our output pins feeds it
+
 		TArray<int32> ExecPredecessors;
 		TArray<int32> ExecSuccessors;
 
@@ -5344,29 +5353,112 @@ namespace BridgeBPPinAlignedImpl
 		return MaxLayer + 1;
 	}
 
-	/** Recursive pixel-width of the data chain feeding this node. Returns the
-	 *  widest "horizontal footprint" of upstream pure/data nodes before hitting
-	 *  any exec boundary (exec nodes are handled by their own layer). Used to
-	 *  reserve X-budget between exec layers so data producers aren't crammed
-	 *  into the entry node's column. */
-	static int32 ComputeDataBudget(int32 NodeIdx, const TArray<FPALayoutNode>& Nodes,
-		TMap<int32, int32>& Cache, int32 HSpace)
+	/** BFS from each exec node outward via DataProducers. Assigns every pure
+	 *  node a (ConsumerLayer, Depth) slot; shared pure nodes get the closest
+	 *  slot (smallest layer, then smallest depth). Also records each pure
+	 *  node's primary consumer and the specific pin pair used for Y alignment.
+	 *  Nodes with no exec ancestor (orphan pure chains) keep the sentinels
+	 *  and are parked later. */
+	static void AssignDataSlots(TArray<FPALayoutNode>& Nodes)
 	{
-		if (int32* Cached = Cache.Find(NodeIdx)) return *Cached;
-		Cache.Add(NodeIdx, 0);  // sentinel against data cycles
+		struct FFrontier { int32 NodeIdx; int32 ConsumerIdx; int32 ConsumerInDirIdx; int32 Depth; };
+		TArray<FFrontier> Queue;
 
-		int32 MaxBudget = 0;
-		const FPALayoutNode& LN = Nodes[NodeIdx];
-		for (const TPair<int32, int32>& Prod : LN.DataProducers)
+		// Seed: every exec node emits one frontier entry per direct data producer.
+		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
-			const int32 PIdx = Prod.Key;
-			if (Nodes[PIdx].bHasExecPins) continue;  // exec producer has own layer
-			const int32 Sub = ComputeDataBudget(PIdx, Nodes, Cache, HSpace);
-			const int32 Budget = Nodes[PIdx].Width + HSpace + Sub;
-			if (Budget > MaxBudget) MaxBudget = Budget;
+			const FPALayoutNode& Exec = Nodes[i];
+			if (!Exec.bHasExecPins) continue;
+			if (Exec.Layer < 0) continue;
+			for (const TPair<int32,int32>& Prod : Exec.DataProducers)
+			{
+				if (Nodes[Prod.Key].bHasExecPins) continue;  // exec→exec handled elsewhere
+				Queue.Add({ Prod.Key, i, Prod.Value, 1 });
+			}
 		}
-		Cache[NodeIdx] = MaxBudget;
-		return MaxBudget;
+
+		int32 Head = 0;
+		while (Head < Queue.Num())
+		{
+			const FFrontier F = Queue[Head++];
+			FPALayoutNode& N = Nodes[F.NodeIdx];
+			if (N.bHasExecPins) continue;
+
+			const int32 OwningExecLayer = Nodes[F.ConsumerIdx].bHasExecPins
+				? Nodes[F.ConsumerIdx].Layer
+				: Nodes[F.ConsumerIdx].DataConsumerLayer;
+			if (OwningExecLayer == INT32_MAX) continue;
+
+			const bool bBetter = (OwningExecLayer < N.DataConsumerLayer) ||
+				(OwningExecLayer == N.DataConsumerLayer && F.Depth < N.DataDepth);
+			if (!bBetter && N.PrimaryConsumerIdx != INDEX_NONE) continue;
+
+			N.DataConsumerLayer = OwningExecLayer;
+			N.DataDepth         = F.Depth;
+			N.PrimaryConsumerIdx        = F.ConsumerIdx;
+			N.PrimaryConsumerInDirIdx   = F.ConsumerInDirIdx;
+
+			// Resolve the actual output pin on us that feeds the consumer.
+			const FPALayoutNode& Cons = Nodes[F.ConsumerIdx];
+			UEdGraphPin* ConsInPin = nullptr;
+			{
+				int32 DirIdx = 0;
+				for (UEdGraphPin* Q : Cons.Node->Pins)
+				{
+					if (!Q || Q->bHidden) continue;
+					if (Q->Direction != EGPD_Input) continue;
+					if (DirIdx == F.ConsumerInDirIdx) { ConsInPin = Q; break; }
+					++DirIdx;
+				}
+			}
+			N.MyOutDirIdxToPrimary = -1;
+			if (ConsInPin)
+			{
+				for (UEdGraphPin* Linked : ConsInPin->LinkedTo)
+				{
+					if (Linked && Linked->GetOwningNode() == N.Node)
+					{
+						N.MyOutDirIdxToPrimary = PinDirIndex(N.Node, Linked);
+						break;
+					}
+				}
+			}
+
+			// Recurse into this node's own data producers (depth+1).
+			for (const TPair<int32,int32>& Prod : N.DataProducers)
+			{
+				if (Nodes[Prod.Key].bHasExecPins) continue;
+				Queue.Add({ Prod.Key, F.NodeIdx, Prod.Value, F.Depth + 1 });
+			}
+		}
+	}
+
+	/** Compute per-slot max width and per-slot X position. Slot keys are
+	 *  encoded as (ConsumerLayer * LargeStride + Depth) packed into int64
+	 *  to stay in a single TMap. Returns the per-exec-layer cumulative data
+	 *  budget (sum of slot widths + gaps) so AutoLayoutGraph can space the
+	 *  exec columns apart. */
+	static int64 MakeSlotKey(int32 ConsumerLayer, int32 Depth)
+	{
+		return (int64(ConsumerLayer) << 20) | int64(Depth & 0xFFFFF);
+	}
+
+	static void ComputeDataSlots(
+		const TArray<FPALayoutNode>& Nodes,
+		TMap<int64, int32>& OutSlotWidth,
+		TMap<int32, int32>& OutLayerMaxDepth)
+	{
+		for (const FPALayoutNode& LN : Nodes)
+		{
+			if (LN.bHasExecPins) continue;
+			if (LN.DataConsumerLayer == INT32_MAX) continue;
+			if (LN.DataDepth == INT32_MAX) continue;
+			const int64 Key = MakeSlotKey(LN.DataConsumerLayer, LN.DataDepth);
+			int32& W = OutSlotWidth.FindOrAdd(Key, 0);
+			if (LN.Width > W) W = LN.Width;
+			int32& MaxD = OutLayerMaxDepth.FindOrAdd(LN.DataConsumerLayer, 0);
+			if (LN.DataDepth > MaxD) MaxD = LN.DataDepth;
+		}
 	}
 
 	/** Pick the primary exec predecessor for each exec node; record the exact
@@ -5484,96 +5576,82 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
-	/** Walk each placed node's data producers right-to-left; place each pure
-	 *  producer pin-aligned to its consumer's input pin. Shared producers
-	 *  (multiple consumers) are placed once, by the first consumer we visit.
-	 *  Recurse: each producer's own data inputs form the next column left. */
-	static void PlaceDataProducers(TArray<FPALayoutNode>& Nodes, int32 HSpace, int32 VSpace)
+	/** Place pure nodes into their assigned slot columns. All nodes in the
+	 *  same (ConsumerLayer, Depth) slot share the same X (= SlotX for that
+	 *  slot), so sibling producers never have overlapping X-ranges regardless
+	 *  of individual widths. Y is pin-aligned to the primary consumer's input
+	 *  pin; collisions within a slot are resolved by downward bump. Process
+	 *  depth-1 slots first (closest to exec) so deeper slots can align to
+	 *  their already-placed (intermediate) consumers. */
+	static void PlaceDataProducersInSlots(TArray<FPALayoutNode>& Nodes,
+		const TMap<int64, int32>& SlotX, int32 VSpace)
 	{
-		// BFS from placed nodes outward through data inputs.
-		TArray<int32> Queue;
+		// Group data nodes by ConsumerLayer, sorted by Depth (ascending).
+		struct FSlotBucket { int32 ConsumerLayer; int32 Depth; TArray<int32> Nodes; };
+		TArray<FSlotBucket> Buckets;
+		TMap<int64, int32> BucketIdxByKey;
 		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
-			if (Nodes[i].bPlaced) Queue.Add(i);
-		}
-		int32 Head = 0;
-
-		// Per-column (x-bucket) stack to resolve overlaps between data nodes
-		// pulled in by different exec consumers.
-		TMap<int32, TArray<int32>> ColumnOccupancy;
-		auto ResolveColumnOverlap = [&](int32 Idx)
-		{
-			FPALayoutNode& LN = Nodes[Idx];
-			TArray<int32>& Column = ColumnOccupancy.FindOrAdd(LN.NewX);
-			// Find any already-placed node in this column overlapping my Y band.
-			int32 Attempts = 0;
-			while (Attempts++ < 64)
+			const FPALayoutNode& LN = Nodes[i];
+			if (LN.bHasExecPins) continue;
+			if (LN.DataConsumerLayer == INT32_MAX) continue;
+			if (LN.DataDepth == INT32_MAX) continue;
+			const int64 Key = MakeSlotKey(LN.DataConsumerLayer, LN.DataDepth);
+			int32* Existing = BucketIdxByKey.Find(Key);
+			int32 BucketIdx;
+			if (Existing) { BucketIdx = *Existing; }
+			else
 			{
-				bool bClash = false;
-				for (int32 Other : Column)
-				{
-					const FPALayoutNode& O = Nodes[Other];
-					if (LN.NewY + LN.Height + VSpace <= O.NewY) continue;
-					if (O.NewY + O.Height + VSpace <= LN.NewY) continue;
-					LN.NewY = O.NewY + O.Height + VSpace;
-					bClash = true;
-					break;
-				}
-				if (!bClash) break;
+				FSlotBucket B; B.ConsumerLayer = LN.DataConsumerLayer; B.Depth = LN.DataDepth;
+				BucketIdx = Buckets.Add(B);
+				BucketIdxByKey.Add(Key, BucketIdx);
 			}
-			Column.Add(Idx);
-		};
+			Buckets[BucketIdx].Nodes.Add(i);
+		}
 
-		while (Head < Queue.Num())
+		// Process shallowest-depth slots first so that deeper producers can
+		// align against already-placed intermediate consumers.
+		Buckets.Sort([](const FSlotBucket& A, const FSlotBucket& B) {
+			return A.Depth < B.Depth;
+		});
+
+		for (FSlotBucket& B : Buckets)
 		{
-			const int32 ConsumerIdx = Queue[Head++];
-			FPALayoutNode& Consumer = Nodes[ConsumerIdx];
+			const int64 Key = MakeSlotKey(B.ConsumerLayer, B.Depth);
+			const int32* X = SlotX.Find(Key);
+			if (!X) continue;
 
-			for (const TPair<int32,int32>& Prod : Consumer.DataProducers)
+			// Tentative Y from primary consumer pin alignment.
+			for (int32 Idx : B.Nodes)
 			{
-				const int32 PIdx = Prod.Key;
-				FPALayoutNode& P = Nodes[PIdx];
-				if (P.bPlaced) continue;
-
-				// Resolve Consumer's input pin by dir-index.
-				UEdGraphPin* ConsumerInPin = nullptr;
+				FPALayoutNode& LN = Nodes[Idx];
+				LN.NewX = *X;
+				if (LN.PrimaryConsumerIdx != INDEX_NONE && Nodes[LN.PrimaryConsumerIdx].bPlaced
+					&& LN.PrimaryConsumerInDirIdx >= 0 && LN.MyOutDirIdxToPrimary >= 0)
 				{
-					int32 DirIdx = 0;
-					for (UEdGraphPin* Q : Consumer.Node->Pins)
-					{
-						if (!Q || Q->bHidden) continue;
-						if (Q->Direction != EGPD_Input) continue;
-						if (DirIdx == Prod.Value) { ConsumerInPin = Q; break; }
-						++DirIdx;
-					}
+					const FPALayoutNode& Cons = Nodes[LN.PrimaryConsumerIdx];
+					const int32 ConsPinY = Cons.NewY + HeaderHeight
+						+ LN.PrimaryConsumerInDirIdx * PinRowHeight;
+					const int32 MyOutLocalY = HeaderHeight
+						+ LN.MyOutDirIdxToPrimary * PinRowHeight;
+					LN.NewY = ConsPinY - MyOutLocalY;
 				}
-				if (!ConsumerInPin) continue;
-
-				// Find the producer's output pin actually connected to this input.
-				UEdGraphPin* ProdOutPin = nullptr;
-				for (UEdGraphPin* Linked : ConsumerInPin->LinkedTo)
+				else
 				{
-					if (Linked && Linked->GetOwningNode() == P.Node)
-					{
-						ProdOutPin = Linked; break;
-					}
+					LN.NewY = LN.Node->NodePosY;
 				}
-				if (!ProdOutPin) continue;
+			}
 
-				const int32 ProdOutDirIdx = PinDirIndex(P.Node, ProdOutPin);
-				if (ProdOutDirIdx < 0) continue;
-
-				// Align producer's output pin Y to consumer's input pin Y.
-				const int32 ConsumerPinY = Consumer.NewY + HeaderHeight
-					+ Prod.Value * PinRowHeight;
-				const int32 ProdOutLocalY = HeaderHeight
-					+ ProdOutDirIdx * PinRowHeight;
-
-				P.NewX = Consumer.NewX - P.Width - HSpace;
-				P.NewY = ConsumerPinY - ProdOutLocalY;
-				P.bPlaced = true;
-				ResolveColumnOverlap(PIdx);
-				Queue.Add(PIdx);
+			// Resolve Y collisions within this slot (preserve tentative order).
+			B.Nodes.Sort([&](int32 A, int32 BB) { return Nodes[A].NewY < Nodes[BB].NewY; });
+			for (int32 k = 0; k < B.Nodes.Num(); ++k)
+			{
+				if (k == 0) { Nodes[B.Nodes[k]].bPlaced = true; continue; }
+				const FPALayoutNode& Prev = Nodes[B.Nodes[k-1]];
+				FPALayoutNode& Curr = Nodes[B.Nodes[k]];
+				const int32 MinY = Prev.NewY + Prev.Height + VSpace;
+				if (Curr.NewY < MinY) Curr.NewY = MinY;
+				Curr.bPlaced = true;
 			}
 		}
 	}
@@ -5638,6 +5716,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 
 		const int32 LayerCount = AssignExecLayers(Nodes, Result.Warnings);
 		SelectPrimaryExecPreds(Nodes);
+		AssignDataSlots(Nodes);
 
 		// Per-layer widest width (exec nodes only).
 		TArray<int32> LayerMaxW; LayerMaxW.SetNumZeroed(LayerCount);
@@ -5647,21 +5726,32 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 			if (LN.Layer < 0 || LN.Layer >= LayerCount) continue;
 			if (LN.Width > LayerMaxW[LN.Layer]) LayerMaxW[LN.Layer] = LN.Width;
 		}
-		// Per-layer max data-chain budget (reserve X for nodes pulled in from
-		// the right by layer L's exec consumers).
+		// Per-slot max width + per-layer max depth.
+		TMap<int64, int32> SlotWidth;
+		TMap<int32, int32> LayerMaxDepth;
+		ComputeDataSlots(Nodes, SlotWidth, LayerMaxDepth);
+
+		// Per-layer data budget = sum of slot widths + HSpace gaps for this
+		// layer's depth range.
 		TArray<int32> LayerDataBudget; LayerDataBudget.SetNumZeroed(LayerCount);
-		for (int32 i = 0; i < Nodes.Num(); ++i)
+		for (int32 L = 0; L < LayerCount; ++L)
 		{
-			const FPALayoutNode& LN = Nodes[i];
-			if (!LN.bHasExecPins) continue;
-			if (LN.Layer < 0 || LN.Layer >= LayerCount) continue;
-			TMap<int32, int32> Cache;
-			const int32 Budget = ComputeDataBudget(i, Nodes, Cache, HSpace);
-			if (Budget > LayerDataBudget[LN.Layer]) LayerDataBudget[LN.Layer] = Budget;
+			const int32* MaxD = LayerMaxDepth.Find(L);
+			if (!MaxD) continue;
+			int32 Sum = 0;
+			for (int32 d = 1; d <= *MaxD; ++d)
+			{
+				const int64 Key = MakeSlotKey(L, d);
+				const int32* W = SlotWidth.Find(Key);
+				const int32 SlotW = W ? *W : 0;
+				Sum += SlotW + HSpace;
+			}
+			LayerDataBudget[L] = Sum;
 		}
-		// Layer X positions (cumulative). Layer 0 gets no data budget (there's
-		// no preceding layer to feed it). Each later layer starts at previous
-		// layer's right edge + that layer's data budget + spacing.
+
+		// Layer X positions (cumulative). Layer 0 has no data feeding it from
+		// the left (that'd be cyclic). Each later layer's X = prev layer's
+		// right edge + that layer's data budget (+HSpace is already in budget).
 		TArray<int32> LayerX; LayerX.SetNumZeroed(LayerCount);
 		int32 Cur = 0;
 		for (int32 L = 0; L < LayerCount; ++L)
@@ -5671,8 +5761,26 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 			if (L + 1 < LayerCount) Cur += LayerDataBudget[L + 1];
 		}
 
+		// Slot X positions: walk each layer's data depths right-to-left.
+		TMap<int64, int32> SlotX;
+		for (int32 L = 0; L < LayerCount; ++L)
+		{
+			const int32* MaxD = LayerMaxDepth.Find(L);
+			if (!MaxD) continue;
+			int32 SX = LayerX[L] - HSpace;
+			for (int32 d = 1; d <= *MaxD; ++d)
+			{
+				const int64 Key = MakeSlotKey(L, d);
+				const int32* W = SlotWidth.Find(Key);
+				const int32 SlotW = W ? *W : 0;
+				SX -= SlotW;
+				SlotX.Add(Key, SX);
+				SX -= HSpace;
+			}
+		}
+
 		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace);
-		PlaceDataProducers(Nodes, HSpace, VSpace);
+		PlaceDataProducersInSlots(Nodes, SlotX, VSpace);
 
 		// Compute current-layout bounds, then park anything still unplaced.
 		int32 MinNewX = INT32_MAX, MinNewY = INT32_MAX, MaxNewX = INT32_MIN, MaxNewY = INT32_MIN;
