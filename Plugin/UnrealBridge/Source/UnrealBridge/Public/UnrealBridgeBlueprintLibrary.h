@@ -777,6 +777,36 @@ struct FBridgeLayoutResult
 	UPROPERTY(BlueprintReadOnly) TArray<FString> Warnings;
 };
 
+/** A single finding from LintBlueprint. `code` is a stable machine-readable
+ *  tag; `message` is human text. Location fields are populated only when
+ *  meaningful (e.g. NodeGuid for per-node issues, VariableName for per-var). */
+USTRUCT(BlueprintType)
+struct FBridgeLintIssue
+{
+	GENERATED_BODY()
+
+	/** "error" (compile-blocking), "warning" (quality issue), "info" (style). */
+	UPROPERTY(BlueprintReadOnly) FString Severity;
+
+	/** Stable identifier (e.g. "OrphanNode", "OversizedFunction", "UnusedVariable"). */
+	UPROPERTY(BlueprintReadOnly) FString Code;
+
+	/** Plain-English description with the specific offending name(s) inlined. */
+	UPROPERTY(BlueprintReadOnly) FString Message;
+
+	/** Graph where the issue lives ("" for BP-level issues like unused class vars). */
+	UPROPERTY(BlueprintReadOnly) FString GraphName;
+
+	/** Node GUID for per-node issues ("" if not applicable). */
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+
+	/** Variable name for per-variable issues ("" if not applicable). */
+	UPROPERTY(BlueprintReadOnly) FString VariableName;
+
+	/** Function name for per-function issues ("" if not applicable). */
+	UPROPERTY(BlueprintReadOnly) FString FunctionName;
+};
+
 /** Full pin description for one node pin (listed regardless of wire state). */
 USTRUCT(BlueprintType)
 struct FBridgePinInfo
@@ -1846,4 +1876,141 @@ public:
 	static bool DisconnectPinLink(const FString& BlueprintPath, const FString& GraphName,
 		const FString& SourceNodeGuid, const FString& SourcePinName,
 		const FString& TargetNodeGuid, const FString& TargetPinName);
+
+	// ─── Lint / quality review ─────────────────────────────────────
+
+	/**
+	 * Run a quality-review pass over a Blueprint and return structured
+	 * findings. Designed for AI agents to self-review generated graphs before
+	 * calling the task done. Checks are intentionally cheap (single BP load,
+	 * no compile required).
+	 *
+	 * Current checks (v1):
+	 *   • OrphanNode            — node has zero connections on every pin
+	 *   • OversizedFunction     — function graph exceeds the node threshold
+	 *   • UnnamedCustomEvent    — CustomEvent has default name (Event_N etc.)
+	 *   • UnnamedFunction       — user-authored function named NewFunction_N
+	 *   • InstanceEditableNoCategory — editable var lacks a custom Category
+	 *   • InstanceEditableNoTooltip  — editable var lacks a tooltip
+	 *   • UnusedVariable        — class variable with zero references
+	 *   • UnusedLocalVariable   — function local var with zero references
+	 *   • LargeUncommentedGraph — graph has many nodes and no comment boxes
+	 *   • LongExecChain         — unbroken exec chain suggests extraction
+	 *   • HardcodedStringLiteral — PrintString / literal nodes with prod-looking defaults
+	 *
+	 * @param SeverityFilter  "" = all, or one of "error"/"warning"/"info"
+	 * @param OversizedFunctionThreshold  Node-count ceiling for functions.
+	 *                                    -1 uses the default of 20.
+	 * @param LongExecChainThreshold  Linear-chain length that triggers the
+	 *                                extraction hint. -1 uses default 15.
+	 * @param LargeGraphThreshold     Node count above which a graph must
+	 *                                have at least one comment box. -1 = 10.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeLintIssue> LintBlueprint(
+		const FString& BlueprintPath,
+		const FString& SeverityFilter,
+		int32 OversizedFunctionThreshold,
+		int32 LongExecChainThreshold,
+		int32 LargeGraphThreshold);
+
+	// ─── Collapse to function / macro ─────────────────────────────
+
+	/**
+	 * Extract a selection of nodes into a new Function graph and replace the
+	 * selection with a CallFunction gateway node wired to the same external
+	 * pins. Mirrors the engine's "Collapse to Function" command but callable
+	 * without the editor UI.
+	 *
+	 * Algorithm (matches FBlueprintEditor::CollapseNodesIntoGraph):
+	 *   1. Create a new function graph (unique name derived from NewName)
+	 *   2. Move the selected nodes into it
+	 *   3. For each pin on a selected node whose LinkedTo crosses the
+	 *      selection boundary, create a matching pin on the FunctionEntry
+	 *      (inputs) or FunctionResult (outputs), plus a corresponding pin on
+	 *      the gateway CallFunction node in the source graph
+	 *   4. Rewire: external side ↔ gateway; internal side ↔ entry/result
+	 *
+	 * The selection must all live in the same graph. Comment boxes in the
+	 * selection are moved along with the nodes. Orphan Events / Function
+	 * entries in the selection are refused (they can't be extracted).
+	 *
+	 * @param NewFunctionName  Desired name; gets uniquified if taken.
+	 * @param OutNewGraphName  Set to the actual function graph name on success.
+	 * @return GUID of the gateway CallFunction node in the source graph, or ""
+	 *         on failure. Check OutNewGraphName to locate the new function.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString CollapseNodesToFunction(const FString& BlueprintPath,
+		const FString& SourceGraphName, const TArray<FString>& NodeGuids,
+		const FString& NewFunctionName, FString& OutNewGraphName);
+
+	// ─── Straighten exec rail ─────────────────────────────────────
+
+	/**
+	 * Walk a linear exec chain starting from StartNodeGuid and align each
+	 * downstream node's Y so its exec-input pin sits at exactly the same Y
+	 * as the upstream exec-output pin. Produces the "clean straight rail"
+	 * look that auto_layout_graph alone can't give because layout works at
+	 * layer-center granularity, not pin granularity.
+	 *
+	 * Stops at the first branch (multiple exec outs with links) or merge
+	 * (exec in pin with > 1 links) — use multiple calls to straighten each
+	 * branch independently.
+	 *
+	 * @return number of nodes whose Y was adjusted.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static int32 StraightenExecChain(const FString& BlueprintPath,
+		const FString& GraphName, const FString& StartNodeGuid,
+		const FString& StartExecPinName);
+
+	// ─── Comment-box color + node tint ─────────────────────────────
+
+	/**
+	 * Set the background color of a Comment box. Accepts a hex string
+	 * ("#RRGGBB" or "#RRGGBBAA") or one of these presets:
+	 *   "Section"    — neutral grey
+	 *   "Validation" — yellow
+	 *   "Danger"     — red
+	 *   "Network"    — purple
+	 *   "UI"         — teal
+	 *   "Debug"      — green
+	 *   "Setup"      — blue
+	 *
+	 * @return true if the node is a Comment and the color parsed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetCommentBoxColor(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid,
+		const FString& ColorOrPreset);
+
+	/**
+	 * Tint an individual node with a custom color override (the little
+	 * "Enable Node Color" path). Uses the same preset names / hex grammar as
+	 * SetCommentBoxColor. Pass an empty string to clear the override.
+	 *
+	 * @return true on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetNodeColor(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid,
+		const FString& ColorOrPreset);
+
+	// ─── Auto-insert reroute knots to break overlaps ───────────────
+
+	/**
+	 * Walk every wire in the graph; if a wire's straight line from source
+	 * pin to destination pin crosses any *other* node's bounding box
+	 * (non-endpoint), insert a reroute (knot) node at a clear Y above or
+	 * below the obstruction so the wire no longer passes through it.
+	 *
+	 * Only operates on wires that are problematic — untouched wires stay
+	 * untouched. Safe to call multiple times.
+	 *
+	 * @return number of reroute knots inserted.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static int32 AutoInsertReroutes(const FString& BlueprintPath,
+		const FString& GraphName);
 };

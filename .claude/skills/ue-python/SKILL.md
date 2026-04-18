@@ -86,6 +86,28 @@ Every task executed through this skill MUST follow these principles — no excep
 
 > **Asset lookup by name defaults to `search_assets_in_all_content(name, max_results)` — read `bridge-asset-api.md` before searching.** When the user names an asset without giving a path, do **not** call `unreal.AssetRegistryHelpers.get_assets_by_path('/Game', recursive=True)` and filter in Python — that walks 100k–2M+ entries and times out. The full `search_assets` form needs `BridgeAssetSearchScope.ALL_ASSETS` (not `PROJECT`) when the asset might live in a plugin mount (`/PluginName/...`). `PROJECT` scope only covers `/Game`; using it for a plugin asset returns `[]` silently. The valid scope members are exactly `ALL_ASSETS`, `PROJECT`, `CUSTOM_PACKAGE_PATH` — there is no `GAME_FOLDER`.
 
+## Blueprint review loop (mandatory after any BP authoring)
+
+When you **author or modify a Blueprint graph** (spawn / connect / remove nodes, add variables, create functions), you MUST run this loop before calling the task done. AI-generated BPs default to a visually chaotic, maintainability-light shape — the review loop is what turns them into code a human will want to maintain.
+
+```
+1. plan        — list events, functions, local vars as text before touching the bridge
+2. build       — add_*_node / connect_graph_pins / add_blueprint_variable …
+3. auto_layout — auto_layout_graph(bp, graph, 'exec_flow', '', 80, 40)
+4. lint        — lint_blueprint(bp, '', -1, -1, -1) and resolve every finding
+5. collapse    — for any LongExecChain finding, collapse_nodes_to_function
+6. straighten  — straighten_exec_chain for each main exec rail
+7. reroute     — auto_insert_reroutes to break wires that cross nodes
+8. comment     — add_comment_box + set_comment_box_color for each section
+9. compile     — confirm compile_blueprints returns clean
+```
+
+- **Lint is non-optional.** If `lint_blueprint` returns any `warning` or `error`, fix or explicitly accept each one (write a justification in a comment box). Do not hand the BP back with unresolved warnings.
+- **Name things.** `UnnamedCustomEvent` / `UnnamedFunction` findings mean the agent left a placeholder — always rename to describe intent (`OnHealthChanged`, not `CustomEvent_0`).
+- **Comment boxes are section titles.** Any graph > 10 nodes must have at least one comment box with a meaningful title (e.g. `"1. Validate inputs"`, `"2. Apply damage"`) and an appropriate preset color via `set_comment_box_color` (`Section`, `Validation`, `Danger`, `Network`, `UI`, `Debug`, `Setup`).
+- **Straighten before you ship.** `auto_layout_graph` places nodes in layers but doesn't guarantee pin-level alignment on the main exec rail. Call `straighten_exec_chain` on the primary event's exec output last — it's the single biggest visual quality signal.
+- **Size predict before spawning.** If you're placing several nodes in a row by hand, call `predict_node_size` for each kind first so your X offsets don't overlap.
+
 ## Safety Rules
 
 - **NEVER** delete assets, actors, or files without explicit user confirmation

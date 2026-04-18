@@ -1560,6 +1560,124 @@ wires first.
 
 ---
 
+## Quality / review toolkit
+
+The following five APIs turn a freshly-authored BP from "works" into "a human wants to maintain this". They're meant to be called together as a post-build review loop — see the workflow block at the top of `SKILL.md`.
+
+### lint_blueprint(blueprint_path, severity_filter, oversized_fn_threshold, long_exec_chain_threshold, large_graph_threshold) -> list[FBridgeLintIssue]
+
+Run a structural / stylistic review and return findings. Pass `-1` for any threshold to use the default. Pass `""` for the severity filter to get everything.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+for i in L.lint_blueprint(bp, '', -1, -1, -1):
+    print(f'[{i.severity}] {i.code}: {i.message}')
+```
+
+**Check codes (v1)**:
+
+| Code | Severity | Triggered when |
+|------|----------|----------------|
+| `OrphanNode` | warning | Every pin on a node has zero links (dead code / left-over spawn) |
+| `OversizedFunction` | warning | Function graph exceeds node threshold (default 20) |
+| `UnnamedCustomEvent` | warning | `CustomEvent_N` / `Event_N` pattern — rename to describe intent |
+| `UnnamedFunction` | warning | `NewFunction_N` pattern |
+| `InstanceEditableNoCategory` | info | Editable var with `Default` / empty / = var-name category |
+| `InstanceEditableNoTooltip` | info | Editable var with no tooltip — designers won't know what it does |
+| `UnusedVariable` | info | Non-editable class variable with zero references |
+| `UnusedLocalVariable` | info | Local variable with zero references |
+| `LargeUncommentedGraph` | info | Graph has ≥ threshold nodes and no comment boxes |
+| `LongExecChain` | warning | Unbroken linear exec chain ≥ threshold — consider extraction |
+
+**FBridgeLintIssue fields**: `severity`, `code`, `message`, `graph_name`, `node_guid`, `variable_name`, `function_name` (location fields are `""` when not meaningful).
+
+**Caveat (locale)**: `InstanceEditableNoCategory` uses English-source + var-name matching. In non-English locales UE may store `Default` as a localized FText (e.g. `默认`) which slips past the check — ignore the false negative or set an explicit category to silence it.
+
+### collapse_nodes_to_function(blueprint_path, source_graph, node_guids, new_function_name) -> (str, str)
+
+Extract a selection of nodes into a new Function graph and replace the selection in the source graph with a CallFunction gateway node wired to the same external pins. Returns `(gateway_guid, new_graph_name)`. On failure, gateway is `""`.
+
+```python
+# After lint flags a LongExecChain, extract the offending range
+gateway, new_name = L.collapse_nodes_to_function(bp, 'EventGraph',
+    [p1, p2, p3, p4, p5], 'HandlePrints')
+print(f'extracted into {new_name}, call-site {gateway[:8]}')
+```
+
+**Algorithm** (mirrors `FBlueprintEditor::CollapseNodesIntoGraph`):
+1. Create a new function graph (unique name derived from `new_function_name`)
+2. Move the selected nodes into it
+3. For each pin that crosses the selection boundary, create matching pins on `FunctionEntry` (inputs) / `FunctionResult` (outputs) and on the gateway CallFunction
+4. Re-wire: external side ↔ gateway, internal side ↔ entry/result
+
+**Constraints**:
+- The selection must all live in the same graph.
+- `FunctionEntry` / `FunctionResult` / tunnel nodes are rejected (can't be extracted).
+- An empty-output function discards its result node automatically.
+
+### straighten_exec_chain(blueprint_path, graph_name, start_node_guid, start_exec_pin_name) -> int
+
+Walk the linear exec chain downstream from `start_node_guid.start_exec_pin_name` and align each downstream node's `NodePosY` so its exec-input pin sits at *exactly* the same Y as the upstream exec-output pin. Returns the number of nodes adjusted.
+
+Pass `""` for `start_exec_pin_name` to pick the first exec-output pin with a single link.
+
+```python
+# After auto_layout_graph, straighten the main event's exec rail
+L.straighten_exec_chain(bp, 'EventGraph', begin_play_guid, 'then')
+```
+
+**Stops at**:
+- A branch (multiple exec-out pins with links) — call again on each branch
+- A merge (exec-in pin with > 1 links)
+- A node with 0 exec-out links (end of chain)
+
+This is the missing piece for the "clean straight rail" look — `auto_layout_graph` operates on layer-center Y, not pin-level Y, so exec pins don't line up pixel-perfect until this runs.
+
+### set_comment_box_color(blueprint_path, graph_name, node_guid, color_or_preset) -> bool
+
+Set a comment box's background color. Accepts a hex string (`"#RRGGBB"` / `"#RRGGBBAA"`, `#` optional) or one of these preset names:
+
+| Preset | Color | Use for |
+|--------|-------|---------|
+| `Section` | neutral grey | generic grouping / section headers |
+| `Validation` | yellow | input validation / guard clauses |
+| `Danger` | red | destructive / irreversible actions |
+| `Network` | purple | multiplayer / replication |
+| `UI` | teal | HUD / UMG / viewport interactions |
+| `Debug` | green | temporary debug prints, breakpoint zones |
+| `Setup` | blue | initialization / construction |
+
+```python
+comment = L.add_comment_box(bp, g, [n1, n2, n3], '1. Validate inputs', 0, 0, 0, 0)
+L.set_comment_box_color(bp, g, comment, 'Validation')
+```
+
+Returns `False` if the node isn't a Comment, or the color/preset didn't parse.
+
+### set_node_color(blueprint_path, graph_name, node_guid, color_or_preset) -> bool
+
+Tag an individual node with a visible color cue. **UE doesn't expose a true per-node background tint at the base class level**, so this helper sets a labelled comment bubble on the node with the color/preset name as the label — enough for a human or an agent re-reading the graph to see which functional group a node belongs to.
+
+For real visual grouping, prefer `add_comment_box` + `set_comment_box_color` over per-node tagging.
+
+```python
+L.set_node_color(bp, g, damage_call_guid, 'Danger')  # labels the node
+```
+
+### auto_insert_reroutes(blueprint_path, graph_name) -> int
+
+Walk every wire; if a wire's straight line from source-pin to destination-pin crosses any other node's bounding box, insert a reroute knot at a clear Y above the obstruction and re-route the wire through it. Returns the number of knots inserted.
+
+```python
+# Run after auto_layout_graph (which can still leave wires passing through
+# nodes when a layer's vertical stack is shorter than the one it feeds)
+knots = L.auto_insert_reroutes(bp, 'EventGraph')
+```
+
+Safe to call multiple times — previously-routed wires don't get re-processed.
+
+---
+
 ### End-to-end example — one node-graph build, one compile
 
 ```python

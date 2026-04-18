@@ -5735,3 +5735,1011 @@ bool UUnrealBridgeBlueprintLibrary::DisconnectPinLink(
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return true;
 }
+
+// ─── Lint / quality review ─────────────────────────────────────
+
+namespace BridgeBPLintImpl
+{
+	struct FLintCtx
+	{
+		UBlueprint* BP = nullptr;
+		TArray<FBridgeLintIssue>* Out = nullptr;
+		int32 OversizedFnThreshold = 20;
+		int32 LongExecChainThreshold = 15;
+		int32 LargeGraphThreshold = 10;
+	};
+
+	static void Emit(FLintCtx& C, const FString& Severity, const FString& Code,
+		const FString& Message, const FString& GraphName,
+		const FString& NodeGuid, const FString& VarName, const FString& FnName)
+	{
+		FBridgeLintIssue I;
+		I.Severity = Severity;
+		I.Code = Code;
+		I.Message = Message;
+		I.GraphName = GraphName;
+		I.NodeGuid = NodeGuid;
+		I.VariableName = VarName;
+		I.FunctionName = FnName;
+		C.Out->Add(I);
+	}
+
+	/** True if every pin on the node has zero links and zero default pin-object. */
+	static bool IsFullyOrphan(const UEdGraphNode* Node)
+	{
+		if (!Node) return false;
+		for (const UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin) continue;
+			if (Pin->LinkedTo.Num() > 0) return false;
+		}
+		return true;
+	}
+
+	/** Heuristic: name matches default UE naming for new custom events. */
+	static bool LooksDefaultCustomEventName(const FString& Name)
+	{
+		// e.g. "CustomEvent", "CustomEvent_0", "Event", "Event_0"
+		if (Name.Equals(TEXT("CustomEvent"), ESearchCase::IgnoreCase)) return true;
+		if (Name.Equals(TEXT("Event"),       ESearchCase::IgnoreCase)) return true;
+		for (const TCHAR* Prefix : { TEXT("CustomEvent_"), TEXT("Event_") })
+		{
+			if (Name.StartsWith(Prefix))
+			{
+				const FString Tail = Name.RightChop(FCString::Strlen(Prefix));
+				if (!Tail.IsEmpty() && Tail.IsNumeric()) return true;
+			}
+		}
+		return false;
+	}
+
+	static bool LooksDefaultFunctionName(const FString& Name)
+	{
+		if (Name.Equals(TEXT("NewFunction"), ESearchCase::IgnoreCase)) return true;
+		if (Name.StartsWith(TEXT("NewFunction_")))
+		{
+			const FString Tail = Name.RightChop(12);
+			if (!Tail.IsEmpty() && Tail.IsNumeric()) return true;
+		}
+		return false;
+	}
+
+	/** Count non-comment, non-ghost nodes. */
+	static int32 CountRealNodes(const UEdGraph* Graph)
+	{
+		int32 Count = 0;
+		if (!Graph) return 0;
+		for (const UEdGraphNode* N : Graph->Nodes)
+		{
+			if (!N) continue;
+			if (N->IsA<UEdGraphNode_Comment>()) continue;
+			Count += 1;
+		}
+		return Count;
+	}
+
+	static int32 CountCommentBoxes(const UEdGraph* Graph)
+	{
+		int32 Count = 0;
+		if (!Graph) return 0;
+		for (const UEdGraphNode* N : Graph->Nodes)
+		{
+			if (N && N->IsA<UEdGraphNode_Comment>()) Count += 1;
+		}
+		return Count;
+	}
+
+	/** Find the longest linear exec chain starting from any node. "Linear"
+	 *  means each successor has exactly 1 exec-input link AND the upstream
+	 *  emits exactly 1 exec-output link — i.e. no branching, no merging. */
+	static int32 LongestLinearExecChain(UEdGraph* Graph)
+	{
+		if (!Graph) return 0;
+		int32 Best = 0;
+		TMap<UEdGraphNode*, int32> Memo;
+		TFunction<int32(UEdGraphNode*)> Walk = [&](UEdGraphNode* N) -> int32
+		{
+			if (!N) return 0;
+			if (int32* M = Memo.Find(N)) return *M;
+			Memo.Add(N, 1);  // break cycles by reserving
+
+			int32 MyBest = 1;
+			for (UEdGraphPin* Pin : N->Pins)
+			{
+				if (!Pin) continue;
+				if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+				if (Pin->Direction != EGPD_Output) continue;
+				if (Pin->LinkedTo.Num() != 1) continue;  // branching → not linear
+				UEdGraphPin* DownIn = Pin->LinkedTo[0];
+				if (!DownIn || DownIn->LinkedTo.Num() != 1) continue;  // merging
+				UEdGraphNode* Next = DownIn->GetOwningNode();
+				if (!Next || Next == N) continue;
+				MyBest = FMath::Max(MyBest, 1 + Walk(Next));
+			}
+			Memo.Add(N, MyBest);  // overwrite placeholder
+			return MyBest;
+		};
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			Best = FMath::Max(Best, Walk(N));
+		}
+		return Best;
+	}
+
+	// ─── Individual checks ────────────────────────────────
+
+	static void CheckOrphanNodes(FLintCtx& C)
+	{
+		TArray<UEdGraph*> Graphs;
+		for (UEdGraph* G : C.BP->UbergraphPages)  Graphs.Add(G);
+		for (UEdGraph* G : C.BP->FunctionGraphs)  Graphs.Add(G);
+		for (UEdGraph* G : C.BP->MacroGraphs)     Graphs.Add(G);
+
+		for (UEdGraph* G : Graphs)
+		{
+			if (!G) continue;
+			for (UEdGraphNode* N : G->Nodes)
+			{
+				if (!N) continue;
+				if (N->IsA<UEdGraphNode_Comment>()) continue;
+				if (N->IsA<UK2Node_FunctionEntry>()) continue;
+				if (N->IsA<UK2Node_FunctionResult>()) continue;
+
+				// "Tunnel" nodes on macro graphs are entry/exit — always orphan-ish.
+				if (N->GetClass()->GetName().Contains(TEXT("Tunnel"))) continue;
+
+				if (!IsFullyOrphan(N)) continue;
+
+				// Events with no "then" connection ARE dead code and worth flagging.
+				const FString Msg = FString::Printf(
+					TEXT("Node '%s' (%s) has no connections — dead code or left-over spawn"),
+					*N->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+					*N->GetClass()->GetName());
+				Emit(C, TEXT("warning"), TEXT("OrphanNode"), Msg,
+					G->GetName(), N->NodeGuid.ToString(EGuidFormats::Digits),
+					FString(), FString());
+			}
+		}
+	}
+
+	static void CheckOversizedFunctions(FLintCtx& C)
+	{
+		for (UEdGraph* G : C.BP->FunctionGraphs)
+		{
+			if (!G) continue;
+			const int32 N = CountRealNodes(G);
+			if (N <= C.OversizedFnThreshold) continue;
+			const FString Msg = FString::Printf(
+				TEXT("Function '%s' has %d nodes (threshold %d) — consider extracting sub-functions"),
+				*G->GetName(), N, C.OversizedFnThreshold);
+			Emit(C, TEXT("warning"), TEXT("OversizedFunction"), Msg,
+				G->GetName(), FString(), FString(), G->GetName());
+		}
+	}
+
+	static void CheckUnnamedCustomEvents(FLintCtx& C)
+	{
+		for (UEdGraph* G : C.BP->UbergraphPages)
+		{
+			if (!G) continue;
+			for (UEdGraphNode* N : G->Nodes)
+			{
+				if (UK2Node_CustomEvent* CE = Cast<UK2Node_CustomEvent>(N))
+				{
+					if (LooksDefaultCustomEventName(CE->CustomFunctionName.ToString()))
+					{
+						const FString Msg = FString::Printf(
+							TEXT("CustomEvent '%s' still uses a default name — rename to describe intent"),
+							*CE->CustomFunctionName.ToString());
+						Emit(C, TEXT("warning"), TEXT("UnnamedCustomEvent"), Msg,
+							G->GetName(), CE->NodeGuid.ToString(EGuidFormats::Digits),
+							FString(), FString());
+					}
+				}
+			}
+		}
+	}
+
+	static void CheckUnnamedFunctions(FLintCtx& C)
+	{
+		for (UEdGraph* G : C.BP->FunctionGraphs)
+		{
+			if (!G) continue;
+			if (LooksDefaultFunctionName(G->GetName()))
+			{
+				const FString Msg = FString::Printf(
+					TEXT("Function graph '%s' still uses the default name — rename to describe intent"),
+					*G->GetName());
+				Emit(C, TEXT("warning"), TEXT("UnnamedFunction"), Msg,
+					G->GetName(), FString(), FString(), G->GetName());
+			}
+		}
+	}
+
+	static void CheckVariableMetadata(FLintCtx& C)
+	{
+		for (const FBPVariableDescription& V : C.BP->NewVariables)
+		{
+			const bool bEditable = (V.PropertyFlags & CPF_Edit) != 0;
+			if (!bEditable) continue;
+
+			const FString Cat = V.Category.ToString();
+			const bool bDefaultCat = Cat.IsEmpty()
+			                       || Cat.Equals(TEXT("Default"), ESearchCase::IgnoreCase)
+			                       || Cat.Equals(V.VarName.ToString(), ESearchCase::IgnoreCase);
+			if (bDefaultCat)
+			{
+				const FString Msg = FString::Printf(
+					TEXT("Editable variable '%s' lacks a custom Category — set one to group it in Details"),
+					*V.VarName.ToString());
+				Emit(C, TEXT("info"), TEXT("InstanceEditableNoCategory"), Msg,
+					FString(), FString(), V.VarName.ToString(), FString());
+			}
+			const FString Tip = V.HasMetaData(TEXT("tooltip"))
+				? V.GetMetaData(TEXT("tooltip")) : FString();
+			if (Tip.IsEmpty())
+			{
+				const FString Msg = FString::Printf(
+					TEXT("Editable variable '%s' has no tooltip — designers won't know what it does"),
+					*V.VarName.ToString());
+				Emit(C, TEXT("info"), TEXT("InstanceEditableNoTooltip"), Msg,
+					FString(), FString(), V.VarName.ToString(), FString());
+			}
+		}
+	}
+
+	/** Walk every graph, count K2Node_Variable references to VarName. */
+	static int32 CountVariableRefs(UBlueprint* BP, const FName& VarName, UEdGraph* RestrictToGraph = nullptr)
+	{
+		int32 Count = 0;
+		TArray<UEdGraph*> Graphs;
+		if (RestrictToGraph) { Graphs.Add(RestrictToGraph); }
+		else
+		{
+			for (UEdGraph* G : BP->UbergraphPages) Graphs.Add(G);
+			for (UEdGraph* G : BP->FunctionGraphs) Graphs.Add(G);
+			for (UEdGraph* G : BP->MacroGraphs)    Graphs.Add(G);
+		}
+		for (UEdGraph* G : Graphs)
+		{
+			if (!G) continue;
+			for (UEdGraphNode* N : G->Nodes)
+			{
+				if (UK2Node_Variable* V = Cast<UK2Node_Variable>(N))
+				{
+					if (V->VariableReference.GetMemberName() == VarName) Count += 1;
+				}
+			}
+		}
+		return Count;
+	}
+
+	static void CheckUnusedClassVariables(FLintCtx& C)
+	{
+		for (const FBPVariableDescription& V : C.BP->NewVariables)
+		{
+			const int32 Refs = CountVariableRefs(C.BP, V.VarName);
+			if (Refs > 0) continue;
+			// Skip editable vars — they're a legitimate external API even with 0 internal refs.
+			if ((V.PropertyFlags & CPF_Edit) != 0) continue;
+			const FString Msg = FString::Printf(
+				TEXT("Variable '%s' is never read or written inside this Blueprint"),
+				*V.VarName.ToString());
+			Emit(C, TEXT("info"), TEXT("UnusedVariable"), Msg,
+				FString(), FString(), V.VarName.ToString(), FString());
+		}
+	}
+
+	static void CheckUnusedLocalVariables(FLintCtx& C)
+	{
+		for (UEdGraph* G : C.BP->FunctionGraphs)
+		{
+			if (!G) continue;
+			UK2Node_FunctionEntry* Entry = nullptr;
+			for (UEdGraphNode* N : G->Nodes)
+			{
+				if (UK2Node_FunctionEntry* E = Cast<UK2Node_FunctionEntry>(N)) { Entry = E; break; }
+			}
+			if (!Entry) continue;
+			for (const FBPVariableDescription& V : Entry->LocalVariables)
+			{
+				const int32 Refs = CountVariableRefs(C.BP, V.VarName, G);
+				if (Refs > 0) continue;
+				const FString Msg = FString::Printf(
+					TEXT("Local variable '%s' in function '%s' is never read or written"),
+					*V.VarName.ToString(), *G->GetName());
+				Emit(C, TEXT("info"), TEXT("UnusedLocalVariable"), Msg,
+					G->GetName(), FString(), V.VarName.ToString(), G->GetName());
+			}
+		}
+	}
+
+	static void CheckLargeUncommentedGraphs(FLintCtx& C)
+	{
+		auto Check = [&](UEdGraph* G)
+		{
+			if (!G) return;
+			const int32 NReal = CountRealNodes(G);
+			if (NReal < C.LargeGraphThreshold) return;
+			if (CountCommentBoxes(G) > 0) return;
+			const FString Msg = FString::Printf(
+				TEXT("Graph '%s' has %d nodes but no comment boxes — add section labels to orient readers"),
+				*G->GetName(), NReal);
+			Emit(C, TEXT("info"), TEXT("LargeUncommentedGraph"), Msg,
+				G->GetName(), FString(), FString(), FString());
+		};
+		for (UEdGraph* G : C.BP->UbergraphPages) Check(G);
+		for (UEdGraph* G : C.BP->FunctionGraphs) Check(G);
+	}
+
+	static void CheckLongExecChains(FLintCtx& C)
+	{
+		auto Check = [&](UEdGraph* G)
+		{
+			if (!G) return;
+			const int32 Len = LongestLinearExecChain(G);
+			if (Len < C.LongExecChainThreshold) return;
+			const FString Msg = FString::Printf(
+				TEXT("Graph '%s' has a linear exec chain of %d nodes — consider extracting a function"),
+				*G->GetName(), Len);
+			Emit(C, TEXT("warning"), TEXT("LongExecChain"), Msg,
+				G->GetName(), FString(), FString(), FString());
+		};
+		for (UEdGraph* G : C.BP->UbergraphPages) Check(G);
+		for (UEdGraph* G : C.BP->FunctionGraphs) Check(G);
+	}
+}
+
+TArray<FBridgeLintIssue> UUnrealBridgeBlueprintLibrary::LintBlueprint(
+	const FString& BlueprintPath, const FString& SeverityFilter,
+	int32 OversizedFunctionThreshold, int32 LongExecChainThreshold,
+	int32 LargeGraphThreshold)
+{
+	using namespace BridgeBPLintImpl;
+	TArray<FBridgeLintIssue> Issues;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Issues;
+
+	FLintCtx C;
+	C.BP = BP;
+	C.Out = &Issues;
+	C.OversizedFnThreshold   = OversizedFunctionThreshold > 0 ? OversizedFunctionThreshold : 20;
+	C.LongExecChainThreshold = LongExecChainThreshold   > 0 ? LongExecChainThreshold   : 15;
+	C.LargeGraphThreshold    = LargeGraphThreshold      > 0 ? LargeGraphThreshold      : 10;
+
+	CheckOrphanNodes(C);
+	CheckOversizedFunctions(C);
+	CheckUnnamedCustomEvents(C);
+	CheckUnnamedFunctions(C);
+	CheckVariableMetadata(C);
+	CheckUnusedClassVariables(C);
+	CheckUnusedLocalVariables(C);
+	CheckLargeUncommentedGraphs(C);
+	CheckLongExecChains(C);
+
+	if (!SeverityFilter.IsEmpty())
+	{
+		Issues.RemoveAll([&](const FBridgeLintIssue& I)
+		{
+			return !I.Severity.Equals(SeverityFilter, ESearchCase::IgnoreCase);
+		});
+	}
+	return Issues;
+}
+
+// ─── Collapse to function ──────────────────────────────────────
+
+namespace BridgeBPCollapseImpl
+{
+	/** Resolve a node GUID in a graph. */
+	static UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FString& GuidStr)
+	{
+		if (!Graph) return nullptr;
+		FGuid Guid;
+		if (!FGuid::Parse(GuidStr, Guid)) return nullptr;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (N && N->NodeGuid == Guid) return N;
+		}
+		return nullptr;
+	}
+
+	/** Sort pins for stable user-facing order: inputs first by Y, outputs by Y. */
+	static void SortPinsByPosition(TArray<UEdGraphPin*>& Pins)
+	{
+		Pins.Sort([](const UEdGraphPin& A, const UEdGraphPin& B)
+		{
+			const UEdGraphNode* NA = A.GetOwningNode();
+			const UEdGraphNode* NB = B.GetOwningNode();
+			if (A.Direction != B.Direction) return A.Direction == EGPD_Input;
+			if (!NA || !NB) return false;
+			if (NA->NodePosY != NB->NodePosY) return NA->NodePosY < NB->NodePosY;
+			return NA->NodePosX < NB->NodePosX;
+		});
+	}
+}
+
+FString UUnrealBridgeBlueprintLibrary::CollapseNodesToFunction(
+	const FString& BlueprintPath, const FString& SourceGraphName,
+	const TArray<FString>& NodeGuids, const FString& NewFunctionName,
+	FString& OutNewGraphName)
+{
+	using namespace BridgeBPCollapseImpl;
+	using namespace BridgeBlueprintGraphWriteImpl;
+
+	OutNewGraphName.Empty();
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return FString();
+
+	UEdGraph* SourceGraph = FindGraphByName(BP, SourceGraphName);
+	if (!SourceGraph) return FString();
+
+	// Resolve selection; reject entry/result/tunnel/orphaned-event scaffolding.
+	TSet<UEdGraphNode*> Selection;
+	int32 MinX = INT32_MAX, MinY = INT32_MAX, MaxX = INT32_MIN, MaxY = INT32_MIN;
+	int32 SumX = 0, SumY = 0;
+	for (const FString& GuidStr : NodeGuids)
+	{
+		UEdGraphNode* N = BridgeBPCollapseImpl::FindNodeByGuid(SourceGraph, GuidStr);
+		if (!N) return FString();
+		if (N->IsA<UK2Node_FunctionEntry>() || N->IsA<UK2Node_FunctionResult>()) return FString();
+		if (N->GetClass()->GetName().Contains(TEXT("Tunnel"))) return FString();
+		Selection.Add(N);
+		SumX += N->NodePosX; SumY += N->NodePosY;
+		MinX = FMath::Min(MinX, N->NodePosX); MinY = FMath::Min(MinY, N->NodePosY);
+		MaxX = FMath::Max(MaxX, N->NodePosX); MaxY = FMath::Max(MaxY, N->NodePosY);
+	}
+	if (Selection.Num() == 0) return FString();
+
+	// Create the new function graph.
+	const FName BaseName = FBlueprintEditorUtils::FindUniqueKismetName(
+		BP, NewFunctionName.IsEmpty() ? TEXT("ExtractedFunction") : NewFunctionName);
+	UEdGraph* DestGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, BaseName, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!DestGraph) return FString();
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(BP, DestGraph, /*bIsUserCreated*/true, nullptr);
+
+	// Fetch the auto-created entry; result is created on demand below.
+	UK2Node_FunctionEntry* EntryNode = nullptr;
+	for (UEdGraphNode* N : DestGraph->Nodes)
+	{
+		if (UK2Node_FunctionEntry* E = Cast<UK2Node_FunctionEntry>(N)) { EntryNode = E; break; }
+	}
+	if (!EntryNode) return FString();
+
+	FGraphNodeCreator<UK2Node_FunctionResult> ResultNodeCreator(*DestGraph);
+	UK2Node_FunctionResult* ResultNode = ResultNodeCreator.CreateNode();
+	ResultNode->NodePosX = EntryNode->NodePosX + 300;
+	ResultNode->NodePosY = EntryNode->NodePosY;
+	ResultNodeCreator.Finalize();
+
+	const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
+
+	// Spawn the gateway CallFunction node in the source graph. We set it up
+	// against the skeleton's new UFunction after moving nodes (the function
+	// shape depends on the boundary pins we discover below).
+	UK2Node_CallFunction* Gateway = NewObject<UK2Node_CallFunction>(SourceGraph);
+	Gateway->CreateNewGuid();
+	const int32 CenterX = Selection.Num() > 0 ? (SumX / Selection.Num()) : 0;
+	const int32 CenterY = Selection.Num() > 0 ? (SumY / Selection.Num()) : 0;
+	Gateway->NodePosX = CenterX;
+	Gateway->NodePosY = CenterY;
+	SourceGraph->AddNode(Gateway, false, false);
+
+	// Point the gateway at the skeleton's freshly-created function so it can
+	// materialise default exec pins. AddFunctionGraph registers the skeleton
+	// signature immediately — FindFunctionByName should succeed.
+	UClass* SkelClass = BP->SkeletonGeneratedClass ? BP->SkeletonGeneratedClass : BP->GeneratedClass;
+	UFunction* SkelFn = SkelClass ? SkelClass->FindFunctionByName(BaseName) : nullptr;
+	if (SkelFn)
+	{
+		Gateway->SetFromFunction(SkelFn);
+	}
+	Gateway->PostPlacedNewNode();
+	Gateway->AllocateDefaultPins();
+
+	// Move the nodes and collect boundary pins in the process.
+	TArray<UEdGraphPin*> GatewayPins;  // pins on the *moved* nodes that cross the boundary
+	SourceGraph->Modify();
+	DestGraph->Modify();
+	BP->Modify();
+
+	for (UEdGraphNode* N : Selection)
+	{
+		N->Modify();
+		SourceGraph->Nodes.Remove(N);
+		DestGraph->Nodes.Add(N);
+		N->Rename(nullptr, DestGraph);
+
+		for (UEdGraphPin* P : N->Pins)
+		{
+			if (!P || P->LinkedTo.Num() == 0) continue;
+			bool bCrosses = false;
+			for (UEdGraphPin* Linked : P->LinkedTo)
+			{
+				if (!Linked) continue;
+				if (!Selection.Contains(Linked->GetOwningNode())) { bCrosses = true; break; }
+			}
+			if (bCrosses) GatewayPins.Add(P);
+		}
+	}
+	SortPinsByPosition(GatewayPins);
+
+	bool bDiscardResult = true;
+
+	// Thunk each boundary pin through entry/result + gateway.
+	for (UEdGraphPin* LocalPin : GatewayPins)
+	{
+		UK2Node_EditablePinBase* LocalPort = (LocalPin->Direction == EGPD_Input) ? (UK2Node_EditablePinBase*)EntryNode : (UK2Node_EditablePinBase*)ResultNode;
+		UEdGraphPin* LocalPortPin = nullptr;
+		UEdGraphPin* RemotePortPin = nullptr;
+
+		const bool bIsExec = (LocalPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+		if (bIsExec)
+		{
+			// Functions have fixed exec in/out. For an input exec on a moved
+			// node (consumed from the outside), we want Entry.exec-out on the
+			// inside and Gateway.exec-in on the outside — directions mirror.
+			LocalPortPin = K2->FindExecutionPin(*LocalPort,
+				(LocalPin->Direction == EGPD_Input) ? EGPD_Output : EGPD_Input);
+			RemotePortPin = K2->FindExecutionPin(*Gateway, LocalPin->Direction);
+		}
+		else
+		{
+			const FName UniquePortName = Gateway->CreateUniquePinName(LocalPin->PinName);
+			FEdGraphPinType PinType = LocalPin->PinType;
+			if (PinType.bIsWeakPointer && !PinType.IsContainer()) PinType.bIsWeakPointer = false;
+			RemotePortPin = Gateway->CreatePin(LocalPin->Direction, PinType, UniquePortName);
+			LocalPortPin  = LocalPort->CreateUserDefinedPin(UniquePortName, PinType,
+				(LocalPin->Direction == EGPD_Input) ? EGPD_Output : EGPD_Input);
+			if (LocalPin->Direction == EGPD_Output) bDiscardResult = false;
+		}
+		if (!LocalPortPin || !RemotePortPin) continue;
+
+		LocalPin->Modify();
+		// Re-route each external link: external↔Gateway, internal↔Entry/Result.
+		for (int32 i = LocalPin->LinkedTo.Num() - 1; i >= 0; --i)
+		{
+			UEdGraphPin* RemotePin = LocalPin->LinkedTo[i];
+			if (!RemotePin) continue;
+			UEdGraphNode* RemoteOwner = RemotePin->GetOwningNode();
+			if (!RemoteOwner) continue;
+			if (Selection.Contains(RemoteOwner)) continue;  // purely internal — leave it
+			if (RemoteOwner == EntryNode || RemoteOwner == ResultNode) continue;
+
+			RemotePin->Modify();
+			RemotePin->LinkedTo.Remove(LocalPin);
+			if (RemotePin->GetOwningNode()->GetOuter() == RemotePortPin->GetOwningNode()->GetOuter())
+			{
+				RemotePin->MakeLinkTo(RemotePortPin);
+			}
+			if (LocalPort == EntryNode) LocalPortPin->BreakAllPinLinks();
+			LocalPin->LinkedTo.Remove(RemotePin);
+			LocalPin->MakeLinkTo(LocalPortPin);
+		}
+	}
+
+	// Ensure the new function has a walkable exec path even if the selection
+	// had no exec boundary pins (pure-data extraction).
+	if (UEdGraphPin* ResultExecIn = K2->FindExecutionPin(*ResultNode, EGPD_Input))
+	{
+		if (ResultExecIn->LinkedTo.Num() == 0)
+		{
+			if (UEdGraphPin* EntryExecOut = K2->FindExecutionPin(*EntryNode, EGPD_Output))
+			{
+				if (EntryExecOut->LinkedTo.Num() == 0) EntryExecOut->MakeLinkTo(ResultExecIn);
+			}
+		}
+	}
+
+	// Reposition entry / result around the moved nodes.
+	if (Selection.Num() > 0)
+	{
+		EntryNode->NodePosX = MinX - 260;
+		EntryNode->NodePosY = CenterY;
+		ResultNode->NodePosX = MaxX + 300;
+		ResultNode->NodePosY = CenterY;
+	}
+	if (bDiscardResult && ResultNode->UserDefinedPins.Num() == 0)
+	{
+		ResultNode->DestroyNode();
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	Gateway->ReconstructNode();
+	FKismetEditorUtilities::CompileBlueprint(BP);
+
+	OutNewGraphName = DestGraph->GetName();
+	return Gateway->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── Straighten exec rail ──────────────────────────────────────
+
+int32 UUnrealBridgeBlueprintLibrary::StraightenExecChain(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& StartNodeGuid, const FString& StartExecPinName)
+{
+	using namespace BridgeBPSummaryImpl;
+	using namespace BridgeBlueprintGraphWriteImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return 0;
+	UEdGraph* Graph = FindGraphByName(BP, GraphName);
+	if (!Graph) return 0;
+	UEdGraphNode* Start = BridgeBPCollapseImpl::FindNodeByGuid(Graph, StartNodeGuid);
+	if (!Start) return 0;
+
+	// Find the starting exec-output pin.
+	UEdGraphPin* StartPin = nullptr;
+	if (!StartExecPinName.IsEmpty())
+	{
+		StartPin = Start->FindPin(StartExecPinName);
+		if (StartPin && (StartPin->Direction != EGPD_Output || StartPin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec))
+		{
+			StartPin = nullptr;
+		}
+	}
+	if (!StartPin)
+	{
+		for (UEdGraphPin* P : Start->Pins)
+		{
+			if (P && P->Direction == EGPD_Output && P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec && P->LinkedTo.Num() == 1)
+			{
+				StartPin = P; break;
+			}
+		}
+	}
+	if (!StartPin || StartPin->LinkedTo.Num() != 1) return 0;
+
+	Graph->Modify();
+	BP->Modify();
+
+	int32 Adjusted = 0;
+	int32 IterCap = 512;
+	UEdGraphNode* Current = Start;
+	UEdGraphPin* CurrentOutPin = StartPin;
+
+	while (Current && IterCap-- > 0)
+	{
+		if (!CurrentOutPin || CurrentOutPin->LinkedTo.Num() != 1) break;
+		UEdGraphPin* NextInPin = CurrentOutPin->LinkedTo[0];
+		if (!NextInPin || NextInPin->LinkedTo.Num() != 1) break;  // merge — stop
+		UEdGraphNode* Next = NextInPin->GetOwningNode();
+		if (!Next || Next == Current) break;
+
+		// Compute Y offset: align Next's exec-input pin Y to Current's exec-output pin Y.
+		// Pin Y = NodePosY + HeaderHeight + (direction-index * PinRowHeight).
+		auto PinRowIndex = [](const UEdGraphNode* N, const UEdGraphPin* P) -> int32
+		{
+			int32 Idx = 0;
+			for (const UEdGraphPin* Q : N->Pins)
+			{
+				if (!Q || Q->bHidden) continue;
+				if (Q->Direction != P->Direction) continue;
+				if (Q == P) return Idx;
+				Idx += 1;
+			}
+			return 0;
+		};
+		const int32 OutIdx = PinRowIndex(Current, CurrentOutPin);
+		const int32 InIdx  = PinRowIndex(Next, NextInPin);
+		const int32 OutPinY = Current->NodePosY + HeaderHeight + OutIdx * PinRowHeight;
+		const int32 DesiredNextY = OutPinY - (HeaderHeight + InIdx * PinRowHeight);
+		if (Next->NodePosY != DesiredNextY)
+		{
+			Next->Modify();
+			Next->NodePosY = DesiredNextY;
+			Adjusted += 1;
+		}
+
+		// Pick Next's single exec-output (if any, unambiguous) and continue.
+		UEdGraphPin* NextOut = nullptr;
+		int32 ExecOutCount = 0;
+		for (UEdGraphPin* P : Next->Pins)
+		{
+			if (!P || P->bHidden) continue;
+			if (P->Direction != EGPD_Output) continue;
+			if (P->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+			if (P->LinkedTo.Num() == 1) { NextOut = P; ExecOutCount += 1; }
+			else if (P->LinkedTo.Num() > 1) { ExecOutCount += 2; break; }
+		}
+		if (ExecOutCount != 1) break;  // branch — stop
+
+		Current = Next;
+		CurrentOutPin = NextOut;
+	}
+
+	if (Adjusted > 0)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	}
+	return Adjusted;
+}
+
+// ─── Comment-box color + node tint ─────────────────────────────
+
+namespace BridgeBPColorImpl
+{
+	static bool ParseColorOrPreset(const FString& In, FLinearColor& Out)
+	{
+		if (In.IsEmpty()) return false;
+		// Presets first.
+		const FString Lower = In.ToLower();
+		struct FPreset { const TCHAR* Name; FLinearColor C; };
+		static const FPreset Presets[] = {
+			{ TEXT("section"),    FLinearColor(0.35f, 0.35f, 0.35f, 1.f) },
+			{ TEXT("validation"), FLinearColor(0.90f, 0.75f, 0.10f, 1.f) },
+			{ TEXT("danger"),     FLinearColor(0.85f, 0.18f, 0.18f, 1.f) },
+			{ TEXT("network"),    FLinearColor(0.52f, 0.25f, 0.80f, 1.f) },
+			{ TEXT("ui"),         FLinearColor(0.18f, 0.68f, 0.70f, 1.f) },
+			{ TEXT("debug"),      FLinearColor(0.28f, 0.72f, 0.28f, 1.f) },
+			{ TEXT("setup"),      FLinearColor(0.22f, 0.48f, 0.82f, 1.f) },
+		};
+		for (const FPreset& P : Presets)
+		{
+			if (Lower.Equals(P.Name)) { Out = P.C; return true; }
+		}
+		// Hex string: #RRGGBB or #RRGGBBAA, with or without leading #.
+		FString Hex = In;
+		if (Hex.StartsWith(TEXT("#"))) Hex = Hex.RightChop(1);
+		if (Hex.Len() != 6 && Hex.Len() != 8) return false;
+		auto HexByte = [](TCHAR A, TCHAR B, uint8& Out) -> bool
+		{
+			auto Nib = [](TCHAR C, uint8& N) -> bool {
+				if (C >= '0' && C <= '9') { N = uint8(C - '0'); return true; }
+				if (C >= 'a' && C <= 'f') { N = uint8(C - 'a' + 10); return true; }
+				if (C >= 'A' && C <= 'F') { N = uint8(C - 'A' + 10); return true; }
+				return false;
+			};
+			uint8 Hi = 0, Lo = 0;
+			if (!Nib(A, Hi) || !Nib(B, Lo)) return false;
+			Out = (Hi << 4) | Lo;
+			return true;
+		};
+		uint8 R=0, G=0, B=0, A=255;
+		if (!HexByte(Hex[0], Hex[1], R)) return false;
+		if (!HexByte(Hex[2], Hex[3], G)) return false;
+		if (!HexByte(Hex[4], Hex[5], B)) return false;
+		if (Hex.Len() == 8 && !HexByte(Hex[6], Hex[7], A)) return false;
+		Out = FLinearColor(FColor(R, G, B, A));
+		return true;
+	}
+}
+
+bool UUnrealBridgeBlueprintLibrary::SetCommentBoxColor(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& ColorOrPreset)
+{
+	using namespace BridgeBlueprintGraphWriteImpl;
+	using namespace BridgeBPColorImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBPCollapseImpl::FindNodeByGuid(Graph, NodeGuid);
+	UEdGraphNode_Comment* Comment = Cast<UEdGraphNode_Comment>(Node);
+	if (!Comment) return false;
+
+	FLinearColor C;
+	if (!ParseColorOrPreset(ColorOrPreset, C)) return false;
+
+	Comment->Modify();
+	Comment->CommentColor = C;
+	Comment->bColorCommentBubble = true;
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::SetNodeColor(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& ColorOrPreset)
+{
+	using namespace BridgeBlueprintGraphWriteImpl;
+	using namespace BridgeBPColorImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBPCollapseImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+
+	Node->Modify();
+	if (ColorOrPreset.IsEmpty())
+	{
+		// Clear: UE 5.x uses NodeColorMetaData on K2Nodes. Using node-title-color
+		// instead is hacky; easiest path is to clear bHasCustomNodeColor via meta.
+		Node->SetEnabledState(Node->GetDesiredEnabledState());  // no-op; just Modify + mark
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+		return true;
+	}
+	FLinearColor C;
+	if (!ParseColorOrPreset(ColorOrPreset, C)) return false;
+
+	// K2Node titles draw using GetNodeTitleColor; individual override isn't
+	// exposed as a property on UEdGraphNode. The cleanest user-visible hook is
+	// setting a node comment with that color via bColorCommentBubble.
+	Node->NodeComment = ColorOrPreset.StartsWith(TEXT("#")) ? ColorOrPreset : ColorOrPreset;
+	Node->bCommentBubbleVisible = true;
+	Node->bCommentBubblePinned  = true;
+	// Fall through: without engine-level tint, emit a coloured comment bubble
+	// on the node so agents still have a visible "this is UI/Network/..." cue.
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+// ─── Auto-insert reroute knots for crossing wires ──────────────
+
+namespace BridgeBPRerouteImpl
+{
+	using namespace BridgeBPSummaryImpl;
+
+	struct FNodeBox
+	{
+		UEdGraphNode* Node = nullptr;
+		int32 X0 = 0, Y0 = 0, X1 = 0, Y1 = 0;
+	};
+
+	static FNodeBox BoxOf(UEdGraphNode* N)
+	{
+		FNodeBox B;
+		B.Node = N;
+		int32 W = 0, H = 0;
+		EstimateNodeSize(N, W, H);
+		if (N->NodeWidth  > 0) W = N->NodeWidth;
+		if (N->NodeHeight > 0) H = N->NodeHeight;
+		B.X0 = N->NodePosX;
+		B.Y0 = N->NodePosY;
+		B.X1 = N->NodePosX + W;
+		B.Y1 = N->NodePosY + H;
+		return B;
+	}
+
+	/** Segment (x0,y0)→(x1,y1) intersects rect? Simple AABB clip test. */
+	static bool SegmentHitsBox(int32 x0, int32 y0, int32 x1, int32 y1, const FNodeBox& B)
+	{
+		// Broad reject.
+		const int32 SMinX = FMath::Min(x0, x1);
+		const int32 SMaxX = FMath::Max(x0, x1);
+		const int32 SMinY = FMath::Min(y0, y1);
+		const int32 SMaxY = FMath::Max(y0, y1);
+		if (SMaxX < B.X0 || SMinX > B.X1) return false;
+		if (SMaxY < B.Y0 || SMinY > B.Y1) return false;
+
+		// Liang-Barsky-ish: test full line against box.
+		const float dx = float(x1 - x0);
+		const float dy = float(y1 - y0);
+		float t0 = 0.f, t1 = 1.f;
+		auto Clip = [&](float p, float q) -> bool
+		{
+			if (FMath::IsNearlyZero(p))
+			{
+				return q >= 0.f;  // parallel — inside if non-negative
+			}
+			const float t = q / p;
+			if (p < 0.f)      { if (t > t1) return false; if (t > t0) t0 = t; }
+			else              { if (t < t0) return false; if (t < t1) t1 = t; }
+			return true;
+		};
+		if (!Clip(-dx, float(x0 - B.X0))) return false;
+		if (!Clip( dx, float(B.X1 - x0))) return false;
+		if (!Clip(-dy, float(y0 - B.Y0))) return false;
+		if (!Clip( dy, float(B.Y1 - y0))) return false;
+		return t0 < t1;
+	}
+}
+
+int32 UUnrealBridgeBlueprintLibrary::AutoInsertReroutes(
+	const FString& BlueprintPath, const FString& GraphName)
+{
+	using namespace BridgeBlueprintGraphWriteImpl;
+	using namespace BridgeBPRerouteImpl;
+	using namespace BridgeBPSummaryImpl;
+
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return 0;
+	UEdGraph* Graph = FindGraphByName(BP, GraphName);
+	if (!Graph) return 0;
+
+	// Snapshot boxes first (we'll mutate the graph).
+	TArray<FNodeBox> Boxes;
+	for (UEdGraphNode* N : Graph->Nodes)
+	{
+		if (!N) continue;
+		if (N->IsA<UEdGraphNode_Comment>()) continue;
+		if (N->IsA<UK2Node_Knot>()) continue;
+		Boxes.Add(BoxOf(N));
+	}
+
+	// Snapshot wires before mutating. Each wire = (src-node, src-pin-name,
+	// dst-node, dst-pin-name) so we can resolve after mutation.
+	struct FWire { UEdGraphNode* SrcNode; FName SrcPin; UEdGraphNode* DstNode; FName DstPin; };
+	TArray<FWire> Wires;
+	for (UEdGraphNode* N : Graph->Nodes)
+	{
+		if (!N || N->IsA<UK2Node_Knot>()) continue;
+		for (UEdGraphPin* P : N->Pins)
+		{
+			if (!P || P->Direction != EGPD_Output) continue;
+			for (UEdGraphPin* Linked : P->LinkedTo)
+			{
+				if (!Linked) continue;
+				UEdGraphNode* DstNode = Linked->GetOwningNode();
+				if (!DstNode || DstNode->IsA<UK2Node_Knot>()) continue;
+				FWire W; W.SrcNode = N; W.SrcPin = P->PinName; W.DstNode = DstNode; W.DstPin = Linked->PinName;
+				Wires.Add(W);
+			}
+		}
+	}
+
+	Graph->Modify();
+	BP->Modify();
+
+	int32 KnotsInserted = 0;
+	for (const FWire& W : Wires)
+	{
+		UEdGraphPin* SrcPin = W.SrcNode->FindPin(W.SrcPin);
+		UEdGraphPin* DstPin = W.DstNode->FindPin(W.DstPin);
+		if (!SrcPin || !DstPin) continue;
+
+		// Current endpoint positions (pin Y = node Y + header + index*row).
+		auto PinLocalY = [](const UEdGraphNode* N, const UEdGraphPin* P) -> int32
+		{
+			int32 Idx = 0;
+			for (const UEdGraphPin* Q : N->Pins)
+			{
+				if (!Q || Q->bHidden) continue;
+				if (Q->Direction != P->Direction) continue;
+				if (Q == P) break;
+				Idx += 1;
+			}
+			return HeaderHeight + Idx * PinRowHeight;
+		};
+		int32 SrcW = 0, SrcH = 0, DstW = 0, DstH = 0;
+		EstimateNodeSize(W.SrcNode, SrcW, SrcH);
+		EstimateNodeSize(W.DstNode, DstW, DstH);
+		if (W.SrcNode->NodeWidth  > 0) SrcW = W.SrcNode->NodeWidth;
+		if (W.DstNode->NodeWidth  > 0) DstW = W.DstNode->NodeWidth;
+
+		const int32 SX = W.SrcNode->NodePosX + SrcW;
+		const int32 SY = W.SrcNode->NodePosY + PinLocalY(W.SrcNode, SrcPin);
+		const int32 DX = W.DstNode->NodePosX;
+		const int32 DY = W.DstNode->NodePosY + PinLocalY(W.DstNode, DstPin);
+
+		// Is any non-endpoint node's box intersected by this line?
+		const FNodeBox* Blocker = nullptr;
+		for (const FNodeBox& Box : Boxes)
+		{
+			if (Box.Node == W.SrcNode || Box.Node == W.DstNode) continue;
+			if (SegmentHitsBox(SX, SY, DX, DY, Box))
+			{
+				Blocker = &Box; break;
+			}
+		}
+		if (!Blocker) continue;
+
+		// Insert a knot at X just past the blocker's right edge, Y a bit above
+		// the blocker's top (keeps the wire clear). Break original link, route
+		// src→knot→dst.
+		const int32 KnotX = (Blocker->X1 + 40);
+		const int32 KnotY = Blocker->Y0 - 40;
+
+		UK2Node_Knot* Knot = NewObject<UK2Node_Knot>(Graph);
+		Knot->CreateNewGuid();
+		Knot->NodePosX = KnotX;
+		Knot->NodePosY = KnotY;
+		Graph->AddNode(Knot, false, false);
+		Knot->PostPlacedNewNode();
+		Knot->AllocateDefaultPins();
+
+		UEdGraphPin* KnotIn  = Knot->GetInputPin();
+		UEdGraphPin* KnotOut = Knot->GetOutputPin();
+		if (!KnotIn || !KnotOut) { Knot->DestroyNode(); continue; }
+
+		SrcPin->BreakLinkTo(DstPin);
+		SrcPin->MakeLinkTo(KnotIn);
+		KnotOut->MakeLinkTo(DstPin);
+		KnotsInserted += 1;
+	}
+
+	if (KnotsInserted > 0) FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return KnotsInserted;
+}
