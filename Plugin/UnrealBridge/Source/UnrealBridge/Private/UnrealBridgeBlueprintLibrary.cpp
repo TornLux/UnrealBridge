@@ -5810,6 +5810,57 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
+	/** Recursive chain width: own width + DataHSpace + max child chain width.
+	 *  Returns the pixel extent this data node and all its own producers
+	 *  need to the left of their consumer. Key difference from slot-sum
+	 *  budgeting: siblings of a data node at the same depth-slot but
+	 *  different Y don't contribute to OUR chain budget — only what's
+	 *  upstream of US does. Used for per-layer budget = max over all
+	 *  data producers feeding the layer of their chain width. */
+	static int32 ComputeChainWidth(int32 NodeIdx, const TArray<FPALayoutNode>& Nodes,
+		int32 DataHSpace, TMap<int32, int32>& Memo)
+	{
+		if (int32* Cached = Memo.Find(NodeIdx)) return *Cached;
+		Memo.Add(NodeIdx, 0);  // cycle sentinel
+		const FPALayoutNode& LN = Nodes[NodeIdx];
+		if (LN.bHasExecPins) return 0;  // reached exec boundary, no chain here
+		int32 MaxChild = 0;
+		for (const TPair<int32, int32>& Prod : LN.DataProducers)
+		{
+			if (Nodes[Prod.Key].bHasExecPins) continue;  // exec producer has own X
+			const int32 Child = ComputeChainWidth(Prod.Key, Nodes, DataHSpace, Memo);
+			if (Child > MaxChild) MaxChild = Child;
+		}
+		const int32 Result = LN.Width + DataHSpace + MaxChild;
+		Memo[NodeIdx] = Result;
+		return Result;
+	}
+
+	/** Per-layer chain budget: for each exec layer L, the maximum chain
+	 *  width of any data producer feeding an exec node at L. This is what
+	 *  LayerX[L] needs to reserve left of it for data pipelines to fit. */
+	static void ComputeLayerChainBudgets(
+		const TArray<FPALayoutNode>& Nodes, int32 LayerCount, int32 DataHSpace,
+		TArray<int32>& OutBudgets)
+	{
+		OutBudgets.Init(0, LayerCount);
+		TMap<int32, int32> Memo;
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			const FPALayoutNode& LN = Nodes[i];
+			if (!LN.bHasExecPins) continue;
+			if (LN.Layer < 0 || LN.Layer >= LayerCount) continue;
+			int32 MaxBudget = 0;
+			for (const TPair<int32, int32>& Prod : LN.DataProducers)
+			{
+				if (Nodes[Prod.Key].bHasExecPins) continue;  // exec feed, separate
+				const int32 W = ComputeChainWidth(Prod.Key, Nodes, DataHSpace, Memo);
+				if (W > MaxBudget) MaxBudget = W;
+			}
+			if (MaxBudget > OutBudgets[LN.Layer]) OutBudgets[LN.Layer] = MaxBudget;
+		}
+	}
+
 	/** Pick the primary exec predecessor for each exec node; record the exact
 	 *  pins on both sides for Y alignment. Preference: leftmost layer; tie
 	 *  break by lowest original Y (matches "main rail" intuition). */
@@ -6495,11 +6546,14 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		SelectPrimaryExecSuccs(Nodes);
 		AssignDataSlots(Nodes);
 
-		// Data columns (inside a single exec layer's data chain) benefit from
-		// a tighter gap than exec-column-to-exec-column — hand-authored BPs
-		// pack data pipelines densely. Derive DataHSpace from HSpace but cap
-		// tight: ~1/3 of the user's HSpace, floor 15 px so labels stay legible.
+		// Compact-pack horizontally. Hand-authored BPs pack data pipelines
+		// and exec columns more densely than a round HSpace=100 suggests —
+		// we treat the user's HSpace as a loose upper bound and derive two
+		// tight inner values. Data columns (inside a single exec layer's
+		// chain) get the tightest gap; exec-layer-to-exec-layer is a bit
+		// roomier so branches and single-pin consumers read clearly.
 		const int32 DataHSpace = FMath::Max(15, HSpace / 3);
+		const int32 ExecGap    = FMath::Max(30, HSpace / 2);
 
 		// Per-layer widest width (exec nodes only).
 		TArray<int32> LayerMaxW; LayerMaxW.SetNumZeroed(LayerCount);
@@ -6514,32 +6568,21 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		TMap<int32, int32> LayerMaxDepth;
 		ComputeDataSlots(Nodes, SlotWidth, LayerMaxDepth);
 
-		// Per-layer data budget = sum of slot widths + DataHSpace gaps for
-		// this layer's depth range.
-		TArray<int32> LayerDataBudget; LayerDataBudget.SetNumZeroed(LayerCount);
-		for (int32 L = 0; L < LayerCount; ++L)
-		{
-			const int32* MaxD = LayerMaxDepth.Find(L);
-			if (!MaxD) continue;
-			int32 Sum = 0;
-			for (int32 d = 1; d <= *MaxD; ++d)
-			{
-				const int64 Key = MakeSlotKey(L, d);
-				const int32* W = SlotWidth.Find(Key);
-				const int32 SlotW = W ? *W : 0;
-				Sum += SlotW + DataHSpace;
-			}
-			LayerDataBudget[L] = Sum;
-		}
+		// Per-layer data budget = max over all data chains feeding the layer
+		// of their total pixel extent (widths + gaps). Same-depth siblings
+		// at different Y don't contribute to each other's chain budget, so
+		// this is usually much tighter than sum-of-slot-max widths.
+		TArray<int32> LayerDataBudget;
+		ComputeLayerChainBudgets(Nodes, LayerCount, DataHSpace, LayerDataBudget);
 
-		// Layer X positions (cumulative). Exec layers spaced by HSpace; data
+		// Layer X positions (cumulative). Exec layers spaced by ExecGap; data
 		// chains reserved with DataHSpace inside each layer-to-layer gap.
 		TArray<int32> LayerX; LayerX.SetNumZeroed(LayerCount);
 		int32 Cur = 0;
 		for (int32 L = 0; L < LayerCount; ++L)
 		{
 			LayerX[L] = Cur;
-			Cur += LayerMaxW[L] + HSpace;
+			Cur += LayerMaxW[L] + ExecGap;
 			if (L + 1 < LayerCount) Cur += LayerDataBudget[L + 1];
 		}
 
