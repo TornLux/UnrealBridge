@@ -3072,11 +3072,59 @@ bool UUnrealBridgeBlueprintLibrary::AlignNodes(
 
 namespace BridgeBPCommentImpl
 {
+	/** Resolve the best-known rendered size for a node. Priority:
+	 *   1. Live SGraphNode widget's GetDesiredSize (pixel-accurate; only
+	 *      available when the graph has been opened + ticked in an editor).
+	 *   2. Node->NodeWidth / NodeHeight (non-zero only for comment boxes
+	 *      in normal UE — regular nodes don't populate these).
+	 *   3. Flat 200×80 fallback (used only when the graph isn't rendered;
+	 *      comment boxes will under-wrap wide Custom-Event / Break-Struct
+	 *      nodes in that case — always call open_function_graph_for_render
+	 *      first for an accurate frame).
+	 *  Used by FitCommentToNodes. */
+	static void BestNodeSize(UEdGraphNode* N, int32& OutW, int32& OutH)
+	{
+		OutW = 0; OutH = 0;
+		if (!N) return;
+
+		// 1. Try live Slate widget via the owning BP editor's graph panel.
+		UBlueprint* BP = FBlueprintEditorUtils::FindBlueprintForNode(N);
+		if (BP && GEditor)
+		{
+			if (UAssetEditorSubsystem* Sub = GEditor->GetEditorSubsystem<UAssetEditorSubsystem>())
+			{
+				if (IAssetEditorInstance* Inst = Sub->FindEditorForAsset(BP, false))
+				{
+					FBlueprintEditor* BPEd = static_cast<FBlueprintEditor*>(Inst);
+					// OpenGraphAndBringToFront is idempotent when the graph
+					// is already the focused tab; grabs the SGraphEditor
+					// either way.
+					if (TSharedPtr<SGraphEditor> GEd = BPEd->OpenGraphAndBringToFront(N->GetGraph()))
+					{
+						if (SGraphPanel* Panel = GEd->GetGraphPanel())
+						{
+							TSharedPtr<SGraphNode> NW = Panel->GetNodeWidgetFromGuid(N->NodeGuid);
+							if (NW.IsValid())
+							{
+								const FVector2D Desired = FVector2D(NW->GetDesiredSize());
+								if (Desired.X > 0) OutW = int32(Desired.X);
+								if (Desired.Y > 0) OutH = int32(Desired.Y);
+							}
+						}
+					}
+				}
+			}
+		}
+		// 2. Fall back to stored (comment boxes, resizable nodes).
+		if (OutW <= 0 && N->NodeWidth  > 0) OutW = N->NodeWidth;
+		if (OutH <= 0 && N->NodeHeight > 0) OutH = N->NodeHeight;
+	}
+
 	/** Compute the bounding box of the given nodes and size the comment to
 	 *  enclose them with a standard padding + 32 px title strip on top.
-	 *  Returns true if any guid resolved to a node. Live-rendered sizes
-	 *  (Node->NodeWidth / NodeHeight) are used when available, else a
-	 *  conservative (200, 80) fallback — matches pre-refactor behaviour. */
+	 *  Returns true if any guid resolved to a node. Uses BestNodeSize so
+	 *  nodes with larger-than-fallback actual widths (Custom Events,
+	 *  Break Structs, long labels) are framed without clipping. */
 	static bool FitCommentToNodes(UEdGraphNode_Comment* Comment,
 		const TArray<FString>& NodeGuids, UEdGraph* Graph)
 	{
@@ -3087,10 +3135,14 @@ namespace BridgeBPCommentImpl
 		{
 			UEdGraphNode* N = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, G);
 			if (!N) continue;
+			int32 W = 0, H = 0;
+			BestNodeSize(N, W, H);
+			if (W <= 0) W = 200;
+			if (H <= 0) H = 80;
 			MinX = FMath::Min(MinX, N->NodePosX);
 			MinY = FMath::Min(MinY, N->NodePosY);
-			MaxX = FMath::Max(MaxX, N->NodePosX + FMath::Max(N->NodeWidth, 200));
-			MaxY = FMath::Max(MaxY, N->NodePosY + FMath::Max(N->NodeHeight, 80));
+			MaxX = FMath::Max(MaxX, N->NodePosX + W);
+			MaxY = FMath::Max(MaxY, N->NodePosY + H);
 			bHit = true;
 		}
 		if (!bHit) return false;
