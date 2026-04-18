@@ -5517,6 +5517,15 @@ namespace BridgeBPPinAlignedImpl
 		// Dir-index of our own exec-IN pin receiving from the primary pred.
 		int32 MyExecInDirIdx = -1;
 
+		// Primary exec SUCCESSOR (the .then / first-exec-out path). Used for
+		// downstream-driven Y alignment: each node aligns its primary exec-out
+		// pin Y to its successor's exec-in pin Y, so the primary flow reads
+		// as a clean horizontal rail. The .else branch and other non-primary
+		// successors become diagonal (knotted if |ΔY| > threshold).
+		int32 PrimaryExecSuccIdx = INDEX_NONE;
+		int32 MyExecOutDirIdxToSucc = -1;  // dir-index of my exec-out pin feeding the succ
+		int32 SuccExecInDirIdx = -1;       // dir-index of succ's exec-in pin receiving
+
 		// Data-slot assignment (for pure/data nodes only).
 		int32 DataConsumerLayer = INT32_MAX;  // exec layer of nearest exec consumer
 		int32 DataDepth = INT32_MAX;          // 1 = direct producer, 2 = two hops, ...
@@ -5789,70 +5798,193 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
+	/** Pick each exec node's primary SUCCESSOR: the node reached through the
+	 *  lowest-dir-index exec-output pin (the .then of a Branch, the single
+	 *  .then of a SET, the Entry's .then). Downstream Y alignment follows
+	 *  this chain so the primary path reads as a horizontal rail. Non-primary
+	 *  successors (e.g. Branch.else) stay visually distinct — their wires
+	 *  pick up a single reroute knot if they end up diagonal. */
+	static void SelectPrimaryExecSuccs(TArray<FPALayoutNode>& Nodes)
+	{
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			FPALayoutNode& LN = Nodes[i];
+			if (!LN.bHasExecPins) continue;
+			// Walk exec-output pins in dir order (PinDirIndex ascending). First
+			// one with a link = primary successor. LinkedTo[0] if multi-link.
+			UEdGraphPin* OutPin = nullptr;
+			int32 OutDirIdx = -1;
+			int32 CurDirIdx = 0;
+			for (UEdGraphPin* P : LN.Node->Pins)
+			{
+				if (!P || P->bHidden) continue;
+				if (P->Direction != EGPD_Output) continue;
+				if (P->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) { continue; }
+				if (P->LinkedTo.Num() > 0)
+				{
+					OutPin = P;
+					OutDirIdx = CurDirIdx;
+					break;
+				}
+				// Advance dir counter for exec outputs we've seen.
+				// (Non-exec outputs have their own dir-counter; we only care
+				// about exec outputs here.)
+				++CurDirIdx;
+			}
+			// Actually we need dir-index across ALL visible output pins, not
+			// just exec ones. Re-derive properly:
+			if (OutPin)
+			{
+				OutDirIdx = PinDirIndex(LN.Node, OutPin);
+			}
+			if (!OutPin || OutDirIdx < 0) continue;
+
+			UEdGraphPin* Linked = OutPin->LinkedTo[0];
+			if (!Linked) continue;
+			UEdGraphNode* SuccNode = Linked->GetOwningNode();
+			if (!SuccNode) continue;
+
+			// Resolve successor's index in our flat node array.
+			for (int32 j = 0; j < Nodes.Num(); ++j)
+			{
+				if (Nodes[j].Node == SuccNode)
+				{
+					LN.PrimaryExecSuccIdx = j;
+					LN.MyExecOutDirIdxToSucc = OutDirIdx;
+					LN.SuccExecInDirIdx = PinDirIndex(SuccNode, Linked);
+					break;
+				}
+			}
+		}
+	}
+
 	/** Layer 0 exec nodes stacked vertically (original-Y order), then each
 	 *  later layer placed pin-aligned to its primary predecessor. Within each
 	 *  layer, nodes that share a tentative Y are pushed down to clear overlaps. */
 	static void PlaceExecBackbone(TArray<FPALayoutNode>& Nodes, int32 LayerCount,
 		const TArray<int32>& LayerX, int32 VSpace,
-		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
+		const TMap<UEdGraphNode*, FRenderedGeom>& Cache,
+		const TMap<UEdGraphNode*, int32>& IndexOf)
 	{
-		// Layer 0: original-Y order, stacked from Y=0.
-		TArray<int32> Layer0;
+		// DOWNSTREAM-driven Y via DFS of the exec tree:
+		//  1. DFS from the entry following exec-out pins in dir order (.then
+		//     first, then .else). Leaves (Return / terminal nodes) are
+		//     pushed to a flat list in the order we meet them — this is
+		//     the natural top-to-bottom order humans draw BPs in.
+		//  2. Leaves get stacked top-to-bottom in that DFS order, spanning
+		//     layers (crouch returns at layer 5 stack below walk return at
+		//     layer 4, etc.).
+		//  3. Non-leaves pull Y from their primary successor so the .then
+		//     wire reads as a horizontal rail. Processed deepest-first so
+		//     successors are placed before predecessors.
+		//  4. Collision-resolve per-layer as a safety net.
+
+		TArray<int32> DFSLeaves;
+		TSet<int32> Visited;
+		TFunction<void(int32)> DFS;
+		DFS = [&](int32 Idx)
+		{
+			if (Visited.Contains(Idx)) return;
+			Visited.Add(Idx);
+			FPALayoutNode& LN = Nodes[Idx];
+			if (!LN.bHasExecPins) return;
+			if (LN.ExecSuccessors.Num() == 0)
+			{
+				DFSLeaves.Add(Idx);
+				return;
+			}
+			// Visit exec-output pins in direction order; each LinkedTo in pin
+			// order. For a Branch that's .then (dir 0) first, then .else.
+			for (UEdGraphPin* P : LN.Node->Pins)
+			{
+				if (!P || P->bHidden) continue;
+				if (P->Direction != EGPD_Output) continue;
+				if (P->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+				for (UEdGraphPin* Linked : P->LinkedTo)
+				{
+					if (!Linked) continue;
+					UEdGraphNode* Succ = Linked->GetOwningNode();
+					if (!Succ) continue;
+					const int32* J = IndexOf.Find(Succ);
+					if (J) DFS(*J);
+				}
+			}
+		};
+
+		// Seed DFS at root exec nodes (layer 0). Multiple roots in original-Y order.
+		TArray<int32> Roots;
 		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
-			if (Nodes[i].bHasExecPins && Nodes[i].Layer == 0) Layer0.Add(i);
+			if (Nodes[i].bHasExecPins && Nodes[i].Layer == 0) Roots.Add(i);
 		}
-		Layer0.Sort([&](int32 A, int32 B) {
+		Roots.Sort([&](int32 A, int32 B) {
 			return Nodes[A].Node->NodePosY < Nodes[B].Node->NodePosY;
 		});
-		int32 Cursor = 0;
-		for (int32 Idx : Layer0)
+		for (int32 R : Roots) DFS(R);
+		// Handle disconnected exec subgraphs (cycle islands, etc.).
+		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
-			Nodes[Idx].NewX = LayerX[0];
-			Nodes[Idx].NewY = Cursor;
-			Nodes[Idx].bPlaced = true;
-			Cursor += Nodes[Idx].Height + VSpace;
+			if (Nodes[i].bHasExecPins && !Visited.Contains(i)) DFS(i);
 		}
 
-		// Later layers: propagate pin alignment.
-		for (int32 L = 1; L < LayerCount; ++L)
+		// Step 2: stack leaves top-to-bottom in DFS order.
+		int32 Cursor = 0;
+		for (int32 Idx : DFSLeaves)
 		{
-			TArray<int32> ThisLayer;
+			FPALayoutNode& LN = Nodes[Idx];
+			LN.NewX = LayerX[FMath::Clamp(LN.Layer, 0, LayerCount - 1)];
+			LN.NewY = Cursor;
+			LN.bPlaced = true;
+			Cursor += LN.Height + VSpace;
+		}
+
+		// Step 3: place non-leaves from deepest layer back to root, each
+		// aligned to its primary exec successor's input pin Y so the .then
+		// wire is horizontal.
+		for (int32 L = LayerCount - 1; L >= 0; --L)
+		{
 			for (int32 i = 0; i < Nodes.Num(); ++i)
 			{
-				if (Nodes[i].bHasExecPins && Nodes[i].Layer == L) ThisLayer.Add(i);
-			}
-
-			for (int32 Idx : ThisLayer)
-			{
-				FPALayoutNode& LN = Nodes[Idx];
+				FPALayoutNode& LN = Nodes[i];
+				if (!LN.bHasExecPins) continue;
+				if (LN.Layer != L) continue;
+				if (LN.bPlaced) continue;
 				LN.NewX = LayerX[L];
-				if (LN.PrimaryExecPredIdx != INDEX_NONE &&
-					Nodes[LN.PrimaryExecPredIdx].bPlaced &&
-					LN.PredExecOutDirIdx >= 0 && LN.MyExecInDirIdx >= 0)
+				if (LN.PrimaryExecSuccIdx != INDEX_NONE &&
+					Nodes[LN.PrimaryExecSuccIdx].bPlaced &&
+					LN.MyExecOutDirIdxToSucc >= 0 && LN.SuccExecInDirIdx >= 0)
 				{
-					const FPALayoutNode& Pred = Nodes[LN.PrimaryExecPredIdx];
-					const int32 PredPinY = Pred.NewY + PinLocalYFor(
-						Pred.Node, EGPD_Output, LN.PredExecOutDirIdx, Cache);
-					const int32 MyInLocalY = PinLocalYFor(
-						LN.Node, EGPD_Input, LN.MyExecInDirIdx, Cache);
-					LN.NewY = PredPinY - MyInLocalY;
+					const FPALayoutNode& Succ = Nodes[LN.PrimaryExecSuccIdx];
+					const int32 SuccPinY = Succ.NewY + PinLocalYFor(
+						Succ.Node, EGPD_Input, LN.SuccExecInDirIdx, Cache);
+					const int32 MyOutLocalY = PinLocalYFor(
+						LN.Node, EGPD_Output, LN.MyExecOutDirIdxToSucc, Cache);
+					LN.NewY = SuccPinY - MyOutLocalY;
 				}
 				else
 				{
-					// No placeable primary pred: keep original Y (rare — cycle
-					// island or disconnected source).
 					LN.NewY = LN.Node->NodePosY;
 				}
 				LN.bPlaced = true;
 			}
+		}
 
-			// Collision resolution (preserve order, push overlaps down by VSpace).
-			ThisLayer.Sort([&](int32 A, int32 B) { return Nodes[A].NewY < Nodes[B].NewY; });
-			for (int32 k = 1; k < ThisLayer.Num(); ++k)
+		// Step 4: collision-resolve per layer. After DFS-ordered leaves +
+		// downstream-pulled non-leaves, overlaps should be rare — this is
+		// a safety net that pushes overlapping nodes in a layer downward.
+		for (int32 L = 0; L < LayerCount; ++L)
+		{
+			TArray<int32> LayerNodes;
+			for (int32 i = 0; i < Nodes.Num(); ++i)
 			{
-				const FPALayoutNode& Prev = Nodes[ThisLayer[k-1]];
-				FPALayoutNode& Curr = Nodes[ThisLayer[k]];
+				if (Nodes[i].bHasExecPins && Nodes[i].Layer == L && Nodes[i].bPlaced)
+					LayerNodes.Add(i);
+			}
+			LayerNodes.Sort([&](int32 A, int32 B) { return Nodes[A].NewY < Nodes[B].NewY; });
+			for (int32 k = 1; k < LayerNodes.Num(); ++k)
+			{
+				const FPALayoutNode& Prev = Nodes[LayerNodes[k-1]];
+				FPALayoutNode& Curr = Nodes[LayerNodes[k]];
 				const int32 MinY = Prev.NewY + Prev.Height + VSpace;
 				if (Curr.NewY < MinY) Curr.NewY = MinY;
 			}
@@ -6296,6 +6428,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 
 		const int32 LayerCount = AssignExecLayers(Nodes, Result.Warnings);
 		SelectPrimaryExecPreds(Nodes);
+		SelectPrimaryExecSuccs(Nodes);
 		AssignDataSlots(Nodes);
 
 		// Per-layer widest width (exec nodes only).
@@ -6359,7 +6492,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 			}
 		}
 
-		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace, Cache);
+		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace, Cache, IndexOf);
 		PlaceDataProducersPerConsumer(Nodes, HSpace, VSpace, Cache);
 
 		// Compute current-layout bounds, then park anything still unplaced.
