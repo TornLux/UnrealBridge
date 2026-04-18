@@ -737,7 +737,27 @@ Create an empty user-defined function graph with default entry + result nodes. R
 
 ### remove_function_graph(blueprint_path, function_name) -> bool
 
-Remove a user function. Recompiles.
+Remove a user function. Recompiles. The bridge automatically closes any
+open Blueprint-editor tab for the graph before removal, so Slate widget
+references are clean.
+
+**⚠ Residual GC crash risk on heavy graphs.** Even after tab close, the
+`UK2Node_FunctionEntry` node held type references via `LocalVariables`
+and `UserDefinedPins`. Rebuilding a 100+ node function by calling
+`remove_function_graph` → `create_function_graph` → re-spawn right
+after can crash during the next GC pass at
+`UK2Node_FunctionEntry::AddReferencedObjects` (access violation at a
+dangling `UStruct*`, typically 0x70 offset). Reproduced on the
+`ScoreTraversalCandidates` showcase rebuild after a prior
+`auto_insert_reroutes` added 43 knots — total ~130 nodes to tear down.
+
+**Prefer in-place edits over full rebuilds** when the graph has many
+parameters / locals. If you only need to remove specific nodes (e.g.
+reroute knots added by `auto_insert_reroutes`), use `remove_graph_node`
+per-guid and splice wires with `connect_graph_pins`. Resolve knot
+upstream/downstream via `get_node_pin_connections` + `get_function_nodes`
+filter='Knot' (ordering matches `get_rendered_node_info` 1:1, so zip them
+to get idx→guid).
 
 ### rename_function_graph(blueprint_path, old_name, new_name) -> bool
 
