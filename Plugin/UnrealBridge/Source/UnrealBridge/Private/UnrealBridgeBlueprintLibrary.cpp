@@ -5674,9 +5674,14 @@ namespace BridgeBPPinAlignedImpl
 			int32 KnotAX, KnotAY, KnotBX, KnotBY; };
 		TArray<FSpec> Specs;
 
-		// Knot visual center offset from NodePosY — a knot renders ~16 px tall,
-		// pin sits at roughly NodePosY + 8.
-		constexpr int32 KnotPinCenterOffset = 8;
+		// K2Node_Knot visual geometry (from SGraphNodeKnot::UpdateGraphNode):
+		//   NodeSpacerSize = (42, 24). Input pin sits at left edge (X = NodePosX),
+		//   output pin at right edge (X = NodePosX + 42), both vertically centered
+		//   (Y = NodePosY + 12). GetNodePinLayouts' generic HeaderHeight=40 math
+		//   is wrong for knots — always use these knot-specific constants.
+		constexpr int32 KnotWidth = 42;
+		constexpr int32 KnotPinCenterOffset = 12;
+		constexpr int32 HalfKnotWidth = KnotWidth / 2;
 
 		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
@@ -5722,9 +5727,13 @@ namespace BridgeBPPinAlignedImpl
 			FSpec S;
 			S.SrcNode = Pred.Node; S.SrcPin = SrcPin->PinName;
 			S.DstNode = LN.Node;   S.DstPin = DstPin->PinName;
-			S.KnotAX = GapMid;
+			// Place KnotA so its OUTPUT pin X equals KnotB's INPUT pin X (both at
+			// GapMid + HalfKnotWidth). That makes the middle segment purely
+			// vertical and the outer segments purely horizontal, landing on the
+			// source & destination pin Y exactly.
+			S.KnotAX = GapMid - HalfKnotWidth;
 			S.KnotAY = PredPinY - KnotPinCenterOffset;
-			S.KnotBX = GapMid + 36;
+			S.KnotBX = GapMid + HalfKnotWidth;  // = KnotAX + KnotWidth
 			S.KnotBY = MyPinY - KnotPinCenterOffset;
 			Specs.Add(S);
 		}
