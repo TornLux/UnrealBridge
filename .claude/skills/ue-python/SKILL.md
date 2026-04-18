@@ -53,6 +53,16 @@ Every task executed through this skill MUST follow these principles — no excep
 3. **Read the reference first.** Always `Read`/`Grep` the relevant `references/bridge-*-api.md` (or the C++ header) before invoking a function whose signature is not already confirmed in this session. Reading a doc is cheaper than a failed round-trip.
 4. **No API hallucination, no parameter guessing.** Never invent function names, parameter names, parameter order, or parameter counts. If you are not certain of a signature, look it up. A guessed call that errors burns a full round-trip and often leaks a long traceback into context.
 5. **Stop on the first signature error.** `TypeError` / `AttributeError` means your assumption is wrong. Do not retry with another guess — re-read the signature, then issue one corrected call.
+6. **Never bail to raw `unreal.*` when an `UnrealBridge*Library` wrapper exists.** If a bridge call returns empty / errors / "feels wrong", the failure is almost always in your **parameters** (wrong scope, wrong path, wrong filter), not in the wrapper. Re-read the reference and fix the call. Falling back to `unreal.AssetRegistryHelpers` / `unreal.EditorAssetLibrary` / `unreal.EditorUtilityLibrary` / `unreal.SystemLibrary` to "do it yourself" bypasses the documented surface, hides the real bug, and burns far more round-trips walking large registries than the bridge call would have. If you genuinely believe no bridge function covers your case, **ask the user before reaching for raw `unreal.*`** — the answer is often "use this other bridge function I forgot to list."
+
+### Common antipatterns (each cost real round-trips in practice)
+
+| Symptom | Wrong reflex | Right move |
+|---------|--------------|------------|
+| `TypeError: required argument 'X' (pos N) not found` | Append `False` / `0` / `''` and retry | Stop, `Read` the `references/bridge-*-api.md` row, write **one** corrected call |
+| `AttributeError: type object 'BridgeXxxScope' has no attribute 'YYY'` | Try another guessed enum name | Read the enum table in the reference doc — never invent enum members |
+| Bridge call returns `[]` / `None` for an asset/actor/BP you know exists | Drop to `unreal.AssetRegistryHelpers.get_assets_by_path` and walk it | Suspect your scope/filter first. For asset name lookup the default is `search_assets_in_all_content(name, max_results)` with `ALL_ASSETS` scope (plugins live outside `/Game`) |
+| Want to do a multi-step BP edit (spawn + connect + position) | Chain 3 `exec` calls inline | Write a `.py` in the project's `temp/` and use `exec-file` once |
 
 | Topic | Reference file | When to read |
 |-------|---------------|--------------|
@@ -73,6 +83,8 @@ Every task executed through this skill MUST follow these principles — no excep
 | UE Material API | `${CLAUDE_SKILL_DIR}/references/ue-python-materials.md` | Creating material instances, setting parameters |
 
 > **Pawn control is non-obvious — read `bridge-gameplay-api.md` first.** Driving the player (sticky `IA_Move`, `apply_look_input`, navigating to a moving target, holding an input over time) has hard constraints that a fresh read of the API will not reveal: `bridge.exec` runs on the GameThread so any `time.sleep` inside an exec freezes the engine and stops the sticky ticker; continuous steering must run from a reactive `register_runtime_timer` callback, not a Python `while` loop; `IA_Move` is camera-relative and the forward-axis convention varies per project. The "Pattern: chase a (possibly moving) target and stop on arrival" section has the working template — start there before writing your own loop.
+
+> **Asset lookup by name defaults to `search_assets_in_all_content(name, max_results)` — read `bridge-asset-api.md` before searching.** When the user names an asset without giving a path, do **not** call `unreal.AssetRegistryHelpers.get_assets_by_path('/Game', recursive=True)` and filter in Python — that walks 100k–2M+ entries and times out. The full `search_assets` form needs `BridgeAssetSearchScope.ALL_ASSETS` (not `PROJECT`) when the asset might live in a plugin mount (`/PluginName/...`). `PROJECT` scope only covers `/Game`; using it for a plugin asset returns `[]` silently. The valid scope members are exactly `ALL_ASSETS`, `PROJECT`, `CUSTOM_PACKAGE_PATH` — there is no `GAME_FOLDER`.
 
 ## Safety Rules
 
