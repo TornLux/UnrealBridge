@@ -90,14 +90,20 @@ Every task executed through this skill MUST follow these principles — no excep
 
 When you **author or modify a Blueprint graph** (spawn / connect / remove nodes, add variables, create functions), you MUST run this loop before calling the task done. AI-generated BPs default to a visually chaotic, maintainability-light shape — the review loop is what turns them into code a human will want to maintain.
 
+**Auto-layout is not optional.** Every BP edit — even a single `add_call_function_node` or `connect_graph_pins` — leaves nodes at spawn-time XY (often stacked at origin or wherever a caller guessed). Before any reply claims "done", `auto_layout_graph` must have run on every function / event graph you touched in that session. If you edited three graphs, you run auto-layout three times. No exceptions for "just one tiny change".
+
 ```
 1. plan        — list events, functions, local vars as text before touching the bridge
 2. build       — add_*_node / connect_graph_pins / add_blueprint_variable …
-3. auto_layout — THREE-EXEC flow for pin_aligned (widgets must tick between opens and layout):
+3. auto_layout — MANDATORY after ANY graph mutation. THREE-EXEC flow for pin_aligned
+                 (widgets must tick between opens and layout):
                    exec A:  open_function_graph_for_render(bp, graph)
                    ~3 s  :  client-side time.sleep so Slate ticks the new widgets
                    exec B:  auto_layout_graph(bp, graph, 'pin_aligned', '', 100, 48)
-                 # or single-exec 'exec_flow' for bulk tidy when pin-level alignment is not required
+                 Repeat for every graph you mutated this session.
+                 # Single-exec 'exec_flow' is acceptable ONLY for huge graphs where
+                 # pixel-accurate alignment doesn't matter; always follow it with
+                 # straighten_exec_chain on the main rail.
 4. lint        — lint_blueprint(bp, '', -1, -1, -1) and resolve every finding
 5. collapse    — for any LongExecChain finding, collapse_nodes_to_function
 6. straighten  — straighten_exec_chain for each main exec rail (only needed after 'exec_flow')
