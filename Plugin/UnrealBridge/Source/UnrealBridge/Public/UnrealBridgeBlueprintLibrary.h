@@ -724,6 +724,59 @@ struct FBridgePinLayout
 	UPROPERTY(BlueprintReadOnly) bool bIsEstimated = true;
 };
 
+/** Pre-spawn node size estimate. Same heuristic as FBridgeNodeLayout's
+ *  estimated path, but keyed off node *kind* + parameters rather than an
+ *  existing UEdGraphNode — lets callers reserve space before spawning. */
+USTRUCT(BlueprintType)
+struct FBridgeNodeSizeEstimate
+{
+	GENERATED_BODY()
+
+	/** Predicted width in graph units. Matches EstimateNodeSize's output. */
+	UPROPERTY(BlueprintReadOnly) int32 Width = 180;
+
+	/** Predicted height in graph units. */
+	UPROPERTY(BlueprintReadOnly) int32 Height = 60;
+
+	/** Visible input pin count (exec + data, hidden pins excluded). */
+	UPROPERTY(BlueprintReadOnly) int32 InputPinCount = 0;
+
+	/** Visible output pin count. */
+	UPROPERTY(BlueprintReadOnly) int32 OutputPinCount = 0;
+
+	/** Echoes the input Kind — "function_call", "branch", etc. */
+	UPROPERTY(BlueprintReadOnly) FString Kind;
+
+	/** Diagnostic notes: "function not found", "fallback default", etc. */
+	UPROPERTY(BlueprintReadOnly) FString Notes;
+
+	/** True if the estimate succeeded; false if kind/params couldn't be
+	 *  resolved and we fell back to a generic default size. */
+	UPROPERTY(BlueprintReadOnly) bool bResolved = false;
+};
+
+/** Result of AutoLayoutGraph. */
+USTRUCT(BlueprintType)
+struct FBridgeLayoutResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) bool bSucceeded = false;
+
+	/** Number of nodes whose NodePosX/Y was updated. */
+	UPROPERTY(BlueprintReadOnly) int32 NodesPositioned = 0;
+
+	/** Depth of the layered layout (layer 0 = leftmost sources). */
+	UPROPERTY(BlueprintReadOnly) int32 LayerCount = 0;
+
+	/** Width of the final laid-out area in graph units. */
+	UPROPERTY(BlueprintReadOnly) int32 BoundsWidth = 0;
+	UPROPERTY(BlueprintReadOnly) int32 BoundsHeight = 0;
+
+	/** Per-node diagnostics: cycles broken, unreachable nodes, etc. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> Warnings;
+};
+
 /** Full pin description for one node pin (listed regardless of wire state). */
 USTRUCT(BlueprintType)
 struct FBridgePinInfo
@@ -1580,6 +1633,71 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgePinLayout> GetNodePinLayouts(const FString& BlueprintPath,
 		const FString& GraphName, const FString& NodeGuid);
+
+	/**
+	 * Predict the rendered size of a node *before* it is spawned, so callers
+	 * can reserve space / avoid overlap without a two-round-trip spawn→measure
+	 * dance. Uses the same width/height heuristic as FBridgeNodeLayout's
+	 * estimated path (header + pin rows + char-width title).
+	 *
+	 * @param Kind  Node kind discriminator. Supported:
+	 *   - "function_call"  ParamA=ClassPath, ParamB=FunctionName
+	 *   - "variable_get"   ParamA=BlueprintPath (or ""), ParamB=VariableName
+	 *   - "variable_set"   ParamA=BlueprintPath (or ""), ParamB=VariableName
+	 *   - "event"          ParamA=ClassPath, ParamB=EventName
+	 *   - "custom_event"   ParamInt=output-pin count (data params)
+	 *   - "branch"         (no params)
+	 *   - "sequence"       ParamInt=then-pin count (≥1)
+	 *   - "cast"           ParamA=TargetClassPath (for title length)
+	 *   - "self"           (no params)
+	 *   - "reroute"        (no params)
+	 *   - "delay"          (no params)
+	 *   - "foreach"        (no params)
+	 *   - "forloop"        (no params)
+	 *   - "whileloop"      (no params)
+	 *   - "select"         ParamInt=option count (≥2)
+	 *   - "make_array"     ParamInt=element count (≥1)
+	 *   - "make_struct"    ParamA=StructPath (for title + member count)
+	 *   - "break_struct"   ParamA=StructPath
+	 *   - "enum_literal"   ParamA=EnumPath
+	 *   - "make_literal"   ParamA=TypeString (e.g. "Vector")
+	 *   - "spawn_actor"    ParamA=ActorClassPath
+	 *   - "dispatcher_call"|"dispatcher_bind"|"dispatcher_event"  ParamA=BlueprintPath, ParamB=DispatcherName
+	 *
+	 * Unknown Kind returns the 180×60 fallback with bResolved=false.
+	 *
+	 * @param ParamInt  Used by kinds that take a count (see above). Clamped ≥ 0.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeNodeSizeEstimate PredictNodeSize(const FString& Kind,
+		const FString& ParamA, const FString& ParamB, int32 ParamInt);
+
+	/**
+	 * Reflow the graph with a layered, exec-flow-driven auto-layout. Classic
+	 * Sugiyama: topologically layer nodes by exec dependency, position each
+	 * layer left-to-right with H_SPACING gaps, stack nodes vertically within
+	 * a layer with V_SPACING between them, then barycentrically re-order each
+	 * layer to reduce wire crossings. Pure / data-only nodes are attached to
+	 * their first exec consumer's layer − 1 so they render immediately upstream.
+	 *
+	 * Doesn't modify wires — positions only. Safe to call multiple times;
+	 * idempotent on stable topology. Doesn't compile the Blueprint.
+	 *
+	 * @param Strategy  "exec_flow" (v1). Reserved: "data_flow", "event_grouped".
+	 * @param AnchorNodeGuid  Optional. If set, the anchor node's position is
+	 *   preserved and everything else is translated so the anchor lands where
+	 *   it was. Otherwise the layout origin defaults to the current top-left
+	 *   of the graph's bounding box.
+	 * @param HorizontalSpacing  Gap between layers. Pass 0 or negative for
+	 *   the default (80).
+	 * @param VerticalSpacing  Gap between nodes within a layer. Pass 0 or
+	 *   negative for the default (40).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeLayoutResult AutoLayoutGraph(const FString& BlueprintPath,
+		const FString& GraphName, const FString& Strategy,
+		const FString& AnchorNodeGuid,
+		int32 HorizontalSpacing, int32 VerticalSpacing);
 
 	// ─── Universal node spawner (FBlueprintActionDatabase) ─────────
 

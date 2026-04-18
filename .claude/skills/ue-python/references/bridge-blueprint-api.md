@@ -1377,6 +1377,119 @@ for p in L.get_node_pin_layouts(bp, fn, select):
   across the target nodes' `get_node_layout` results, pad by 30, pass
   as `add_comment_box(x, y, width, height)`.
 
+### predict_node_size(kind, param_a, param_b, param_int) -> FBridgeNodeSizeEstimate
+
+Predict a node's rendered size **before** spawning it, so you can
+reserve space / avoid overlap without a spawn→measure round-trip. The
+formula matches `FBridgeNodeLayout.estimated_*` exactly — prediction and
+post-spawn estimate agree to the pixel for resolved kinds.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+
+# Reserve horizontal space for a PrintString call + a Sequence(3)
+p1 = L.predict_node_size('function_call',
+    '/Script/Engine.KismetSystemLibrary', 'PrintString', 0)
+p2 = L.predict_node_size('sequence', '', '', 3)
+
+x = 0
+fn = L.add_call_function_node(bp, g,
+    '/Script/Engine.KismetSystemLibrary', 'PrintString', x, 0)
+x += p1.width + 80
+seq = L.add_sequence_node(bp, g, 3, x, 0)
+```
+
+Supported kinds (arg meanings):
+
+| Kind | `param_a` | `param_b` | `param_int` |
+|------|-----------|-----------|-------------|
+| `function_call` | class path (e.g. `/Script/Engine.KismetSystemLibrary`) | function name | — |
+| `event`         | class path | event name | — |
+| `variable_get`  | — | variable name | — |
+| `variable_set`  | — | variable name | — |
+| `custom_event`  | event name (for title width) | — | data-output count |
+| `branch`        | — | — | — |
+| `sequence`      | — | — | `then` pin count (≥2) |
+| `cast`          | target class path (for title) | — | — |
+| `self`          | — | — | — |
+| `reroute`       | — | — | — |
+| `delay`         | — | — | — |
+| `foreach` / `forloop` / `whileloop` | — | — | — |
+| `select`        | — | — | option count (≥2) |
+| `make_array`    | — | — | element count (≥1) |
+| `make_struct` / `break_struct` | struct path | — | — |
+| `enum_literal`  | enum path | — | — |
+| `make_literal`  | type string (e.g. `"Vector"`) | — | — |
+| `spawn_actor`   | actor class path | — | — |
+| `dispatcher_call` / `dispatcher_bind` / `dispatcher_event` | blueprint path | dispatcher name | — |
+
+Unknown kind returns a 180×60 fallback with `resolved=False`.
+
+#### FBridgeNodeSizeEstimate fields
+
+| Field | Meaning |
+|-------|---------|
+| `width`, `height` | Predicted size in graph units |
+| `input_pin_count`, `output_pin_count` | Visible pin counts (exec + data) |
+| `kind` | Echoes the input kind |
+| `resolved` | True if kind + params resolved cleanly; False on fallback |
+| `notes` | Diagnostic: `"function not found"`, `"unknown kind"`, etc. |
+
+### auto_layout_graph(blueprint_path, graph_name, strategy, anchor_node_guid, h_spacing, v_spacing) -> FBridgeLayoutResult
+
+Re-flow a graph with layered exec-flow auto-layout (Sugiyama-lite).
+Topologically layers nodes by exec dependency, places each layer
+left-to-right, stacks nodes vertically within a layer, then
+barycentrically re-orders within layers to reduce wire crossings. Pure
+/ data-only nodes attach to their first exec consumer's layer − 1 so
+they sit immediately upstream.
+
+**Only moves nodes — wires, comments, and pin defaults are untouched.**
+Safe to call repeatedly; idempotent on stable topology. Doesn't
+compile the Blueprint.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+
+# After a batch of add_* calls, tidy up the result.
+r = L.auto_layout_graph(bp, 'EventGraph', 'exec_flow', '', 80, 40)
+print(f'layers={r.layer_count}  positioned={r.nodes_positioned}  bounds={r.bounds_width}×{r.bounds_height}')
+for w in r.warnings: print(' !', w)
+```
+
+Pin anchor mode — keep one node in place (handy when integrating auto-
+layout into a larger edit session where you've already placed a known-
+good anchor):
+
+```python
+# Keep BeginPlay at its current spot; everything else flows from it.
+r = L.auto_layout_graph(bp, 'EventGraph', 'exec_flow', begin_guid, 100, 50)
+```
+
+**Strategy**: only `"exec_flow"` in v1. Reserved values: `"data_flow"`,
+`"event_grouped"`.
+
+**Spacing**: pass 0 or negative to get defaults (H=80, V=40).
+
+**Comment boxes** are detected and skipped (moving the box breaks the
+"encloses these specific nodes" intent). Comments stay where they are;
+the nodes inside may shift out of them.
+
+#### FBridgeLayoutResult fields
+
+| Field | Meaning |
+|-------|---------|
+| `succeeded` | True if the graph was processed (false = BP or graph missing / bad strategy) |
+| `nodes_positioned` | Count of nodes whose `NodePosX/Y` was updated |
+| `layer_count` | Depth of the final layout (layer 0 = leftmost sources) |
+| `bounds_width`, `bounds_height` | Size of the laid-out region in graph units |
+| `warnings` | Diagnostics: cycle breaks, unreachable anchors, unknown strategy |
+
+**Cycle handling**: exec cycles break the longest-path layering. The
+algorithm caps iterations and drops any still-unlayered nodes at layer 0
+with a warning. The graph isn't mutated to break the cycle — fix the
+wires first.
+
 ---
 
 ### End-to-end example — one node-graph build, one compile

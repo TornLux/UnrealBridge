@@ -4475,6 +4475,624 @@ TArray<FBridgePinLayout> UUnrealBridgeBlueprintLibrary::GetNodePinLayouts(
 	return Out;
 }
 
+// ─── Pre-spawn size prediction + graph auto-layout ─────────────
+
+namespace BridgeBPLayoutImpl
+{
+	using namespace BridgeBPSummaryImpl;
+
+	/** Apply the shared size formula once pin counts + title are known. */
+	static void ApplySizeFormula(
+		int32 InputCount, int32 OutputCount,
+		int32 LongestLabelLen, const FString& Title,
+		int32& OutW, int32& OutH)
+	{
+		const int32 TitleWidth = Title.Len() * 7 + 40;
+		const int32 PinWidth   = LongestLabelLen * 7 + 80;
+		OutW = FMath::Clamp(FMath::Max(TitleWidth, PinWidth), MinNodeWidth, MaxNodeWidth);
+		const int32 RowCount = FMath::Max(InputCount, OutputCount);
+		OutH = FMath::Max(MinNodeHeight, HeaderHeight + RowCount * PinRowHeight + FooterHeight);
+	}
+
+	/** Count parameters on a UFunction as they'd appear on a K2Node_CallFunction. */
+	static void TallyFunctionParams(
+		const UFunction* Fn, int32& InPins, int32& OutPins, int32& LongestLabel)
+	{
+		if (!Fn) return;
+		const bool bPure = Fn->HasAnyFunctionFlags(FUNC_BlueprintPure);
+		if (!bPure)
+		{
+			InPins  += 1;  // exec in
+			OutPins += 1;  // exec out (then)
+		}
+		if (!Fn->HasAnyFunctionFlags(FUNC_Static))
+		{
+			InPins += 1;  // self
+			if (4 > LongestLabel) LongestLabel = 4;
+		}
+		for (TFieldIterator<FProperty> It(Fn); It; ++It)
+		{
+			const FProperty* P = *It;
+			if (!P || !P->HasAnyPropertyFlags(CPF_Parm)) continue;
+			const bool bReturn = P->HasAnyPropertyFlags(CPF_ReturnParm);
+			const bool bOut    = P->HasAnyPropertyFlags(CPF_OutParm)
+			                  && !P->HasAnyPropertyFlags(CPF_ReferenceParm);
+			if (bReturn || bOut) OutPins += 1;
+			else                 InPins  += 1;
+			const int32 Len = P->GetName().Len();
+			if (Len > LongestLabel) LongestLabel = Len;
+		}
+	}
+
+	/** Resolve a variable's name length for a get/set node title. */
+	static int32 VariableTitleLen(UBlueprint* BP, const FString& VarName)
+	{
+		// K2Node_VariableGet / Set titles are just the variable name.
+		return VarName.Len();
+	}
+
+	/** Width-of-member labels heuristic for a struct by path. */
+	static void TallyStructMembers(
+		const FString& StructPath, int32& MemberCount, int32& LongestLabel)
+	{
+		if (StructPath.IsEmpty()) return;
+		UScriptStruct* S = FindObject<UScriptStruct>(nullptr, *StructPath);
+		if (!S) S = LoadObject<UScriptStruct>(nullptr, *StructPath);
+		if (!S) return;
+		for (TFieldIterator<FProperty> It(S); It; ++It)
+		{
+			const FProperty* P = *It;
+			if (!P) continue;
+			MemberCount += 1;
+			const int32 Len = P->GetName().Len();
+			if (Len > LongestLabel) LongestLabel = Len;
+		}
+	}
+}
+
+FBridgeNodeSizeEstimate UUnrealBridgeBlueprintLibrary::PredictNodeSize(
+	const FString& Kind, const FString& ParamA,
+	const FString& ParamB, int32 ParamInt)
+{
+	using namespace BridgeBPLayoutImpl;
+	using namespace BridgeBPSummaryImpl;
+
+	FBridgeNodeSizeEstimate Out;
+	Out.Kind = Kind;
+	Out.Width = MinNodeWidth;
+	Out.Height = MinNodeHeight;
+
+	auto Finish = [&](int32 InCount, int32 OutCount, int32 LongestLabel, const FString& Title)
+	{
+		int32 W = MinNodeWidth, H = MinNodeHeight;
+		ApplySizeFormula(InCount, OutCount, LongestLabel, Title, W, H);
+		Out.Width = W;
+		Out.Height = H;
+		Out.InputPinCount = InCount;
+		Out.OutputPinCount = OutCount;
+		Out.bResolved = true;
+	};
+
+	const int32 ClampedInt = FMath::Max(0, ParamInt);
+	const FString LowerKind = Kind.ToLower();
+
+	if (LowerKind == TEXT("function_call") || LowerKind == TEXT("event"))
+	{
+		UClass* Target = nullptr;
+		if (!ParamA.IsEmpty())
+		{
+			Target = FindObject<UClass>(nullptr, *ParamA);
+			if (!Target) Target = LoadObject<UClass>(nullptr, *ParamA);
+		}
+		UFunction* Fn = Target ? Target->FindFunctionByName(FName(*ParamB)) : nullptr;
+		if (!Fn)
+		{
+			Out.Notes = TEXT("function not found — fallback default");
+			Out.Width = 220; Out.Height = 80;
+			return Out;
+		}
+		int32 In = 0, OutP = 0, LongestLabel = ParamB.Len();
+		TallyFunctionParams(Fn, In, OutP, LongestLabel);
+		if (LowerKind == TEXT("event"))
+		{
+			// Event entry nodes: no exec-in, only exec-out + data outs for params.
+			In = 0;
+			OutP = 1;  // exec out
+			LongestLabel = ParamB.Len();
+			for (TFieldIterator<FProperty> It(Fn); It; ++It)
+			{
+				const FProperty* P = *It;
+				if (!P || !P->HasAnyPropertyFlags(CPF_Parm)) continue;
+				if (P->HasAnyPropertyFlags(CPF_ReturnParm)) continue;
+				OutP += 1;
+				const int32 L = P->GetName().Len();
+				if (L > LongestLabel) LongestLabel = L;
+			}
+		}
+		Finish(In, OutP, LongestLabel, ParamB);
+		return Out;
+	}
+
+	if (LowerKind == TEXT("variable_get"))
+	{
+		const int32 Len = VariableTitleLen(nullptr, ParamB);
+		Finish(/*in*/0, /*out*/1, Len, ParamB);
+		return Out;
+	}
+	if (LowerKind == TEXT("variable_set"))
+	{
+		const int32 Len = VariableTitleLen(nullptr, ParamB);
+		Finish(/*in*/2, /*out*/1, Len, FString::Printf(TEXT("SET %s"), *ParamB));
+		return Out;
+	}
+	if (LowerKind == TEXT("custom_event"))
+	{
+		Finish(/*in*/0, /*out*/1 + ClampedInt, 8, ParamA.IsEmpty() ? TEXT("CustomEvent") : ParamA);
+		return Out;
+	}
+	if (LowerKind == TEXT("branch"))
+	{
+		Finish(2, 2, 5, TEXT("Branch"));
+		return Out;
+	}
+	if (LowerKind == TEXT("sequence"))
+	{
+		const int32 ThenCount = FMath::Max(2, ClampedInt);
+		Finish(1, ThenCount, 5, TEXT("Sequence"));
+		return Out;
+	}
+	if (LowerKind == TEXT("cast"))
+	{
+		FString Title = TEXT("Cast To ");
+		if (!ParamA.IsEmpty())
+		{
+			// Use last path segment for brevity.
+			int32 Dot = INDEX_NONE;
+			ParamA.FindLastChar(TEXT('.'), Dot);
+			Title += (Dot != INDEX_NONE ? ParamA.RightChop(Dot + 1) : ParamA);
+		}
+		Finish(2, 3, 8, Title);
+		return Out;
+	}
+	if (LowerKind == TEXT("self"))       { Finish(0, 1, 4, TEXT("Self")); return Out; }
+	if (LowerKind == TEXT("reroute"))
+	{
+		// Reroute renders as a small diamond in the editor, but NodeWidth/Height
+		// follow the shared estimate formula (min-size for a 1-in/1-out node).
+		// Match what GetNodeLayout's estimated path returns so Predict+Actual agree.
+		Finish(1, 1, 0, TEXT(""));
+		return Out;
+	}
+	if (LowerKind == TEXT("delay"))      { Finish(2, 1, 10, TEXT("Delay")); return Out; }
+	if (LowerKind == TEXT("foreach"))    { Finish(3, 4, 14, TEXT("ForEachLoop")); return Out; }
+	if (LowerKind == TEXT("forloop"))    { Finish(3, 3, 10, TEXT("ForLoop")); return Out; }
+	if (LowerKind == TEXT("whileloop"))  { Finish(2, 2, 10, TEXT("WhileLoop")); return Out; }
+	if (LowerKind == TEXT("select"))
+	{
+		const int32 Opts = FMath::Max(2, ClampedInt);
+		Finish(1 + Opts, 1, 8, TEXT("Select"));
+		return Out;
+	}
+	if (LowerKind == TEXT("make_array"))
+	{
+		const int32 Elems = FMath::Max(1, ClampedInt);
+		Finish(Elems, 1, 6, TEXT("Make Array"));
+		return Out;
+	}
+	if (LowerKind == TEXT("make_struct") || LowerKind == TEXT("break_struct"))
+	{
+		int32 Members = 0, Longest = 0;
+		TallyStructMembers(ParamA, Members, Longest);
+		if (Members == 0) { Out.Notes = TEXT("struct not found — fallback"); Members = 3; Longest = 8; }
+		FString TitlePrefix = (LowerKind == TEXT("make_struct")) ? TEXT("Make ") : TEXT("Break ");
+		int32 Dot = INDEX_NONE;
+		ParamA.FindLastChar(TEXT('.'), Dot);
+		FString ShortName = (Dot != INDEX_NONE) ? ParamA.RightChop(Dot + 1) : ParamA;
+		if (LowerKind == TEXT("make_struct"))  Finish(Members, 1, Longest, TitlePrefix + ShortName);
+		else                                    Finish(1, Members, Longest, TitlePrefix + ShortName);
+		return Out;
+	}
+	if (LowerKind == TEXT("enum_literal"))
+	{
+		int32 Dot = INDEX_NONE;
+		ParamA.FindLastChar(TEXT('.'), Dot);
+		FString Short = (Dot != INDEX_NONE) ? ParamA.RightChop(Dot + 1) : ParamA;
+		Finish(0, 1, Short.Len(), Short);
+		return Out;
+	}
+	if (LowerKind == TEXT("make_literal"))
+	{
+		Finish(0, 1, ParamA.Len(), FString::Printf(TEXT("Literal %s"), *ParamA));
+		return Out;
+	}
+	if (LowerKind == TEXT("spawn_actor"))
+	{
+		int32 Dot = INDEX_NONE;
+		ParamA.FindLastChar(TEXT('.'), Dot);
+		FString Short = (Dot != INDEX_NONE) ? ParamA.RightChop(Dot + 1) : ParamA;
+		// SpawnActorFromClass: exec in, class, transform, collision, owner; out exec + return.
+		Finish(5, 2, 16, FString::Printf(TEXT("SpawnActor %s"), *Short));
+		return Out;
+	}
+	if (LowerKind == TEXT("dispatcher_call"))
+	{
+		Finish(2, 1, ParamB.Len(), FString::Printf(TEXT("Call %s"), *ParamB));
+		return Out;
+	}
+	if (LowerKind == TEXT("dispatcher_bind"))
+	{
+		Finish(3, 1, ParamB.Len(), FString::Printf(TEXT("Bind %s"), *ParamB));
+		return Out;
+	}
+	if (LowerKind == TEXT("dispatcher_event"))
+	{
+		Finish(0, 1, ParamB.Len(), FString::Printf(TEXT("Event %s"), *ParamB));
+		return Out;
+	}
+
+	Out.Notes = TEXT("unknown kind — fallback default");
+	Out.Width = MinNodeWidth;
+	Out.Height = MinNodeHeight;
+	return Out;
+}
+
+// ─── AutoLayoutGraph (Sugiyama-lite) ─────────────────────────
+
+namespace BridgeBPAutoLayoutImpl
+{
+	using namespace BridgeBPSummaryImpl;
+
+	struct FLayoutNode
+	{
+		UEdGraphNode* Node = nullptr;
+		int32 Width = MinNodeWidth;
+		int32 Height = MinNodeHeight;
+		int32 Layer = -1;
+		int32 OrderInLayer = 0;
+		TArray<int32> ExecSuccessors;   // indices into nodes array
+		TArray<int32> ExecPredecessors;
+		TArray<int32> DataSuccessors;   // for pure-node pull-in
+		bool bHasExecPins = false;
+	};
+
+	static bool PinIsExec(const UEdGraphPin* Pin)
+	{
+		return Pin && Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec;
+	}
+
+	/** Build layout graph. Exec edges drive layering; data edges used for
+	 *  pulling pure nodes near their consumers. */
+	static void BuildGraph(
+		UEdGraph* Graph, TArray<FLayoutNode>& Out,
+		TMap<UEdGraphNode*, int32>& IndexOf)
+	{
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (!N) continue;
+			FLayoutNode LN;
+			LN.Node = N;
+			int32 EstW = 0, EstH = 0;
+			EstimateNodeSize(N, EstW, EstH);
+			LN.Width  = (N->NodeWidth  > 0) ? N->NodeWidth  : EstW;
+			LN.Height = (N->NodeHeight > 0) ? N->NodeHeight : EstH;
+			// Comment boxes: keep their authored size; they're not laid out.
+			IndexOf.Add(N, Out.Num());
+			Out.Add(LN);
+		}
+		for (int32 i = 0; i < Out.Num(); ++i)
+		{
+			FLayoutNode& LN = Out[i];
+			for (UEdGraphPin* Pin : LN.Node->Pins)
+			{
+				if (!Pin) continue;
+				const bool bExec = PinIsExec(Pin);
+				if (bExec) LN.bHasExecPins = true;
+				for (UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					if (!Linked) continue;
+					UEdGraphNode* Other = Linked->GetOwningNode();
+					if (!Other) continue;
+					const int32* J = IndexOf.Find(Other);
+					if (!J) continue;
+					if (bExec && Pin->Direction == EGPD_Output)
+					{
+						LN.ExecSuccessors.AddUnique(*J);
+						Out[*J].ExecPredecessors.AddUnique(i);
+					}
+					else if (!bExec && Pin->Direction == EGPD_Input)
+					{
+						// This node consumes data from Other → Other is a producer;
+						// we want Other placed at layer(this) − 1 (handled later).
+						Out[*J].DataSuccessors.AddUnique(i);
+					}
+				}
+			}
+		}
+	}
+
+	/** Assign layers by longest-path from exec sources. Cycles are broken by
+	 *  ignoring back-edges (reported as warnings). */
+	static int32 AssignLayers(TArray<FLayoutNode>& Nodes, TArray<FString>& Warnings)
+	{
+		int32 MaxLayer = 0;
+		// Kahn-style longest-path: iterate until stable, with a cap.
+		const int32 Cap = Nodes.Num() * 8 + 16;
+		int32 Iter = 0;
+		bool bChanged = true;
+		// Seed: nodes with no exec preds get layer 0.
+		for (FLayoutNode& LN : Nodes)
+		{
+			if (LN.bHasExecPins && LN.ExecPredecessors.Num() == 0)
+			{
+				LN.Layer = 0;
+			}
+		}
+		while (bChanged && Iter++ < Cap)
+		{
+			bChanged = false;
+			for (int32 i = 0; i < Nodes.Num(); ++i)
+			{
+				FLayoutNode& LN = Nodes[i];
+				if (!LN.bHasExecPins) continue;
+				int32 Best = LN.Layer;
+				for (int32 P : LN.ExecPredecessors)
+				{
+					if (Nodes[P].Layer >= 0)
+					{
+						Best = FMath::Max(Best, Nodes[P].Layer + 1);
+					}
+				}
+				if (Best > LN.Layer)
+				{
+					LN.Layer = Best;
+					bChanged = true;
+				}
+			}
+		}
+		if (Iter >= Cap)
+		{
+			Warnings.Add(TEXT("layer assignment hit iteration cap — possible exec cycle"));
+		}
+		// Any exec node still at -1 is in a cycle island — stick it at layer 0.
+		for (FLayoutNode& LN : Nodes)
+		{
+			if (LN.bHasExecPins && LN.Layer < 0) LN.Layer = 0;
+		}
+		// Pure / data-only nodes: layer = min(consumer.layer) − 1, default 0.
+		for (FLayoutNode& LN : Nodes)
+		{
+			if (LN.bHasExecPins) continue;
+			int32 MinConsumer = INT32_MAX;
+			for (int32 C : LN.DataSuccessors)
+			{
+				if (Nodes[C].Layer >= 0)
+				{
+					MinConsumer = FMath::Min(MinConsumer, Nodes[C].Layer);
+				}
+			}
+			LN.Layer = (MinConsumer == INT32_MAX) ? 0 : FMath::Max(0, MinConsumer - 1);
+		}
+		for (const FLayoutNode& LN : Nodes)
+		{
+			if (LN.Layer > MaxLayer) MaxLayer = LN.Layer;
+		}
+		return MaxLayer + 1;
+	}
+
+	/** Barycentric ordering within each layer: sort by average Y of the
+	 *  predecessors' OrderInLayer. Two passes is usually enough. */
+	static void BarycentricOrder(TArray<FLayoutNode>& Nodes, int32 LayerCount)
+	{
+		TArray<TArray<int32>> Layers;
+		Layers.SetNum(LayerCount);
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			const int32 L = FMath::Clamp(Nodes[i].Layer, 0, LayerCount - 1);
+			Layers[L].Add(i);
+		}
+		// Seed: stable by original Y so untouched graphs don't scramble.
+		for (TArray<int32>& Layer : Layers)
+		{
+			Layer.Sort([&](int32 A, int32 B) {
+				return Nodes[A].Node->NodePosY < Nodes[B].Node->NodePosY;
+			});
+			for (int32 k = 0; k < Layer.Num(); ++k) Nodes[Layer[k]].OrderInLayer = k;
+		}
+		// Two sweeps: forward (use predecessors) then back (use successors).
+		for (int32 Pass = 0; Pass < 2; ++Pass)
+		{
+			for (int32 L = 1; L < LayerCount; ++L)
+			{
+				Layers[L].Sort([&](int32 A, int32 B) {
+					auto Bary = [&](int32 I)
+					{
+						const TArray<int32>& Preds = Nodes[I].ExecPredecessors.Num() > 0
+							? Nodes[I].ExecPredecessors : Nodes[I].DataSuccessors;
+						if (Preds.Num() == 0) return (float)Nodes[I].OrderInLayer;
+						float Sum = 0.f;
+						for (int32 P : Preds) Sum += Nodes[P].OrderInLayer;
+						return Sum / Preds.Num();
+					};
+					return Bary(A) < Bary(B);
+				});
+				for (int32 k = 0; k < Layers[L].Num(); ++k) Nodes[Layers[L][k]].OrderInLayer = k;
+			}
+		}
+	}
+}
+
+FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& Strategy, const FString& AnchorNodeGuid,
+	int32 HorizontalSpacing, int32 VerticalSpacing)
+{
+	using namespace BridgeBPAutoLayoutImpl;
+	using namespace BridgeBPSummaryImpl;
+
+	FBridgeLayoutResult Result;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) { Result.Warnings.Add(TEXT("blueprint not found")); return Result; }
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) { Result.Warnings.Add(TEXT("graph not found")); return Result; }
+
+	const FString LowerStrat = Strategy.IsEmpty() ? TEXT("exec_flow") : Strategy.ToLower();
+	if (LowerStrat != TEXT("exec_flow"))
+	{
+		Result.Warnings.Add(FString::Printf(TEXT("unknown strategy '%s' — only 'exec_flow' supported"), *Strategy));
+		return Result;
+	}
+
+	const int32 HSpace = HorizontalSpacing > 0 ? HorizontalSpacing : 80;
+	const int32 VSpace = VerticalSpacing   > 0 ? VerticalSpacing   : 40;
+
+	TArray<FLayoutNode> Nodes;
+	TMap<UEdGraphNode*, int32> IndexOf;
+	BuildGraph(Graph, Nodes, IndexOf);
+	if (Nodes.Num() == 0) { Result.bSucceeded = true; return Result; }
+
+	// Skip comment boxes — they enclose other nodes; moving them breaks intent.
+	TArray<int32> Layoutable;
+	for (int32 i = 0; i < Nodes.Num(); ++i)
+	{
+		if (Nodes[i].Node && !Nodes[i].Node->IsA<UEdGraphNode_Comment>())
+		{
+			Layoutable.Add(i);
+		}
+	}
+
+	const int32 LayerCount = AssignLayers(Nodes, Result.Warnings);
+	BarycentricOrder(Nodes, LayerCount);
+
+	// Compute per-layer widest + per-layer cumulative X offset.
+	TArray<int32> LayerWidth; LayerWidth.SetNumZeroed(LayerCount);
+	TArray<TArray<int32>> NodesByLayer; NodesByLayer.SetNum(LayerCount);
+	for (int32 Idx : Layoutable)
+	{
+		const FLayoutNode& LN = Nodes[Idx];
+		const int32 L = FMath::Clamp(LN.Layer, 0, LayerCount - 1);
+		if (LN.Width > LayerWidth[L]) LayerWidth[L] = LN.Width;
+		NodesByLayer[L].Add(Idx);
+	}
+
+	// Order within each layer by OrderInLayer (already set).
+	for (TArray<int32>& Layer : NodesByLayer)
+	{
+		Layer.Sort([&](int32 A, int32 B) {
+			return Nodes[A].OrderInLayer < Nodes[B].OrderInLayer;
+		});
+	}
+
+	// Compute anchor origin: use anchor node's current position if given, else
+	// top-left of existing bounding box.
+	int32 OriginX = 0, OriginY = 0;
+	const FLayoutNode* Anchor = nullptr;
+	if (!AnchorNodeGuid.IsEmpty())
+	{
+		for (const FLayoutNode& LN : Nodes)
+		{
+			if (LN.Node && LN.Node->NodeGuid.ToString(EGuidFormats::Digits) == AnchorNodeGuid)
+			{
+				Anchor = &LN; break;
+			}
+		}
+		if (!Anchor)
+		{
+			Result.Warnings.Add(FString::Printf(TEXT("anchor node %s not found"), *AnchorNodeGuid));
+		}
+		else
+		{
+			OriginX = Anchor->Node->NodePosX;
+			OriginY = Anchor->Node->NodePosY;
+		}
+	}
+	if (!Anchor)
+	{
+		int32 MinX = INT32_MAX, MinY = INT32_MAX;
+		for (int32 Idx : Layoutable)
+		{
+			MinX = FMath::Min(MinX, Nodes[Idx].Node->NodePosX);
+			MinY = FMath::Min(MinY, Nodes[Idx].Node->NodePosY);
+		}
+		if (MinX != INT32_MAX) { OriginX = MinX; OriginY = MinY; }
+	}
+
+	// Walk layers: compute X offset per layer, then stack nodes vertically.
+	TArray<int32> LayerX; LayerX.SetNum(LayerCount);
+	int32 Cursor = 0;
+	for (int32 L = 0; L < LayerCount; ++L)
+	{
+		LayerX[L] = Cursor;
+		Cursor += LayerWidth[L] + HSpace;
+	}
+
+	// Vertically center each layer around the bounding box midpoint.
+	int32 MaxLayerHeight = 0;
+	TArray<int32> LayerHeight; LayerHeight.SetNumZeroed(LayerCount);
+	for (int32 L = 0; L < LayerCount; ++L)
+	{
+		int32 H = 0;
+		for (int32 Idx : NodesByLayer[L])
+		{
+			H += Nodes[Idx].Height + VSpace;
+		}
+		if (H > 0) H -= VSpace;  // no trailing spacing
+		LayerHeight[L] = H;
+		if (H > MaxLayerHeight) MaxLayerHeight = H;
+	}
+
+	// If anchor is set, preserve anchor's (NodePosX, NodePosY) exactly. Compute
+	// the delta between anchor's would-be layout position and its current one,
+	// then translate everyone by the delta.
+	int32 DeltaX = OriginX;
+	int32 DeltaY = OriginY;
+	if (Anchor)
+	{
+		const int32 AnchorIdx = IndexOf[Anchor->Node];
+		const int32 AL = FMath::Clamp(Nodes[AnchorIdx].Layer, 0, LayerCount - 1);
+		const int32 AnchorLayoutX = LayerX[AL];
+		int32 AnchorLayoutY = 0;
+		for (int32 Idx : NodesByLayer[AL])
+		{
+			if (Idx == AnchorIdx) break;
+			AnchorLayoutY += Nodes[Idx].Height + VSpace;
+		}
+		// Center layer vertically: layer y starts at -LayerHeight/2.
+		AnchorLayoutY -= LayerHeight[AL] / 2;
+		DeltaX = OriginX - AnchorLayoutX;
+		DeltaY = OriginY - AnchorLayoutY;
+	}
+
+	Graph->Modify();
+	BP->Modify();
+
+	int32 MaxXOut = 0, MaxYOut = 0;
+	for (int32 L = 0; L < LayerCount; ++L)
+	{
+		int32 Y = -LayerHeight[L] / 2;
+		for (int32 Idx : NodesByLayer[L])
+		{
+			FLayoutNode& LN = Nodes[Idx];
+			const int32 NewX = DeltaX + LayerX[L];
+			const int32 NewY = DeltaY + Y;
+			LN.Node->Modify();
+			LN.Node->NodePosX = NewX;
+			LN.Node->NodePosY = NewY;
+			if (NewX + LN.Width  > MaxXOut) MaxXOut = NewX + LN.Width;
+			if (NewY + LN.Height > MaxYOut) MaxYOut = NewY + LN.Height;
+			Y += LN.Height + VSpace;
+			Result.NodesPositioned += 1;
+		}
+	}
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+
+	Result.bSucceeded = true;
+	Result.LayerCount = LayerCount;
+	Result.BoundsWidth  = MaxXOut - DeltaX;
+	Result.BoundsHeight = MaxYOut - DeltaY;
+	return Result;
+}
+
 TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
 	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
 {
