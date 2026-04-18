@@ -5656,6 +5656,122 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
+	/** For each primary exec edge, if the Y offset between pred's output exec
+	 *  pin and successor's input exec pin exceeds YThreshold (indicating that
+	 *  pin alignment was broken by collision resolution), insert a pair of
+	 *  reroute knots to convert the diagonal wire into a clean L-shape:
+	 *    src ─┐   (knot1 at mid-X, src pin Y — horizontal segment)
+	 *         │
+	 *         └─ dst   (knot2 at mid-X + offset, dst pin Y)
+	 *  Must be called AFTER final Node positions (NodePosX/Y) are applied —
+	 *  reads those directly. Returns the number of L-route edges knotted. */
+	static int32 InsertLRouteKnotsForDiagonalExec(
+		UEdGraph* Graph, const TArray<FPALayoutNode>& Nodes, int32 YThreshold)
+	{
+		if (!Graph) return 0;
+
+		struct FSpec { UEdGraphNode* SrcNode; FName SrcPin; UEdGraphNode* DstNode; FName DstPin;
+			int32 KnotAX, KnotAY, KnotBX, KnotBY; };
+		TArray<FSpec> Specs;
+
+		// Knot visual center offset from NodePosY — a knot renders ~16 px tall,
+		// pin sits at roughly NodePosY + 8.
+		constexpr int32 KnotPinCenterOffset = 8;
+
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			const FPALayoutNode& LN = Nodes[i];
+			if (!LN.bPlaced || !LN.bHasExecPins) continue;
+			if (LN.PrimaryExecPredIdx == INDEX_NONE) continue;
+			if (LN.PredExecOutDirIdx < 0 || LN.MyExecInDirIdx < 0) continue;
+
+			const FPALayoutNode& Pred = Nodes[LN.PrimaryExecPredIdx];
+			if (!Pred.bPlaced) continue;
+
+			const int32 PredPinY = Pred.Node->NodePosY + HeaderHeight + LN.PredExecOutDirIdx * PinRowHeight;
+			const int32 MyPinY   = LN.Node->NodePosY   + HeaderHeight + LN.MyExecInDirIdx   * PinRowHeight;
+			if (FMath::Abs(PredPinY - MyPinY) < YThreshold) continue;
+
+			UEdGraphPin* SrcPin = nullptr;
+			{
+				int32 VIdx = 0;
+				for (UEdGraphPin* Q : Pred.Node->Pins)
+				{
+					if (!Q || Q->bHidden) continue;
+					if (Q->Direction != EGPD_Output) continue;
+					if (VIdx == LN.PredExecOutDirIdx) { SrcPin = Q; break; }
+					++VIdx;
+				}
+			}
+			UEdGraphPin* DstPin = nullptr;
+			{
+				int32 VIdx = 0;
+				for (UEdGraphPin* Q : LN.Node->Pins)
+				{
+					if (!Q || Q->bHidden) continue;
+					if (Q->Direction != EGPD_Input) continue;
+					if (VIdx == LN.MyExecInDirIdx) { DstPin = Q; break; }
+					++VIdx;
+				}
+			}
+			if (!SrcPin || !DstPin) continue;
+			if (!SrcPin->LinkedTo.Contains(DstPin)) continue;
+
+			const int32 PredRight = Pred.Node->NodePosX + Pred.Width;
+			const int32 GapMid = PredRight + (LN.Node->NodePosX - PredRight) / 2;
+			FSpec S;
+			S.SrcNode = Pred.Node; S.SrcPin = SrcPin->PinName;
+			S.DstNode = LN.Node;   S.DstPin = DstPin->PinName;
+			S.KnotAX = GapMid;
+			S.KnotAY = PredPinY - KnotPinCenterOffset;
+			S.KnotBX = GapMid + 36;
+			S.KnotBY = MyPinY - KnotPinCenterOffset;
+			Specs.Add(S);
+		}
+
+		int32 Inserted = 0;
+		for (const FSpec& S : Specs)
+		{
+			UEdGraphPin* SrcPin = S.SrcNode->FindPin(S.SrcPin);
+			UEdGraphPin* DstPin = S.DstNode->FindPin(S.DstPin);
+			if (!SrcPin || !DstPin) continue;
+			if (!SrcPin->LinkedTo.Contains(DstPin)) continue;
+
+			UK2Node_Knot* K1 = NewObject<UK2Node_Knot>(Graph);
+			K1->CreateNewGuid();
+			K1->NodePosX = S.KnotAX;
+			K1->NodePosY = S.KnotAY;
+			Graph->AddNode(K1, false, false);
+			K1->PostPlacedNewNode();
+			K1->AllocateDefaultPins();
+
+			UK2Node_Knot* K2 = NewObject<UK2Node_Knot>(Graph);
+			K2->CreateNewGuid();
+			K2->NodePosX = S.KnotBX;
+			K2->NodePosY = S.KnotBY;
+			Graph->AddNode(K2, false, false);
+			K2->PostPlacedNewNode();
+			K2->AllocateDefaultPins();
+
+			UEdGraphPin* K1In  = K1->GetInputPin();
+			UEdGraphPin* K1Out = K1->GetOutputPin();
+			UEdGraphPin* K2In  = K2->GetInputPin();
+			UEdGraphPin* K2Out = K2->GetOutputPin();
+			if (!K1In || !K1Out || !K2In || !K2Out)
+			{
+				K1->DestroyNode(); K2->DestroyNode();
+				continue;
+			}
+
+			SrcPin->BreakLinkTo(DstPin);
+			SrcPin->MakeLinkTo(K1In);
+			K1Out->MakeLinkTo(K2In);
+			K2Out->MakeLinkTo(DstPin);
+			Inserted += 1;
+		}
+		return Inserted;
+	}
+
 	/** Park any still-unplaced, non-comment nodes (disconnected islands, etc.)
 	 *  in a spillover strip below the main layout so they don't get lost. */
 	static void ParkUnplacedNodes(TArray<FPALayoutNode>& Nodes, int32 MinX, int32 MaxY,
@@ -5867,12 +5983,23 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 			Result.NodesPositioned += 1;
 		}
 
+		// Post-placement: L-route any exec edge whose pin alignment was broken
+		// by collision resolution (e.g. sibling branches pushed far below the
+		// predecessor's False pin). Uses two knots for a clean rectilinear
+		// turn instead of a long diagonal Bezier.
+		const int32 LKnots = InsertLRouteKnotsForDiagonalExec(Graph, Nodes, 30);
+
 		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 
 		Result.bSucceeded = true;
 		Result.LayerCount = LayerCount;
 		Result.BoundsWidth  = (MaxXOut == INT32_MIN) ? 0 : (MaxXOut - MinXOut);
 		Result.BoundsHeight = (MaxYOut == INT32_MIN) ? 0 : (MaxYOut - MinYOut);
+		if (LKnots > 0)
+		{
+			Result.Warnings.Add(FString::Printf(
+				TEXT("pin_aligned: inserted %d L-route knots for diagonal exec edges"), LKnots));
+		}
 		return Result;
 	}
 
