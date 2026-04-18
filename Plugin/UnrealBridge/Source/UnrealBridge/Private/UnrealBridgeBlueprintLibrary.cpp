@@ -5576,82 +5576,124 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
-	/** Place pure nodes into their assigned slot columns. All nodes in the
-	 *  same (ConsumerLayer, Depth) slot share the same X (= SlotX for that
-	 *  slot), so sibling producers never have overlapping X-ranges regardless
-	 *  of individual widths. Y is pin-aligned to the primary consumer's input
-	 *  pin; collisions within a slot are resolved by downward bump. Process
-	 *  depth-1 slots first (closest to exec) so deeper slots can align to
-	 *  their already-placed (intermediate) consumers. */
-	static void PlaceDataProducersInSlots(TArray<FPALayoutNode>& Nodes,
-		const TMap<int64, int32>& SlotX, int32 VSpace)
+	/** Place pure nodes per-consumer: each producer sits `HSpace` px to the
+	 *  left of its primary consumer, with its own width (not the slot's max
+	 *  width). All nodes whose primary consumer shares an X naturally share
+	 *  a right edge, so sibling output pins stay aligned. Narrow siblings of
+	 *  wide ones no longer pay for the wide one's extra width on their input
+	 *  side — wire lengths to deeper producers become HSpace + 2×PinInset
+	 *  regardless of slot composition.
+	 *
+	 *  Y is pin-aligned to the primary consumer's input pin; collisions among
+	 *  any pair of placed nodes with overlapping X-range are resolved by
+	 *  downward bump. Shallowest depth first so deeper producers align to
+	 *  already-placed intermediates. */
+	static void PlaceDataProducersPerConsumer(TArray<FPALayoutNode>& Nodes,
+		int32 HSpace, int32 VSpace)
 	{
-		// Group data nodes by ConsumerLayer, sorted by Depth (ascending).
-		struct FSlotBucket { int32 ConsumerLayer; int32 Depth; TArray<int32> Nodes; };
-		TArray<FSlotBucket> Buckets;
-		TMap<int64, int32> BucketIdxByKey;
+		// Gather pure data nodes, bucket by DataDepth ascending so we process
+		// shallowest (depth 1) first — their consumers are exec nodes already
+		// at their final positions. Running collision resolution per-depth
+		// means deeper-placed nodes align to the POST-collision Y of their
+		// consumer, avoiding the classic "placed before consumer moved" bug.
+		int32 MaxDepth = 0;
 		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
 			const FPALayoutNode& LN = Nodes[i];
 			if (LN.bHasExecPins) continue;
 			if (LN.DataConsumerLayer == INT32_MAX) continue;
 			if (LN.DataDepth == INT32_MAX) continue;
-			const int64 Key = MakeSlotKey(LN.DataConsumerLayer, LN.DataDepth);
-			int32* Existing = BucketIdxByKey.Find(Key);
-			int32 BucketIdx;
-			if (Existing) { BucketIdx = *Existing; }
-			else
-			{
-				FSlotBucket B; B.ConsumerLayer = LN.DataConsumerLayer; B.Depth = LN.DataDepth;
-				BucketIdx = Buckets.Add(B);
-				BucketIdxByKey.Add(Key, BucketIdx);
-			}
-			Buckets[BucketIdx].Nodes.Add(i);
+			if (LN.PrimaryConsumerIdx == INDEX_NONE) continue;
+			if (LN.DataDepth > MaxDepth) MaxDepth = LN.DataDepth;
 		}
 
-		// Process shallowest-depth slots first so that deeper producers can
-		// align against already-placed intermediate consumers.
-		Buckets.Sort([](const FSlotBucket& A, const FSlotBucket& B) {
-			return A.Depth < B.Depth;
-		});
-
-		for (FSlotBucket& B : Buckets)
+		auto PlaceOne = [&](int32 Idx)
 		{
-			const int64 Key = MakeSlotKey(B.ConsumerLayer, B.Depth);
-			const int32* X = SlotX.Find(Key);
-			if (!X) continue;
-
-			// Tentative Y from primary consumer pin alignment.
-			for (int32 Idx : B.Nodes)
+			FPALayoutNode& LN = Nodes[Idx];
+			const FPALayoutNode& Cons = Nodes[LN.PrimaryConsumerIdx];
+			if (!Cons.bPlaced)
 			{
-				FPALayoutNode& LN = Nodes[Idx];
-				LN.NewX = *X;
-				if (LN.PrimaryConsumerIdx != INDEX_NONE && Nodes[LN.PrimaryConsumerIdx].bPlaced
-					&& LN.PrimaryConsumerInDirIdx >= 0 && LN.MyOutDirIdxToPrimary >= 0)
-				{
-					const FPALayoutNode& Cons = Nodes[LN.PrimaryConsumerIdx];
-					const int32 ConsPinY = Cons.NewY + HeaderHeight
-						+ LN.PrimaryConsumerInDirIdx * PinRowHeight;
-					const int32 MyOutLocalY = HeaderHeight
-						+ LN.MyOutDirIdxToPrimary * PinRowHeight;
-					LN.NewY = ConsPinY - MyOutLocalY;
-				}
-				else
-				{
-					LN.NewY = LN.Node->NodePosY;
-				}
+				LN.NewX = LN.Node->NodePosX;
+				LN.NewY = LN.Node->NodePosY;
+				LN.bPlaced = true;
+				return;
 			}
-
-			// Resolve Y collisions within this slot (preserve tentative order).
-			B.Nodes.Sort([&](int32 A, int32 BB) { return Nodes[A].NewY < Nodes[BB].NewY; });
-			for (int32 k = 0; k < B.Nodes.Num(); ++k)
+			LN.NewX = Cons.NewX - HSpace - LN.Width;
+			if (LN.PrimaryConsumerInDirIdx >= 0 && LN.MyOutDirIdxToPrimary >= 0)
 			{
-				if (k == 0) { Nodes[B.Nodes[k]].bPlaced = true; continue; }
-				const FPALayoutNode& Prev = Nodes[B.Nodes[k-1]];
-				FPALayoutNode& Curr = Nodes[B.Nodes[k]];
-				const int32 MinY = Prev.NewY + Prev.Height + VSpace;
-				if (Curr.NewY < MinY) Curr.NewY = MinY;
-				Curr.bPlaced = true;
+				const int32 ConsPinY = Cons.NewY + HeaderHeight
+					+ LN.PrimaryConsumerInDirIdx * PinRowHeight;
+				const int32 MyOutLocalY = HeaderHeight
+					+ LN.MyOutDirIdxToPrimary * PinRowHeight;
+				LN.NewY = ConsPinY - MyOutLocalY;
+			}
+			else
+			{
+				LN.NewY = LN.Node->NodePosY;
+			}
+			LN.bPlaced = true;
+		};
+
+		// Per-depth: place, then resolve collisions against ALL already-placed
+		// nodes (exec + earlier data depths). X-range overlap + Y-range overlap
+		// triggers a downward bump.
+		TArray<int32> AllPlaced;
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			if (Nodes[i].bPlaced) AllPlaced.Add(i);  // exec backbone pre-placed
+		}
+
+		for (int32 d = 1; d <= MaxDepth; ++d)
+		{
+			// Collect nodes at this depth and place them (pin-aligned to their
+			// consumers, which are by now at their final Y).
+			TArray<int32> ThisDepth;
+			for (int32 i = 0; i < Nodes.Num(); ++i)
+			{
+				const FPALayoutNode& LN = Nodes[i];
+				if (LN.bHasExecPins) continue;
+				if (LN.DataDepth != d) continue;
+				if (LN.PrimaryConsumerIdx == INDEX_NONE) continue;
+				PlaceOne(i);
+				ThisDepth.Add(i);
+			}
+			if (ThisDepth.Num() == 0) continue;
+
+			// Collision-sort this depth's nodes (lowest Y first), then push
+			// any that overlap an earlier-placed node horizontally AND
+			// vertically. "Earlier" = placed in a prior iteration (exec +
+			// shallower depths + already-processed siblings in this depth).
+			ThisDepth.Sort([&](int32 A, int32 B) {
+				if (Nodes[A].NewY != Nodes[B].NewY) return Nodes[A].NewY < Nodes[B].NewY;
+				return Nodes[A].NewX < Nodes[B].NewX;
+			});
+			for (int32 Idx : ThisDepth)
+			{
+				FPALayoutNode& Curr = Nodes[Idx];
+				int32 MinY = INT32_MIN;
+				for (int32 Other : AllPlaced)
+				{
+					if (Other == Idx) continue;
+					const FPALayoutNode& P = Nodes[Other];
+					if (!P.bPlaced) continue;
+					const bool bXOverlap =
+						!(Curr.NewX + Curr.Width <= P.NewX ||
+						  P.NewX + P.Width <= Curr.NewX);
+					if (!bXOverlap) continue;
+					// Only react when the actual bounding boxes overlap (with
+					// a VSpace cushion). If Curr is already fully above or
+					// fully below P, no adjustment needed — otherwise we'd
+					// push a perfectly-placed node down for no reason when a
+					// previously-placed node was collision-bumped higher Y
+					// than Curr's natural position.
+					const bool bAboveP = Curr.NewY + Curr.Height + VSpace <= P.NewY;
+					const bool bBelowP = P.NewY + P.Height + VSpace <= Curr.NewY;
+					if (bAboveP || bBelowP) continue;
+					const int32 PrevBottomPlusGap = P.NewY + P.Height + VSpace;
+					if (PrevBottomPlusGap > MinY) MinY = PrevBottomPlusGap;
+				}
+				if (MinY != INT32_MIN && Curr.NewY < MinY) Curr.NewY = MinY;
+				AllPlaced.Add(Idx);
 			}
 		}
 	}
@@ -5905,7 +5947,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		}
 
 		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace);
-		PlaceDataProducersInSlots(Nodes, SlotX, VSpace);
+		PlaceDataProducersPerConsumer(Nodes, HSpace, VSpace);
 
 		// Compute current-layout bounds, then park anything still unplaced.
 		int32 MinNewX = INT32_MAX, MinNewY = INT32_MAX, MaxNewX = INT32_MIN, MaxNewY = INT32_MIN;
