@@ -112,9 +112,12 @@ When you **author or modify a Blueprint graph** (spawn / connect / remove nodes,
 4. lint        — lint_blueprint(bp, '', -1, -1, -1) and resolve every finding
 5. collapse    — for any LongExecChain finding, collapse_nodes_to_function
 6. straighten  — straighten_exec_chain for each main exec rail (only needed after 'exec_flow')
-7. reroute     — auto_insert_reroutes to break wires that cross nodes
-8. comment     — add_comment_box + set_comment_box_color for each section
-9. compile     — confirm compile_blueprints returns clean
+7. comment     — add_comment_box + set_comment_box_color for each section
+8. compile     — confirm compile_blueprints returns clean
+# auto_insert_reroutes is intentionally NOT in the loop. Empirically on
+# dense math-heavy graphs it inserts dozens of knots to avoid straight-line
+# wire-through-node violations, but the resulting many-knot routing reads
+# worse than the original. Opt in per-graph if a specific case needs it.
 ```
 
 - **Lint is non-optional.** If `lint_blueprint` returns any `warning` or `error`, fix or explicitly accept each one (write a justification in a comment box). Do not hand the BP back with unresolved warnings.
