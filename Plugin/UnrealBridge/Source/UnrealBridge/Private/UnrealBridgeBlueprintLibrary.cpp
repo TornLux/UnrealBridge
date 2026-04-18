@@ -5394,6 +5394,64 @@ namespace BridgeBPPinAlignedImpl
 		bool bValid = false;
 	};
 
+	/** Strip all reroute knots from the graph by short-circuiting every wire
+	 *  that passes through one. Each knot's input pin has exactly one source
+	 *  link; its output pin may have multiple destinations. Re-wire source →
+	 *  each destination directly, then delete the knot. Call before layout
+	 *  so the algorithm sees a canonical graph (no inherited reroutes from
+	 *  previous layout runs). The layout's own L-route pass re-adds knots
+	 *  for any wires that end up diagonal in the new positions. */
+	static void StripRerouteKnots(UEdGraph* Graph)
+	{
+		if (!Graph) return;
+		TArray<UK2Node_Knot*> Knots;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (UK2Node_Knot* K = Cast<UK2Node_Knot>(N)) Knots.Add(K);
+		}
+		for (UK2Node_Knot* K : Knots)
+		{
+			UEdGraphPin* KIn  = K->GetInputPin();
+			UEdGraphPin* KOut = K->GetOutputPin();
+			if (!KIn || !KOut) continue;
+
+			// Snapshot source(s) reaching KIn and destination(s) leaving KOut.
+			TArray<UEdGraphPin*> Sources;
+			for (UEdGraphPin* L : KIn->LinkedTo)
+			{
+				if (L) Sources.Add(L);
+			}
+			TArray<UEdGraphPin*> Dests;
+			for (UEdGraphPin* L : KOut->LinkedTo)
+			{
+				if (L) Dests.Add(L);
+			}
+
+			// Break existing links (LinkedTo is mutated as we break).
+			while (KIn->LinkedTo.Num() > 0)
+			{
+				KIn->BreakLinkTo(KIn->LinkedTo[0]);
+			}
+			while (KOut->LinkedTo.Num() > 0)
+			{
+				KOut->BreakLinkTo(KOut->LinkedTo[0]);
+			}
+
+			// Re-wire every source to every destination. If a source is itself
+			// a knot (chained reroutes), this wire still lands on the knot for
+			// now — the next iteration of this loop will collapse that knot.
+			for (UEdGraphPin* S : Sources)
+			{
+				for (UEdGraphPin* D : Dests)
+				{
+					if (S && D) S->MakeLinkTo(D);
+				}
+			}
+
+			K->DestroyNode();
+		}
+	}
+
 	/** Query the live SGraphPanel for each node's desired size and each pin's
 	 *  node-offset. Requires the graph to already be open in a Blueprint
 	 *  editor AND to have been ticked by Slate at least once (this function
@@ -6410,6 +6468,12 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 	{
 		using namespace BridgeBPPinAlignedImpl;
 
+		// Collapse any reroute knots from prior layout runs so primary-succ
+		// walking and data-chain BFS see the canonical topology. L-route
+		// will re-insert knots for whatever diagonals the new layout leaves.
+		Graph->Modify();
+		StripRerouteKnots(Graph);
+
 		// Query live Slate widgets for accurate node sizes + pin offsets.
 		// Requires the graph to already be open + ticked; if not, Cache is
 		// empty and all helpers fall back to EstimateNodeSize/ComputePinLocalY.
@@ -6431,6 +6495,12 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		SelectPrimaryExecSuccs(Nodes);
 		AssignDataSlots(Nodes);
 
+		// Data columns (inside a single exec layer's data chain) benefit from
+		// a tighter gap than exec-column-to-exec-column — hand-authored BPs
+		// pack data pipelines densely. Derive DataHSpace from HSpace but cap
+		// tight: ~1/3 of the user's HSpace, floor 15 px so labels stay legible.
+		const int32 DataHSpace = FMath::Max(15, HSpace / 3);
+
 		// Per-layer widest width (exec nodes only).
 		TArray<int32> LayerMaxW; LayerMaxW.SetNumZeroed(LayerCount);
 		for (const FPALayoutNode& LN : Nodes)
@@ -6444,8 +6514,8 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		TMap<int32, int32> LayerMaxDepth;
 		ComputeDataSlots(Nodes, SlotWidth, LayerMaxDepth);
 
-		// Per-layer data budget = sum of slot widths + HSpace gaps for this
-		// layer's depth range.
+		// Per-layer data budget = sum of slot widths + DataHSpace gaps for
+		// this layer's depth range.
 		TArray<int32> LayerDataBudget; LayerDataBudget.SetNumZeroed(LayerCount);
 		for (int32 L = 0; L < LayerCount; ++L)
 		{
@@ -6457,14 +6527,13 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 				const int64 Key = MakeSlotKey(L, d);
 				const int32* W = SlotWidth.Find(Key);
 				const int32 SlotW = W ? *W : 0;
-				Sum += SlotW + HSpace;
+				Sum += SlotW + DataHSpace;
 			}
 			LayerDataBudget[L] = Sum;
 		}
 
-		// Layer X positions (cumulative). Layer 0 has no data feeding it from
-		// the left (that'd be cyclic). Each later layer's X = prev layer's
-		// right edge + that layer's data budget (+HSpace is already in budget).
+		// Layer X positions (cumulative). Exec layers spaced by HSpace; data
+		// chains reserved with DataHSpace inside each layer-to-layer gap.
 		TArray<int32> LayerX; LayerX.SetNumZeroed(LayerCount);
 		int32 Cur = 0;
 		for (int32 L = 0; L < LayerCount; ++L)
@@ -6480,7 +6549,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		{
 			const int32* MaxD = LayerMaxDepth.Find(L);
 			if (!MaxD) continue;
-			int32 SX = LayerX[L] - HSpace;
+			int32 SX = LayerX[L] - DataHSpace;
 			for (int32 d = 1; d <= *MaxD; ++d)
 			{
 				const int64 Key = MakeSlotKey(L, d);
@@ -6488,12 +6557,12 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 				const int32 SlotW = W ? *W : 0;
 				SX -= SlotW;
 				SlotX.Add(Key, SX);
-				SX -= HSpace;
+				SX -= DataHSpace;
 			}
 		}
 
 		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace, Cache, IndexOf);
-		PlaceDataProducersPerConsumer(Nodes, HSpace, VSpace, Cache);
+		PlaceDataProducersPerConsumer(Nodes, DataHSpace, VSpace, Cache);
 
 		// Compute current-layout bounds, then park anything still unplaced.
 		int32 MinNewX = INT32_MAX, MinNewY = INT32_MAX, MaxNewX = INT32_MIN, MaxNewY = INT32_MIN;
