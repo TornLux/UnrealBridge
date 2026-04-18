@@ -5765,14 +5765,18 @@ namespace BridgeBPPinAlignedImpl
 			if (!SrcPin->LinkedTo.Contains(DstPin)) continue;
 
 			const int32 PredRight = Pred.Node->NodePosX + Pred.Width;
-			const int32 GapMid = PredRight + (LN.Node->NodePosX - PredRight) / 2;
+			const int32 DstLeft = LN.Node->NodePosX;
+			// Need at least 2 × KnotWidth of gap to fit both knots plus margin
+			// on either side; otherwise skip (diagonal stays, but a too-tight
+			// L-route looks worse than a small diagonal).
+			if (DstLeft - PredRight < 2 * KnotWidth) continue;
+			// Center the knot pair so that KnotA.in sits just right of Pred
+			// and KnotB.out sits just left of Dst. Both outer segments get
+			// symmetric margins; the middle is purely vertical.
+			const int32 GapMid = (PredRight + DstLeft - KnotWidth) / 2;
 			FSpec S;
 			S.SrcNode = Pred.Node; S.SrcPin = SrcPin->PinName;
 			S.DstNode = LN.Node;   S.DstPin = DstPin->PinName;
-			// Place KnotA so its OUTPUT pin X equals KnotB's INPUT pin X (both at
-			// GapMid + HalfKnotWidth). That makes the middle segment purely
-			// vertical and the outer segments purely horizontal, landing on the
-			// source & destination pin Y exactly.
 			S.KnotAX = GapMid - HalfKnotWidth;
 			S.KnotAY = PredPinY - KnotPinCenterOffset;
 			S.KnotBX = GapMid + HalfKnotWidth;  // = KnotAX + KnotWidth
@@ -5916,8 +5920,12 @@ namespace BridgeBPPinAlignedImpl
 			if (!SrcPin || !DstPin) continue;
 			if (!SrcPin->LinkedTo.Contains(DstPin)) continue;
 			if (E.DstNodeLeft <= E.SrcNodeRight) continue;  // wire goes right-to-left, skip
+			// Need at least 2 × KnotWidth of horizontal gap to fit both knots.
+			// Without that, the second knot would overshoot the destination's
+			// left edge and the outbound wire would curl backwards.
+			if (E.DstNodeLeft - E.SrcNodeRight < 2 * KnotWidth) continue;
 
-			const int32 GapMid = E.SrcNodeRight + (E.DstNodeLeft - E.SrcNodeRight) / 2;
+			const int32 GapMid = (E.SrcNodeRight + E.DstNodeLeft - KnotWidth) / 2;
 			const int32 KnotAX = GapMid - HalfKnotWidth;
 			const int32 KnotAY = E.SrcPinY - KnotPinCenterOffset;
 			const int32 KnotBX = GapMid + HalfKnotWidth;
@@ -6172,13 +6180,16 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 			Result.NodesPositioned += 1;
 		}
 
-		// Post-placement: L-route any wire whose pin alignment was broken by
-		// collision resolution. Two reroute knots turn a diagonal into a
-		// rectilinear horizontal-vertical-horizontal turn. Run for exec
-		// first, then data; each uses the same pattern with side-specific
-		// pin lookup.
+		// Post-placement: L-route diagonal EXEC edges only. Exec flow needs
+		// rectilinear turns to read cleanly, and diagonal Bezier on an exec
+		// wire reads as a misdirection. Data wires, by contrast, are
+		// comfortable as gentle Beziers — hand-authored BPs regularly leave
+		// data diagonals with no knots (see reference BPs); adding knots for
+		// every small Y offset just creates visual clutter. Keep the data
+		// layout pin-aligned at the node level (which PlaceDataProducersPerConsumer
+		// already does) and let UE's bezier render the unavoidable diagonals.
 		const int32 LKnotsExec = InsertLRouteKnotsForDiagonalExec(Graph, Nodes, 30);
-		const int32 LKnotsData = InsertLRouteKnotsForAllDataWires(Graph, 30);
+		const int32 LKnotsData = 0;
 
 		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 
