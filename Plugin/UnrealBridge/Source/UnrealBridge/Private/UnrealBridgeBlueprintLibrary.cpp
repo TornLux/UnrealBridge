@@ -6120,10 +6120,15 @@ namespace BridgeBPPinAlignedImpl
 		//  1. DFS from the entry following exec-out pins in dir order (.then
 		//     first, then .else). Leaves (Return / terminal nodes) are
 		//     pushed to a flat list in the order we meet them — this is
-		//     the natural top-to-bottom order humans draw BPs in.
-		//  2. Leaves get stacked top-to-bottom in that DFS order, spanning
-		//     layers (crouch returns at layer 5 stack below walk return at
-		//     layer 4, etc.).
+		//     the natural top-to-bottom order humans draw BPs in. Each node
+		//     also records its "lane chain": the fanout-output pins crossed
+		//     on the path from root. Two fanout-outputs K, K+1 on the same
+		//     fanout appear at the same chain position but with increasing
+		//     PinDirIdx, so lex-ordering chains gives then_0 ≺ then_1 ≺ ….
+		//  2. Sort leaves by lane chain (lex), tiebreak by DFS visit order.
+		//     Stack top-to-bottom; add an extra block-gap between leaves that
+		//     belong to different lanes. This is what makes each fanout pin's
+		//     sub-tree a visually separate "code block" with no overlap.
 		//  3. Non-leaves pull Y from their primary successor so the .then
 		//     wire reads as a horizontal rail. Processed deepest-first so
 		//     successors are placed before predecessors.
@@ -6131,11 +6136,18 @@ namespace BridgeBPPinAlignedImpl
 
 		TArray<int32> DFSLeaves;
 		TSet<int32> Visited;
-		TFunction<void(int32)> DFS;
-		DFS = [&](int32 Idx)
+		TArray<TArray<int64>> LaneChainOf; LaneChainOf.SetNum(Nodes.Num());
+		TArray<int32> DFSOrderOf;          DFSOrderOf.Init(INT32_MAX, Nodes.Num());
+		int32 DFSTick = 0;
+
+		TFunction<void(int32, const TArray<int64>&)> DFS;
+		DFS = [&](int32 Idx, const TArray<int64>& Chain)
 		{
 			if (Visited.Contains(Idx)) return;
 			Visited.Add(Idx);
+			LaneChainOf[Idx] = Chain;
+			DFSOrderOf[Idx]  = DFSTick++;
+
 			FPALayoutNode& LN = Nodes[Idx];
 			if (!LN.bHasExecPins) return;
 			if (LN.ExecSuccessors.Num() == 0)
@@ -6143,6 +6155,20 @@ namespace BridgeBPPinAlignedImpl
 				DFSLeaves.Add(Idx);
 				return;
 			}
+
+			// Count exec outputs — any node with ≥2 wired exec outputs acts as
+			// a fanout whose output pins each open a new lane. Branch (then /
+			// else) and Sequence (then_0 / then_1 / …) are the canonical cases.
+			int32 WiredExecOuts = 0;
+			for (UEdGraphPin* P : LN.Node->Pins)
+			{
+				if (!P || P->bHidden) continue;
+				if (P->Direction != EGPD_Output) continue;
+				if (P->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+				if (P->LinkedTo.Num() > 0) ++WiredExecOuts;
+			}
+			const bool bIsFanout = WiredExecOuts >= 2;
+
 			// Visit exec-output pins in direction order; each LinkedTo in pin
 			// order. For a Branch that's .then (dir 0) first, then .else.
 			for (UEdGraphPin* P : LN.Node->Pins)
@@ -6150,13 +6176,23 @@ namespace BridgeBPPinAlignedImpl
 				if (!P || P->bHidden) continue;
 				if (P->Direction != EGPD_Output) continue;
 				if (P->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec) continue;
+				TArray<int64> ChildChain = Chain;
+				if (bIsFanout)
+				{
+					const int32 PinDir = PinDirIndex(LN.Node, P);
+					// Encode (FanoutIdx, PinDir) as int64: high 32 = node idx,
+					// low 32 = pin dir. Lex-compare gives fanout-grouped then
+					// pin-order ordering.
+					ChildChain.Add((static_cast<int64>(Idx) << 32) |
+					               static_cast<int64>(static_cast<uint32>(PinDir)));
+				}
 				for (UEdGraphPin* Linked : P->LinkedTo)
 				{
 					if (!Linked) continue;
 					UEdGraphNode* Succ = Linked->GetOwningNode();
 					if (!Succ) continue;
 					const int32* J = IndexOf.Find(Succ);
-					if (J) DFS(*J);
+					if (J) DFS(*J, ChildChain);
 				}
 			}
 		};
@@ -6170,22 +6206,49 @@ namespace BridgeBPPinAlignedImpl
 		Roots.Sort([&](int32 A, int32 B) {
 			return Nodes[A].Node->NodePosY < Nodes[B].Node->NodePosY;
 		});
-		for (int32 R : Roots) DFS(R);
+		for (int32 R : Roots) DFS(R, TArray<int64>{});
 		// Handle disconnected exec subgraphs (cycle islands, etc.).
 		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
-			if (Nodes[i].bHasExecPins && !Visited.Contains(i)) DFS(i);
+			if (Nodes[i].bHasExecPins && !Visited.Contains(i)) DFS(i, TArray<int64>{});
 		}
 
-		// Step 2: stack leaves top-to-bottom in DFS order.
+		// Step 2a: sort leaves by lane chain (lex) with DFS-order tiebreak.
+		// Result: leaves in lane 0 come first, then lane 1, … Within a lane,
+		// DFS order is preserved (matches the human "top-down" expectation).
+		DFSLeaves.Sort([&](int32 A, int32 B) {
+			const TArray<int64>& CA = LaneChainOf[A];
+			const TArray<int64>& CB = LaneChainOf[B];
+			const int32 Min = FMath::Min(CA.Num(), CB.Num());
+			for (int32 k = 0; k < Min; ++k)
+			{
+				if (CA[k] != CB[k]) return CA[k] < CB[k];
+			}
+			if (CA.Num() != CB.Num()) return CA.Num() < CB.Num();
+			return DFSOrderOf[A] < DFSOrderOf[B];
+		});
+
+		// Step 2b: stack leaves top-to-bottom. Insert a block-gap between
+		// leaves whose lane chain differs so a fanout's pin-K sub-tree stays
+		// strictly above pin-(K+1)'s sub-tree — no wire can now "reach back
+		// upward" across pin boundaries.
+		const int32 BlockGap = VSpace * 2;
 		int32 Cursor = 0;
+		bool bFirstLeaf = true;
+		TArray<int64> PrevChain;
 		for (int32 Idx : DFSLeaves)
 		{
 			FPALayoutNode& LN = Nodes[Idx];
+			if (!bFirstLeaf && LaneChainOf[Idx] != PrevChain)
+			{
+				Cursor += BlockGap;
+			}
 			LN.NewX = LayerX[FMath::Clamp(LN.Layer, 0, LayerCount - 1)];
 			LN.NewY = Cursor;
 			LN.bPlaced = true;
 			Cursor += LN.Height + VSpace;
+			PrevChain  = LaneChainOf[Idx];
+			bFirstLeaf = false;
 		}
 
 		// Step 3: place non-leaves from deepest layer back to root, each
@@ -6219,9 +6282,13 @@ namespace BridgeBPPinAlignedImpl
 			}
 		}
 
-		// Step 4: collision-resolve per layer. After DFS-ordered leaves +
-		// downstream-pulled non-leaves, overlaps should be rare — this is
-		// a safety net that pushes overlapping nodes in a layer downward.
+		// Step 4: collision-resolve per layer. Nodes that collapsed onto the
+		// same Y (most often siblings of a shared successor — e.g. Branch.then
+		// and Branch.else both pulling to a common Return) are ordered by
+		// LaneChain lex — earlier lanes ABOVE later lanes — then pushed down
+		// so each lane keeps its own band. Without lane-aware sorting the
+		// order was arbitrary (by node index), which let the second lane's
+		// node land above the first and produced .then/.else wire crossings.
 		for (int32 L = 0; L < LayerCount; ++L)
 		{
 			TArray<int32> LayerNodes;
@@ -6230,7 +6297,20 @@ namespace BridgeBPPinAlignedImpl
 				if (Nodes[i].bHasExecPins && Nodes[i].Layer == L && Nodes[i].bPlaced)
 					LayerNodes.Add(i);
 			}
-			LayerNodes.Sort([&](int32 A, int32 B) { return Nodes[A].NewY < Nodes[B].NewY; });
+			LayerNodes.Sort([&](int32 A, int32 B) {
+				// Primary: current tentative Y (existing behaviour).
+				if (Nodes[A].NewY != Nodes[B].NewY) return Nodes[A].NewY < Nodes[B].NewY;
+				// Tiebreak: lane chain lex — pins that open earlier lanes come first.
+				const TArray<int64>& CA = LaneChainOf[A];
+				const TArray<int64>& CB = LaneChainOf[B];
+				const int32 Min = FMath::Min(CA.Num(), CB.Num());
+				for (int32 k = 0; k < Min; ++k)
+				{
+					if (CA[k] != CB[k]) return CA[k] < CB[k];
+				}
+				if (CA.Num() != CB.Num()) return CA.Num() < CB.Num();
+				return DFSOrderOf[A] < DFSOrderOf[B];
+			});
 			for (int32 k = 1; k < LayerNodes.Num(); ++k)
 			{
 				const FPALayoutNode& Prev = Nodes[LayerNodes[k-1]];
