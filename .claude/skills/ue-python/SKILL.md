@@ -95,12 +95,17 @@ When you **author or modify a Blueprint graph** (spawn / connect / remove nodes,
 ```
 1. plan        — list events, functions, local vars as text before touching the bridge
 2. build       — add_*_node / connect_graph_pins / add_blueprint_variable …
-3. auto_layout — MANDATORY after ANY graph mutation. THREE-EXEC flow for pin_aligned
-                 (widgets must tick between opens and layout):
-                   exec A:  open_function_graph_for_render(bp, graph)
+3. auto_layout — MANDATORY after ANY graph mutation. Flow for pin_aligned:
+                   exec A:  open_asset(bp)                       # if BP editor not open
+                   ~2 s  :  client-side time.sleep
+                   exec B:  open_function_graph_for_render(bp, graph)
                    ~3 s  :  client-side time.sleep so Slate ticks the new widgets
-                   exec B:  auto_layout_graph(bp, graph, 'pin_aligned', '', 100, 48)
-                 Repeat for every graph you mutated this session.
+                   exec C:  auto_layout_graph(bp, graph, 'pin_aligned', '', 100, 48)
+                 Skip exec A if the BP editor is already open (typical mid-session).
+                 open_function_graph_for_render returns False on a fresh editor
+                 launch until open_asset registers the BP editor tab — do NOT
+                 poll it in a loop, polling alone won't make it register faster.
+                 Repeat exec B + exec C for every graph you mutated this session.
                  # Single-exec 'exec_flow' is acceptable ONLY for huge graphs where
                  # pixel-accurate alignment doesn't matter; always follow it with
                  # straighten_exec_chain on the main rail.
@@ -118,6 +123,7 @@ When you **author or modify a Blueprint graph** (spawn / connect / remove nodes,
 - **Pick the right layout strategy.** `auto_layout_graph` with `'pin_aligned'` uses DFS-ordered leaves + downstream-driven Y alignment + live Slate geometry — matches hand-laid BP shape (`.then` rails horizontal, siblings stacked in a single column across exec layers). Requires the three-exec flow (open graph, sleep, layout) to read the live widgets. Use `'exec_flow'` (Sugiyama-lite, layer-center Y) for bulk tidy on large graphs where pixel-accurate alignment matters less — then follow with `straighten_exec_chain` on the main rail.
 - **Compact by spacing, not by node.** `pin_aligned` treats the user's `h_spacing` as a loose upper bound and internally uses `DataHSpace = max(15, h/3)` and `ExecGap = max(30, h/2)`. So `h_spacing=100` renders tighter than you'd expect from the raw number. Pass smaller values (e.g. `40, 32`) when you want maximum density.
 - **Size predict before spawning.** If you're placing several nodes in a row by hand, call `predict_node_size` for each kind first so your X offsets don't overlap.
+- **Post-layout geometry reads.** After `auto_layout_graph` runs, the Slate widgets don't refresh `NodePosX/Y` until they tick — so `get_rendered_node_info` returns *pre-layout* pin coords in the same exec. For crossing-detection, wire-length audits, or overlap checks right after layout, read `get_node_layout(bp, fn, guid).pos_*` (authoritative from the node model) and estimate pin Y as `pos_y + 40 + 22 × dir_index`. Only pay the open-graph + sleep cost when you specifically need Slate-accurate coords.
 
 ## Safety Rules
 

@@ -1517,6 +1517,28 @@ infos = L.get_rendered_node_info(bp, 'MyFunction')
 Returns `True` if the graph was found and opened, `False` if the
 Blueprint / graph couldn't be resolved.
 
+**⚠ Prerequisite: the Blueprint editor must already be open for this
+asset.** Internally this calls `UAssetEditorSubsystem::OpenEditorForAsset`
+then immediately `FindEditorForAsset(bp, /*bFocusIfOpen*/false)`. The
+open is async — same-exec `FindEditorForAsset` returns null and the
+function gives back `False` on a fresh editor launch.
+
+**Do NOT poll this in a tight loop** — polling alone does not make the
+asset editor register any faster, it just burns round-trips. Instead:
+
+```python
+# Exec A: force the BP editor tab to exist
+unreal.UnrealBridgeEditorLibrary.open_asset(bp)
+```
+```python
+# Client-side sleep so the asset editor registers
+import time; time.sleep(2)
+```
+```python
+# Exec B: now open_function_graph_for_render returns True
+L.open_function_graph_for_render(bp, 'MyFunction')
+```
+
 ### get_rendered_node_info(blueprint_path, graph_name) -> list[FBridgeRenderedNode]
 
 Pixel-accurate node geometry and pin positions, queried from the live
@@ -1796,6 +1818,24 @@ implemented): `"data_flow"`, `"event_grouped"`.
 algorithm caps iterations and drops any still-unlayered nodes at layer 0
 with a warning. The graph isn't mutated to break the cycle — fix the
 wires first.
+
+**Reading geometry same-exec after auto_layout**: `auto_layout_graph`
+writes new `NodePosX / NodePosY` on the node model, but the live
+`SGraphNode` Slate widgets don't pick up the change until they tick —
+which can't happen while the bridge exec is still holding the
+GameThread. So `get_rendered_node_info` returns the *pre-layout* pin
+coordinates if you call it right after `auto_layout_graph` in the same
+exec.
+
+For post-layout geometric analysis (crossing detection, wire-length
+measurement, overlap checks, bounds auditing), read from the node model
+instead: `get_node_layout(bp, fn, guid).pos_x / pos_y /
+effective_width / effective_height`. Pin positions can be estimated
+from `NodePosY + 40 + 22 × dir_index` (see `get_node_pin_layouts` for
+the same formula), which is authoritative right after layout. Only
+reach for `get_rendered_node_info` when you specifically need
+Slate-accurate pin coords, and only after the 3-exec
+open-graph → sleep → query dance.
 
 ---
 
