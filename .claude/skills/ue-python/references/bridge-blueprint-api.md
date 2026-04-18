@@ -553,15 +553,22 @@ L.set_function_local_variable_default('/Game/BP/MyBP', 'Attack', 'HitCount', '99
 
 ### add_function_local_variable_node(blueprint_path, function_name, variable_name, is_set, node_pos_x, node_pos_y) -> str
 
-Spawn a variable-get (`is_set=False`) or variable-set (`is_set=True`) node for a local variable. This is separate from `add_variable_node` because the underlying `VariableReference` must carry the **function scope**, not the self-member scope — `add_variable_node` can't spawn local-variable nodes correctly.
+Spawn a variable-get (`is_set=False`) or variable-set (`is_set=True`) node for a local variable **or a function parameter**. This is separate from `add_variable_node` because the underlying `VariableReference` must carry the **function scope**, not the self-member scope — `add_variable_node` can't spawn local-variable nodes correctly.
+
+Resolution order: first looks in `FunctionEntry.LocalVariables` (true locals), then falls back to `FunctionEntry.UserDefinedPins` (function parameters). For parameters the variable reference is name-only (no FGuid in `FUserPinInfo` to pass), and UE's compile-time lookup resolves by name against the generated UFunction's parameter properties — same as the editor's drag-from-MyBlueprint path.
 
 ```python
-get_guid = L.add_function_local_variable_node(bp, 'Attack', 'HitCount', False,   0, 0)
-set_guid = L.add_function_local_variable_node(bp, 'Attack', 'HitCount', True,  400, 0)
-L.connect_graph_pins(bp, 'Attack', get_guid, 'HitCount', set_guid, 'HitCount')
+# Local variable
+get_hit  = L.add_function_local_variable_node(bp, 'Attack', 'HitCount',      False, 0, 0)
+set_hit  = L.add_function_local_variable_node(bp, 'Attack', 'HitCount',      True,  400, 0)
+
+# Function parameter (no redundant SET-into-local-mirror needed)
+get_dmg  = L.add_function_local_variable_node(bp, 'Attack', 'IncomingDamage', False, 0, 100)
 ```
 
-Returns `""` if the variable is missing or the graph isn't a function graph.
+**Avoid the "fanout into local mirrors" antipattern.** A parameter used in N places does not need a matching `ParamL` local + `SET ParamL = Param` chain at the function head — that's authoring overhead the editor doesn't require. Drop Gets for the parameter directly near each consumer. Intermediate locals are still worth it for **reused computed values** (e.g. `DeltaL`, `DistanceL`, `FinalScoreL`) — those break deep pure chains into short hops and reduce `LayerDataBudget` in the layout.
+
+Returns `""` if the name doesn't match any local variable or parameter, or if the graph isn't a function graph.
 
 ---
 

@@ -1790,12 +1790,39 @@ FString UUnrealBridgeBlueprintLibrary::AddFunctionLocalVariableNode(
 	if (!Entry) return FString();
 
 	const FName VarFName(*VariableName);
-	const FBPVariableDescription* Found = nullptr;
+
+	// Resolve via LocalVariables first (actual local var). Fall back to
+	// UserDefinedPins on the FunctionEntry (function input parameters) —
+	// they compile to FProperty fields on the generated UFunction too, so
+	// a K2Node_VariableGet with SetLocalMember resolves against them the
+	// same way the editor's drag-from-MyBlueprint path does. This lets
+	// callers avoid authoring a redundant `ParamL = Param` SET chain just
+	// to use a Get node near a consumer.
+	FGuid VarGuid;
+	bool bFound = false;
 	for (const FBPVariableDescription& V : Entry->LocalVariables)
 	{
-		if (V.VarName == VarFName) { Found = &V; break; }
+		if (V.VarName == VarFName) { VarGuid = V.VarGuid; bFound = true; break; }
 	}
-	if (!Found) return FString();
+	if (!bFound)
+	{
+		for (const TSharedPtr<FUserPinInfo>& UDP : Entry->UserDefinedPins)
+		{
+			if (UDP.IsValid() && UDP->PinName == VarFName)
+			{
+				// Function parameters carry no GUID in FUserPinInfo —
+				// leave VarGuid empty. VariableReference resolution at
+				// compile time falls back to name-based lookup against
+				// the generated UFunction's parameter properties, which
+				// is what makes the editor's drag-from-MyBlueprint path
+				// work for parameters too (see EdGraphSchema_K2::
+				// ConfigureVarNode's local-var branch).
+				bFound = true;
+				break;
+			}
+		}
+	}
+	if (!bFound) return FString();
 
 	Graph->Modify();
 	BP->Modify();
@@ -1806,7 +1833,7 @@ FString UUnrealBridgeBlueprintLibrary::AddFunctionLocalVariableNode(
 	Node->CreateNewGuid();
 	// Local-member scope is the top-level function graph's *name* (string),
 	// with the variable's declared FGuid — see K2Node_LocalVariable.cpp.
-	Node->VariableReference.SetLocalMember(VarFName, Graph->GetName(), Found->VarGuid);
+	Node->VariableReference.SetLocalMember(VarFName, Graph->GetName(), VarGuid);
 	Node->NodePosX = NodePosX;
 	Node->NodePosY = NodePosY;
 	Graph->AddNode(Node, false, false);
