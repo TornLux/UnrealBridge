@@ -497,6 +497,74 @@ Rename a member variable and recompile. Returns `False` if the old name is missi
 unreal.UnrealBridgeBlueprintLibrary.rename_blueprint_variable('/Game/BP/MyBP', 'Health', 'HP')
 ```
 
+---
+
+## Function-scope local variables
+
+Local variables live on a function graph's `UK2Node_FunctionEntry`. They're visible **inside the function body** but not as class members, so the class-level `get_blueprint_variables` won't surface them. These helpers operate on Function graphs only — `EventGraph`, macro graphs, and construction-script-style graphs reject the call.
+
+### get_function_local_variables(blueprint_path, function_name) -> list[FBridgeVariableInfo]
+
+List local variables on a function. Returns the same `FBridgeVariableInfo` fields as `get_blueprint_variables` — name, type, category, default_value, description, instance_editable, blueprint_read_only. `replication_condition` is always `"None"` (local vars can't be replicated).
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+for v in L.get_function_local_variables('/Game/BP/MyBP', 'Attack'):
+    print(f'{v.name:12s} {v.type:20s} = {v.default_value}')
+# HitCount      Int                    = 99
+# Velocity      Vector                 = (X=1.0,Y=2.0,Z=3.0)
+# Tag           String                 = Hello
+```
+
+### add_function_local_variable(blueprint_path, function_name, variable_name, type_string, default_value="") -> bool
+
+Add a local variable. Type grammar identical to `add_blueprint_variable` (`"Bool"`, `"Int"`, `"Float"`, `"Vector"`, class paths, `"Array of X"` prefix). Compiles on success so subsequent node spawns resolve the variable.
+
+```python
+L.add_function_local_variable('/Game/BP/MyBP', 'Attack', 'HitCount', 'Int', '0')
+L.add_function_local_variable('/Game/BP/MyBP', 'Attack', 'Targets', 'Array of Actor', '')
+```
+
+Returns `False` if the function graph is missing, the name is taken, or the type string can't be parsed.
+
+### remove_function_local_variable(blueprint_path, function_name, variable_name) -> bool
+
+Remove a local variable. Variable-get/set nodes that still reference it become dangling after compile — delete or repoint them first if you care about a clean graph.
+
+```python
+L.remove_function_local_variable('/Game/BP/MyBP', 'Attack', 'HitCount')
+```
+
+### rename_function_local_variable(blueprint_path, function_name, old_name, new_name) -> bool
+
+Rename a local variable. Variable-get/set nodes inside the function are updated to the new name. Returns `False` if `old_name` is missing, `new_name` is already taken, or the names are equal.
+
+```python
+L.rename_function_local_variable('/Game/BP/MyBP', 'Attack', 'Counter', 'HitCount')
+```
+
+### set_function_local_variable_default(blueprint_path, function_name, variable_name, value) -> bool
+
+Set the default value. Uses the same export-text format as `set_blueprint_variable_default` (e.g. `"true"`, `"3.14"`, `"(X=1,Y=2,Z=3)"`, `'"some string"'` for text).
+
+```python
+L.set_function_local_variable_default('/Game/BP/MyBP', 'Attack', 'HitCount', '99')
+```
+
+### add_function_local_variable_node(blueprint_path, function_name, variable_name, is_set, node_pos_x, node_pos_y) -> str
+
+Spawn a variable-get (`is_set=False`) or variable-set (`is_set=True`) node for a local variable. This is separate from `add_variable_node` because the underlying `VariableReference` must carry the **function scope**, not the self-member scope — `add_variable_node` can't spawn local-variable nodes correctly.
+
+```python
+get_guid = L.add_function_local_variable_node(bp, 'Attack', 'HitCount', False,   0, 0)
+set_guid = L.add_function_local_variable_node(bp, 'Attack', 'HitCount', True,  400, 0)
+L.connect_graph_pins(bp, 'Attack', get_guid, 'HitCount', set_guid, 'HitCount')
+```
+
+Returns `""` if the variable is missing or the graph isn't a function graph.
+
+---
+
 ### add_blueprint_interface(blueprint_path, interface_path) -> bool
 
 Add an interface implementation to a Blueprint and recompile. `interface_path` can be:

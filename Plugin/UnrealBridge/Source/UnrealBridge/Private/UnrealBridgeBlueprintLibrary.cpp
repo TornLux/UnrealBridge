@@ -1540,6 +1540,276 @@ bool UUnrealBridgeBlueprintLibrary::RenameBlueprintVariable(
 	return true;
 }
 
+// ─── Function-scope local variables ─────────────────────────
+
+namespace BridgeBPLocalVarImpl
+{
+	/** Find a function graph by name. Restricted to FunctionGraphs — local
+	 *  variables don't apply to ubergraph pages or macros. */
+	static UEdGraph* FindFunctionGraph(UBlueprint* BP, const FString& FunctionName)
+	{
+		if (!BP) return nullptr;
+		for (UEdGraph* G : BP->FunctionGraphs)
+		{
+			if (G && G->GetName() == FunctionName) return G;
+		}
+		return nullptr;
+	}
+
+	/** The function-entry node owns the LocalVariables array. */
+	static UK2Node_FunctionEntry* FindFunctionEntry(UEdGraph* Graph)
+	{
+		if (!Graph) return nullptr;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (UK2Node_FunctionEntry* E = Cast<UK2Node_FunctionEntry>(N))
+			{
+				return E;
+			}
+		}
+		return nullptr;
+	}
+
+	/** Resolve the UStruct scope used by FBlueprintEditorUtils' local-var
+	 *  helpers. For a function graph this is the UFunction on the skeleton
+	 *  class (which exists even before a successful compile of the body). */
+	static UStruct* FindFunctionScope(UBlueprint* BP, UEdGraph* Graph)
+	{
+		if (!BP || !Graph) return nullptr;
+		UClass* Skeleton = BP->SkeletonGeneratedClass ? BP->SkeletonGeneratedClass : BP->GeneratedClass;
+		if (!Skeleton) return nullptr;
+		if (UFunction* Fn = Skeleton->FindFunctionByName(Graph->GetFName()))
+		{
+			return Fn;
+		}
+		return nullptr;
+	}
+
+	/** Build FBridgeVariableInfo from a local FBPVariableDescription. Looks up
+	 *  the skeleton UFunction's corresponding FProperty (if any) for a more
+	 *  precise type string; falls back to pin-category string. */
+	static FBridgeVariableInfo MakeLocalVarInfo(
+		const FBPVariableDescription& Var, const UStruct* Scope)
+	{
+		FBridgeVariableInfo Info;
+		Info.Name = Var.VarName.ToString();
+
+		const FProperty* Prop = Scope ? Scope->FindPropertyByName(Var.VarName) : nullptr;
+		Info.Type = Prop ? PropertyTypeToString(Prop) : Var.VarType.PinCategory.ToString();
+		Info.Category = Var.Category.ToString();
+		if (Var.HasMetaData(TEXT("tooltip")))
+		{
+			Info.Description = Var.GetMetaData(TEXT("tooltip"));
+		}
+		Info.DefaultValue = Var.DefaultValue;
+		Info.bInstanceEditable  = (Var.PropertyFlags & CPF_Edit) != 0;
+		Info.bBlueprintReadOnly = (Var.PropertyFlags & CPF_BlueprintReadOnly) != 0;
+		Info.ReplicationCondition = TEXT("None");
+		return Info;
+	}
+}
+
+TArray<FBridgeVariableInfo> UUnrealBridgeBlueprintLibrary::GetFunctionLocalVariables(
+	const FString& BlueprintPath, const FString& FunctionName)
+{
+	using namespace BridgeBPLocalVarImpl;
+	TArray<FBridgeVariableInfo> Out;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Out;
+	UEdGraph* Graph = FindFunctionGraph(BP, FunctionName);
+	if (!Graph) return Out;
+	UK2Node_FunctionEntry* Entry = FindFunctionEntry(Graph);
+	if (!Entry) return Out;
+
+	const UStruct* Scope = FindFunctionScope(BP, Graph);
+	for (const FBPVariableDescription& V : Entry->LocalVariables)
+	{
+		Out.Add(MakeLocalVarInfo(V, Scope));
+	}
+	return Out;
+}
+
+bool UUnrealBridgeBlueprintLibrary::AddFunctionLocalVariable(
+	const FString& BlueprintPath, const FString& FunctionName,
+	const FString& VariableName, const FString& TypeString, const FString& DefaultValue)
+{
+	using namespace BridgeBPLocalVarImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = FindFunctionGraph(BP, FunctionName);
+	if (!Graph) return false;
+	UK2Node_FunctionEntry* Entry = FindFunctionEntry(Graph);
+	if (!Entry) return false;
+
+	const FName VarFName(*VariableName);
+	for (const FBPVariableDescription& V : Entry->LocalVariables)
+	{
+		if (V.VarName == VarFName) return false;
+	}
+
+	FEdGraphPinType PinType;
+	if (!ParseTypeString(TypeString, PinType)) return false;
+
+	// FBlueprintEditorUtils::AddLocalVariable handles the full propagation
+	// (entry-node modify, MarkBlueprintAsModified, variable visibility).
+	FBlueprintEditorUtils::AddLocalVariable(BP, Graph, VarFName, PinType, DefaultValue);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::RemoveFunctionLocalVariable(
+	const FString& BlueprintPath, const FString& FunctionName, const FString& VariableName)
+{
+	using namespace BridgeBPLocalVarImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = FindFunctionGraph(BP, FunctionName);
+	if (!Graph) return false;
+	UK2Node_FunctionEntry* Entry = FindFunctionEntry(Graph);
+	if (!Entry) return false;
+
+	const FName VarFName(*VariableName);
+	const UStruct* Scope = FindFunctionScope(BP, Graph);
+
+	bool bFound = false;
+	for (const FBPVariableDescription& V : Entry->LocalVariables)
+	{
+		if (V.VarName == VarFName) { bFound = true; break; }
+	}
+	if (!bFound) return false;
+
+	if (Scope)
+	{
+		FBlueprintEditorUtils::RemoveLocalVariable(BP, Scope, VarFName);
+	}
+	else
+	{
+		// Fallback: scope resolution failed (skeleton not compiled yet) — drop
+		// the entry directly. Safe because LocalVariables is the source of truth.
+		Entry->Modify();
+		Entry->LocalVariables.RemoveAll([&](const FBPVariableDescription& V)
+		{
+			return V.VarName == VarFName;
+		});
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	}
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::RenameFunctionLocalVariable(
+	const FString& BlueprintPath, const FString& FunctionName,
+	const FString& OldName, const FString& NewName)
+{
+	using namespace BridgeBPLocalVarImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = FindFunctionGraph(BP, FunctionName);
+	if (!Graph) return false;
+	UK2Node_FunctionEntry* Entry = FindFunctionEntry(Graph);
+	if (!Entry) return false;
+
+	const FName OldFName(*OldName);
+	const FName NewFName(*NewName);
+	if (OldFName == NewFName || NewFName.IsNone()) return false;
+
+	bool bFoundOld = false;
+	for (const FBPVariableDescription& V : Entry->LocalVariables)
+	{
+		if (V.VarName == OldFName) { bFoundOld = true; }
+		if (V.VarName == NewFName) { return false; }
+	}
+	if (!bFoundOld) return false;
+
+	const UStruct* Scope = FindFunctionScope(BP, Graph);
+	if (Scope)
+	{
+		FBlueprintEditorUtils::RenameLocalVariable(BP, Scope, OldFName, NewFName);
+	}
+	else
+	{
+		Entry->Modify();
+		for (FBPVariableDescription& V : Entry->LocalVariables)
+		{
+			if (V.VarName == OldFName) { V.VarName = NewFName; break; }
+		}
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	}
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::SetFunctionLocalVariableDefault(
+	const FString& BlueprintPath, const FString& FunctionName,
+	const FString& VariableName, const FString& Value)
+{
+	using namespace BridgeBPLocalVarImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = FindFunctionGraph(BP, FunctionName);
+	if (!Graph) return false;
+	UK2Node_FunctionEntry* Entry = FindFunctionEntry(Graph);
+	if (!Entry) return false;
+
+	const FName VarFName(*VariableName);
+	bool bFound = false;
+	Entry->Modify();
+	for (FBPVariableDescription& V : Entry->LocalVariables)
+	{
+		if (V.VarName == VarFName)
+		{
+			V.DefaultValue = Value;
+			bFound = true;
+			break;
+		}
+	}
+	if (!bFound) return false;
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddFunctionLocalVariableNode(
+	const FString& BlueprintPath, const FString& FunctionName,
+	const FString& VariableName, bool bIsSet, int32 NodePosX, int32 NodePosY)
+{
+	using namespace BridgeBPLocalVarImpl;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return FString();
+	UEdGraph* Graph = FindFunctionGraph(BP, FunctionName);
+	if (!Graph) return FString();
+	UK2Node_FunctionEntry* Entry = FindFunctionEntry(Graph);
+	if (!Entry) return FString();
+
+	const FName VarFName(*VariableName);
+	const FBPVariableDescription* Found = nullptr;
+	for (const FBPVariableDescription& V : Entry->LocalVariables)
+	{
+		if (V.VarName == VarFName) { Found = &V; break; }
+	}
+	if (!Found) return FString();
+
+	Graph->Modify();
+	BP->Modify();
+
+	UK2Node_Variable* Node = bIsSet
+		? (UK2Node_Variable*)NewObject<UK2Node_VariableSet>(Graph)
+		: (UK2Node_Variable*)NewObject<UK2Node_VariableGet>(Graph);
+	Node->CreateNewGuid();
+	// Local-member scope is the top-level function graph's *name* (string),
+	// with the variable's declared FGuid — see K2Node_LocalVariable.cpp.
+	Node->VariableReference.SetLocalMember(VarFName, Graph->GetName(), Found->VarGuid);
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, false, false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
 // ─── Interface helpers ──────────────────────────────────────
 
 namespace BridgeBpInterfaceOps

@@ -1107,6 +1107,89 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static bool RenameBlueprintVariable(const FString& BlueprintPath, const FString& OldName, const FString& NewName);
 
+	// ── Function-scope local variables ──
+	//
+	// Local variables live on UK2Node_FunctionEntry of a user-authored function
+	// graph (not EventGraph, not macros). They're visible inside the function
+	// body but not as class members; tooling that walks NewVariables won't see
+	// them. These helpers operate on FunctionEntry.LocalVariables directly.
+
+	/**
+	 * List local variables declared inside a function graph. Returns the same
+	 * FBridgeVariableInfo shape used by GetBlueprintVariables — name, type,
+	 * category, default value, instance-editable flag, tooltip description.
+	 * Replication fields are always "None" (local vars can't be replicated).
+	 *
+	 * @param FunctionName  Function graph name as listed by GetGraphNames /
+	 *                      GetBlueprintFunctions. Must be a Function graph;
+	 *                      EventGraph and Macro graphs return an empty list.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeVariableInfo> GetFunctionLocalVariables(
+		const FString& BlueprintPath, const FString& FunctionName);
+
+	/**
+	 * Add a local variable to a function graph. Same TypeString grammar as
+	 * AddBlueprintVariable ("Bool" / "Int" / "Float" / "Vector" / class paths /
+	 * "Array of X" prefix). Compiles on success so the variable becomes visible
+	 * to subsequent variable-get/set node spawns.
+	 *
+	 * @return true if the variable was added; false if the function graph is
+	 *         missing, the name is taken, or the TypeString couldn't be parsed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AddFunctionLocalVariable(const FString& BlueprintPath,
+		const FString& FunctionName, const FString& VariableName,
+		const FString& TypeString, const FString& DefaultValue);
+
+	/**
+	 * Remove a local variable from a function graph. Any variable-get/set
+	 * nodes that reference it inside the function become invalid after compile
+	 * — delete or repoint them before removing if you care about a clean graph.
+	 *
+	 * @return true on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveFunctionLocalVariable(const FString& BlueprintPath,
+		const FString& FunctionName, const FString& VariableName);
+
+	/**
+	 * Rename a local variable within a function graph. Variable-get/set nodes
+	 * in the function are updated to reference the new name.
+	 *
+	 * @return true on success; false if the old name doesn't exist or the new
+	 *         name is already taken.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RenameFunctionLocalVariable(const FString& BlueprintPath,
+		const FString& FunctionName, const FString& OldName, const FString& NewName);
+
+	/**
+	 * Set a local variable's default value. Uses the same export-text format
+	 * as SetBlueprintVariableDefault (e.g. "true", "3.14", "(X=1,Y=2,Z=3)").
+	 *
+	 * @return true on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetFunctionLocalVariableDefault(const FString& BlueprintPath,
+		const FString& FunctionName, const FString& VariableName,
+		const FString& Value);
+
+	/**
+	 * Add a variable-get / variable-set node for a function-scope local
+	 * variable. Equivalent to AddVariableNode but resolves against the
+	 * function's LocalVariables instead of BP->NewVariables — AddVariableNode
+	 * can't spawn local-var nodes because the VariableReference has to carry
+	 * the function scope, not the self-member scope.
+	 *
+	 * @return GUID of the new node, or "" if the variable is missing / the
+	 *         graph isn't a function graph.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddFunctionLocalVariableNode(const FString& BlueprintPath,
+		const FString& FunctionName, const FString& VariableName,
+		bool bIsSet, int32 NodePosX, int32 NodePosY);
+
 	/**
 	 * Add an interface implementation to a Blueprint. InterfacePath can be a content path
 	 * to a Blueprint interface (e.g. "/Game/BPI_Foo") or a native class path
