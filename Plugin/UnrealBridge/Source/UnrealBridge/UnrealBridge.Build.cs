@@ -26,6 +26,7 @@ public class UnrealBridge : ModuleRules
 			"UMG",
 			"AssetRegistry",
 			"Kismet",
+			"GraphEditor",
 			"UMGEditor",
 			"AnimGraph",
 			"UnrealEd",

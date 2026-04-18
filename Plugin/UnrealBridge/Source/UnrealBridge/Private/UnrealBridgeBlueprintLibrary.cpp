@@ -38,6 +38,13 @@
 #include "Engine/TimelineTemplate.h"
 #include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
+#include "BlueprintEditor.h"
+#include "GraphEditor.h"
+#include "SGraphPanel.h"
+#include "SGraphNode.h"
+#include "SGraphPin.h"
+#include "Subsystems/AssetEditorSubsystem.h"
+#include "Editor.h"
 #include "Kismet2/KismetDebugUtilities.h"
 #include "Kismet2/Breakpoint.h"
 #include "K2Node_SpawnActorFromClass.h"
@@ -4784,6 +4791,118 @@ TArray<FBridgePinLayout> UUnrealBridgeBlueprintLibrary::GetNodePinLayouts(
 		L.LocalOffset = FVector2D(Lx, Ly);
 		L.Position    = FVector2D(Ox + Lx, Oy + Ly);
 		Out.Add(L);
+	}
+	return Out;
+}
+
+bool UUnrealBridgeBlueprintLibrary::OpenFunctionGraphForRender(
+	const FString& BlueprintPath, const FString& GraphName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+	// Open the Blueprint editor, then ask its BlueprintEditor instance to
+	// open the specific graph tab. Regular BringKismetToFocusAttentionOnObject
+	// opens the editor but can leave the tab stale; OpenGraphAndBringToFront
+	// forces the graph's SGraphEditor widget to be constructed or focused.
+	UAssetEditorSubsystem* Sub = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+	if (!Sub) return false;
+	Sub->OpenEditorForAsset(BP);
+	IAssetEditorInstance* Inst = Sub->FindEditorForAsset(BP, false);
+	if (!Inst) return false;
+	FBlueprintEditor* BPEd = static_cast<FBlueprintEditor*>(Inst);
+	TSharedPtr<SGraphEditor> GraphEd = BPEd->OpenGraphAndBringToFront(Graph);
+	return GraphEd.IsValid();
+}
+
+TArray<FBridgeRenderedNode> UUnrealBridgeBlueprintLibrary::GetRenderedNodeInfo(
+	const FString& BlueprintPath, const FString& GraphName)
+{
+	TArray<FBridgeRenderedNode> Out;
+
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Out;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return Out;
+
+	UAssetEditorSubsystem* Sub = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+	if (!Sub) return Out;
+	IAssetEditorInstance* Inst = Sub->FindEditorForAsset(BP, /*bFocusIfOpen=*/false);
+	if (!Inst) return Out;
+	FBlueprintEditor* BPEd = static_cast<FBlueprintEditor*>(Inst);
+
+	// Resolve the SGraphEditor for the requested graph. If it happens to be
+	// the currently-focused graph, use it directly; otherwise ask the
+	// BlueprintEditor to open it — returns the same widget if already open.
+	TSharedPtr<SGraphEditor> GraphEd;
+	if (BPEd->GetFocusedGraph() == Graph)
+	{
+		// Access via editor's focused pointer is internal; simpler to just
+		// call OpenGraphAndBringToFront which returns the live widget and is
+		// idempotent for an already-open graph.
+		GraphEd = BPEd->OpenGraphAndBringToFront(Graph);
+	}
+	else
+	{
+		GraphEd = BPEd->OpenGraphAndBringToFront(Graph);
+	}
+	if (!GraphEd.IsValid()) return Out;
+
+	SGraphPanel* Panel = GraphEd->GetGraphPanel();
+	if (!Panel) return Out;
+
+	for (UEdGraphNode* Node : Graph->Nodes)
+	{
+		if (!Node) continue;
+		FBridgeRenderedNode R;
+		R.NodeGuid = Node->NodeGuid.ToString(EGuidFormats::Digits);
+		R.Title = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+		R.GraphPosition = FVector2D(Node->NodePosX, Node->NodePosY);
+
+		TSharedPtr<SGraphNode> NodeWidget = Panel->GetNodeWidgetFromGuid(Node->NodeGuid);
+		if (NodeWidget.IsValid())
+		{
+			// Desired size = what Slate plans to render the node at; this is
+			// the authoritative pre-layout geometry. Cached geometry (post-
+			// layout) would be equivalent once the panel has ticked, but
+			// desired size is always valid after widget construction.
+			const FVector2D Desired = FVector2D(NodeWidget->GetDesiredSize());
+			R.Size = Desired;
+			R.bIsLive = true;
+
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin) continue;
+				FBridgeRenderedPin P;
+				P.Name       = Pin->PinName.ToString();
+				P.Direction  = (Pin->Direction == EGPD_Input) ? TEXT("input") : TEXT("output");
+				P.bIsExec    = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+				P.bIsHidden  = Pin->bHidden;
+
+				// Compute direction-index (visible pins only) to match the
+				// layout helpers' convention.
+				int32 DirIdx = 0;
+				for (UEdGraphPin* Q : Node->Pins)
+				{
+					if (!Q || Q->bHidden) continue;
+					if (Q->Direction != Pin->Direction) continue;
+					if (Q == Pin) break;
+					DirIdx += 1;
+				}
+				P.DirectionIndex = DirIdx;
+
+				TSharedPtr<SGraphPin> PinWidget = NodeWidget->FindWidgetForPin(Pin);
+				if (PinWidget.IsValid())
+				{
+					const FVector2D NodeOff = FVector2D(PinWidget->GetNodeOffset());
+					P.NodeOffset    = NodeOff;
+					P.GraphPosition = R.GraphPosition + NodeOff;
+				}
+				R.Pins.Add(P);
+			}
+		}
+		Out.Add(R);
 	}
 	return Out;
 }

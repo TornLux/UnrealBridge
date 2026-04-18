@@ -694,6 +694,54 @@ struct FBridgeNodeLayout
 	UPROPERTY(BlueprintReadOnly) bool bSizeIsAuthoritative = false;
 };
 
+/** Pixel-accurate pin position, queried from the live Slate SGraphPin
+ *  widget. Only populated when the pin's owning node's graph is the
+ *  active tab in an open Blueprint editor. Returned by
+ *  GetRenderedNodeInfo. */
+USTRUCT(BlueprintType)
+struct FBridgeRenderedPin
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Name;
+	UPROPERTY(BlueprintReadOnly) FString Direction;  // "input" or "output"
+	UPROPERTY(BlueprintReadOnly) int32 DirectionIndex = 0;
+
+	/** Pin position relative to its owning node's top-left corner. */
+	UPROPERTY(BlueprintReadOnly) FVector2D NodeOffset = FVector2D::ZeroVector;
+
+	/** Pin position in graph coordinates (node graph pos + node offset). */
+	UPROPERTY(BlueprintReadOnly) FVector2D GraphPosition = FVector2D::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly) bool bIsExec = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsHidden = false;
+};
+
+/** Pixel-accurate node geometry queried from the live SGraphNode widget.
+ *  Size comes from the widget's cached desired size (what Slate will
+ *  render at). Pin offsets come from SGraphPin::GetNodeOffset — the
+ *  authoritative pixel position each wire endpoint actually lands at. */
+USTRUCT(BlueprintType)
+struct FBridgeRenderedNode
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly) FString Title;
+
+	/** Graph-space position (top-left). Matches UEdGraphNode::NodePosX/Y. */
+	UPROPERTY(BlueprintReadOnly) FVector2D GraphPosition = FVector2D::ZeroVector;
+
+	/** Actual rendered size in graph units, from SGraphNode->GetDesiredSize(). */
+	UPROPERTY(BlueprintReadOnly) FVector2D Size = FVector2D::ZeroVector;
+
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeRenderedPin> Pins;
+
+	/** True when Size & Pins were read from the live widget; false if the
+	 *  node's widget couldn't be found (graph not open / not yet rendered). */
+	UPROPERTY(BlueprintReadOnly) bool bIsLive = false;
+};
+
 /** Estimated per-pin position for layout. Pin X is inset from node edges;
  *  pin Y is derived from the pin's direction-specific index × row height. */
 USTRUCT(BlueprintType)
@@ -1746,6 +1794,44 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgePinLayout> GetNodePinLayouts(const FString& BlueprintPath,
 		const FString& GraphName, const FString& NodeGuid);
+
+	/**
+	 * Open the named function/event/macro graph in the Blueprint editor and
+	 * bring it to the front. Focuses Slate's attention on that graph so the
+	 * SGraphNode / SGraphPin widgets get created, which (after a Slate tick)
+	 * populates UEdGraphNode::NodeWidth/NodeHeight with accurate rendered
+	 * dimensions. Without this, those fields stay 0 and size queries fall
+	 * back to the heuristic estimator.
+	 *
+	 * Returns true if the graph was opened. After calling this, yield
+	 * control (return from the current bridge exec so Slate can tick), then
+	 * re-query GetNodeLayout / GetNodePinLayouts in a second exec.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool OpenFunctionGraphForRender(const FString& BlueprintPath,
+		const FString& GraphName);
+
+	/**
+	 * Query pixel-accurate node sizes and pin positions from the live Slate
+	 * SGraphNode / SGraphPin widgets. Returns one entry per node in the
+	 * graph; each entry's bIsLive flag tells you whether the widget was
+	 * actually rendered and queried (vs. not yet rendered, in which case
+	 * Size is zero and Pins is empty).
+	 *
+	 * Prerequisite: OpenFunctionGraphForRender must have been called in a
+	 * PREVIOUS bridge exec AND at least one Slate tick must have elapsed
+	 * (i.e. a small wait + new exec). Slate can't render while an exec is
+	 * holding the game thread, so a single-shot query on a freshly-opened
+	 * graph will return bIsLive=false for everything.
+	 *
+	 * Use this instead of GetNodeLayout / GetNodePinLayouts when you need
+	 * the ACTUAL rendered geometry (e.g. to drive pin-accurate auto-layout
+	 * for nodes whose widths depend on compact-mode rendering, localised
+	 * labels, or custom Slate overrides).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeRenderedNode> GetRenderedNodeInfo(
+		const FString& BlueprintPath, const FString& GraphName);
 
 	/**
 	 * Predict the rendered size of a node *before* it is spawned, so callers
