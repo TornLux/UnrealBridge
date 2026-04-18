@@ -93,8 +93,11 @@ When you **author or modify a Blueprint graph** (spawn / connect / remove nodes,
 ```
 1. plan        — list events, functions, local vars as text before touching the bridge
 2. build       — add_*_node / connect_graph_pins / add_blueprint_variable …
-3. auto_layout — auto_layout_graph(bp, graph, 'pin_aligned', '', 100, 48)
-                 # or 'exec_flow' for bulk tidy when pin-level alignment is not required
+3. auto_layout — THREE-EXEC flow for pin_aligned (widgets must tick between opens and layout):
+                   exec A:  open_function_graph_for_render(bp, graph)
+                   ~3 s  :  client-side time.sleep so Slate ticks the new widgets
+                   exec B:  auto_layout_graph(bp, graph, 'pin_aligned', '', 100, 48)
+                 # or single-exec 'exec_flow' for bulk tidy when pin-level alignment is not required
 4. lint        — lint_blueprint(bp, '', -1, -1, -1) and resolve every finding
 5. collapse    — for any LongExecChain finding, collapse_nodes_to_function
 6. straighten  — straighten_exec_chain for each main exec rail (only needed after 'exec_flow')
@@ -106,7 +109,8 @@ When you **author or modify a Blueprint graph** (spawn / connect / remove nodes,
 - **Lint is non-optional.** If `lint_blueprint` returns any `warning` or `error`, fix or explicitly accept each one (write a justification in a comment box). Do not hand the BP back with unresolved warnings.
 - **Name things.** `UnnamedCustomEvent` / `UnnamedFunction` findings mean the agent left a placeholder — always rename to describe intent (`OnHealthChanged`, not `CustomEvent_0`).
 - **Comment boxes are section titles.** Any graph > 10 nodes must have at least one comment box with a meaningful title (e.g. `"1. Validate inputs"`, `"2. Apply damage"`) and an appropriate preset color via `set_comment_box_color` (`Section`, `Validation`, `Danger`, `Network`, `UI`, `Debug`, `Setup`).
-- **Pick the right layout strategy.** `auto_layout_graph` with `'pin_aligned'` makes exec wires pin-to-pin horizontal and pulls data nodes in from the right; this is the default for human-readable output. Use `'exec_flow'` (Sugiyama-lite, layer-center Y) when you have many crossing data wires and want barycentric crossing minimization — then follow with `straighten_exec_chain` on the main rail because `exec_flow` does not pin-align on its own.
+- **Pick the right layout strategy.** `auto_layout_graph` with `'pin_aligned'` uses DFS-ordered leaves + downstream-driven Y alignment + live Slate geometry — matches hand-laid BP shape (`.then` rails horizontal, siblings stacked in a single column across exec layers). Requires the three-exec flow (open graph, sleep, layout) to read the live widgets. Use `'exec_flow'` (Sugiyama-lite, layer-center Y) for bulk tidy on large graphs where pixel-accurate alignment matters less — then follow with `straighten_exec_chain` on the main rail.
+- **Compact by spacing, not by node.** `pin_aligned` treats the user's `h_spacing` as a loose upper bound and internally uses `DataHSpace = max(15, h/3)` and `ExecGap = max(30, h/2)`. So `h_spacing=100` renders tighter than you'd expect from the raw number. Pass smaller values (e.g. `40, 32`) when you want maximum density.
 - **Size predict before spawning.** If you're placing several nodes in a row by hand, call `predict_node_size` for each kind first so your X offsets don't overlap.
 
 ## Safety Rules

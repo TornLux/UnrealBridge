@@ -1445,6 +1445,102 @@ for p in L.get_node_pin_layouts(bp, fn, select):
   across the target nodes' `get_node_layout` results, pad by 30, pass
   as `add_comment_box(x, y, width, height)`.
 
+**Accuracy caveat.** `local_offset.y` uses the generic formula
+`HeaderHeight=40 + row × PinRowHeight=22`. This is **wrong for compact
+nodes** (`>=`, `OR`, `+`, variable getters) and for standard nodes
+whose actual header isn't 40 px. For pixel-accurate pin positions,
+open the function graph first (`open_function_graph_for_render`, wait
+a Slate tick) and use **`get_rendered_node_info`** — it reads the
+live SGraphPin widgets.
+
+### open_function_graph_for_render(blueprint_path, graph_name) -> bool
+
+Open the named function/event/macro graph in the Blueprint editor and
+bring its tab to the front. This is what forces UE to construct the
+`SGraphNode`/`SGraphPin` widgets for the graph — without it, the
+function graph's widgets don't exist and `get_rendered_node_info`
+returns nothing usable.
+
+Must be called in one bridge exec ON ITS OWN (Slate can't tick while
+an exec holds the game thread). A typical flow is three execs:
+
+```python
+# Exec 1
+L.open_function_graph_for_render(bp, 'MyFunction')
+```
+```python
+# Client-side sleep — Slate ticks in the meantime
+import time; time.sleep(4)
+```
+```python
+# Exec 2: now widgets exist and have been laid out
+infos = L.get_rendered_node_info(bp, 'MyFunction')
+# ...or run auto_layout_graph in pin_aligned mode, which calls
+# get_rendered_node_info internally.
+```
+
+Returns `True` if the graph was found and opened, `False` if the
+Blueprint / graph couldn't be resolved.
+
+### get_rendered_node_info(blueprint_path, graph_name) -> list[FBridgeRenderedNode]
+
+Pixel-accurate node geometry and pin positions, queried from the live
+SGraphNode/SGraphPin Slate widgets. Use this (not `get_node_layout` /
+`get_node_pin_layouts`) whenever you need ACTUAL rendered coordinates
+— e.g. to drive a pin-accurate layout, to measure the real gap
+between two wired pins, or to check why a wire renders diagonal.
+
+Prerequisite: the graph must already be open + ticked. Call
+`open_function_graph_for_render` in a prior exec and wait a moment.
+
+```python
+# Measure the real Y of every pin on a >=
+for r in L.get_rendered_node_info(bp, g):
+    if r.title != '>= 布尔':
+        continue
+    print(f'size={int(r.size.x)}x{int(r.size.y)}')
+    for p in r.pins:
+        if p.is_hidden: continue
+        print(f'  {p.direction:6s} #{p.direction_index} Y={p.graph_position.y:.0f}  {p.name!r}')
+# size=147x66
+#   input  #0  Y=190  'A'
+#   input  #1  Y=220  'B'
+#   output #0  Y=205  'ReturnValue'       ← output centered between inputs!
+```
+
+Each node returned has `is_live=True` when a widget was found, or
+`is_live=False` (with zero size and empty pins) for nodes whose
+widget isn't rendered yet. Compare against `get_node_pin_layouts`
+output for the same node to see where the generic formula is wrong.
+
+#### FBridgeRenderedNode fields
+
+| Field | Meaning |
+|-------|---------|
+| `node_guid` | The node's GUID (digits format) |
+| `title` | `GetNodeTitle(ListView)` |
+| `graph_position` | Node's NodePosX/Y (matches `get_node_layout.pos_*`) |
+| `size` | Actual rendered size from `SGraphNode::GetDesiredSize` |
+| `pins` | Array of `FBridgeRenderedPin` (see below) |
+| `is_live` | True if the widget was found and measured |
+
+#### FBridgeRenderedPin fields
+
+| Field | Meaning |
+|-------|---------|
+| `name` | Pin internal name |
+| `direction` | `"input"` / `"output"` |
+| `direction_index` | Index among visible pins of the same direction |
+| `node_offset` | Pin position relative to node top-left, from `SGraphPin::GetNodeOffset` |
+| `graph_position` | Absolute graph position (node pos + node offset) |
+| `is_exec` | True for exec-category pins |
+| `is_hidden` | True for hidden pins (surfaced but no widget) |
+
+**Knot caveat**: `K2Node_Knot` reports `node_offset = (0, 0)` from
+`GetNodeOffset`. Treat knots specially: the actual pin center sits at
+`NodePos + (0, 12)` for input and `(42, 12)` for output (knot body is
+42×24, pins vertically centred).
+
 ### predict_node_size(kind, param_a, param_b, param_int) -> FBridgeNodeSizeEstimate
 
 Predict a node's rendered size **before** spawning it, so you can
@@ -1508,70 +1604,148 @@ Unknown kind returns a 180×60 fallback with `resolved=False`.
 Re-flow a graph with an exec-flow-driven auto-layout. Choose a strategy
 by passing its name:
 
-- **`"exec_flow"`** (Sugiyama-lite, default): topologically layer nodes
-  by exec dependency, place each layer left-to-right, stack vertically
-  within a layer, then barycentrically re-order each layer to reduce
-  wire crossings. Pure / data nodes attach to their first exec
-  consumer's layer − 1. **Positions nodes at layer-center Y** — exec
-  pins are not pixel-aligned; follow up with `straighten_exec_chain`
-  for that. Fast, crossings-minimal; the right choice for bulk tidy.
+- **`"exec_flow"`** (Sugiyama-lite): topologically layer nodes by exec
+  dependency, place each layer left-to-right, stack vertically within
+  a layer, then barycentrically re-order each layer to reduce wire
+  crossings. Pure / data nodes attach to their first exec consumer's
+  layer − 1. **Positions nodes at layer-center Y** — exec pins are
+  not pixel-aligned; follow up with `straighten_exec_chain` for that.
+  Fast, crossings-minimal; the right choice for bulk tidy on large
+  graphs where pin-perfect alignment matters less.
 
-- **`"pin_aligned"`**: exec backbone placed pin-to-pin — each node's
-  input exec pin Y matches its primary predecessor's output exec pin Y,
-  so exec wires render **perfectly horizontal**. Data producers are
-  then pulled right-to-left into the exec consumers they feed, aligning
-  each producer's output pin Y to its consumer's input pin Y. Chained
-  pure nodes cascade further left; each exec layer reserves X-budget
-  for the deepest data chain that terminates in it, so the function
-  entry sits at the leftmost column and data never overlaps it. The
-  "polished BP" look without a separate straightening pass.
+- **`"pin_aligned"`** (recommended for human-readable output): places
+  nodes using **DFS-ordered downstream alignment** — the same shape
+  hand-authored BPs take. See the full details below; this is what
+  you should use for polish.
 
-**Only moves nodes — wires, comments, and pin defaults are untouched.**
-Safe to call repeatedly; idempotent on stable topology. Doesn't
-compile the Blueprint.
+**Only moves nodes — wires, comments, and pin defaults are untouched**
+(aside from reroute knots the pass inserts/strips as described below).
+Safe to call repeatedly; idempotent on stable topology. Doesn't compile
+the Blueprint.
+
+#### `"pin_aligned"` — the flow
+
+Getting a pixel-accurate pin-aligned layout requires three bridge
+execs in sequence, because Slate can't tick while an exec holds the
+game thread:
 
 ```python
 L = unreal.UnrealBridgeBlueprintLibrary
+bp = '/Game/Blueprints/BP_MyActor.BP_MyActor'
+g  = 'MyFunction'
 
-# After a batch of add_* calls, tidy up the result.
-r = L.auto_layout_graph(bp, 'EventGraph', 'exec_flow', '', 80, 40)
-print(f'layers={r.layer_count}  positioned={r.nodes_positioned}  bounds={r.bounds_width}×{r.bounds_height}')
+# Exec 1: open the function graph in BP editor, forcing Slate to
+#         construct the SGraphNode/SGraphPin widgets we'll read from.
+L.open_function_graph_for_render(bp, g)
+```
+
+```python
+# (short client-side sleep — ~3-4 s — to let Slate tick the widgets)
+import time; time.sleep(4)
+```
+
+```python
+# Exec 2: run the layout. It queries the live widgets for pixel-exact
+#         node sizes and pin positions, then places everything.
+r = L.auto_layout_graph(bp, g, 'pin_aligned', '', 100, 48)
+print(f'bounds={r.bounds_width}×{r.bounds_height}')
 for w in r.warnings: print(' !', w)
 ```
 
-Pin-aligned polish (recommended for human-readable output):
+If you skip step 1 (or call step 2 in the same exec), the cache is
+empty and the layout silently falls back to formula-based size/pin
+estimates. Estimates are off by 10–50 px per node for UE 5.7's
+compact/standard node mix — visible as mildly-diagonal wires even on
+"aligned" pairs. Always run the three-exec flow for anything you care
+about visually.
+
+#### `"pin_aligned"` — the algorithm (why it matches hand-laid BPs)
+
+1. **Strip prior reroutes**: collapse every existing knot into a
+   direct src→dst link, so the algorithm always operates on the
+   canonical topology. (Calling layout repeatedly doesn't accumulate
+   reroutes.)
+
+2. **Query live Slate geometry** for every node: real rendered size
+   from `SGraphNode::GetDesiredSize`, real pin offsets from
+   `SGraphPin::GetNodeOffset`. Required for compact nodes (`>=`,
+   `OR`, variable getters) whose pin Ys differ from the generic
+   `HeaderHeight + row × PinRowHeight` formula by 10–22 px.
+
+3. **DFS the exec tree** from the function entry, visiting exec-out
+   pins in pin-direction order (`.then` before `.else`). Push leaves
+   (nodes with no exec successor — Returns, terminal calls) to a flat
+   list in DFS-visit order. This matches how humans read top-to-bottom.
+
+4. **Stack leaves** in that DFS order spanning layers: Return Sprint
+   (Branch.True path) at the top, Return Run (Branch.False), Return
+   Walk, Return Run (crouch.True), Return Walk (crouch.False) — all
+   in one vertical column, regardless of exec layer depth.
+
+5. **Place non-leaves backward** from the deepest exec layer. Each
+   Branch / exec node pulls its Y from its primary successor (the
+   `.then` path) so the `.then` wire reads as a perfect horizontal
+   rail. `.else` branches fan out diagonally.
+
+6. **Place data producers** per-consumer: each pure node sits
+   `DataHSpace` px to the left of its primary consumer, pin-Y-aligned
+   to the specific input pin it feeds. Chained producers cascade
+   further left by the same rule. Siblings feeding different pins of
+   the same consumer share a right edge so output pins align.
+
+7. **Reroute diagonal exec wires** with a single knot per wire,
+   placed near the destination at the dst pin Y. The first segment is
+   a natural diagonal Bezier; the final segment is horizontal into
+   the destination pin. Data wires are left as bare Beziers — hand-
+   laid BPs don't knot mild data diagonals.
+
+#### Spacing: user values are *loose upper bounds*, not exact gaps
+
+`h_spacing` and `v_spacing` are hints, not strict widths. The
+algorithm derives three tighter values from them:
+
+| What                                    | Formula                     |
+|-----------------------------------------|-----------------------------|
+| `DataHSpace` — gap between data columns | `max(15, h_spacing / 3)`    |
+| `ExecGap`    — gap between exec layers  | `max(30, h_spacing / 2)`    |
+| `VSpace`     — gap between stacked rows | `v_spacing` (used as-is)    |
+
+So `h_spacing=100` → `DataHSpace=33`, `ExecGap=50` inside. Pass 0 or
+negative to get defaults (`h=80, v=40` → internally 26/40). Pass
+smaller values (e.g. 40/32 → 15/30) for a denser pack.
+
+#### Anchor node — keep one position fixed
 
 ```python
-# Exec backbone pin-to-pin, data nodes cascading from the right.
-L.auto_layout_graph(bp, 'DetermineGait', 'pin_aligned', '', 100, 48)
-# Then knot up any wires that still pass through nodes:
-L.auto_insert_reroutes(bp, 'DetermineGait')
+# Keep BeginPlay at its current spot; the rest of the graph flows
+# out from it. Useful when merging layout into an active edit session.
+r = L.auto_layout_graph(bp, 'EventGraph', 'pin_aligned', begin_guid, 100, 50)
 ```
 
-Pin anchor mode — keep one node in place (handy when integrating auto-
-layout into a larger edit session where you've already placed a known-
-good anchor):
+#### Comment boxes
 
-```python
-# Keep BeginPlay at its current spot; everything else flows from it.
-r = L.auto_layout_graph(bp, 'EventGraph', 'exec_flow', begin_guid, 100, 50)
-```
+Skipped — moving a comment box breaks its "encloses these specific
+nodes" intent. Comments stay at their authored XY; the nodes inside
+may shift out of them. Re-enclose or resize the box afterward if it
+matters.
+
+#### Unavoidable diagonals
+
+Two cases where pin-Y alignment is physically impossible:
+
+- **Multi-input consumer with tall producers**: V2D (74 px tall) and
+  Threshold (38 px tall) both feeding a `>=` whose A/B pins are only
+  22 px apart. The producers have to sit above/below each other with
+  VSpace between them, so at most one pin-aligns.
+- **Single output feeding multiple pins at different Y**: OR's one
+  `Return Value` out wired to Select's dir-1 and dir-3 pins (44 px
+  apart on Select). Only one wire can be horizontal.
+
+Both are rendered as Bezier curves without knots — matches the
+reference look.
 
 **Strategies**: `"exec_flow"`, `"pin_aligned"`. Reserved (not yet
 implemented): `"data_flow"`, `"event_grouped"`.
-
-**Spacing**: pass 0 or negative to get defaults (H=80, V=40).
-
-**Comment boxes** are detected and skipped (moving the box breaks the
-"encloses these specific nodes" intent). Comments stay where they are;
-the nodes inside may shift out of them — re-enclose or resize the box
-afterward if needed.
-
-**Caveat for `pin_aligned`**: when a single exec node fans out to
-multiple downstream branches whose total height exceeds the predecessor,
-collision resolution pushes later siblings below pure pin alignment.
-Insert reroute knots via `auto_insert_reroutes` (or manually) to keep
-those branch wires readable.
 
 #### FBridgeLayoutResult fields
 
