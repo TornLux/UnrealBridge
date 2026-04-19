@@ -5647,7 +5647,6 @@ namespace BridgeBPPinAlignedImpl
 		if (!GraphEd.IsValid()) return;
 		SGraphPanel* Panel = GraphEd->GetGraphPanel();
 		if (!Panel) return;
-
 		for (UEdGraphNode* N : Graph->Nodes)
 		{
 			if (!N) continue;
@@ -5657,7 +5656,7 @@ namespace BridgeBPPinAlignedImpl
 			const FVector2D Size = FVector2D(NW->GetDesiredSize());
 			G.Width  = int32(Size.X);
 			G.Height = int32(Size.Y);
-			if (G.Width <= 0 && G.Height <= 0) continue;  // widget not yet ticked
+			if (G.Width <= 0 && G.Height <= 0) continue;
 
 			// Collect visible pins in two parallel arrays — the i-th visible
 			// input pin's offset goes at InputPinLocalYs[i].
@@ -5683,9 +5682,17 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
-	/** Fetch the local-Y of a visible pin (direction-indexed). Uses the
-	 *  live-rendered cache if populated for this node, falls back to the
-	 *  EstimateNodeSize formula otherwise. */
+	/** Fetch the local-Y of a visible pin (direction-indexed).
+	 *
+	 *  Slate's `SGraphPin::NodeOffset` is only written when the parent
+	 *  SGraphNode runs its OnArrangeChildren — which requires the node to
+	 *  be inside the panel's visible viewport at the time. Nodes off-screen
+	 *  report (0,0). A cached value of exactly 0 is therefore treated as
+	 *  "unknown" and we fall back to the EstimateNodeSize formula, which
+	 *  puts the pin in the right row even if slightly off (± a few px).
+	 *  Without this check, off-screen nodes would park the pin at the very
+	 *  top of their node — putting any knot wired to them flush with the
+	 *  node's top edge instead of the exec pin. */
 	static int32 PinLocalYFor(UEdGraphNode* Node, EEdGraphPinDirection Dir, int32 DirIdx,
 		const TMap<UEdGraphNode*, FRenderedGeom>& Cache)
 	{
@@ -5694,7 +5701,13 @@ namespace BridgeBPPinAlignedImpl
 			if (G->bValid)
 			{
 				const TArray<int32>& Arr = (Dir == EGPD_Input) ? G->InputPinLocalYs : G->OutputPinLocalYs;
-				if (DirIdx >= 0 && DirIdx < Arr.Num()) return Arr[DirIdx];
+				if (DirIdx >= 0 && DirIdx < Arr.Num())
+				{
+					const int32 Cached = Arr[DirIdx];
+					if (Cached > 0) return Cached;
+					// Cached == 0 means Slate hasn't arranged this node yet
+					// (viewport-culled). Fall through to the formula.
+				}
 			}
 		}
 		return ComputePinLocalY(Node, Dir, DirIdx);
@@ -6844,7 +6857,12 @@ namespace BridgeBPPinAlignedImpl
 		TArray<FSpec> Specs;
 
 		constexpr int32 KnotWidth = 42;
-		constexpr int32 KnotPinCenterOffset = 12;
+		// UK2Node_Knot is 42×24 with pin center at NodeOffset.y = 9.5 (live
+		// Slate measurement). Integer NodePosY rounds that to 10, giving a
+		// 0.5 px residual — invisible. The previous value of 12 left a
+		// visible 2.5 px offset between the knot's pin and the exec/data
+		// pin it was trying to align with.
+		constexpr int32 KnotPinCenterOffset = 10;
 
 		for (int32 i = 0; i < Nodes.Num(); ++i)
 		{
@@ -6957,7 +6975,9 @@ namespace BridgeBPPinAlignedImpl
 		if (!Graph) return 0;
 
 		constexpr int32 KnotWidth = 42;
-		constexpr int32 KnotPinCenterOffset = 12;
+		// See InsertLRouteKnotsForDiagonalExec — measured pin offset is 9.5,
+		// rounded to 10 for int32 NodePosY.
+		constexpr int32 KnotPinCenterOffset = 10;
 
 		auto DirIndex = [](const UEdGraphNode* N, const UEdGraphPin* P) -> int32
 		{
@@ -7115,17 +7135,22 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 	{
 		using namespace BridgeBPPinAlignedImpl;
 
+		// Query live Slate widgets for accurate node sizes + pin offsets.
+		// MUST run before StripRerouteKnots — stripping knots invalidates
+		// the graph panel and leaves SGraphPin widgets in an untickable
+		// state where GetNodeOffset() returns (0,0). Capturing the cache
+		// first gets valid offsets from the stable, pre-modification
+		// widget tree. Requires the graph to already be open + ticked;
+		// if not, Cache is empty and all helpers fall back to
+		// EstimateNodeSize/ComputePinLocalY.
+		TMap<UEdGraphNode*, FRenderedGeom> Cache;
+		BuildRenderedCache(Graph, Cache);
+
 		// Collapse any reroute knots from prior layout runs so primary-succ
 		// walking and data-chain BFS see the canonical topology. L-route
 		// will re-insert knots for whatever diagonals the new layout leaves.
 		Graph->Modify();
 		StripRerouteKnots(Graph);
-
-		// Query live Slate widgets for accurate node sizes + pin offsets.
-		// Requires the graph to already be open + ticked; if not, Cache is
-		// empty and all helpers fall back to EstimateNodeSize/ComputePinLocalY.
-		TMap<UEdGraphNode*, FRenderedGeom> Cache;
-		BuildRenderedCache(Graph, Cache);
 		if (Cache.Num() > 0)
 		{
 			Result.Warnings.Add(FString::Printf(
