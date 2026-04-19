@@ -1326,6 +1326,61 @@ The returned `NodeGuid` matches what `get_function_nodes` reports, so
 you can pipe Find* results into `remove_graph_node`, `set_node_enabled`,
 `set_node_comment`, etc. for bulk edits.
 
+### find_function_call_sites_global(function_name, owning_class_filter, package_path, max_results) -> list[FBridgeGlobalReference]
+
+Cross-Blueprint call-site search. Enumerates every Blueprint under
+`package_path` via AssetRegistry, then walks each BP's `UbergraphPages +
+FunctionGraphs + MacroGraphs` — same matcher as
+`find_function_call_sites`, but the result entries are keyed by
+`blueprint_path` so an agent can answer "who calls X project-wide?" in
+one call.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+
+# Every PrintString call in /Game (capped at 200)
+for r in L.find_function_call_sites_global('PrintString', '', '/Game', 200):
+    print(f'{r.blueprint_path}  {r.graph_type}/{r.graph_name}  {r.node_title}')
+
+# Narrow by owner class — 'KismetSystemLibrary' or 'UKismetSystemLibrary' both work
+hits = L.find_function_call_sites_global(
+    'PrintString', 'KismetSystemLibrary', '/Game', 200)
+
+# Narrow by folder
+hits = L.find_function_call_sites_global('PrintString', '', '/Game/AI', 500)
+```
+
+**Parameters**
+- `function_name` — target function short name. Matched against
+  `K2Node_CallFunction` target-function name and `K2Node_Message` title
+  (for interface dispatch).
+- `owning_class_filter` — optional owner filter. Accepts both the short
+  name (`"KismetSystemLibrary"`) and the `U`-prefixed C++ form
+  (`"UKismetSystemLibrary"`). Empty string = match any owner.
+- `package_path` — content-browser root to scan. `"/Game"` = project
+  only (default). `"/Engine"` adds engine content; subfolders like
+  `"/Game/AI"` narrow the scope. `bRecursivePaths = true` always.
+- `max_results` — stop after this many hits. `0` or negative → 1000.
+
+**Returns** — list of `FBridgeGlobalReference` with:
+
+| Field | Meaning |
+|-------|---------|
+| `blueprint_path` | full asset path of the containing BP, e.g. `/Game/BP_X.BP_X` |
+| `graph_name` | containing graph (EventGraph / function / macro name) |
+| `graph_type` | `"EventGraph"` \| `"Function"` \| `"Macro"` |
+| `node_guid` | 32-hex digits (same form as other bridge APIs) |
+| `node_title` | palette-style title |
+| `kind` | always `"call"` |
+
+**When to use.** Before renaming or removing a function, to audit
+breakage; when reverse-engineering a codebase to find usage examples of
+an API; when collecting training data for AI-driven BP authoring.
+
+**Cost.** O(# BPs in scope × nodes per BP). Every BP in the scope gets
+loaded if it isn't already — on large projects prefer scoping to a
+subfolder. Subsequent calls reuse the loaded BPs via UE's object cache.
+
 ---
 
 ## Pin introspection
@@ -1549,6 +1604,100 @@ to discover internal names when unsure.
 | `default_value` | stored `CPP_Default_<name>` metadata; empty when caller must wire |
 | `is_reference` | passed by ref — BP caller must wire a variable, not a literal |
 | `is_const` | declared const |
+
+---
+
+### invoke_blueprint_function(blueprint_path, function_name, args_json) -> (result_json, error)
+
+Execute a Blueprint function on a transient instance of its generated
+class and return the result as JSON. Closes the "how do I verify a
+function's behavior?" gap — previously agents had to enter PIE (heavy)
+or rely on `compile_blueprints` (which only proves syntax). This is the
+reflection-based equivalent of `UFunction::ProcessEvent` wrapped in a
+JSON in / JSON out interface.
+
+> **Always-true return contract.** The Python UFUNCTION binding strips
+> out-params on a `false` return, so this function always returns true
+> and communicates failure via the `result_json`'s `"error"` key. See
+> error handling below.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+bp = '/Game/Blueprints/Data/BFL_HelpfulFunctions.BFL_HelpfulFunctions'
+
+# Happy path — scalar in, scalar out
+result_json, err = L.invoke_blueprint_function(bp, 'AddNumbers', '{"A":7,"B":35}')
+# result_json = '{"Sum":42}'
+# err = ''
+
+# Return value is keyed as "_return"
+result_json, err = L.invoke_blueprint_function(
+    bp, 'MakeGreeting', '{"Name":"world"}'
+)
+# result_json = '{"_return":"Hello, world"}'
+
+# Handled failure — inspect result_json for "error"
+import json
+result_json, err = L.invoke_blueprint_function(bp, 'DoesNotExist', '{}')
+payload = json.loads(result_json)
+if 'error' in payload:
+    print('invoke failed:', payload['error'])
+# invoke failed: function not found on generated class
+```
+
+**Execution model**
+- **AActor-derived BP** — spawned in the editor world with `RF_Transient`
+  + `SpawnCollisionHandlingOverride = AlwaysSpawn`, then `Destroy()`'d
+  after the call. The spawn happens on the GameThread (bridge's
+  standard dispatch).
+- **Other UObject BPs** (BlueprintFunctionLibrary, DataAsset-derived,
+  etc.) — `NewObject<UObject>` in the transient package. No world
+  needed.
+
+**Parameters**
+- `blueprint_path` — full BP object path, e.g. `/Game/Foo/BP_X.BP_X`.
+- `function_name` — internal short name (same as `get_function_signature`).
+- `args_json` — JSON object string keyed by parameter name. Empty
+  string = no args (all inputs take their default-constructed value,
+  not the BP's `CPP_Default_*` metadata — that defaulting is only
+  applied by BP callers, not by `ProcessEvent`).
+
+**Returns** — `(result_json, error)` tuple.
+- On success: `result_json` is a JSON object with one entry per
+  out-param / return. The return value is keyed as `"_return"`; named
+  out-params keep their declared name. `error` is empty.
+- On handled failure: `result_json = '{"error":"..."}'` and `error`
+  mirrors the same text (useful for C++ callers; Python callers can
+  parse `result_json`).
+
+**Safety gates** — produce an error JSON without calling the function:
+- function not found on the generated class;
+- function is not `FUNC_BlueprintCallable` / `FUNC_BlueprintPure` and
+  is not user-defined on this BP (rejects engine lifecycle events like
+  `ReceiveBeginPlay` / `ReceiveTick`);
+- function takes an `FLatentActionInfo` parameter (would never
+  complete inline — use PIE + the reactive layer for those).
+
+**Arg conversion.** Uses `FJsonObjectConverter::JsonAttributesToUStruct`
+against the `UFunction`'s parameter block, so the engine's full type
+coverage applies: scalars, strings, structs (nested JSON objects),
+arrays (JSON arrays), enums (string or numeric), object refs (asset
+path string), soft references. Unknown / unsupported fields fail with
+`"failed to import args: <reason>"`.
+
+**What you cannot invoke this way**
+- Functions that rely on component state initialized in `BeginPlay` —
+  spawned actors bypass `BeginPlay`. Pure / stateless functions are
+  safe; functions that read `Components[0]->SomeField` may see null.
+- Async / latent functions (gated).
+- Functions that call `World->GetGameInstance()` expecting PIE (you're
+  in the editor world, not a PIE world).
+
+**Typical workflow.** `get_function_signature` → learn parameter names
+and types → build `args_json` → `invoke_blueprint_function` → check
+`"error"` key → parse expected return field. Use alongside
+`compile_blueprints` to verify a generated BP both compiles *and*
+executes correctly.
 
 ---
 
