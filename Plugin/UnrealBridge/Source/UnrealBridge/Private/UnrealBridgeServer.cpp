@@ -8,6 +8,8 @@
 #include "SocketSubsystem.h"
 #include "Misc/Base64.h"
 #include "Editor.h"
+#include "Kismet2/KismetDebugUtilities.h"
+#include "Framework/Application/SlateApplication.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridge, Log, All);
 
@@ -348,6 +350,44 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 	{
 		Response->SetBoolField(TEXT("success"), true);
 		Response->SetStringField(TEXT("output"), TEXT("pong"));
+		Response->SetStringField(TEXT("error"), TEXT(""));
+		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+	}
+	else if (Command == TEXT("debug_resume"))
+	{
+		// Recovery path for a stuck blueprint breakpoint.
+		//
+		// When a BP breakpoint fires, UE enters `FSlateApplication::EnterDebuggingMode`
+		// — a nested Slate loop that keeps pumping the task graph on the
+		// GameThread but does NOT pump the FTSTicker-based Python exec queue.
+		// A prior `invoke_*` that triggered the break is still blocked inside
+		// `ProcessEvent`, so the Python interpreter is occupied and new
+		// `exec` commands can't land.
+		//
+		// Recovery requires TWO things, both dispatched via AsyncTask (task
+		// graph is pumped during the nested Slate loop; FTSTicker is not):
+		//
+		//   1. `FSlateApplication::LeaveDebuggingMode()` — exits the nested
+		//      Slate loop, unblocking `AttemptToBreakExecution` so the BP
+		//      VM resumes.
+		//   2. `FKismetDebugUtilities::RequestAbortingExecution()` — sets
+		//      `bAbortingExecution` on the stack frame so when the VM
+		//      resumes, it unwinds rather than continuing past the
+		//      breakpoint (which would hit the same break again).
+		//
+		// Together these pop the debug-mode stack and let ProcessEvent
+		// return, which unblocks the stuck Python exec, which unblocks the
+		// TCP response to the original caller.
+		AsyncTask(ENamedThreads::GameThread, []()
+		{
+			FKismetDebugUtilities::RequestAbortingExecution();
+			if (FSlateApplication::IsInitialized())
+			{
+				FSlateApplication::Get().LeaveDebuggingMode(/*bLeavingDebugForSingleStep*/ false);
+			}
+		});
+		Response->SetBoolField(TEXT("success"), true);
+		Response->SetStringField(TEXT("output"), TEXT("resume requested"));
 		Response->SetStringField(TEXT("error"), TEXT(""));
 		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
 	}

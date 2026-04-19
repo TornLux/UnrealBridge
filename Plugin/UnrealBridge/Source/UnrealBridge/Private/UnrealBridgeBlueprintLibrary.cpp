@@ -11098,6 +11098,36 @@ void UUnrealBridgeBlueprintLibrary::ResumeScriptExecution()
 	FKismetDebugUtilities::RequestAbortingExecution();
 }
 
+int32 UUnrealBridgeBlueprintLibrary::ClearProjectBreakpoints(const FString& PackagePath)
+{
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FString Root = PackagePath.IsEmpty() ? FString(TEXT("/Game")) : PackagePath;
+	if (!Root.StartsWith(TEXT("/"))) Root = TEXT("/") + Root;
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(FName(*Root));
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+
+	TArray<FAssetData> BpAssets;
+	Registry.GetAssets(Filter, BpAssets);
+
+	int32 Total = 0;
+	for (const FAssetData& Data : BpAssets)
+	{
+		UBlueprint* BP = LoadBP(Data.GetSoftObjectPath().ToString());
+		if (!BP) continue;
+		int32 Before = 0;
+		FKismetDebugUtilities::ForeachBreakpoint(BP,
+			[&Before](FBlueprintBreakpoint&) { ++Before; });
+		if (Before == 0) continue;
+		FKismetDebugUtilities::ClearBreakpoints(BP);
+		Total += Before;
+	}
+	return Total;
+}
+
 bool UUnrealBridgeBlueprintLibrary::ChangeVariableTypeWithReport(
 	const FString& BlueprintPath, const FString& VariableName,
 	const FString& NewTypeString, TArray<FString>& OutBrokenNodeGuids)

@@ -2294,18 +2294,43 @@ Companions: `clear` drops the stored snapshot so the next hit starts
 fresh; `resume` calls `FKismetDebugUtilities::RequestAbortingExecution`
 to unstick a paused execution path.
 
-**PIE-pause gotcha.** When a breakpoint fires on the editor's
-currently-debugged object, UE opens the BP editor and pauses the
-GameThread in a nested Slate loop — **the bridge TCP exec can't
-reach the GameThread during this pause**. The hit IS captured
-(our handler runs before UE's pause code), but reading the
-snapshot requires the editor to be in a responsive state. Options:
-- Trigger the scenario from inside PIE (PIE-pause freezes PIE,
-  editor stays responsive — bridge still works).
-- Have a human click Resume in the BP editor.
-- Call `resume_script_execution()` from a different bridge
-  session if it can reach the GameThread (rare — only the PIE
-  pause leaves the editor responsive enough).
+**PIE-pause gotcha.** When a breakpoint fires, UE opens the BP
+editor and parks the GameThread in a nested Slate loop. During
+that loop the bridge's Python exec queue (FTSTicker-based) does
+**not** pump, so any `exec` call on the same or a different TCP
+connection will time out — including any attempt to call
+`resume_script_execution` **through Python**.
+
+**Recovery path — `bridge.py resume`.** The bridge TCP server
+handles a special `debug_resume` command at the protocol level,
+bypassing the Python exec queue entirely. It dispatches two calls
+via AsyncTask (which IS pumped during the nested Slate loop):
+`FKismetDebugUtilities::RequestAbortingExecution()` (unwinds the
+VM when it resumes) + `FSlateApplication::LeaveDebuggingMode()`
+(exits the nested loop). Together they pop the pause:
+
+```bash
+# From ANY terminal (not the one that triggered the break):
+python bridge.py resume
+# -> "resume requested"
+```
+
+The blocked `exec` that triggered the break then completes
+normally. No editor restart needed.
+
+**Prevention — `clear_project_breakpoints`.** For unattended
+runs, clear any stale breakpoints up front:
+
+```python
+n = BP_LIB.clear_project_breakpoints('/Game')  # returns count removed
+```
+
+**Workflow checklist for automated tests:**
+1. `clear_project_breakpoints(path)` at session start.
+2. Run your scenario.
+3. If a break slips through anyway (e.g. AI-generated BP set
+   one), recover via `python bridge.py resume` from a fresh
+   terminal.
 
 ---
 

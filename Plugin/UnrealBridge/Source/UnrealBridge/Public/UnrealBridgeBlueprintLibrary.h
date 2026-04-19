@@ -3090,7 +3090,24 @@ public:
 	 * on the debugger. Useful for unsticking PIE / editor when a test
 	 * triggered a breakpoint and needs to continue. Does nothing if no
 	 * breakpoint is currently held.
+	 *
+	 * **Important:** if your exec call triggered the break, this won't reach
+	 * the GameThread (Python queue is blocked). Use the server-level
+	 * `bridge.py resume` CLI instead, which bypasses the Python exec queue.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static void ResumeScriptExecution();
+
+	/**
+	 * Sweep every Blueprint under `PackagePath` (default "/Game") and delete
+	 * all breakpoints. Preventive hygiene for automated test flows — a stray
+	 * breakpoint from a prior session can freeze the editor when an
+	 * AI-driven test invokes a function that hits it, and the bridge can't
+	 * recover from the freeze (see ResumeScriptExecution note). Call this
+	 * at the start of any unattended run.
+	 *
+	 * @return number of breakpoints removed across all scanned BPs.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static int32 ClearProjectBreakpoints(const FString& PackagePath);
 };

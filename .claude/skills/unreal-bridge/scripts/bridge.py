@@ -98,6 +98,33 @@ def cmd_ping(args):
     return 0
 
 
+def cmd_resume(args):
+    """Unstick a paused Blueprint breakpoint.
+
+    Goes through the bridge's server-level `debug_resume` command, which
+    dispatches `FKismetDebugUtilities::RequestAbortingExecution` via AsyncTask.
+    Unlike `exec`, this bypasses the FTSTicker-based Python exec queue and
+    reaches the GameThread even while it's inside UE's nested Slate debug
+    loop.
+    """
+    try:
+        payload = {"id": str(uuid.uuid4()), "command": "debug_resume"}
+        resp = send_request(args.host, args.port, payload, args.timeout)
+    except Exception as e:
+        if args.json:
+            print(json.dumps({"success": False, "error": str(e)}))
+        else:
+            print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(resp, ensure_ascii=False))
+    else:
+        msg = resp.get("output") or resp.get("error") or "unknown"
+        print(msg)
+    return 0 if resp.get("success") else 1
+
+
 def cmd_exec(args):
     """Execute inline Python code in UE."""
     return _execute(args, args.code)
@@ -200,6 +227,12 @@ def main():
     )
     execfile_parser.add_argument("file", help="Path to the Python script")
 
+    # resume — unstick a paused Blueprint breakpoint
+    subparsers.add_parser(
+        "resume",
+        help="Resume a paused BP breakpoint (bypasses the exec queue)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "ping":
@@ -208,6 +241,8 @@ def main():
         sys.exit(cmd_exec(args))
     elif args.command == "exec-file":
         sys.exit(cmd_exec_file(args))
+    elif args.command == "resume":
+        sys.exit(cmd_resume(args))
 
 
 if __name__ == "__main__":
