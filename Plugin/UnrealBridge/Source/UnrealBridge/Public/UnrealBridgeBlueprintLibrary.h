@@ -1018,6 +1018,30 @@ struct FBridgeReference
 	UPROPERTY(BlueprintReadOnly) FString Kind;
 };
 
+/** Reference site for a cross-Blueprint query — same fields as FBridgeReference
+ *  plus the asset path of the containing Blueprint. */
+USTRUCT(BlueprintType)
+struct FBridgeGlobalReference
+{
+	GENERATED_BODY()
+
+	/** Full object path of the containing Blueprint (e.g. "/Game/BP_X.BP_X"). */
+	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+
+	UPROPERTY(BlueprintReadOnly) FString GraphName;
+
+	/** "EventGraph" | "Function" | "Macro". */
+	UPROPERTY(BlueprintReadOnly) FString GraphType;
+
+	/** NodeGuid (digits). */
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+
+	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+
+	/** "call". */
+	UPROPERTY(BlueprintReadOnly) FString Kind;
+};
+
 /** Unified one-shot description of a single graph node. Combines title,
  *  position, classification, pins (with link targets), and the
  *  K2Node-subclass-specific fields a caller typically wants — all in a
@@ -1914,6 +1938,85 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgeReference> FindFunctionCallSites(
 		const FString& BlueprintPath, const FString& FunctionName);
+
+	/**
+	 * Cross-Blueprint search for all call sites of `FunctionName` across every
+	 * Blueprint under `PackagePath` (e.g. "/Game" — recursive). Walks each BP's
+	 * UbergraphPages + FunctionGraphs + MacroGraphs just like the single-BP
+	 * variant, but returns refs keyed by `BlueprintPath` so an agent can see
+	 * "who calls X" project-wide.
+	 *
+	 * @param FunctionName  Target function short name; matched against
+	 *                      K2Node_CallFunction target-function name and
+	 *                      K2Node_Message title (for interface calls).
+	 * @param OwningClassFilter  Optional filter: when non-empty, only matches
+	 *                      calls whose target function's OwnerClass name OR
+	 *                      short name equals this (supports both
+	 *                      "KismetSystemLibrary" and "UKismetSystemLibrary").
+	 *                      Empty = match any owner.
+	 * @param PackagePath   Content root to search (default "/Game" = project
+	 *                      only). Use "/Engine" to include engine content, or
+	 *                      a subfolder like "/Game/AI" to narrow the scope.
+	 * @param MaxResults    Stop after this many hits (0 or negative = 1000).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeGlobalReference> FindFunctionCallSitesGlobal(
+		const FString& FunctionName,
+		const FString& OwningClassFilter,
+		const FString& PackagePath,
+		int32 MaxResults);
+
+	/**
+	 * Execute a Blueprint-callable function on a transient instance of the
+	 * given Blueprint's generated class and return the result as JSON. Lets
+	 * an agent verify a function's behavior without entering PIE.
+	 *
+	 * Execution:
+	 *   - AActor-derived classes are spawned in the editor world with
+	 *     RF_Transient and Destroy()'d after the call.
+	 *   - Other UObject classes are NewObject'd in the transient package.
+	 *
+	 * Args JSON must be a JSON object keyed by parameter name. Struct
+	 * parameters accept nested JSON objects (field names match UPROPERTY
+	 * names). Arrays accept JSON arrays. Object-ref params accept the
+	 * asset/object path string.
+	 *
+	 * Output JSON is a JSON object with one entry per out/return param.
+	 * The return value (if any) is under the key "_return"; named out
+	 * params keep their declared name.
+	 *
+	 * Safety gates — produces {"error":"..."} without calling the function
+	 * when:
+	 *   - Function is not found on the generated class
+	 *   - Function lacks FUNC_BlueprintCallable and is not user-defined
+	 *     on this Blueprint (rejects engine lifecycle events like BeginPlay)
+	 *   - Function takes a latent action info (would never complete inline)
+	 *
+	 * @param BlueprintPath   Full BP object path (e.g. "/Game/BP_X.BP_X").
+	 * @param FunctionName    Short name of the function to call.
+	 * @param ArgsJson        JSON object string of parameter values; empty
+	 *                        string = no args.
+	 * @param OutResultJson   JSON object string. On success: one entry per
+	 *                        out/return param (return value keyed as
+	 *                        "_return"). On handled failure: {"error":"..."}.
+	 *                        Always populated — callers should inspect for
+	 *                        an "error" key rather than rely on the bool
+	 *                        return.
+	 * @param OutError        Duplicate of the error text (empty on success).
+	 *                        Useful for C++ callers that branch on error;
+	 *                        Python callers should use OutResultJson since
+	 *                        the UFUNCTION binding strips out-params when
+	 *                        a bool return is false.
+	 * @return Always true for handled outcomes. Reserved as false only for
+	 *         catastrophic failures that can't produce a JSON payload.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool InvokeBlueprintFunction(
+		const FString& BlueprintPath,
+		const FString& FunctionName,
+		const FString& ArgsJson,
+		FString& OutResultJson,
+		FString& OutError);
 
 	/**
 	 * All event-handler / dispatcher bind sites matching `EventName`.

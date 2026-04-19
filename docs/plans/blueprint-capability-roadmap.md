@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 在蓝图全生命周期（读取、理解、编辑、执行验证）上相对"AI 从自然语言自主生成蓝图"目标的能力缺口，按优先级排序。
 
-最后更新：2026-04-19（在 `describe_node` + `get_function_signature` 落地后）
+最后更新：2026-04-19（#5 `invoke_blueprint_function` + #7 `find_function_call_sites_global` 落地后）
 
 ---
 
@@ -13,12 +13,14 @@
 - Blueprint / 函数级 summary（紧凑）
 - 执行流程 walk（`get_function_execution_flow`）
 - 单 BP 内引用追踪：`find_variable_references` / `find_function_call_sites` / `find_event_handler_sites`
+- 跨 BP 调用查询：**`find_function_call_sites_global`** 按函数名 + 可选 owner class + 路径 scope + MaxResults
 - 节点搜索：`search_blueprint_nodes` 按 title/type/detail 子串
 - 节点详细：**`describe_node`** 单次调用返回 pos/size/class/K2Node 子类字段/所有 pin（含类型/默认值/`linked_to`）
 - 函数签名：**`get_function_signature`** 参数名/类型/默认值/ref/const/out + pure/static/latent/native + tooltip + category
 - Lint（11 种检查）
 - 可生成节点发现：`list_spawnable_actions`
 - 活 Slate 几何：`get_rendered_node_info`
+- 行为验证：**`invoke_blueprint_function`** 在 transient 实例上直接 ProcessEvent（非 Actor = NewObject；Actor = 编辑器世界 SpawnActor），JSON 入参 / JSON 出参（`_return` + out-params），拒绝 latent/非 BlueprintCallable
 
 ### 写
 - 变量/函数/Macro/接口/组件/dispatcher 全 CRUD + metadata 编辑
@@ -42,14 +44,14 @@
 | 2 | **AnimGraph + 状态机写** | `UnrealBridgeAnimLibrary` 只读。无法建状态、改转换、改 BlendSpace 采样、改 LinkedLayer。角色 BP 整类做不出来。 |
 | 3 | **GameplayAbility 图编辑** | 只读 CDO 元数据。无法编辑 GA 激活图/GameplayEffect/GameplayCue。所有 GAS 项目卡死。 |
 | 4 | **Enhanced Input 绑定** | 无 IA/IMC 辅助。现代 UE 输入层只能走 raw `unreal.*`。 |
-| 5 | **invoke_blueprint_function(bp, func, args) → result** | **AI 自主 BP 的最大验证缺口**。目前只能"编译通过"（仅证明语法对）或走 PIE（重）。不能快速验证函数行为。 |
+| 5 | ~~**invoke_blueprint_function(bp, func, args) → result**~~ | ✅ 2026-04-19 落地。transient 实例 ProcessEvent；支持 Actor（SpawnActor）+ 普通 UObject；拒绝 latent / 非 BlueprintCallable；JSON 入参 + 出参。 |
 | 6 | **运行时 BP 变量/参数快照** | 断点 API 已有，但命中后无法看局部变量值、参数值、返回值。调试循环残缺。 |
 
 ### P1 中优先级：常见重构与模板
 
 | # | 项目 | 影响 |
 |---|---|---|
-| 7 | **find_function_call_sites_global(func, class, max_results)** | 单 BP 查询已有；无跨项目查询。大项目里"PrintString 用在哪"当前需手动遍历 `/Game/`。实现成本低。 |
+| 7 | ~~**find_function_call_sites_global(func, class, max_results)**~~ | ✅ 2026-04-19 落地。AssetRegistry 枚举 BP → 遍历 UbergraphPages/FunctionGraphs/MacroGraphs，支持 owner class 过滤（短名或 `U*` 前缀名）+ PackagePath scope + MaxResults。 |
 | 8 | **find_usage_examples(class, func, n)** | 跨 BP 取 N 个真实调用点 + 上下游 2 层，让 AI 照样学。`get_function_signature` 只给文档不给实例。 |
 | 9 | **Promote-to-Variable** | 编辑器常见操作，Bridge 无对应。 |
 | 10 | **Collapse-to-Macro** | 有 Collapse-to-Function，缺 Macro 版本。 |
@@ -79,13 +81,15 @@
 
 | 排名 | 项目 | 工程量 | 频次 | 理由 |
 |---|---|---|---|---|
-| 1 | **#5 invoke_blueprint_function** | 中 | 高 | AI 验证循环关键缺口；通用模式 |
-| 2 | **#1 Timeline 轨道 CRUD** | 中-大 | 高 | 一大类 BP 写不了 |
-| 3 | **#7 find_function_call_sites_global** | 小 | 中-高 | 解锁"跨项目学习"；低成本 |
-| 4 | **#4 Enhanced Input 绑定** | 中 | 高 | 现代 UE 输入必经 |
-| 5 | **#2 AnimGraph 状态机写** | 大 | 高 | 角色 BP 品类解锁 |
+| ~~1~~ | ~~**#5 invoke_blueprint_function**~~ | ~~中~~ | ~~高~~ | ✅ 已落地 |
+| 1 | **#1 Timeline 轨道 CRUD** | 中-大 | 高 | 一大类 BP 写不了 |
+| ~~2~~ | ~~**#7 find_function_call_sites_global**~~ | ~~小~~ | ~~中-高~~ | ✅ 已落地 |
+| 2 | **#4 Enhanced Input 绑定** | 中 | 高 | 现代 UE 输入必经 |
+| 3 | **#2 AnimGraph 状态机写** | 大 | 高 | 角色 BP 品类解锁 |
+| 4 | **#6 运行时 BP 变量/参数快照** | 中 | 高 | 断点 + 快照配合才是完整调试环 |
+| 5 | **#3 GameplayAbility 图编辑** | 大 | 中-高 | GAS 项目解锁 |
 
-最性价比起点：**#7（跨 BP 查询）** 和 **#5（invoke BP function）**——都是小-中工程量，能立即提升 AI 反馈闭环质量。
+下一最性价比起点：**#6（运行时变量/参数快照）** 与 **#4（Enhanced Input）** — #6 直接配合已有的断点 API 补齐调试循环，#4 是现代 UE 项目的刚需。
 
 ---
 

@@ -62,6 +62,12 @@
 #include "BlueprintVariableNodeSpawner.h"
 #include "BlueprintEventNodeSpawner.h"
 #include "K2Node.h"
+#include "AssetRegistry/ARFilter.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "JsonObjectConverter.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "Engine/LatentActionManager.h"
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -4624,6 +4630,308 @@ TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindFunctionCallSites(
 		}
 	}
 	return Result;
+}
+
+// ─── Cross-Blueprint call-site query (#7) ──────────────────────
+
+namespace BridgeBPInvokeImpl
+{
+	/** Compare an owning-class name against a user filter that may be either
+	 *  the short name ("KismetSystemLibrary") or the C++ prefixed form
+	 *  ("UKismetSystemLibrary"). */
+	static bool OwnerMatches(const UClass* OwnerClass, const FString& Filter)
+	{
+		if (Filter.IsEmpty()) return true;
+		if (!OwnerClass)     return false;
+		const FString Short = OwnerClass->GetName();
+		const FString CppName = OwnerClass->GetPrefixCPP() + Short;
+		return Short == Filter || CppName == Filter;
+	}
+}
+
+TArray<FBridgeGlobalReference> UUnrealBridgeBlueprintLibrary::FindFunctionCallSitesGlobal(
+	const FString& FunctionName,
+	const FString& OwningClassFilter,
+	const FString& PackagePath,
+	int32 MaxResults)
+{
+	using namespace BridgeBPSummaryImpl;
+	using namespace BridgeBPInvokeImpl;
+
+	TArray<FBridgeGlobalReference> Result;
+	if (FunctionName.IsEmpty()) return Result;
+
+	const int32 EffectiveMax = (MaxResults > 0) ? MaxResults : 1000;
+	FString Root = PackagePath.IsEmpty() ? FString(TEXT("/Game")) : PackagePath;
+	if (!Root.StartsWith(TEXT("/"))) Root = TEXT("/") + Root;
+
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(FName(*Root));
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+
+	TArray<FAssetData> BpAssets;
+	Registry.GetAssets(Filter, BpAssets);
+
+	for (const FAssetData& Data : BpAssets)
+	{
+		if (Result.Num() >= EffectiveMax) break;
+
+		const FString ObjectPath = Data.GetSoftObjectPath().ToString();
+		UBlueprint* BP = LoadBP(ObjectPath);
+		if (!BP) continue;
+
+		for (const FAllGraphs& Entry : CollectAllGraphs(BP))
+		{
+			if (Result.Num() >= EffectiveMax) break;
+			for (UEdGraphNode* Node : Entry.Graph->Nodes)
+			{
+				if (Result.Num() >= EffectiveMax) break;
+				bool bHit = false;
+				if (const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node))
+				{
+					UFunction* TF = Call->GetTargetFunction();
+					const FString Name = TF ? TF->GetName() : Call->GetFunctionName().ToString();
+					if (Name == FunctionName)
+					{
+						const UClass* Owner = TF ? TF->GetOuterUClass() : nullptr;
+						if (OwnerMatches(Owner, OwningClassFilter))
+						{
+							bHit = true;
+						}
+					}
+				}
+				else if (const UK2Node_Message* Msg = Cast<UK2Node_Message>(Node))
+				{
+					// Interface-message dispatch: match by title substring
+					// (same heuristic as the single-BP variant).
+					if (OwningClassFilter.IsEmpty() &&
+						Msg->GetNodeTitle(ENodeTitleType::ListView).ToString().Contains(FunctionName))
+					{
+						bHit = true;
+					}
+				}
+
+				if (bHit)
+				{
+					const FBridgeReference Ref = MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("call"));
+					FBridgeGlobalReference G;
+					G.BlueprintPath = ObjectPath;
+					G.GraphName     = Ref.GraphName;
+					G.GraphType     = Ref.GraphType;
+					G.NodeGuid      = Ref.NodeGuid;
+					G.NodeTitle     = Ref.NodeTitle;
+					G.Kind          = Ref.Kind;
+					Result.Add(MoveTemp(G));
+				}
+			}
+		}
+	}
+	return Result;
+}
+
+// ─── invoke_blueprint_function (#5) ────────────────────────────
+
+namespace BridgeBPInvokeImpl
+{
+	/** Return true iff the function is safe to invoke from the bridge. */
+	static bool IsInvokable(UFunction* Func, UBlueprint* BP, FString& OutError)
+	{
+		if (!Func)
+		{
+			OutError = TEXT("function not found on generated class");
+			return false;
+		}
+
+		// Reject latent functions — they need a tick loop to resolve.
+		for (TFieldIterator<FProperty> It(Func); It; ++It)
+		{
+			const FProperty* Prop = *It;
+			if (Prop->GetCPPType().Contains(TEXT("FLatentActionInfo")))
+			{
+				OutError = TEXT("function is latent (FLatentActionInfo param); cannot invoke synchronously");
+				return false;
+			}
+		}
+
+		// Accept if marked BlueprintCallable/BlueprintPure, OR if defined on
+		// this BP (user functions on a BP don't always carry FUNC_BlueprintCallable
+		// via the usual path — check the UBlueprint's FunctionGraphs instead).
+		if (Func->HasAnyFunctionFlags(FUNC_BlueprintCallable | FUNC_BlueprintPure))
+		{
+			return true;
+		}
+		if (BP)
+		{
+			for (UEdGraph* G : BP->FunctionGraphs)
+			{
+				if (G && G->GetFName() == Func->GetFName()) return true;
+			}
+		}
+		OutError = TEXT("function is not BlueprintCallable/BlueprintPure; refusing to invoke engine lifecycle events");
+		return false;
+	}
+}
+
+bool UUnrealBridgeBlueprintLibrary::InvokeBlueprintFunction(
+	const FString& BlueprintPath,
+	const FString& FunctionName,
+	const FString& ArgsJson,
+	FString& OutResultJson,
+	FString& OutError)
+{
+	using namespace BridgeBPInvokeImpl;
+
+	OutResultJson = TEXT("{}");
+	OutError.Reset();
+
+	// Always return true so Python callers (which strip out-params when a
+	// UFUNCTION bool returns false) can read OutResultJson. The JSON object
+	// carries either the out/return params on success, or {"error": "..."}
+	// on a handled failure. The bool return is reserved for catastrophic
+	// C++ failures that can't even produce a JSON payload (currently none).
+	auto Fail = [&OutResultJson, &OutError](const FString& Msg) -> bool
+	{
+		OutError = Msg;
+		const FString Escaped = Msg.ReplaceCharWithEscapedChar();
+		OutResultJson = FString::Printf(TEXT("{\"error\":\"%s\"}"), *Escaped);
+		return true;
+	};
+
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP || !BP->GeneratedClass)
+	{
+		return Fail(FString::Printf(TEXT("blueprint not found or not compiled: %s"), *BlueprintPath));
+	}
+
+	UClass* GenClass = BP->GeneratedClass;
+	UFunction* Func = GenClass->FindFunctionByName(FName(*FunctionName));
+	{
+		FString Reason;
+		if (!IsInvokable(Func, BP, Reason))
+		{
+			return Fail(Reason);
+		}
+	}
+
+	// Parse args JSON (empty = no args).
+	TSharedPtr<FJsonObject> ArgsObj;
+	if (!ArgsJson.IsEmpty())
+	{
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ArgsJson);
+		if (!FJsonSerializer::Deserialize(Reader, ArgsObj) || !ArgsObj.IsValid())
+		{
+			return Fail(TEXT("failed to parse ArgsJson"));
+		}
+	}
+
+	// Build the target instance.
+	UObject* Instance = nullptr;
+	AActor*  SpawnedActor = nullptr;
+	if (GenClass->IsChildOf(AActor::StaticClass()))
+	{
+		UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+		if (!World)
+		{
+			return Fail(TEXT("no editor world to spawn transient actor"));
+		}
+		FActorSpawnParameters Params;
+		Params.ObjectFlags = RF_Transient;
+		Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+		Params.bNoFail = true;
+		SpawnedActor = World->SpawnActor<AActor>(GenClass, FTransform::Identity, Params);
+		Instance = SpawnedActor;
+	}
+	else
+	{
+		Instance = NewObject<UObject>(GetTransientPackage(), GenClass, NAME_None, RF_Transient);
+	}
+	if (!Instance)
+	{
+		return Fail(TEXT("failed to create transient instance of generated class"));
+	}
+
+	// Allocate + zero-init the parameter buffer.
+	TArray<uint8> ParamBuffer;
+	ParamBuffer.SetNumZeroed(Func->ParmsSize);
+	uint8* ParamBuf = ParamBuffer.GetData();
+
+	// Initialize values (constructs TArray/TMap/TSet/FString/structs properly).
+	for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+	{
+		It->InitializeValue_InContainer(ParamBuf);
+	}
+
+	// Import caller-supplied args into input params. Treating UFunction as a
+	// UStruct lets JsonAttributesToUStruct walk property names and convert
+	// each JSON field with the engine's full type coverage (structs, arrays,
+	// enums, object refs). We still need a pre-pass to skip pure-output
+	// params so junk in ArgsJson for an out-only param doesn't pre-populate.
+	if (ArgsObj.IsValid() && ArgsObj->Values.Num() > 0)
+	{
+		TMap<FString, TSharedPtr<FJsonValue>> InputsOnly;
+		for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			FProperty* Prop = *It;
+			const bool bIsReturn = Prop->HasAnyPropertyFlags(CPF_ReturnParm);
+			const bool bIsOut    = Prop->HasAnyPropertyFlags(CPF_OutParm);
+			const bool bIsRef    = Prop->HasAnyPropertyFlags(CPF_ReferenceParm);
+			if (bIsReturn) continue;
+			if (bIsOut && !bIsRef) continue;
+			TSharedPtr<FJsonValue> Val = ArgsObj->TryGetField(Prop->GetName());
+			if (Val.IsValid()) InputsOnly.Add(Prop->GetName(), Val);
+		}
+		FText FailReason;
+		if (InputsOnly.Num() > 0 &&
+			!FJsonObjectConverter::JsonAttributesToUStruct(InputsOnly, Func, ParamBuf, 0, 0, false, &FailReason))
+		{
+			for (TFieldIterator<FProperty> D(Func); D && D->HasAnyPropertyFlags(CPF_Parm); ++D)
+			{
+				D->DestroyValue_InContainer(ParamBuf);
+			}
+			if (SpawnedActor) SpawnedActor->Destroy();
+			return Fail(FString::Printf(TEXT("failed to import args: %s"), *FailReason.ToString()));
+		}
+	}
+
+	// Execute.
+	Instance->ProcessEvent(Func, ParamBuf);
+
+	// Serialize return + out params.
+	TSharedRef<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+	{
+		FProperty* Prop = *It;
+		const bool bIsReturn = Prop->HasAnyPropertyFlags(CPF_ReturnParm);
+		const bool bIsOut    = Prop->HasAnyPropertyFlags(CPF_OutParm);
+		if (!bIsReturn && !bIsOut) continue;
+
+		const void* Addr = Prop->ContainerPtrToValuePtr<void>(ParamBuf);
+		TSharedPtr<FJsonValue> Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr, 0, 0);
+		if (!Val.IsValid()) continue;
+		const FString Key = bIsReturn ? FString(TEXT("_return")) : Prop->GetName();
+		ResultObj->SetField(Key, Val);
+	}
+
+	// Destroy param buffer contents.
+	for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+	{
+		It->DestroyValue_InContainer(ParamBuf);
+	}
+
+	// Cleanup instance.
+	if (SpawnedActor) SpawnedActor->Destroy();
+
+	// Emit the result JSON.
+	FString Out;
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+	FJsonSerializer::Serialize(ResultObj, Writer);
+	OutResultJson = Out;
+	return true;
 }
 
 // ─── Pin introspection helpers ─────────────────────────────────
