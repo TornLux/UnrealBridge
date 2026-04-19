@@ -11,6 +11,33 @@ Module: `unreal.UnrealBridgeAnimLibrary`
 > reactive registration to discover notify names first, then bind
 > handlers to the ones you care about.
 
+> **Visual pose inspection lives in `bridge-level-api.md`, not here.**
+> This library returns *metadata* (durations, sections, notifies,
+> segments, curves). To see what the character actually looks like at
+> a given time — the visual pose — use the Vision-category renderers
+> on `UnrealBridgeLevelLibrary`:
+>
+> - `capture_anim_pose_grid(anim_path, time, mesh, views, ...)` — one
+>   pose at a specific time, multi-view PNG grid.
+> - `capture_anim_montage_timeline(anim_path, mesh, num_time_samples,
+>   views, ...)` — whole timeline as a grid (rows = time samples,
+>   columns = views), with optional bone overlay, ground grid, and
+>   root-trajectory polyline.
+>
+> They run in an isolated `FPreviewScene`, so the project's level
+> lighting / sky / actors do not appear in the frame. Read
+> `bridge-level-api.md` for full signatures.
+>
+> **Sampling rule (mandatory for "analyze this animation" requests):**
+> use **at least 16 time samples** in `capture_anim_montage_timeline`
+> so sub-0.2-second pose transitions don't get missed. Short montages
+> (<1s) can still use 16 — the cost is linear in samples, and under-
+> sampling hides impact frames / windup peaks that are the entire
+> point of reading the pose. Go higher (24-32) for long combat
+> montages where multiple strikes chain. **Do NOT** answer an
+> "analyze pose" / "analyze animation" question from metadata alone;
+> render the grid first, look at it, then correlate against metadata.
+
 ## State Machine Info
 
 ### get_anim_graph_info(anim_blueprint_path) -> list[FBridgeStateMachineInfo]
