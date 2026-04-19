@@ -23,6 +23,7 @@
 #include "K2Node_Self.h"
 #include "K2Node_CallDelegate.h"
 #include "K2Node_AddDelegate.h"
+#include "K2Node_BaseMCDelegate.h"
 #include "K2Node_RemoveDelegate.h"
 #include "K2Node_Message.h"
 #include "K2Node_Timeline.h"
@@ -6348,6 +6349,140 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
+	/** Post-exec-placement: co-locate CustomEvent subtrees with their Bind
+	 *  Event nodes. A K2Node_CustomEvent's delegate OUT-pin wired to a
+	 *  K2Node_AddDelegate's Event IN-pin means the event is the Bind's
+	 *  callback — humans author them as a visual cluster ("bind registers
+	 *  it, event handles it"). The layering pass above can't express this
+	 *  because CustomEvent is itself an exec root (Layer 0), so the algorithm
+	 *  separates it from the Bind by the full graph width.
+	 *
+	 *  For each such pair (E → B), translate E's entire exec subtree so E
+	 *  sits immediately below B at the same X, preserving subtree shape.
+	 *  The delegate wire becomes a short vertical; the handler exec chain
+	 *  continues rightward from E in its own swim lane.
+	 *
+	 *  Subtree membership uses the PrimaryExecPredIdx chain — node X belongs
+	 *  to E's subtree iff walking primary-pred from X reaches E. This
+	 *  naturally excludes shared join points (where PrimaryExecPredIdx
+	 *  picked a different root), so we don't yank nodes belonging to
+	 *  another event's primary flow. */
+	static void ClusterDelegateBoundEvents(TArray<FPALayoutNode>& Nodes,
+		const TMap<UEdGraphNode*, int32>& IndexOf,
+		int32 VSpace,
+		TArray<FString>& Warnings)
+	{
+		int32 ClusteredCount = 0;
+		// Track already-used target slots so stacking multiple events near
+		// the same Bind doesn't pile them at the same Y. Key = BindIdx,
+		// Value = next available Y below that Bind.
+		TMap<int32, int32> BindNextY;
+
+		for (int32 Ei = 0; Ei < Nodes.Num(); ++Ei)
+		{
+			FPALayoutNode& E = Nodes[Ei];
+			if (!E.Node || !E.bPlaced) continue;
+			UK2Node_CustomEvent* CE = Cast<UK2Node_CustomEvent>(E.Node);
+			if (!CE) continue;
+
+			// Find the (multicast) delegate OUT-pin. CustomEvents expose one.
+			UEdGraphPin* DelegatePin = nullptr;
+			for (UEdGraphPin* P : CE->Pins)
+			{
+				if (!P || P->bHidden) continue;
+				if (P->Direction != EGPD_Output) continue;
+				const FName Cat = P->PinType.PinCategory;
+				if (Cat == UEdGraphSchema_K2::PC_Delegate ||
+					Cat == UEdGraphSchema_K2::PC_MCDelegate)
+				{
+					DelegatePin = P;
+					break;
+				}
+			}
+			if (!DelegatePin || DelegatePin->LinkedTo.Num() == 0) continue;
+
+			// Prefer an AddDelegate consumer. Fall back to any node holding
+			// a delegate IN-pin — covers BaseMCDelegate variants used by
+			// Bind to Anim Finish / Bind to Dispatcher etc.
+			int32 Bi = INDEX_NONE;
+			for (UEdGraphPin* Linked : DelegatePin->LinkedTo)
+			{
+				if (!Linked) continue;
+				UEdGraphNode* Owner = Linked->GetOwningNode();
+				if (!Owner) continue;
+				const int32* BPtr = IndexOf.Find(Owner);
+				if (!BPtr) continue;
+				if (!Nodes[*BPtr].bPlaced) continue;
+				if (Owner->IsA<UK2Node_BaseMCDelegate>())
+				{
+					Bi = *BPtr;
+					break;
+				}
+			}
+			if (Bi == INDEX_NONE) continue;
+
+			// Build E's primary-pred-defined subtree. Walk pred chain; if
+			// it reaches E, include. Skip nodes whose chain reaches another
+			// exec root first (they belong to a different event's cluster).
+			TSet<int32> Subtree;
+			Subtree.Add(Ei);
+			for (int32 k = 0; k < Nodes.Num(); ++k)
+			{
+				if (k == Ei) continue;
+				if (!Nodes[k].bPlaced) continue;
+				int32 Cur = k;
+				int32 Iter = 0;
+				const int32 MaxIter = Nodes.Num() + 1;
+				while (Cur != INDEX_NONE && Iter < MaxIter)
+				{
+					if (Cur == Ei) { Subtree.Add(k); break; }
+					Cur = Nodes[Cur].PrimaryExecPredIdx;
+					++Iter;
+				}
+			}
+
+			// Safety: if the Bind itself fell into the subtree (a cyclic
+			// bind-then-invoke-back pattern), skip — translating would drag
+			// the Bind too.
+			if (Subtree.Contains(Bi)) continue;
+
+			// Target: under the Bind at the same X. If another event was
+			// already clustered under this Bind, stack this one below it.
+			const FPALayoutNode& B = Nodes[Bi];
+			const int32 BlockGap = VSpace * 2;
+			int32* NextYPtr = BindNextY.Find(Bi);
+			const int32 TargetY = NextYPtr ? *NextYPtr : (B.NewY + B.Height + BlockGap);
+			const int32 TargetX = B.NewX;
+			const int32 DeltaX = TargetX - E.NewX;
+			const int32 DeltaY = TargetY - E.NewY;
+			if (DeltaX == 0 && DeltaY == 0)
+			{
+				BindNextY.Add(Bi, TargetY + E.Height + BlockGap);
+				continue;
+			}
+
+			// Apply delta to the whole subtree. Compute post-translation
+			// bottom to seed the next sibling's Y.
+			int32 SubtreeMaxBottom = INT32_MIN;
+			for (int32 Idx : Subtree)
+			{
+				FPALayoutNode& LN = Nodes[Idx];
+				LN.NewX += DeltaX;
+				LN.NewY += DeltaY;
+				const int32 Bottom = LN.NewY + LN.Height;
+				if (Bottom > SubtreeMaxBottom) SubtreeMaxBottom = Bottom;
+			}
+			BindNextY.Add(Bi, SubtreeMaxBottom + BlockGap);
+			++ClusteredCount;
+		}
+		if (ClusteredCount > 0)
+		{
+			Warnings.Add(FString::Printf(
+				TEXT("pin_aligned: clustered %d delegate-bound CustomEvent subtree(s) with their Bind nodes"),
+				ClusteredCount));
+		}
+	}
+
 	/** Place pure nodes per-consumer: each producer sits `HSpace` px to the
 	 *  left of its primary consumer, with its own width (not the slot's max
 	 *  width). All nodes whose primary consumer shares an X naturally share
@@ -6853,6 +6988,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		}
 
 		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace, Cache, IndexOf);
+		ClusterDelegateBoundEvents(Nodes, IndexOf, VSpace, Result.Warnings);
 		PlaceDataProducersPerConsumer(Nodes, DataHSpace, VSpace, Cache);
 
 		// Compute current-layout bounds, then park anything still unplaced.
