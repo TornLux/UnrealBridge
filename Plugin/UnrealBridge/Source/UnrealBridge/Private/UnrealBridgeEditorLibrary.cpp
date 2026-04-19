@@ -65,6 +65,14 @@
 #include "Misc/FileHelper.h"
 #include "UnrealClient.h"
 #include "Engine/GameViewportClient.h"
+#include "Engine/SceneCapture2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "TextureResource.h"
+#include "RenderingThread.h"
+#include "PixelFormat.h"
+#include "HitProxies.h"
+#include "EngineUtils.h"
 #if PLATFORM_WINDOWS
 #include "ILiveCodingModule.h"
 #endif
@@ -1030,6 +1038,533 @@ FBridgeScreenshotResult UUnrealBridgeEditorLibrary::CaptureActiveViewport(const 
 
 	R.bSuccess = true;
 	return R;
+}
+
+// ─── GBuffer channel capture ───────────────────────────────
+
+namespace BridgeEditorImpl
+{
+	struct FChannelSpec
+	{
+		ESceneCaptureSource Source;
+		bool bFloatRT;
+		bool bIsDepth;
+		bool bDisablePostProcess;  // GBuffer channels look wrong after tonemap
+	};
+
+	bool ResolveChannel(const FString& Channel, FChannelSpec& Out)
+	{
+		if (Channel.Equals(TEXT("SceneColor"), ESearchCase::IgnoreCase))
+		{
+			Out = { ESceneCaptureSource::SCS_FinalColorLDR, false, false, false };
+			return true;
+		}
+		if (Channel.Equals(TEXT("SceneColorHDR"), ESearchCase::IgnoreCase))
+		{
+			Out = { ESceneCaptureSource::SCS_SceneColorHDR, true, false, false };
+			return true;
+		}
+		if (Channel.Equals(TEXT("Depth"), ESearchCase::IgnoreCase))
+		{
+			Out = { ESceneCaptureSource::SCS_SceneDepth, true, true, true };
+			return true;
+		}
+		if (Channel.Equals(TEXT("DeviceDepth"), ESearchCase::IgnoreCase))
+		{
+			Out = { ESceneCaptureSource::SCS_DeviceDepth, true, true, true };
+			return true;
+		}
+		if (Channel.Equals(TEXT("Normal"), ESearchCase::IgnoreCase))
+		{
+			Out = { ESceneCaptureSource::SCS_Normal, false, false, true };
+			return true;
+		}
+		if (Channel.Equals(TEXT("BaseColor"), ESearchCase::IgnoreCase))
+		{
+			Out = { ESceneCaptureSource::SCS_BaseColor, false, false, true };
+			return true;
+		}
+		return false;
+	}
+
+	UWorld* GetCaptureWorld()
+	{
+		if (!GEditor)
+		{
+			return nullptr;
+		}
+		if (GEditor->PlayWorld)
+		{
+			return GEditor->PlayWorld;
+		}
+		return GEditor->GetEditorWorldContext().World();
+	}
+}
+
+FBridgeChannelCaptureResult UUnrealBridgeEditorLibrary::CaptureViewportChannel(
+	const FString& Channel,
+	const FString& OutFilePath,
+	int32 Width,
+	int32 Height,
+	float MaxDepthClamp,
+	bool bIncludeBase64)
+{
+	FBridgeChannelCaptureResult R;
+	R.Channel = Channel;
+
+	BridgeEditorImpl::FChannelSpec Spec;
+	if (!BridgeEditorImpl::ResolveChannel(Channel, Spec))
+	{
+		R.Error = FString::Printf(
+			TEXT("Unknown channel '%s'. Valid: SceneColor, SceneColorHDR, Depth, DeviceDepth, Normal, BaseColor."),
+			*Channel);
+		return R;
+	}
+
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC || !VC->Viewport)
+	{
+		R.Error = TEXT("No active level editor viewport.");
+		return R;
+	}
+
+	const FVector CamLoc = VC->GetViewLocation();
+	const FRotator CamRot = VC->GetViewRotation();
+	const float FOV = VC->ViewFOV > 0.f ? VC->ViewFOV : 90.f;
+
+	const FIntPoint VpSize = VC->Viewport->GetSizeXY();
+	const int32 W = Width > 0 ? Width : VpSize.X;
+	const int32 H = Height > 0 ? Height : VpSize.Y;
+	if (W <= 0 || H <= 0)
+	{
+		R.Error = FString::Printf(TEXT("Invalid resolution %dx%d."), W, H);
+		return R;
+	}
+
+	if (OutFilePath.IsEmpty() && !bIncludeBase64)
+	{
+		R.Error = TEXT("Either OutFilePath must be non-empty or bIncludeBase64 must be true.");
+		return R;
+	}
+
+	UWorld* World = BridgeEditorImpl::GetCaptureWorld();
+	if (!World)
+	{
+		R.Error = TEXT("No capture world available.");
+		return R;
+	}
+
+	// 1) Spawn transient SceneCapture2D at the viewport pose.
+	FActorSpawnParameters SpawnInfo;
+	SpawnInfo.ObjectFlags |= RF_Transient;
+	SpawnInfo.Name = MakeUniqueObjectName(
+		World, ASceneCapture2D::StaticClass(), TEXT("BridgeChannelCaptureCam"));
+	ASceneCapture2D* CaptureActor = World->SpawnActor<ASceneCapture2D>(CamLoc, CamRot, SpawnInfo);
+	if (!CaptureActor || !CaptureActor->GetCaptureComponent2D())
+	{
+		R.Error = TEXT("Failed to spawn ASceneCapture2D.");
+		return R;
+	}
+
+	// 2) Configure the render target.
+	UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(
+		GetTransientPackage(),
+		MakeUniqueObjectName(GetTransientPackage(),
+			UTextureRenderTarget2D::StaticClass(), TEXT("BridgeChannelCaptureRT")));
+	RT->ClearColor = FLinearColor::Black;
+	RT->bAutoGenerateMips = false;
+	const EPixelFormat Fmt = Spec.bFloatRT ? PF_FloatRGBA : PF_B8G8R8A8;
+	RT->InitCustomFormat(W, H, Fmt, /*bForceLinearGamma=*/ Spec.bFloatRT);
+	RT->UpdateResourceImmediate(true);
+
+	// 3) Configure the scene capture component.
+	USceneCaptureComponent2D* SCC = CaptureActor->GetCaptureComponent2D();
+	SCC->ProjectionType = ECameraProjectionMode::Perspective;
+	SCC->FOVAngle = FOV;
+	SCC->CaptureSource = Spec.Source;
+	SCC->bCaptureEveryFrame = false;
+	SCC->bCaptureOnMovement = false;
+	SCC->TextureTarget = RT;
+	if (Spec.bDisablePostProcess)
+	{
+		SCC->ShowFlags.SetPostProcessing(false);
+		SCC->ShowFlags.SetTonemapper(false);
+		SCC->ShowFlags.SetEyeAdaptation(false);
+		SCC->ShowFlags.SetMotionBlur(false);
+		SCC->ShowFlags.SetBloom(false);
+		SCC->ShowFlags.SetAntiAliasing(false);
+	}
+
+	// 4) Render + flush so ReadPixels sees the result.
+	SCC->CaptureScene();
+	FlushRenderingCommands();
+
+	FTextureRenderTargetResource* Res = RT->GameThread_GetRenderTargetResource();
+	if (!Res)
+	{
+		CaptureActor->Destroy();
+		R.Error = TEXT("GameThread_GetRenderTargetResource returned null.");
+		return R;
+	}
+
+	// 5) Encode per channel family.
+	TArray64<uint8> Compressed;
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+
+	if (Spec.bIsDepth)
+	{
+		// Read float pixels — depth value lives in the R channel.
+		TArray<FLinearColor> LinearPixels;
+		FReadSurfaceDataFlags ReadFlags(RCM_MinMax);
+		ReadFlags.SetLinearToGamma(false);
+		if (!Res->ReadLinearColorPixels(LinearPixels, ReadFlags) || LinearPixels.Num() != W * H)
+		{
+			CaptureActor->Destroy();
+			R.Error = TEXT("ReadLinearColorPixels (depth) failed or wrong size.");
+			return R;
+		}
+
+		// Optional pre-clamp: sky pixels come back as fp16 ∞ (~65504),
+		// and without clamping they eat ~99% of the 16-bit PNG range.
+		// Clamping to a scene-sized ceiling (e.g. 10000 cm = 100 m) keeps
+		// the useful foreground range resolvable.
+		const bool bClamp = (MaxDepthClamp > 0.f);
+
+		float DMin = FLT_MAX;
+		float DMax = -FLT_MAX;
+		for (const FLinearColor& C : LinearPixels)
+		{
+			float D = C.R;
+			if (!FMath::IsFinite(D))
+			{
+				continue;
+			}
+			if (bClamp && D > MaxDepthClamp)
+			{
+				D = MaxDepthClamp;
+			}
+			DMin = FMath::Min(DMin, D);
+			DMax = FMath::Max(DMax, D);
+		}
+		if (DMin == FLT_MAX) { DMin = 0.f; DMax = 0.f; }
+		R.DepthMin = DMin;
+		R.DepthMax = DMax;
+
+		// Map [DMin, DMax] → [0, 65535]. Flat depth (all pixels equal)
+		// degenerates to all-zero PNG, caller sees DepthMin == DepthMax.
+		const float Range = FMath::Max(DMax - DMin, 1e-6f);
+		TArray<uint16> DepthPixels;
+		DepthPixels.SetNumUninitialized(W * H);
+		for (int32 i = 0; i < W * H; ++i)
+		{
+			float D = LinearPixels[i].R;
+			if (bClamp && D > MaxDepthClamp)
+			{
+				D = MaxDepthClamp;
+			}
+			const float NormD = FMath::Clamp((D - DMin) / Range, 0.f, 1.f);
+			DepthPixels[i] = (uint16)FMath::RoundToInt(NormD * 65535.f);
+		}
+		// (No vertical flip needed — FTextureRenderTargetResource::ReadLinearColorPixels
+		// already returns rows top-down, which is what PNG expects.
+		// Verified 2026-04-20 by A/B comparison against FViewport::ReadPixels
+		// at the same pose.)
+
+		TSharedPtr<IImageWrapper> PNG = IWM.CreateImageWrapper(EImageFormat::PNG);
+		if (!PNG.IsValid() ||
+			!PNG->SetRaw(DepthPixels.GetData(), DepthPixels.Num() * sizeof(uint16),
+				W, H, ERGBFormat::Gray, 16))
+		{
+			CaptureActor->Destroy();
+			R.Error = TEXT("PNG wrapper setup failed (16-bit depth).");
+			return R;
+		}
+		Compressed = PNG->GetCompressed();
+		R.Format = TEXT("PNG16");
+	}
+	else if (Spec.bFloatRT)
+	{
+		// HDR color — quantize to 8-bit BGRA for now. A future pass could
+		// emit EXR when OutFilePath ends with .exr; PNG keeps payload small.
+		TArray<FLinearColor> LinearPixels;
+		FReadSurfaceDataFlags ReadFlags(RCM_MinMax);
+		ReadFlags.SetLinearToGamma(false);
+		if (!Res->ReadLinearColorPixels(LinearPixels, ReadFlags) || LinearPixels.Num() != W * H)
+		{
+			CaptureActor->Destroy();
+			R.Error = TEXT("ReadLinearColorPixels (HDR) failed or wrong size.");
+			return R;
+		}
+		TArray<FColor> Pixels;
+		Pixels.SetNumUninitialized(W * H);
+		for (int32 i = 0; i < W * H; ++i)
+		{
+			Pixels[i] = LinearPixels[i].ToFColor(/*bSRGB=*/ true);
+			Pixels[i].A = 255;
+		}
+
+		TSharedPtr<IImageWrapper> PNG = IWM.CreateImageWrapper(EImageFormat::PNG);
+		if (!PNG.IsValid() ||
+			!PNG->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor),
+				W, H, ERGBFormat::BGRA, 8))
+		{
+			CaptureActor->Destroy();
+			R.Error = TEXT("PNG wrapper setup failed (HDR).");
+			return R;
+		}
+		Compressed = PNG->GetCompressed();
+		R.Format = TEXT("PNG");
+	}
+	else
+	{
+		// 8-bit BGRA readback — SceneColor / Normal / BaseColor.
+		TArray<FColor> Pixels;
+		FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
+		ReadFlags.SetLinearToGamma(false);
+		if (!Res->ReadPixels(Pixels, ReadFlags) || Pixels.Num() != W * H)
+		{
+			CaptureActor->Destroy();
+			R.Error = TEXT("ReadPixels failed or wrong size.");
+			return R;
+		}
+		for (FColor& C : Pixels)
+		{
+			C.A = 255;
+		}
+
+		TSharedPtr<IImageWrapper> PNG = IWM.CreateImageWrapper(EImageFormat::PNG);
+		if (!PNG.IsValid() ||
+			!PNG->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor),
+				W, H, ERGBFormat::BGRA, 8))
+		{
+			CaptureActor->Destroy();
+			R.Error = TEXT("PNG wrapper setup failed (8-bit).");
+			return R;
+		}
+		Compressed = PNG->GetCompressed();
+		R.Format = TEXT("PNG");
+	}
+
+	// 6) Write file + base64.
+	R.Width = W;
+	R.Height = H;
+
+	if (!OutFilePath.IsEmpty())
+	{
+		FString Abs = FPaths::ConvertRelativePathToFull(OutFilePath);
+		const FString Dir = FPaths::GetPath(Abs);
+		if (!Dir.IsEmpty())
+		{
+			IFileManager::Get().MakeDirectory(*Dir, /*Tree=*/true);
+		}
+		if (!FFileHelper::SaveArrayToFile(Compressed, *Abs))
+		{
+			CaptureActor->Destroy();
+			R.Error = FString::Printf(TEXT("Failed to write PNG to '%s'."), *Abs);
+			return R;
+		}
+		R.FilePath = Abs;
+	}
+
+	if (bIncludeBase64)
+	{
+		if (Compressed.Num() > (int64)MAX_int32)
+		{
+			CaptureActor->Destroy();
+			R.Error = TEXT("Compressed PNG too large to base64-encode.");
+			return R;
+		}
+		R.Base64 = FBase64::Encode(Compressed.GetData(), (uint32)Compressed.Num());
+	}
+
+	// 7) Cleanup.
+	CaptureActor->Destroy();
+
+	R.bSuccess = true;
+	return R;
+}
+
+// ─── HitProxy viewport → actor-ID ──────────────────────────
+
+namespace BridgeEditorImpl
+{
+	// Resolve HHitProxy → AActor* if it's an HActor-style proxy. Returns
+	// nullptr for non-actor hit proxies (gizmos, widgets, etc.).
+	AActor* ResolveHitProxyActor(HHitProxy* Proxy)
+	{
+		if (!Proxy)
+		{
+			return nullptr;
+		}
+		if (HActor* AP = HitProxyCast<HActor>(Proxy))
+		{
+			return AP->Actor;
+		}
+		return nullptr;
+	}
+
+	// Deterministic "index → distinct color" so the PNG is readable.
+	// Low indices get high-contrast primary/secondary colors; higher
+	// indices fall back to a hashed palette.
+	FColor ColorForActorIndex(int32 Index)
+	{
+		if (Index <= 0)
+		{
+			return FColor(0, 0, 0, 255);  // 0 = background (no actor)
+		}
+		// Golden-angle hue stepping gives good visual separation.
+		const float H = FMath::Fmod(Index * 137.508f, 360.0f);
+		const FLinearColor HSV(H, 0.85f, 0.95f);
+		return HSV.HSVToLinearRGB().ToFColor(/*bSRGB=*/ true);
+	}
+}
+
+FBridgeScreenshotResult UUnrealBridgeEditorLibrary::CaptureViewportHitProxyMap(
+	const FString& OutFilePath, bool bIncludeBase64)
+{
+	FBridgeScreenshotResult R;
+	R.Source = TEXT("HitProxy");
+
+	if (GEditor && GEditor->PlayWorld)
+	{
+		R.Error = TEXT("HitProxy map is not available while PIE is active.");
+		return R;
+	}
+
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC || !VC->Viewport)
+	{
+		R.Error = TEXT("No active level editor viewport.");
+		return R;
+	}
+
+	// Force a draw so the hit proxy cache is fresh.
+	VC->Viewport->Draw();
+
+	const FIntPoint Size = VC->Viewport->GetSizeXY();
+	if (Size.X <= 0 || Size.Y <= 0)
+	{
+		R.Error = FString::Printf(TEXT("Viewport has zero size (%dx%d)."), Size.X, Size.Y);
+		return R;
+	}
+
+	if (OutFilePath.IsEmpty() && !bIncludeBase64)
+	{
+		R.Error = TEXT("Either OutFilePath must be non-empty or bIncludeBase64 must be true.");
+		return R;
+	}
+
+	TArray<HHitProxy*> HitProxies;
+	const FIntRect Rect(0, 0, Size.X, Size.Y);
+	VC->Viewport->GetHitProxyMap(Rect, HitProxies);
+	if (HitProxies.Num() != Size.X * Size.Y)
+	{
+		R.Error = FString::Printf(
+			TEXT("GetHitProxyMap returned %d entries, expected %d."),
+			HitProxies.Num(), Size.X * Size.Y);
+		return R;
+	}
+
+	// Assign a stable small index per unique actor this frame.
+	TMap<AActor*, int32> ActorToIndex;
+	TArray<FColor> Pixels;
+	Pixels.SetNumUninitialized(HitProxies.Num());
+	for (int32 i = 0; i < HitProxies.Num(); ++i)
+	{
+		AActor* Actor = BridgeEditorImpl::ResolveHitProxyActor(HitProxies[i]);
+		int32 Idx = 0;
+		if (Actor)
+		{
+			int32* Found = ActorToIndex.Find(Actor);
+			if (Found)
+			{
+				Idx = *Found;
+			}
+			else
+			{
+				Idx = ActorToIndex.Num() + 1;  // reserve 0 for "no actor"
+				ActorToIndex.Add(Actor, Idx);
+			}
+		}
+		Pixels[i] = BridgeEditorImpl::ColorForActorIndex(Idx);
+	}
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+	TSharedPtr<IImageWrapper> PNG = IWM.CreateImageWrapper(EImageFormat::PNG);
+	if (!PNG.IsValid() ||
+		!PNG->SetRaw(Pixels.GetData(), Pixels.Num() * sizeof(FColor),
+			Size.X, Size.Y, ERGBFormat::BGRA, 8))
+	{
+		R.Error = TEXT("PNG wrapper setup failed (hit-proxy map).");
+		return R;
+	}
+	const TArray64<uint8>& Compressed = PNG->GetCompressed();
+	if (Compressed.Num() == 0)
+	{
+		R.Error = TEXT("PNG encoding produced no bytes.");
+		return R;
+	}
+
+	R.Width = Size.X;
+	R.Height = Size.Y;
+
+	if (!OutFilePath.IsEmpty())
+	{
+		FString Abs = FPaths::ConvertRelativePathToFull(OutFilePath);
+		const FString Dir = FPaths::GetPath(Abs);
+		if (!Dir.IsEmpty())
+		{
+			IFileManager::Get().MakeDirectory(*Dir, /*Tree=*/true);
+		}
+		if (!FFileHelper::SaveArrayToFile(Compressed, *Abs))
+		{
+			R.Error = FString::Printf(TEXT("Failed to write PNG to '%s'."), *Abs);
+			return R;
+		}
+		R.FilePath = Abs;
+	}
+
+	if (bIncludeBase64)
+	{
+		if (Compressed.Num() > (int64)MAX_int32)
+		{
+			R.Error = TEXT("Compressed PNG too large to base64-encode.");
+			return R;
+		}
+		R.Base64 = FBase64::Encode(Compressed.GetData(), (uint32)Compressed.Num());
+	}
+
+	R.bSuccess = true;
+	return R;
+}
+
+FString UUnrealBridgeEditorLibrary::GetActorUnderViewportPixel(int32 X, int32 Y)
+{
+	if (GEditor && GEditor->PlayWorld)
+	{
+		return FString();
+	}
+	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+	if (!VC || !VC->Viewport)
+	{
+		return FString();
+	}
+	const FIntPoint Size = VC->Viewport->GetSizeXY();
+	if (X < 0 || Y < 0 || X >= Size.X || Y >= Size.Y)
+	{
+		return FString();
+	}
+
+	// Ensure hit proxy cache is current.
+	VC->Viewport->Draw();
+
+	HHitProxy* Proxy = VC->Viewport->GetHitProxy(X, Y);
+	AActor* Actor = BridgeEditorImpl::ResolveHitProxyActor(Proxy);
+	if (!Actor)
+	{
+		return FString();
+	}
+	return Actor->GetPathName();
 }
 
 // ─── Live Coding ───────────────────────────────────────────

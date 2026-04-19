@@ -140,6 +140,79 @@ print(r.success, r.source, r.width, r.height, r.file_path)
 
 Tip: when the caller is Claude Code wanting to "see" the viewport, pass a disk path and then `Read` the PNG — cheaper and more reliable than round-tripping the bytes through base64.
 
+### capture_viewport_channel(channel, out_file_path, width, height, max_depth_clamp, b_include_base64) -> FBridgeChannelCaptureResult
+
+Synchronous GBuffer channel capture at the active editor viewport's pose. Unlike `capture_active_viewport` (final color only), this goes through a transient `ASceneCapture2D` + `UTextureRenderTarget2D` so you can read individual GBuffer channels — depth, world normals, albedo — for quantitative analysis.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `channel` | str | Case-insensitive. Valid: `SceneColor` / `SceneColorHDR` / `Depth` / `DeviceDepth` / `Normal` / `BaseColor`. |
+| `out_file_path` | str | Absolute path (parent dirs auto-created). Pass `""` to skip disk. |
+| `width` / `height` | int | Capture resolution. `0` = viewport native size. |
+| `max_depth_clamp` | float | **Depth-only**: clamp values to this max before mapping to 16-bit PNG. `0.0` = no clamp (sky saturates at fp16 ∞ ≈ 65504 and squashes foreground). Typical: `10000` (100 m) for outdoor scenes. Ignored for non-depth channels. |
+| `b_include_base64` | bool | Return compressed bytes as base64. |
+
+Channels explained:
+
+| Channel | Output | Notes |
+|---------|--------|-------|
+| `SceneColor` | 8-bit RGB PNG | Final LDR, post-processed. For a perfect viewport match use `capture_active_viewport` — this path uses SceneCapture defaults which diverge from editor viewport post-process. |
+| `SceneColorHDR` | 8-bit RGB PNG (quantized) | Pre-tonemap HDR, tonemapped via `FLinearColor::ToFColor(true)`. For genuine HDR export, add an `.exr` extension handler (TODO). |
+| `Depth` | 16-bit grayscale PNG | Linear world-space depth in cm. Pixel value in PNG = `((world_depth - DepthMin) / (DepthMax - DepthMin)) * 65535` — reconstruct via the `depth_min` / `depth_max` fields. Sky = fp16 ∞ (~65504), use `max_depth_clamp` to avoid squashing the foreground. |
+| `DeviceDepth` | 16-bit grayscale PNG | Non-linear device Z in `[0, 1]`. Preserves perspective distribution. Good for LOD / occlusion reasoning without needing projection matrices. |
+| `Normal` | 8-bit RGB PNG | World-space surface normal packed as `N * 0.5 + 0.5`. Reconstruct: `world_N = rgb * 2 - 1`. Sky / no-GBuffer pixels = `(0,0,0)`. |
+| `BaseColor` | 8-bit RGB PNG | Albedo / GBuffer base color, pre-lighting. Useful for "what color is this surface regardless of light". |
+
+Result fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | |
+| `file_path` | str | Absolute path written. |
+| `width` / `height` | int | |
+| `channel` | str | Echoes request. |
+| `format` | str | `"PNG"` (8-bit) / `"PNG16"` (16-bit grayscale depth). |
+| `depth_min` / `depth_max` | float | Depth channels only — linear range the PNG was normalized against. Zero for non-depth. |
+| `base64` | str | Base64 PNG (if requested). |
+| `error` | str | |
+
+```python
+# Foreground-scene depth with sky clipped to "far":
+r = unreal.UnrealBridgeEditorLibrary.capture_viewport_channel(
+    'Depth', '<absolute-path>/depth.png', 0, 0, 10000.0, False)
+print(r.depth_min, r.depth_max)  # e.g. 212.0 10000.0
+
+# World normal, native viewport resolution:
+r = unreal.UnrealBridgeEditorLibrary.capture_viewport_channel(
+    'Normal', '<absolute-path>/normal.png', 0, 0, 0.0, False)
+```
+
+**Gotcha — SceneCapture readback is top-down (verified UE 5.7, 2026-04-20).** Unlike the `FLevelEditorViewportClient::Viewport::ReadPixels` path in `UnrealBridgeLevelLibrary::CaptureSceneToPng`, the render-target resource ReadPixels / ReadLinearColorPixels here returns rows top-down already — no vertical flip needed. If you adapt this pattern, do NOT add an extra flip or the output lands upside-down.
+
+### capture_viewport_hit_proxy_map(out_file_path, b_include_base64) -> FBridgeScreenshotResult
+
+Per-pixel actor-ID pass. Uses the **editor viewport's HitProxy cache** (the same mechanism click-to-select uses), so every pixel resolves to an exact `AActor*`. Distinct actors get distinct colors (deterministic via golden-angle hue stepping). Black pixels = no actor (sky / empty).
+
+**Editor-only** — returns `success=False` with an error when PIE is active. For runtime object-ID during PIE you'd need a CustomStencil-based approach (deferred).
+
+```python
+r = unreal.UnrealBridgeEditorLibrary.capture_viewport_hit_proxy_map(
+    '<absolute-path>/idmap.png', False)
+```
+
+Mapping from color → actor is **not** returned directly (color is a hash of the per-frame index). Use `get_actor_under_viewport_pixel` to look up any specific pixel.
+
+### get_actor_under_viewport_pixel(x, y) -> str
+
+Return the `AActor` path name rendered at pixel `(x, y)` in the active editor viewport. Top-left origin, matching screenshot / hit-proxy orientation. Returns `""` for empty pixels, PIE-active state, or out-of-bounds coords.
+
+```python
+actor = unreal.UnrealBridgeEditorLibrary.get_actor_under_viewport_pixel(1236, 565)
+# e.g. "/Game/Levels/DefaultLevel.DefaultLevel:PersistentLevel.LevelBlock_C_1"
+```
+
+Combine with `capture_viewport_hit_proxy_map`: agent sees which actors segment the frame, picks one by spatial reasoning, then calls `get_actor_under_viewport_pixel` at its centroid to retrieve the path.
+
 ### set_viewport_realtime(realtime) -> bool
 
 Toggle realtime rendering for the active level viewport. Returns False if no viewport.

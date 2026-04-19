@@ -117,6 +117,56 @@ struct FBridgeScreenshotResult
 	FString Error;
 };
 
+// ─── GBuffer channel capture ────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeChannelCaptureResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bSuccess = false;
+
+	/** Absolute path written (empty when OutFilePath was empty). */
+	UPROPERTY(BlueprintReadOnly)
+	FString FilePath;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 Width = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 Height = 0;
+
+	/** Echoes the requested channel name for round-trip confidence. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Channel;
+
+	/** Pixel encoding: "PNG" (8-bit RGB/A) | "PNG16" (16-bit grayscale, depth) | "EXR" (HDR float). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Format;
+
+	/**
+	 * For Depth / DeviceDepth channels: the minimum pixel value observed
+	 * (linear world cm for Depth, 0..1 for DeviceDepth). Pixels in the
+	 * PNG16 were remapped [DepthMin, DepthMax] → [0, 65535], so callers
+	 * reconstruct linear depth as:
+	 *   depth = DepthMin + (pixel / 65535.0) * (DepthMax - DepthMin)
+	 * Zero for non-depth channels.
+	 */
+	UPROPERTY(BlueprintReadOnly)
+	float DepthMin = 0.f;
+
+	UPROPERTY(BlueprintReadOnly)
+	float DepthMax = 0.f;
+
+	/** Base64-encoded compressed bytes (empty unless bIncludeBase64 = true). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Base64;
+
+	/** Failure reason. Empty on success. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+};
+
 // ─── Live Coding compile ───────────────────────────────────
 USTRUCT(BlueprintType)
 struct FBridgeLiveCodingResult
@@ -379,6 +429,86 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FBridgeScreenshotResult CaptureActiveViewport(const FString& OutFilePath, bool bIncludeBase64);
+
+	/**
+	 * Render a single GBuffer channel of the active viewport via a
+	 * transient ASceneCapture2D at the same pose + FOV. Agents use this
+	 * to go from "can see the viewport" to "can measure it" — e.g.
+	 * world-space depth per pixel, surface normals, albedo-only views.
+	 *
+	 * Supported channels (case-insensitive):
+	 *   "SceneColor"    — final LDR post-processed color (RGB, 8-bit PNG)
+	 *   "SceneColorHDR" — HDR pre-tonemap color (RGB, 8-bit PNG, quantized)
+	 *   "Depth"         — linear world-space depth in cm (R channel, 16-bit
+	 *                     grayscale PNG; DepthMin/DepthMax in result for
+	 *                     un-normalization)
+	 *   "DeviceDepth"   — non-linear device Z in [0,1] (R channel, 16-bit
+	 *                     grayscale PNG; DepthMin/DepthMax returned)
+	 *   "Normal"        — world-space surface normal (N * 0.5 + 0.5 packed
+	 *                     into RGB, 8-bit PNG)
+	 *   "BaseColor"     — albedo / GBuffer base color, pre-lighting
+	 *                     (RGB, 8-bit PNG)
+	 *
+	 * @param Channel         One of the strings above.
+	 * @param OutFilePath     Absolute path to write. Pass "" to skip disk
+	 *                        (requires bIncludeBase64 = true).
+	 * @param Width/Height    Pixel resolution. Pass 0 to use the viewport's
+	 *                        native size.
+	 * @param MaxDepthClamp   For Depth / DeviceDepth only: clamp pixel values
+	 *                        to this max before normalizing to 16-bit. 0 =
+	 *                        no clamp (sky pixels will saturate at fp16 ∞
+	 *                        ≈ 65504 and squash the useful ground range).
+	 *                        Typical value: 10000 (100 m) for outdoor scenes
+	 *                        where anything past 100 m should just read as
+	 *                        "far". Ignored for non-depth channels.
+	 * @param bIncludeBase64  Return compressed bytes in Base64 (adds ~33%).
+	 *
+	 * Runs on the game thread — spawn + CaptureScene + FlushRenderingCommands
+	 * + readback + cleanup. Typical cost 50-300 ms depending on resolution.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FBridgeChannelCaptureResult CaptureViewportChannel(
+		const FString& Channel,
+		const FString& OutFilePath,
+		int32 Width,
+		int32 Height,
+		float MaxDepthClamp,
+		bool bIncludeBase64);
+
+	/**
+	 * Capture the editor viewport's HitProxy map — a per-pixel actor-ID
+	 * image. Unlike SceneCapture GBuffer channels, this uses the editor's
+	 * existing hit-test infrastructure (same mechanism click-to-select
+	 * uses), so every pixel maps back to the exact AActor rendered there.
+	 *
+	 * Editor-only — there is no HitProxy path during PIE. Returns bSuccess
+	 * = false when called while PIE is active.
+	 *
+	 * Output PNG is 8-bit RGBA where each unique color encodes a distinct
+	 * actor ID (stable within a single capture, NOT stable across captures).
+	 * The Base64 payload, when requested, is the PNG; the actor ↔ color
+	 * mapping is returned as a JSON string in the Error field on success
+	 * (re-purposed since there's no schema slot for it — see extended
+	 * result below if we ever formalize). Simple use case: call this, read
+	 * any pixel color, look up in the mapping to know "what's under that
+	 * pixel".
+	 *
+	 * For the initial version we write just the PNG; caller gets actor
+	 * info by querying `get_actor_under_viewport_pixel(x, y)` separately.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FBridgeScreenshotResult CaptureViewportHitProxyMap(
+		const FString& OutFilePath,
+		bool bIncludeBase64);
+
+	/**
+	 * Return the actor currently rendered at the given viewport pixel (x, y
+	 * measured from top-left in pixel coordinates, matching screenshot
+	 * orientation). Uses the editor viewport's HitProxy cache. Returns
+	 * empty string when the pixel is empty sky or PIE is active.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString GetActorUnderViewportPixel(int32 X, int32 Y);
 
 	// ─── Live Coding (hot reload) ────────────────────────────
 	//
