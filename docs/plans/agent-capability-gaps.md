@@ -237,6 +237,7 @@ Houdini 风格的 placement 原语，让 agent 能批量组装关卡而不是逐
 
 ## 相关历史文档
 
+- **`docs/plans/agent-capability-gaps-extended.md`**（2026-04-20，扩展模块 B1-B12，41 项）— 本文件之外另一批独立成类的模块：空间查询、UMG 运行时、事务沙箱、Headless / CI、代码生成、动画分析、关卡指标、NNE 集成、构建健康检查、Slate 扩展、perf 分解、replication 内视。与本文件互补。
 - `docs/plans/blueprint-capability-roadmap.md`（2026-04-19 版，BP 读写视角，比本文件窄）
 - `docs/plans/anim-pose-capture.md`（pose 捕获特性 — 本文件 A1-#2 的前身）
 - `docs/plans/reactive-handlers.md`（reactive 事件框架 — 本文件 A3-#11 的同宗扩展）
