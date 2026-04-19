@@ -2205,10 +2205,25 @@ namespace BridgeLevelImpl
 		if (!SkelComp) return;
 		const TArray<FTransform>& CS = SkelComp->GetComponentSpaceTransforms();
 		const FTransform CompToWorld = SkelComp->GetComponentTransform();
-		Out.Reserve(Out.Num() + CS.Num());
+		Out.Reserve(Out.Num() + CS.Num() + 8);
 		for (const FTransform& T : CS)
 		{
 			Out.Add(CompToWorld.TransformPosition(T.GetLocation()));
+		}
+
+		// Bone joints only capture the skeleton's origin points — the rendered
+		// mesh silhouette extends past them (hair, hands, feet, hats, weapons,
+		// cloth). Append the 8 corners of the posed mesh's world-space
+		// bounding box so framing covers the actual visible extent, not just
+		// the joint cloud.
+		const FBoxSphereBounds Bounds = SkelComp->CalcBounds(CompToWorld);
+		const FVector C = Bounds.Origin;
+		const FVector E = Bounds.BoxExtent;
+		for (int32 sx = -1; sx <= 1; sx += 2)
+		for (int32 sy = -1; sy <= 1; sy += 2)
+		for (int32 sz = -1; sz <= 1; sz += 2)
+		{
+			Out.Add(C + FVector(sx * E.X, sy * E.Y, sz * E.Z));
 		}
 	}
 
@@ -2430,7 +2445,7 @@ namespace BridgeLevelImpl
 			const float HalfV = 0.5f * (MaxV - MinV);
 			const float DistU = HalfU / FMath::Max(0.001f, TanH);
 			const float DistV = HalfV / FMath::Max(0.001f, TanV);
-			const float ReqDist = FMath::Max(50.0f, FMath::Max(DistU, DistV) * 1.15f);
+			const float ReqDist = FMath::Max(50.0f, FMath::Max(DistU, DistV) * 1.20f);
 
 			States[i].Target = Target;
 			States[i].Forward = Forward;
