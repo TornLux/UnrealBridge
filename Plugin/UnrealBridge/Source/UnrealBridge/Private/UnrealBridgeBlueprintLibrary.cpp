@@ -5732,6 +5732,7 @@ namespace BridgeBPPinAlignedImpl
 		int32 Width = MinNodeWidth;
 		int32 Height = MinNodeHeight;
 		int32 Layer = -1;         // exec layer; -1 until assigned
+		int32 RowId = -1;         // row / swim-lane id; -1 until assigned
 		int32 NewX = 0;
 		int32 NewY = 0;
 		bool bHasExecPins = false;
@@ -5951,6 +5952,77 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
+	/** Group exec nodes into rows (swim lanes) seeded at layer-0 exec roots.
+	 *  Each row owns the exec subtree reachable from its root via
+	 *  ExecSuccessors. Data nodes inherit the RowId of their primary
+	 *  consumer (walking PrimaryConsumerIdx until an exec node is hit).
+	 *
+	 *  Used by the per-row column-width pass: each row computes its own
+	 *  LayerMaxW so a wide node in row A doesn't inflate the X grid of
+	 *  row B. Rows are ordered by original root Y so the final vertical
+	 *  band order matches authored intent. Returns the row count. */
+	static int32 AssignRows(TArray<FPALayoutNode>& Nodes)
+	{
+		// Collect exec roots (layer 0). Disconnected exec islands (cycles)
+		// seed additional rows in a second pass.
+		TArray<int32> Roots;
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			if (Nodes[i].bHasExecPins && Nodes[i].Layer == 0) Roots.Add(i);
+		}
+		Roots.Sort([&](int32 A, int32 B) {
+			return Nodes[A].Node->NodePosY < Nodes[B].Node->NodePosY;
+		});
+
+		int32 NextRowId = 0;
+		auto FloodRow = [&](int32 Seed)
+		{
+			if (Nodes[Seed].RowId != -1) return;
+			TArray<int32> Queue; Queue.Add(Seed);
+			Nodes[Seed].RowId = NextRowId;
+			while (Queue.Num() > 0)
+			{
+				const int32 Cur = Queue.Pop();
+				for (int32 Succ : Nodes[Cur].ExecSuccessors)
+				{
+					if (Nodes[Succ].RowId != -1) continue;
+					Nodes[Succ].RowId = NextRowId;
+					Queue.Add(Succ);
+				}
+			}
+			++NextRowId;
+		};
+
+		for (int32 R : Roots) FloodRow(R);
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			if (!Nodes[i].bHasExecPins) continue;
+			if (Nodes[i].RowId == -1) FloodRow(i);
+		}
+
+		// Data nodes: walk PrimaryConsumerIdx chain until we hit an exec
+		// node (whose RowId is already set). Cap the walk to avoid infinite
+		// loops on pathological data cycles.
+		const int32 MaxHop = Nodes.Num() + 1;
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			if (Nodes[i].bHasExecPins) continue;
+			int32 Cur = Nodes[i].PrimaryConsumerIdx;
+			int32 Hop = 0;
+			while (Cur != INDEX_NONE && Hop < MaxHop)
+			{
+				if (Nodes[Cur].bHasExecPins)
+				{
+					Nodes[i].RowId = Nodes[Cur].RowId;
+					break;
+				}
+				Cur = Nodes[Cur].PrimaryConsumerIdx;
+				++Hop;
+			}
+		}
+		return NextRowId;
+	}
+
 	/** Compute per-slot max width and per-slot X position. Slot keys are
 	 *  encoded as (ConsumerLayer * LargeStride + Depth) packed into int64
 	 *  to stay in a single TMap. Returns the per-exec-layer cumulative data
@@ -6138,12 +6210,25 @@ namespace BridgeBPPinAlignedImpl
 
 	/** Layer 0 exec nodes stacked vertically (original-Y order), then each
 	 *  later layer placed pin-aligned to its primary predecessor. Within each
-	 *  layer, nodes that share a tentative Y are pushed down to clear overlaps. */
+	 *  layer, nodes that share a tentative Y are pushed down to clear overlaps.
+	 *
+	 *  `RowLayerX[RowId][Layer]` is the row-local X grid — each row starts
+	 *  at X=0 and uses its own per-layer column widths, so rows are
+	 *  horizontally compact. Rows are banded vertically via the leaf-stacking
+	 *  pass, which inserts a block-gap whenever RowId changes. */
 	static void PlaceExecBackbone(TArray<FPALayoutNode>& Nodes, int32 LayerCount,
-		const TArray<int32>& LayerX, int32 VSpace,
+		const TArray<TArray<int32>>& RowLayerX, int32 VSpace,
 		const TMap<UEdGraphNode*, FRenderedGeom>& Cache,
 		const TMap<UEdGraphNode*, int32>& IndexOf)
 	{
+		auto LayerXFor = [&](int32 RowId, int32 Layer) -> int32
+		{
+			const int32 ClampedL = FMath::Clamp(Layer, 0, LayerCount - 1);
+			if (RowId < 0 || RowId >= RowLayerX.Num()) return 0;
+			const TArray<int32>& Row = RowLayerX[RowId];
+			if (ClampedL >= Row.Num()) return 0;
+			return Row[ClampedL];
+		};
 		// DOWNSTREAM-driven Y via DFS of the exec tree:
 		//  1. DFS from the entry following exec-out pins in dir order (.then
 		//     first, then .else). Leaves (Return / terminal nodes) are
@@ -6241,10 +6326,14 @@ namespace BridgeBPPinAlignedImpl
 			if (Nodes[i].bHasExecPins && !Visited.Contains(i)) DFS(i, TArray<int64>{});
 		}
 
-		// Step 2a: sort leaves by lane chain (lex) with DFS-order tiebreak.
-		// Result: leaves in lane 0 come first, then lane 1, … Within a lane,
-		// DFS order is preserved (matches the human "top-down" expectation).
+		// Step 2a: sort leaves by (RowId, lane chain, DFS order). Row is
+		// primary so each row's leaves form a contiguous block (vertical
+		// band); lane chain gives fanout pin-K before pin-(K+1) within a
+		// row; DFS order is the final tiebreak.
 		DFSLeaves.Sort([&](int32 A, int32 B) {
+			const int32 RA = Nodes[A].RowId;
+			const int32 RB = Nodes[B].RowId;
+			if (RA != RB) return RA < RB;
 			const TArray<int64>& CA = LaneChainOf[A];
 			const TArray<int64>& CB = LaneChainOf[B];
 			const int32 Min = FMath::Min(CA.Num(), CB.Num());
@@ -6256,26 +6345,31 @@ namespace BridgeBPPinAlignedImpl
 			return DFSOrderOf[A] < DFSOrderOf[B];
 		});
 
-		// Step 2b: stack leaves top-to-bottom. Insert a block-gap between
-		// leaves whose lane chain differs so a fanout's pin-K sub-tree stays
-		// strictly above pin-(K+1)'s sub-tree — no wire can now "reach back
-		// upward" across pin boundaries.
+		// Step 2b: stack leaves top-to-bottom. Insert a block-gap when the
+		// lane chain changes (fanout pin boundary) AND when the row changes
+		// (row-to-row boundary) so each row is a visually separate band and
+		// each fanout pin's sub-tree is a separate code block within a row.
 		const int32 BlockGap = VSpace * 2;
+		const int32 RowGap   = VSpace * 3;  // bigger than block-gap to sell the "separate event" boundary
 		int32 Cursor = 0;
 		bool bFirstLeaf = true;
 		TArray<int64> PrevChain;
+		int32 PrevRow = -2;
 		for (int32 Idx : DFSLeaves)
 		{
 			FPALayoutNode& LN = Nodes[Idx];
-			if (!bFirstLeaf && LaneChainOf[Idx] != PrevChain)
+			const int32 CurRow = LN.RowId;
+			if (!bFirstLeaf)
 			{
-				Cursor += BlockGap;
+				if (CurRow != PrevRow)       Cursor += RowGap;
+				else if (LaneChainOf[Idx] != PrevChain) Cursor += BlockGap;
 			}
-			LN.NewX = LayerX[FMath::Clamp(LN.Layer, 0, LayerCount - 1)];
+			LN.NewX = LayerXFor(CurRow, LN.Layer);
 			LN.NewY = Cursor;
 			LN.bPlaced = true;
 			Cursor += LN.Height + VSpace;
-			PrevChain  = LaneChainOf[Idx];
+			PrevChain = LaneChainOf[Idx];
+			PrevRow   = CurRow;
 			bFirstLeaf = false;
 		}
 
@@ -6290,7 +6384,7 @@ namespace BridgeBPPinAlignedImpl
 				if (!LN.bHasExecPins) continue;
 				if (LN.Layer != L) continue;
 				if (LN.bPlaced) continue;
-				LN.NewX = LayerX[L];
+				LN.NewX = LayerXFor(LN.RowId, L);
 				if (LN.PrimaryExecSuccIdx != INDEX_NONE &&
 					Nodes[LN.PrimaryExecSuccIdx].bPlaced &&
 					LN.MyExecOutDirIdxToSucc >= 0 && LN.SuccExecInDirIdx >= 0)
@@ -6310,41 +6404,47 @@ namespace BridgeBPPinAlignedImpl
 			}
 		}
 
-		// Step 4: collision-resolve per layer. Nodes that collapsed onto the
-		// same Y (most often siblings of a shared successor — e.g. Branch.then
-		// and Branch.else both pulling to a common Return) are ordered by
-		// LaneChain lex — earlier lanes ABOVE later lanes — then pushed down
-		// so each lane keeps its own band. Without lane-aware sorting the
-		// order was arbitrary (by node index), which let the second lane's
-		// node land above the first and produced .then/.else wire crossings.
-		for (int32 L = 0; L < LayerCount; ++L)
+		// Step 4: collision-resolve per (row, layer). Nodes that collapsed
+		// onto the same Y (most often siblings of a shared successor — e.g.
+		// Branch.then and Branch.else both pulling to a common Return) are
+		// ordered by LaneChain lex — earlier lanes ABOVE later lanes — then
+		// pushed down so each lane keeps its own band. Scoping collision to
+		// a single row prevents cross-row X-disjoint nodes from pushing each
+		// other around just because they share a Y after independent row
+		// layout.
+		const int32 RowCount = RowLayerX.Num();
+		for (int32 R = 0; R < RowCount; ++R)
 		{
-			TArray<int32> LayerNodes;
-			for (int32 i = 0; i < Nodes.Num(); ++i)
+			for (int32 L = 0; L < LayerCount; ++L)
 			{
-				if (Nodes[i].bHasExecPins && Nodes[i].Layer == L && Nodes[i].bPlaced)
-					LayerNodes.Add(i);
-			}
-			LayerNodes.Sort([&](int32 A, int32 B) {
-				// Primary: current tentative Y (existing behaviour).
-				if (Nodes[A].NewY != Nodes[B].NewY) return Nodes[A].NewY < Nodes[B].NewY;
-				// Tiebreak: lane chain lex — pins that open earlier lanes come first.
-				const TArray<int64>& CA = LaneChainOf[A];
-				const TArray<int64>& CB = LaneChainOf[B];
-				const int32 Min = FMath::Min(CA.Num(), CB.Num());
-				for (int32 k = 0; k < Min; ++k)
+				TArray<int32> LayerNodes;
+				for (int32 i = 0; i < Nodes.Num(); ++i)
 				{
-					if (CA[k] != CB[k]) return CA[k] < CB[k];
+					if (!Nodes[i].bHasExecPins) continue;
+					if (Nodes[i].RowId != R) continue;
+					if (Nodes[i].Layer != L) continue;
+					if (!Nodes[i].bPlaced) continue;
+					LayerNodes.Add(i);
 				}
-				if (CA.Num() != CB.Num()) return CA.Num() < CB.Num();
-				return DFSOrderOf[A] < DFSOrderOf[B];
-			});
-			for (int32 k = 1; k < LayerNodes.Num(); ++k)
-			{
-				const FPALayoutNode& Prev = Nodes[LayerNodes[k-1]];
-				FPALayoutNode& Curr = Nodes[LayerNodes[k]];
-				const int32 MinY = Prev.NewY + Prev.Height + VSpace;
-				if (Curr.NewY < MinY) Curr.NewY = MinY;
+				LayerNodes.Sort([&](int32 A, int32 B) {
+					if (Nodes[A].NewY != Nodes[B].NewY) return Nodes[A].NewY < Nodes[B].NewY;
+					const TArray<int64>& CA = LaneChainOf[A];
+					const TArray<int64>& CB = LaneChainOf[B];
+					const int32 Min = FMath::Min(CA.Num(), CB.Num());
+					for (int32 k = 0; k < Min; ++k)
+					{
+						if (CA[k] != CB[k]) return CA[k] < CB[k];
+					}
+					if (CA.Num() != CB.Num()) return CA.Num() < CB.Num();
+					return DFSOrderOf[A] < DFSOrderOf[B];
+				});
+				for (int32 k = 1; k < LayerNodes.Num(); ++k)
+				{
+					const FPALayoutNode& Prev = Nodes[LayerNodes[k-1]];
+					FPALayoutNode& Curr = Nodes[LayerNodes[k]];
+					const int32 MinY = Prev.NewY + Prev.Height + VSpace;
+					if (Curr.NewY < MinY) Curr.NewY = MinY;
+				}
 			}
 		}
 	}
@@ -6928,6 +7028,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		SelectPrimaryExecPreds(Nodes);
 		SelectPrimaryExecSuccs(Nodes);
 		AssignDataSlots(Nodes);
+		const int32 RowCount = AssignRows(Nodes);
 
 		// Compact-pack horizontally. Hand-authored BPs pack data pipelines
 		// and exec columns more densely than a round HSpace=100 suggests —
@@ -6938,56 +7039,71 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		const int32 DataHSpace = FMath::Max(15, HSpace / 3);
 		const int32 ExecGap    = FMath::Max(30, HSpace / 2);
 
-		// Per-layer widest width (exec nodes only).
-		TArray<int32> LayerMaxW; LayerMaxW.SetNumZeroed(LayerCount);
+		// Per-row, per-layer widest exec node. Each row derives its own
+		// column widths so a wide node in row A doesn't inflate the X grid
+		// of row B — "per-row local column widths" rather than the prior
+		// global column widths. Rows are then vertically stacked so the
+		// visual outcome is several compact swim lanes instead of one
+		// globally-wide grid.
+		TArray<TArray<int32>> RowLayerMaxW;
+		RowLayerMaxW.SetNum(RowCount);
+		for (TArray<int32>& A : RowLayerMaxW) A.SetNumZeroed(LayerCount);
 		for (const FPALayoutNode& LN : Nodes)
 		{
 			if (!LN.bHasExecPins) continue;
+			if (LN.RowId < 0 || LN.RowId >= RowCount) continue;
 			if (LN.Layer < 0 || LN.Layer >= LayerCount) continue;
-			if (LN.Width > LayerMaxW[LN.Layer]) LayerMaxW[LN.Layer] = LN.Width;
-		}
-		// Per-slot max width + per-layer max depth.
-		TMap<int64, int32> SlotWidth;
-		TMap<int32, int32> LayerMaxDepth;
-		ComputeDataSlots(Nodes, SlotWidth, LayerMaxDepth);
-
-		// Per-layer data budget = max over all data chains feeding the layer
-		// of their total pixel extent (widths + gaps). Same-depth siblings
-		// at different Y don't contribute to each other's chain budget, so
-		// this is usually much tighter than sum-of-slot-max widths.
-		TArray<int32> LayerDataBudget;
-		ComputeLayerChainBudgets(Nodes, LayerCount, DataHSpace, LayerDataBudget);
-
-		// Layer X positions (cumulative). Exec layers spaced by ExecGap; data
-		// chains reserved with DataHSpace inside each layer-to-layer gap.
-		TArray<int32> LayerX; LayerX.SetNumZeroed(LayerCount);
-		int32 Cur = 0;
-		for (int32 L = 0; L < LayerCount; ++L)
-		{
-			LayerX[L] = Cur;
-			Cur += LayerMaxW[L] + ExecGap;
-			if (L + 1 < LayerCount) Cur += LayerDataBudget[L + 1];
+			if (LN.Width > RowLayerMaxW[LN.RowId][LN.Layer])
+				RowLayerMaxW[LN.RowId][LN.Layer] = LN.Width;
 		}
 
-		// Slot X positions: walk each layer's data depths right-to-left.
-		TMap<int64, int32> SlotX;
-		for (int32 L = 0; L < LayerCount; ++L)
+		// Per-row, per-layer data-chain budget. For each exec node, walk its
+		// data producers' chain widths (memoised globally since chain width
+		// is a pure property of the producer subtree), and take the max per
+		// (row, layer) cell. This reserves horizontal space left of the
+		// layer's exec column for the producer pipeline to fit.
+		TArray<TArray<int32>> RowLayerDataBudget;
+		RowLayerDataBudget.SetNum(RowCount);
+		for (TArray<int32>& A : RowLayerDataBudget) A.SetNumZeroed(LayerCount);
 		{
-			const int32* MaxD = LayerMaxDepth.Find(L);
-			if (!MaxD) continue;
-			int32 SX = LayerX[L] - DataHSpace;
-			for (int32 d = 1; d <= *MaxD; ++d)
+			TMap<int32, int32> ChainMemo;
+			for (int32 i = 0; i < Nodes.Num(); ++i)
 			{
-				const int64 Key = MakeSlotKey(L, d);
-				const int32* W = SlotWidth.Find(Key);
-				const int32 SlotW = W ? *W : 0;
-				SX -= SlotW;
-				SlotX.Add(Key, SX);
-				SX -= DataHSpace;
+				const FPALayoutNode& LN = Nodes[i];
+				if (!LN.bHasExecPins) continue;
+				if (LN.RowId < 0 || LN.RowId >= RowCount) continue;
+				if (LN.Layer < 0 || LN.Layer >= LayerCount) continue;
+				int32 MaxB = 0;
+				for (const TPair<int32, int32>& Prod : LN.DataProducers)
+				{
+					if (Nodes[Prod.Key].bHasExecPins) continue;
+					const int32 W = ComputeChainWidth(Prod.Key, Nodes, DataHSpace, ChainMemo);
+					if (W > MaxB) MaxB = W;
+				}
+				if (MaxB > RowLayerDataBudget[LN.RowId][LN.Layer])
+					RowLayerDataBudget[LN.RowId][LN.Layer] = MaxB;
 			}
 		}
 
-		PlaceExecBackbone(Nodes, LayerCount, LayerX, VSpace, Cache, IndexOf);
+		// Per-row LayerX. Each row restarts at X=0 — rows are later
+		// translated vertically (via leaf-stacking with row block-gap) and
+		// stay X-overlapped at 0-origin. Result: each row is exactly as
+		// wide as IT needs, no wasted column from a wider neighbour.
+		TArray<TArray<int32>> RowLayerX;
+		RowLayerX.SetNum(RowCount);
+		for (int32 R = 0; R < RowCount; ++R)
+		{
+			RowLayerX[R].SetNumZeroed(LayerCount);
+			int32 Cur = 0;
+			for (int32 L = 0; L < LayerCount; ++L)
+			{
+				RowLayerX[R][L] = Cur;
+				Cur += RowLayerMaxW[R][L] + ExecGap;
+				if (L + 1 < LayerCount) Cur += RowLayerDataBudget[R][L + 1];
+			}
+		}
+
+		PlaceExecBackbone(Nodes, LayerCount, RowLayerX, VSpace, Cache, IndexOf);
 		ClusterDelegateBoundEvents(Nodes, IndexOf, VSpace, Result.Warnings);
 		PlaceDataProducersPerConsumer(Nodes, DataHSpace, VSpace, Cache);
 
