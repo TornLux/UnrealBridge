@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 作为 agent ↔ UE 编辑器桥梁的能力缺口，按"能补 / 代价高但理论可行 / 根本补不了"三档划分。用于指导后续投资方向。
 
-最后更新：2026-04-20
+最后更新：2026-04-20（新增 A6-A12：测试 / 卫生 / 资源流水线 / 程序化场景 / 状态持续 / 外部集成 / Bridge 元工具）
 
 ---
 
@@ -72,6 +72,83 @@ Bridge 已覆盖的主要领域（详见各 `bridge-*-api.md`）：
 | 19 | **Cook / Package / BuildServer** | 中 | 中 | 零。所有"能上线吗 / 打个 test build 给 QA"问题无法回答。封装 UAT (`Engine/Build/BatchFiles/RunUAT.bat BuildCookRun ...`) 的异步调用 + stdout 捕获即可。 |
 | 20 | **Plugin 依赖声明扫描** | 小 | 中 | 构建警告里 `Plugin 'UnrealBridge' does not list plugin 'EnhancedInput' as a dependency` 这种应该自动扫 + 修 .uplugin。 |
 
+### A6. 自动化测试 / 回归验证
+
+Agent 最大的痛点是"改完不知道有没有坏东西"。这一组直接给它回归感知。
+
+| # | 项目 | 工程量 | 频次 | 说明 |
+|---|---|---|---|---|
+| 21 | **UE Automation Framework 对接** | 中 | 高 | 封装 `Session Frontend` 的 test runner：`run_automation_tests(groups)` 返回结构化 `[{name, passed, duration_ms, stack}]`。CI 味道的"改完代码跑一轮"体验直接解锁。 |
+| 22 | **Soak / 长跑测试** | 中 | 中-高 | 下一个脚本让 PIE 跑 N 分钟，持续抓 FPS / memory / error count / LogWarning 密度，返回 time series。回归时对比两次运行的统计差。 |
+| 23 | **Golden-image 回归** | 中 | 高 | 同 pose / 同 level / 同 PIE 起始状态做 screenshot，和基线图像素 diff（带 ε tolerance + ignore-mask）。改渲染 / 材质 / BP 后一键确认没破东西。跟 `capture_anim_pose_grid` 那套 pipeline 天然契合。 |
+| 24 | **Fuzz 输入 / 随机 pawn 驱动** | 中 | 中 | 在已有 IA 注入框架上加随机序列 + NaN / 碰撞穿墙 / 卡 geometry 检测。崩溃自动上报 + 种子化可复现。 |
+| 25 | **Replay 录制 + 回放** | 中-大 | 中 | 录一段 PIE 的 input + spawn + 关键时间点，改完代码后能确定性重放。比 soak 更精细，适合 bug 复现。 |
+
+### A7. 项目卫生 / 规模化重构
+
+跨 BP + C++ 的大规模扫描类工具，人肉做太累而 agent 天生适合。
+
+| # | 项目 | 工程量 | 频次 | 说明 |
+|---|---|---|---|---|
+| 26 | **命名 / 目录约定扫描器** | 小-中 | 中 | 按项目 style（如 "BP_* 必须在 /Content/Blueprints/"、"IA_* 是 InputAction"）扫全库，列违规 + 自动修复。规则用 JSON 配置。 |
+| 27 | **死代码 / 孤立 asset 检测** | 小-中 | 中 | 无引用 asset、从未被调用的 BP 函数、从未被 broadcast 的 dispatcher、从未被 bind 的 event。基于 AssetRegistry + `find_function_call_sites_global` 已有原语。cleanup 前必跑。 |
+| 28 | **TODO / debug print 审计** | 小 | 中 | 跨 BP + C++ 扫 `PrintString` / `UE_LOG(LogTemp, ...)` / `// TODO` / `// HACK`，发布前清单。 |
+| 29 | **依赖图可视化** | 小 | 低-中 | 基于现有 reference tracking 生成 mermaid / DOT，定位循环依赖。Agent 能自己读图判断结构风险。 |
+| 30 | **跨版本 BP 语义 diff** | 中 | 中 | git 看 `.uasset` 是二进制 diff 读不懂。已有 `snapshot_graph_json` + `diff_graph_snapshots`，扩成跨 git commit 的 BP diff（"这个 PR 加了哪些节点 / 改了哪个 pin 默认值 / 删了哪条连线"）直接用于 PR review。 |
+
+### A8. Asset 流水线 / 批处理
+
+数据驱动工作流的基石，单点 CRUD 已有但批量能力稀薄。
+
+| # | 项目 | 工程量 | 频次 | 说明 |
+|---|---|---|---|---|
+| 31 | **CSV / JSON → DataTable 批量导入** | 小 | 高 | 现在 DataTable 是逐行 CRUD，真正数据驱动需要 `import_rows_from_csv(path, row_struct)` 一把梭。 |
+| 32 | **FBX / GLTF / USD 批量导入带预设** | 中 | 中-高 | `AutomatedAssetImportData` + 每类资源（mesh / anim / texture / audio）一套 import options。美术交付一大堆资源的场景必备。 |
+| 33 | **LOD / 碰撞 / physics body 自动生成** | 中 | 中 | 扫选中的 mesh，挨个生成 LOD chain / auto-convex / UCX 简单碰撞 / PhysicsAsset。 |
+| 34 | **资源去重** | 中 | 低-中 | 找功能相同的 Texture（图像哈希）/ Material（参数完全相同的 MI）/ BP（节点结构哈希），一键 redirector 合并。 |
+
+### A9. 程序化场景搭建
+
+Houdini 风格的 placement 原语，让 agent 能批量组装关卡而不是逐 actor 摆。
+
+| # | 项目 | 工程量 | 频次 | 说明 |
+|---|---|---|---|---|
+| 35 | **Scatter / grid 布景** | 中 | 中-高 | "把这 10 种 prop 随机撒在 navmesh 上 500 个"、"沿曲线摆路灯"、"在 volume 内等间距放"。输入 = 规则 + 目标区域，输出 = spawn 清单。 |
+| 36 | **Snap-to-surface + 法线对齐** | 小 | 中 | 放 actor 自动投射到地面 + 对齐法线 + 随机偏移。Scatter 的原子。 |
+| 37 | **Landscape 高度图导入 / 绘制** | 中 | 低-中 | 传 PNG 当 heightmap / weightmap，而不是 UI 画。procedural 地形管线入口。 |
+| 38 | **Foliage type 批量配置** | 小 | 低-中 | density / LOD / cull distance / collision preset 的批处理。 |
+
+### A10. 状态管理 / 持续性
+
+让 agent 能"分支尝试 + 回滚"，而不是每条调用都是不可逆的线。
+
+| # | 项目 | 工程量 | 频次 | 说明 |
+|---|---|---|---|---|
+| 39 | **Editor state 快照 / 恢复** | 中 | 高 | 记下当前开的 asset、选中的 actor、viewport 相机、CB 路径、各 BP 编辑器的 active graph → JSON；之后一键回到那个现场。"对比几个方案"的场景极好用。 |
+| 40 | **PIE state 快照** | 中-大 | 中 | save game 之上加一层，dump 当前 world 所有 actor 的位置 / 属性 / component state → JSON，恢复时重建。不用每次从头玩一遍。 |
+| 41 | **Named workflow / macro 录制** | 小-中 | 中 | 把一串 bridge 调用 + 参数打包成一个"macro"，下次一个 call 复用。Reactive handlers 框架已开了半个头。 |
+
+### A11. 外部集成 / 触达
+
+小工程量但体验差异巨大的"连通性"类。
+
+| # | 项目 | 工程量 | 频次 | 说明 |
+|---|---|---|---|---|
+| 42 | **Webhook on completion** | 小 | 中 | Cook / build / 长跑测试完 POST 到 Slack / Discord / email / 自定义 URL。一行 HTTP 的事但解锁异步工作流。 |
+| 43 | **JIRA / Linear / GitHub Issue 自动开票** | 小-中 | 中 | crash dump / test failure / lint violation 直接成 ticket 带 repro 步骤。减少"agent 跑完不知道去哪跟进"的断链。 |
+| 44 | **Perforce / Git LFS 辅助** | 中 | 中-高 | check-out、submit、conflict 检测的 bridge 封装（现在的 SourceControl API 太薄，只有 state 查询 + checkout）。大项目必需。 |
+
+### A12. Bridge 自观测 / 元工具
+
+对 Bridge 本身的自动化，基础设施投入。
+
+| # | 项目 | 工程量 | 频次 | 说明 |
+|---|---|---|---|---|
+| 45 | **Bridge 调用日志 + 性能** | 小 | 中 | 每次 `UnrealBridge*Library.*` 调用记 name / duration / success / payload size，本地 ring buffer + 可导出。"哪个 API 调得最多 / 最慢 / 最容易超时"的数据基础。 |
+| 46 | **Signature registry dump** | 极小 | 高 | 启动时把所有 UFUNCTION 的参数名 / 类型 / 默认值 / tooltip 导出成 JSON。agent 一次拉走 ≈ 不再反复 Read 各 `bridge-*-api.md`。**消除"TypeError → 再读 → 再试"这一整类浪费**。 |
+| 47 | **Bridge API changelog 自动生成** | 小 | 低-中 | 每次合并时 diff `UnrealBridge*Library.h` 之间的 UFUNCTION 列表，生成 Markdown changelog。不再靠记忆回忆"上周加了啥"。 |
+| 48 | **单 call dry-run / trace** | 中 | 低-中 | "这个 bridge 调用会动哪些 asset / 改哪些 UObject"，真跑前预览。蓝图 dry-run（#15）的通用版本。 |
+
 ---
 
 ## Tier B — 理论可行但成本 / 风险过高
@@ -114,15 +191,33 @@ Bridge 已覆盖的主要领域（详见各 `bridge-*-api.md`）：
 
 ## 建议下一季度投入顺序
 
-按 ROI × 解锁面积：
+按 ROI × 解锁面积，分两波。
 
-1. **PIE 视频/帧序列抓取（A1-#1）** — 把 agent 的感知从"偶尔看静态图"升到"能看动作的连续性"。中等工程量，整类调试 / 验证 / demo 场景解锁。
-2. **GBuffer 通道截图（A1-#2）** — 把 screenshot 从"能看"升到"能量化测量"。小-中工程量，永久收益。
-3. **Material Graph 写（A2-#5）** — 打开整个 shader 领域；Niagara 里很多 module 是 material-like 图，算一并铺路。大工程量但进入门槛后摊薄。
-4. **Behavior Tree / Blackboard 运行时读（A3-#11）** — AI 行为从黑盒变白盒。中工程量，所有 AI 项目受益。
-5. **Cook / Package（A5-#19）** — 首次让 agent 能回答"能上线吗"。封装 UAT 即可，工程量不大但门槛效应明显。
+### 快速收益（工程量小，单周内落地，立竿见影）
 
-**剩下**：Niagara / Sequencer / AnimGraph-write / GA-graph-write / Control Rig 这五个都是 3-5k 行级别的独立子系统，每个可作为单独季度的大项目；优先级看用户项目类型（GAS 重度项目优先 GA，过场密集项目优先 Sequencer，动画品类优先 AnimGraph）。
+优先做这批，基础设施投入，对后续所有特性都是乘数。
+
+1. **Signature registry dump（A12-#46）** — 极小工程量，永久消除"读 doc → TypeError → 再读 → 再试"这一整类浪费。**性价比第一，先做**。
+2. **CSV / JSON → DataTable 批量导入（A8-#31）** — 数据驱动项目的基石，工程量小。
+3. **Webhook on completion（A11-#42）** — 一行 HTTP，长跑任务的异步体验全变。
+4. **Editor state 快照 / 恢复（A10-#39）** — 让 agent 能"分支尝试"，不再每步不可逆。
+5. **Snap-to-surface + 法线对齐（A9-#36）** — Scatter / level dressing 的原子，单独也很好用。
+6. **TODO / debug print 审计（A7-#28）** — 发布前清单，小扫描大心安。
+
+### 解锁新物种（中-大工程量，整类能力上线）
+
+这批每个都能解锁一整个工作流，季度级别的大投入。
+
+1. **PIE 视频 / 帧序列抓取（A1-#1）** — 感知从"单帧静态"升到"动作连续性"。所有调试 / 验证 / demo 场景受益。
+2. **GBuffer 通道截图（A1-#2）** — 从"能看"升到"能量化测量"。永久收益。
+3. **Golden-image 回归（A6-#23）** — 配合 A1-#1 和 `capture_anim_pose_grid`，agent 第一次有了"改完没破东西"的自证能力。
+4. **UE Automation Framework 对接（A6-#21）** — CI 味道的测试一键跑。与 golden-image 互补（一个覆盖渲染，一个覆盖逻辑）。
+5. **PIE state 快照（A10-#40）** — 让 agent 能"回到那个关键瞬间"调试 / 比较方案，不用每次从头玩。
+6. **Behavior Tree / Blackboard 运行时读（A3-#11）** — AI 行为从黑盒变白盒。
+7. **Cook / Package（A5-#19）** — 首次让 agent 能回答"能上线吗"。封装 UAT 即可。
+8. **Material Graph 写（A2-#5）** — 打开 shader 领域；Niagara 里很多 module 是 material-like 图，算铺路。
+
+**再之后**：Niagara / Sequencer / AnimGraph-write / GA-graph-write / Control Rig 这五个都是 3-5k 行级别的独立子系统，每个单独作为季度大项目；优先级看用户项目类型（GAS 重度项目优先 GA，过场密集项目优先 Sequencer，动画品类优先 AnimGraph）。
 
 **明确推迟**：引擎源码改动、DCC 联动、marketplace 集成、主观质量判断 — 短期内不解。
 
