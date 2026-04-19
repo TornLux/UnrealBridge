@@ -1,10 +1,10 @@
 ---
-name: ue-python
+name: unreal-bridge
 description: Execute Python scripts inside a running Unreal Engine 5.7 editor via TCP bridge. Use when the user asks to interact with UE, manipulate assets, query scenes, automate workflows, or run Python in Unreal.
 allowed-tools: Bash Read Write Edit Glob Grep
 ---
 
-# UE Python Bridge
+# UnrealBridge
 
 Execute Python code directly inside a running Unreal Engine 5.7 editor. The bridge communicates over TCP with the UnrealBridge plugin (default port 9876).
 

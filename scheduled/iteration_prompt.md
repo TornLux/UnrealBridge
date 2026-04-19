@@ -14,8 +14,8 @@ The exact list and length is authoritative in `scheduled/state.json` `libraries`
 
 1. `CLAUDE.md` — project overview + canonical sync → compile → launch → verify → close workflow
 2. `Plugin/UnrealBridge/Source/UnrealBridge/Public/UnrealBridge<LIBRARY>Library.h` — current C++ surface
-3. `.claude/skills/ue-python/references/bridge-<lowercase>-api.md` — current docs (create if missing)
-4. `.claude/skills/ue-python/SKILL.md` — index table
+3. `.claude/skills/unreal-bridge/references/bridge-<lowercase>-api.md` — current docs (create if missing)
+4. `.claude/skills/unreal-bridge/SKILL.md` — index table
 
 ## Step 3 — Decide what to add
 
@@ -51,7 +51,7 @@ Follow CLAUDE.md's pipeline with this retry policy:
    - Re-sync, re-build to confirm green. If still broken: `git restore .` everything, log `ROLLBACK: build failed after retries` and go to Step 6 (NO-OP path — do not commit, but DO advance state).
 6. Build green → launch editor detached:
    `cmd.exe //c start "" "G:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealEditor.exe" "G:\UEProjects\GameplayLocomotion\GameplayLocomotion.uproject"`
-7. Poll `python .claude/skills/ue-python/scripts/bridge.py ping` until connected.
+7. Poll `python .claude/skills/unreal-bridge/scripts/bridge.py ping` until connected.
 8. For **each new UFUNCTION**, call it via `bridge.py exec "import unreal; ..."` and check the return / no exception. On failure: treat like a compile error (fix → re-sync → re-build → re-verify, up to 3 attempts; if still broken, revert C++ and abort to NO-OP path).
 9. Clean shutdown: `bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"` then verify `tasklist //FI "IMAGENAME eq UnrealEditor.exe"` shows no match.
 

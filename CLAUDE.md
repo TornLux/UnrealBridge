@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 UnrealBridge is a TCP bridge between external tools (Claude Code) and Unreal Engine 5.7. It consists of:
 - A UE Editor plugin (`Plugin/UnrealBridge/`) that runs a TCP server inside the editor
-- A Python CLI client (`.claude/skills/ue-python/scripts/bridge.py`) used by the `ue-python` skill
+- A Python CLI client (`.claude/skills/unreal-bridge/scripts/bridge.py`) used by the `unreal-bridge` skill
 - API reference docs and helper scripts for querying/manipulating UE assets via Python
 
 ## Key Commands
@@ -19,13 +19,13 @@ This mirrors `Plugin/UnrealBridge/` to `G:\UEProjects\GameplayLocomotion\Plugins
 
 **Test bridge connection:**
 ```bash
-python .claude/skills/ue-python/scripts/bridge.py ping
+python .claude/skills/unreal-bridge/scripts/bridge.py ping
 ```
 
 **Execute Python in UE:**
 ```bash
-python .claude/skills/ue-python/scripts/bridge.py exec "print('hello')"
-python .claude/skills/ue-python/scripts/bridge.py exec-file script.py
+python .claude/skills/unreal-bridge/scripts/bridge.py exec "print('hello')"
+python .claude/skills/unreal-bridge/scripts/bridge.py exec-file script.py
 ```
 
 ## Architecture
@@ -51,7 +51,7 @@ Length-prefixed JSON over TCP on port 9876 (localhost only).
 
 ### Python Side
 - `Content/Python/unreal_bridge_helpers.py` — Helper functions auto-loaded in UE Python env (list_assets, get_selected_actors, find_actors_by_class, set_actor_transform, get_world_info)
-- `.claude/skills/ue-python/` — Claude Code skill with bridge CLI, API reference docs, and safety rules
+- `.claude/skills/unreal-bridge/` — Claude Code skill with bridge CLI, API reference docs, and safety rules
 
 ## Development Workflow
 
@@ -75,13 +75,13 @@ Edit C++ source in `Plugin/UnrealBridge/Source/`, then run the standard sync →
    ```
 
 4. **Wait for readiness, then verify new functionality**
-   - Poll `python .claude/skills/ue-python/scripts/bridge.py ping` until it connects (TCP server comes up at `PostEngineInit`).
+   - Poll `python .claude/skills/unreal-bridge/scripts/bridge.py ping` until it connects (TCP server comes up at `PostEngineInit`).
    - Confirm Python is live: `bridge.py exec "import unreal; print(unreal.SystemLibrary.get_project_directory())"`.
    - Exercise the feature you changed via `bridge.py exec` or `exec-file` (e.g. call the new `unreal.<Library>.<method>()`). Check return values and `LogUnrealBridge` output.
 
 5. **Shut down the editor cleanly**
    ```bash
-   python .claude/skills/ue-python/scripts/bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"
+   python .claude/skills/unreal-bridge/scripts/bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"
    ```
    Verify with `tasklist //FI "IMAGENAME eq UnrealEditor.exe"` — should report no matching process. Only fall back to `taskkill` if `quit_editor` fails to terminate.
 
