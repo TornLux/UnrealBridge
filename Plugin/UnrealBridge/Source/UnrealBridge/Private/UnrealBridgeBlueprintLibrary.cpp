@@ -73,6 +73,7 @@
 #include "K2Node_EditablePinBase.h"
 #include "K2Node_Tunnel.h"
 #include "K2Node_Composite.h"
+#include "Misc/SecureHash.h"
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -8190,6 +8191,15 @@ FBridgeFunctionSignature UUnrealBridgeBlueprintLibrary::GetFunctionSignature(
 	if (ClassPath.Contains(TEXT(".")) || ClassPath.StartsWith(TEXT("/")))
 	{
 		Cls = LoadObject<UClass>(nullptr, *ClassPath);
+		// BP path without the `_C` suffix resolves to the UBlueprint; auto-pivot
+		// to its GeneratedClass so callers can pass either shape interchangeably.
+		if (!Cls)
+		{
+			if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *ClassPath))
+			{
+				Cls = BP->GeneratedClass;
+			}
+		}
 	}
 	if (!Cls)
 	{
@@ -10300,6 +10310,564 @@ FBridgeRenameReport UUnrealBridgeBlueprintLibrary::RenameFunctionGlobal(
 }
 
 // ─── #15 Variable-type change with ref report ───────────────────
+
+// ═══════════════════════════════════════════════════════════════════
+//   Graph fingerprint / snapshot / diff (#3)
+// ═══════════════════════════════════════════════════════════════════
+
+namespace BridgeBPSnapshotImpl
+{
+	/** Sort two guid strings case-insensitively for deterministic output. */
+	struct FGuidLess
+	{
+		bool operator()(const FString& A, const FString& B) const
+		{
+			return A.Compare(B, ESearchCase::IgnoreCase) < 0;
+		}
+	};
+
+	/** Build a canonical JSON snapshot for a graph. */
+	static FString BuildSnapshotJson(UEdGraph* Graph)
+	{
+		if (!Graph) return FString();
+
+		// Sort nodes by guid for determinism.
+		TArray<UEdGraphNode*> Nodes;
+		Nodes.Reserve(Graph->Nodes.Num());
+		for (UEdGraphNode* N : Graph->Nodes) if (N) Nodes.Add(N);
+		Nodes.Sort([](const UEdGraphNode& A, const UEdGraphNode& B)
+		{
+			return A.NodeGuid.ToString(EGuidFormats::Digits) <
+			       B.NodeGuid.ToString(EGuidFormats::Digits);
+		});
+
+		TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+
+		TArray<TSharedPtr<FJsonValue>> NodeArr;
+		NodeArr.Reserve(Nodes.Num());
+		TArray<TTuple<FString, FString, FString, FString>> Wires;
+
+		for (UEdGraphNode* N : Nodes)
+		{
+			const FString Guid = N->NodeGuid.ToString(EGuidFormats::Digits);
+			TSharedRef<FJsonObject> NObj = MakeShared<FJsonObject>();
+			NObj->SetStringField(TEXT("guid"),  Guid);
+			NObj->SetStringField(TEXT("class"), N->GetClass()->GetName());
+			NObj->SetStringField(TEXT("title"),
+				N->GetNodeTitle(ENodeTitleType::ListView).ToString());
+			NObj->SetNumberField(TEXT("x"), N->NodePosX);
+			NObj->SetNumberField(TEXT("y"), N->NodePosY);
+			NodeArr.Add(MakeShared<FJsonValueObject>(NObj));
+
+			// Collect wires from output pins only so each wire is emitted once.
+			for (UEdGraphPin* Pin : N->Pins)
+			{
+				if (!Pin || Pin->Direction != EGPD_Output) continue;
+				for (UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					if (!Linked || !Linked->GetOwningNode()) continue;
+					const FString DstGuid =
+						Linked->GetOwningNode()->NodeGuid.ToString(EGuidFormats::Digits);
+					Wires.Emplace(Guid, Pin->PinName.ToString(),
+					              DstGuid, Linked->PinName.ToString());
+				}
+			}
+		}
+		Root->SetArrayField(TEXT("nodes"), NodeArr);
+
+		// Sort wires for determinism.
+		Wires.Sort([](const TTuple<FString, FString, FString, FString>& A,
+		              const TTuple<FString, FString, FString, FString>& B)
+		{
+			if (A.Get<0>() != B.Get<0>()) return A.Get<0>() < B.Get<0>();
+			if (A.Get<1>() != B.Get<1>()) return A.Get<1>() < B.Get<1>();
+			if (A.Get<2>() != B.Get<2>()) return A.Get<2>() < B.Get<2>();
+			return A.Get<3>() < B.Get<3>();
+		});
+
+		TArray<TSharedPtr<FJsonValue>> WireArr;
+		WireArr.Reserve(Wires.Num());
+		for (const auto& W : Wires)
+		{
+			TSharedRef<FJsonObject> WObj = MakeShared<FJsonObject>();
+			WObj->SetStringField(TEXT("src"),     W.Get<0>());
+			WObj->SetStringField(TEXT("src_pin"), W.Get<1>());
+			WObj->SetStringField(TEXT("dst"),     W.Get<2>());
+			WObj->SetStringField(TEXT("dst_pin"), W.Get<3>());
+			WireArr.Add(MakeShared<FJsonValueObject>(WObj));
+		}
+		Root->SetArrayField(TEXT("wires"), WireArr);
+
+		FString Out;
+		TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+		FJsonSerializer::Serialize(Root, Writer);
+		return Out;
+	}
+}
+
+FString UUnrealBridgeBlueprintLibrary::GetGraphFingerprint(
+	const FString& BlueprintPath, const FString& GraphName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+	const FString Json = BridgeBPSnapshotImpl::BuildSnapshotJson(Graph);
+	if (Json.IsEmpty()) return FString();
+
+	FSHA1 Hasher;
+	const FTCHARToUTF8 Utf8(*Json);
+	Hasher.Update(reinterpret_cast<const uint8*>(Utf8.Get()), Utf8.Length());
+	Hasher.Final();
+	uint8 Digest[20];
+	Hasher.GetHash(Digest);
+
+	FString Hex;
+	Hex.Reserve(40);
+	for (int32 i = 0; i < 20; ++i)
+	{
+		Hex.Appendf(TEXT("%02x"), Digest[i]);
+	}
+	return Hex;
+}
+
+FString UUnrealBridgeBlueprintLibrary::SnapshotGraphJson(
+	const FString& BlueprintPath, const FString& GraphName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+	return BridgeBPSnapshotImpl::BuildSnapshotJson(Graph);
+}
+
+FBridgeGraphDiff UUnrealBridgeBlueprintLibrary::DiffGraphSnapshots(
+	const FString& BeforeJson, const FString& AfterJson)
+{
+	FBridgeGraphDiff Out;
+
+	auto Parse = [](const FString& S, TSharedPtr<FJsonObject>& Obj) -> bool
+	{
+		if (S.IsEmpty()) return false;
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(S);
+		return FJsonSerializer::Deserialize(Reader, Obj) && Obj.IsValid();
+	};
+
+	TSharedPtr<FJsonObject> A, B;
+	if (!Parse(BeforeJson, A) || !Parse(AfterJson, B)) return Out;
+
+	auto CollectNodes = [](const TSharedPtr<FJsonObject>& J,
+		TMap<FString, FBridgeGraphDiffNode>& OutMap)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+		if (!J->TryGetArrayField(TEXT("nodes"), Arr) || !Arr) return;
+		for (const TSharedPtr<FJsonValue>& V : *Arr)
+		{
+			const TSharedPtr<FJsonObject>* Obj = nullptr;
+			if (!V.IsValid() || !V->TryGetObject(Obj) || !Obj) continue;
+			FBridgeGraphDiffNode N;
+			N.NodeGuid  = (*Obj)->GetStringField(TEXT("guid"));
+			N.NodeClass = (*Obj)->GetStringField(TEXT("class"));
+			N.Title     = (*Obj)->GetStringField(TEXT("title"));
+			OutMap.Add(N.NodeGuid, MoveTemp(N));
+		}
+	};
+
+	auto CollectWires = [](const TSharedPtr<FJsonObject>& J,
+		TMap<FString, FBridgeGraphDiffWire>& OutMap)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Arr = nullptr;
+		if (!J->TryGetArrayField(TEXT("wires"), Arr) || !Arr) return;
+		for (const TSharedPtr<FJsonValue>& V : *Arr)
+		{
+			const TSharedPtr<FJsonObject>* Obj = nullptr;
+			if (!V.IsValid() || !V->TryGetObject(Obj) || !Obj) continue;
+			FBridgeGraphDiffWire W;
+			W.SrcNodeGuid = (*Obj)->GetStringField(TEXT("src"));
+			W.SrcPinName  = (*Obj)->GetStringField(TEXT("src_pin"));
+			W.DstNodeGuid = (*Obj)->GetStringField(TEXT("dst"));
+			W.DstPinName  = (*Obj)->GetStringField(TEXT("dst_pin"));
+			const FString Key = W.SrcNodeGuid + TEXT("|") + W.SrcPinName +
+			                    TEXT("|") + W.DstNodeGuid + TEXT("|") + W.DstPinName;
+			OutMap.Add(Key, MoveTemp(W));
+		}
+	};
+
+	TMap<FString, FBridgeGraphDiffNode> NA, NB;
+	TMap<FString, FBridgeGraphDiffWire> WA, WB;
+	CollectNodes(A, NA); CollectNodes(B, NB);
+	CollectWires(A, WA); CollectWires(B, WB);
+
+	for (const auto& It : NB)  { if (!NA.Contains(It.Key)) Out.AddedNodes.Add(It.Value); }
+	for (const auto& It : NA)  { if (!NB.Contains(It.Key)) Out.RemovedNodes.Add(It.Value); }
+	for (const auto& It : WB)  { if (!WA.Contains(It.Key)) Out.AddedWires.Add(It.Value); }
+	for (const auto& It : WA)  { if (!WB.Contains(It.Key)) Out.RemovedWires.Add(It.Value); }
+	return Out;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   Entry-friction fix (#4): EnsureFunctionExecWired +
+//   GetFunctionSignature BP-path auto-resolution
+// ═══════════════════════════════════════════════════════════════════
+
+bool UUnrealBridgeBlueprintLibrary::EnsureFunctionExecWired(
+	const FString& BlueprintPath, const FString& FunctionName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = nullptr;
+	const FName FnName(*FunctionName);
+	for (UEdGraph* G : BP->FunctionGraphs) { if (G && G->GetFName() == FnName) { Graph = G; break; } }
+	if (!Graph) return false;
+
+	UK2Node_FunctionEntry* Entry = nullptr;
+	UK2Node_FunctionResult* Result = nullptr;
+	for (UEdGraphNode* N : Graph->Nodes)
+	{
+		if (!Entry)  Entry  = Cast<UK2Node_FunctionEntry>(N);
+		if (!Result) Result = Cast<UK2Node_FunctionResult>(N);
+	}
+	if (!Entry || !Result) return false;
+
+	const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
+	UEdGraphPin* EntryExec = K2 ? K2->FindExecutionPin(*Entry,  EGPD_Output) : nullptr;
+	UEdGraphPin* ResultExec = K2 ? K2->FindExecutionPin(*Result, EGPD_Input)  : nullptr;
+	if (!EntryExec || !ResultExec) return false;
+	// Already wired to something — don't touch.
+	if (EntryExec->LinkedTo.Num() > 0 || ResultExec->LinkedTo.Num() > 0) return false;
+
+	EntryExec->MakeLinkTo(ResultExec);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   Refactor primitives (#2): InsertNodeOnWire +
+//   ReplaceNodePreservingConnections
+// ═══════════════════════════════════════════════════════════════════
+
+bool UUnrealBridgeBlueprintLibrary::InsertNodeOnWire(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& SrcNodeGuid, const FString& SrcPinName,
+	const FString& DstNodeGuid, const FString& DstPinName,
+	const FString& InsertNodeGuid,
+	const FString& InsertInPinName, const FString& InsertOutPinName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+
+	UEdGraphNode* SrcNode    = BridgeBPCollapseImpl::FindNodeByGuid(Graph, SrcNodeGuid);
+	UEdGraphNode* DstNode    = BridgeBPCollapseImpl::FindNodeByGuid(Graph, DstNodeGuid);
+	UEdGraphNode* InsertNode = BridgeBPCollapseImpl::FindNodeByGuid(Graph, InsertNodeGuid);
+	if (!SrcNode || !DstNode || !InsertNode) return false;
+
+	UEdGraphPin* SrcPin    = SrcNode->FindPin(FName(*SrcPinName));
+	UEdGraphPin* DstPin    = DstNode->FindPin(FName(*DstPinName));
+	UEdGraphPin* InsertIn  = InsertNode->FindPin(FName(*InsertInPinName));
+	UEdGraphPin* InsertOut = InsertNode->FindPin(FName(*InsertOutPinName));
+	if (!SrcPin || !DstPin || !InsertIn || !InsertOut) return false;
+
+	// Confirm the original wire actually exists.
+	if (!SrcPin->LinkedTo.Contains(DstPin)) return false;
+
+	Graph->Modify();
+	SrcPin->BreakLinkTo(DstPin);
+	SrcPin->MakeLinkTo(InsertIn);
+	InsertOut->MakeLinkTo(DstPin);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+FBridgeReplaceNodeReport UUnrealBridgeBlueprintLibrary::ReplaceNodePreservingConnections(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& OldNodeGuid, const FString& NewNodeClassPath)
+{
+	FBridgeReplaceNodeReport Rep;
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP)
+	{
+		Rep.Message = TEXT("blueprint not found"); return Rep;
+	}
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) { Rep.Message = TEXT("graph not found"); return Rep; }
+	UEdGraphNode* Old = BridgeBPCollapseImpl::FindNodeByGuid(Graph, OldNodeGuid);
+	if (!Old) { Rep.Message = TEXT("old node not found"); return Rep; }
+
+	UClass* NewCls = BridgeBPExtImpl::ResolveClass(NewNodeClassPath);
+	if (!NewCls || !NewCls->IsChildOf(UK2Node::StaticClass()) ||
+	    NewCls->HasAnyClassFlags(CLASS_Abstract))
+	{
+		Rep.Message = TEXT("new class not resolvable / not a UK2Node");
+		return Rep;
+	}
+
+	const int32 OldX = Old->NodePosX;
+	const int32 OldY = Old->NodePosY;
+
+	// Cache old pin links before we start breaking things.
+	struct FOldPinRef { FName Name; EEdGraphPinDirection Dir; FEdGraphPinType Type; TArray<UEdGraphPin*> Links; };
+	TArray<FOldPinRef> OldPins;
+	for (UEdGraphPin* P : Old->Pins)
+	{
+		if (!P || P->bHidden) continue;
+		FOldPinRef R;
+		R.Name  = P->PinName;
+		R.Dir   = P->Direction;
+		R.Type  = P->PinType;
+		R.Links = P->LinkedTo;
+		OldPins.Add(MoveTemp(R));
+	}
+
+	UK2Node* NewNode = NewObject<UK2Node>(Graph, NewCls);
+	NewNode->CreateNewGuid();
+	NewNode->NodePosX = OldX;
+	NewNode->NodePosY = OldY;
+	Graph->AddNode(NewNode, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+	NewNode->PostPlacedNewNode();
+	NewNode->AllocateDefaultPins();
+
+	const UEdGraphSchema* Schema = Graph->GetSchema();
+
+	Graph->Modify();
+	for (const FOldPinRef& R : OldPins)
+	{
+		UEdGraphPin* NewPin = NewNode->FindPin(R.Name, R.Dir);
+		if (!NewPin)
+		{
+			if (R.Links.Num() > 0) Rep.DroppedPins.Add(R.Name.ToString());
+			continue;
+		}
+		// Compatible types only.
+		bool bCompatible = (NewPin->PinType == R.Type);
+		if (!bCompatible && Schema)
+		{
+			// Check schema compatibility for data pins (exec pins match by
+			// category alone; this covers the common case).
+			bCompatible = (NewPin->PinType.PinCategory == R.Type.PinCategory);
+		}
+		if (!bCompatible)
+		{
+			if (R.Links.Num() > 0) Rep.DroppedPins.Add(R.Name.ToString());
+			continue;
+		}
+		int32 Rewired = 0;
+		for (UEdGraphPin* Linked : R.Links)
+		{
+			if (!Linked) continue;
+			Linked->MakeLinkTo(NewPin);
+			Rewired += 1;
+		}
+		if (Rewired > 0) Rep.ReconnectedPins.Add(R.Name.ToString());
+	}
+
+	Old->DestroyNode();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+
+	Rep.bSuccess = true;
+	Rep.NewNodeGuid = NewNode->NodeGuid.ToString(EGuidFormats::Digits);
+	return Rep;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   Batch graph ops (#1)
+// ═══════════════════════════════════════════════════════════════════
+
+namespace BridgeBPBatchImpl
+{
+	/** Resolve a guid field that may be "$N" back-reference to an earlier op. */
+	static FString ResolveGuid(const FString& Token,
+		const TArray<FBridgeGraphOpResult>& PriorResults)
+	{
+		if (Token.Len() < 2 || Token[0] != TCHAR('$')) return Token;
+		const FString NumStr = Token.Mid(1);
+		if (!NumStr.IsNumeric()) return Token;
+		const int32 Idx = FCString::Atoi(*NumStr);
+		if (!PriorResults.IsValidIndex(Idx)) return FString();
+		return PriorResults[Idx].NewNodeGuid;
+	}
+
+	static FString GetString(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Key, const FString& Fallback = FString())
+	{
+		FString V;
+		if (Obj->TryGetStringField(Key, V)) return V;
+		return Fallback;
+	}
+
+	static int32 GetInt(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Key, int32 Fallback = 0)
+	{
+		int32 V;
+		if (Obj->TryGetNumberField(Key, V)) return V;
+		double D;
+		if (Obj->TryGetNumberField(Key, D)) return static_cast<int32>(D);
+		return Fallback;
+	}
+
+	static bool GetBool(const TSharedPtr<FJsonObject>& Obj, const TCHAR* Key, bool Fallback = false)
+	{
+		bool V;
+		if (Obj->TryGetBoolField(Key, V)) return V;
+		return Fallback;
+	}
+}
+
+TArray<FBridgeGraphOpResult> UUnrealBridgeBlueprintLibrary::ApplyGraphOps(
+	const FString& BlueprintPath, const FString& OpsJson)
+{
+	using namespace BridgeBPBatchImpl;
+
+	TArray<FBridgeGraphOpResult> Results;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Results;
+
+	TArray<TSharedPtr<FJsonValue>> OpArr;
+	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(OpsJson);
+	if (!FJsonSerializer::Deserialize(Reader, OpArr)) return Results;
+
+	bool bAnyMutation = false;
+	for (int32 i = 0; i < OpArr.Num(); ++i)
+	{
+		FBridgeGraphOpResult R;
+		R.Index = i;
+
+		const TSharedPtr<FJsonObject>* ObjPtr = nullptr;
+		if (!OpArr[i].IsValid() || !OpArr[i]->TryGetObject(ObjPtr) || !ObjPtr)
+		{
+			R.Message = TEXT("op is not a JSON object");
+			Results.Add(R); continue;
+		}
+		const TSharedPtr<FJsonObject>& Obj = *ObjPtr;
+		R.Op = GetString(Obj, TEXT("op"));
+
+		if (R.Op == TEXT("add_call_function"))
+		{
+			const FString G = GetString(Obj, TEXT("graph"));
+			const FString TC = GetString(Obj, TEXT("target_class"));
+			const FString FN = GetString(Obj, TEXT("function_name"));
+			const int32 X = GetInt(Obj, TEXT("x")); const int32 Y = GetInt(Obj, TEXT("y"));
+			R.NewNodeGuid = AddCallFunctionNode(BlueprintPath, G, TC, FN, X, Y);
+			R.bSuccess = !R.NewNodeGuid.IsEmpty();
+			if (!R.bSuccess) R.Message = TEXT("add_call_function failed");
+		}
+		else if (R.Op == TEXT("add_variable_node"))
+		{
+			const FString G = GetString(Obj, TEXT("graph"));
+			const FString VN = GetString(Obj, TEXT("variable"));
+			const bool bSet = GetBool(Obj, TEXT("is_set"));
+			const int32 X = GetInt(Obj, TEXT("x")); const int32 Y = GetInt(Obj, TEXT("y"));
+			R.NewNodeGuid = AddVariableNode(BlueprintPath, G, VN, bSet, X, Y);
+			R.bSuccess = !R.NewNodeGuid.IsEmpty();
+			if (!R.bSuccess) R.Message = TEXT("add_variable_node failed");
+		}
+		else if (R.Op == TEXT("add_node_by_class"))
+		{
+			const FString G = GetString(Obj, TEXT("graph"));
+			const FString CP = GetString(Obj, TEXT("class"));
+			const int32 X = GetInt(Obj, TEXT("x")); const int32 Y = GetInt(Obj, TEXT("y"));
+			R.NewNodeGuid = AddNodeByClassName(BlueprintPath, G, CP, X, Y);
+			R.bSuccess = !R.NewNodeGuid.IsEmpty();
+			if (!R.bSuccess) R.Message = TEXT("add_node_by_class failed");
+		}
+		else if (R.Op == TEXT("connect_pins"))
+		{
+			const FString G  = GetString(Obj, TEXT("graph"));
+			const FString SN = ResolveGuid(GetString(Obj, TEXT("src_node")), Results);
+			const FString SP = GetString(Obj, TEXT("src_pin"));
+			const FString DN = ResolveGuid(GetString(Obj, TEXT("dst_node")), Results);
+			const FString DP = GetString(Obj, TEXT("dst_pin"));
+			R.bSuccess = ConnectGraphPins(BlueprintPath, G, SN, SP, DN, DP);
+			if (!R.bSuccess) R.Message = TEXT("connect_pins failed");
+		}
+		else if (R.Op == TEXT("set_pin_default"))
+		{
+			const FString G = GetString(Obj, TEXT("graph"));
+			const FString N = ResolveGuid(GetString(Obj, TEXT("node")), Results);
+			const FString P = GetString(Obj, TEXT("pin"));
+			const FString V = GetString(Obj, TEXT("value"));
+			R.bSuccess = SetPinDefaultValue(BlueprintPath, G, N, P, V);
+			if (!R.bSuccess) R.Message = TEXT("set_pin_default failed");
+		}
+		else if (R.Op == TEXT("remove_node"))
+		{
+			const FString G = GetString(Obj, TEXT("graph"));
+			const FString N = ResolveGuid(GetString(Obj, TEXT("node")), Results);
+			R.bSuccess = RemoveGraphNode(BlueprintPath, G, N);
+			if (!R.bSuccess) R.Message = TEXT("remove_node failed");
+		}
+		else
+		{
+			R.Message = FString::Printf(TEXT("unknown op '%s'"), *R.Op);
+		}
+		if (R.bSuccess) bAnyMutation = true;
+		Results.Add(R);
+	}
+
+	// Compile once at the end if anything mutated.
+	if (bAnyMutation)
+	{
+		FKismetEditorUtilities::CompileBlueprint(BP);
+	}
+	return Results;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   CDO override query (#5)
+// ═══════════════════════════════════════════════════════════════════
+
+TArray<FBridgeCdoOverride> UUnrealBridgeBlueprintLibrary::FindCdoVariableOverrides(
+	const FString& DefiningBlueprintPath,
+	const FString& VariableName,
+	const FString& PackagePath)
+{
+	TArray<FBridgeCdoOverride> Out;
+	UBlueprint* DefBP = LoadBP(DefiningBlueprintPath);
+	if (!DefBP || !DefBP->GeneratedClass) return Out;
+	UClass* DefClass = DefBP->GeneratedClass;
+	UObject* DefCDO  = DefClass->GetDefaultObject(false);
+	if (!DefCDO) return Out;
+
+	FProperty* Prop = FindFProperty<FProperty>(DefClass, FName(*VariableName));
+	if (!Prop) return Out;
+
+	FString ParentVal;
+	Prop->ExportText_InContainer(0, ParentVal, DefCDO, DefCDO, DefCDO, PPF_None);
+
+	// Enumerate all BP assets under PackagePath; keep the ones whose generated
+	// class is a subclass of DefClass and whose CDO's value differs.
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+	FString Root = PackagePath.IsEmpty() ? FString(TEXT("/Game")) : PackagePath;
+	if (!Root.StartsWith(TEXT("/"))) Root = TEXT("/") + Root;
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(FName(*Root));
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+
+	TArray<FAssetData> BpAssets;
+	Registry.GetAssets(Filter, BpAssets);
+
+	for (const FAssetData& Data : BpAssets)
+	{
+		const FString Path = Data.GetSoftObjectPath().ToString();
+		UBlueprint* BP = LoadBP(Path);
+		if (!BP || !BP->GeneratedClass || BP == DefBP) continue;
+		if (!BP->GeneratedClass->IsChildOf(DefClass)) continue;
+		UObject* CDO = BP->GeneratedClass->GetDefaultObject(false);
+		if (!CDO) continue;
+		FProperty* ChildProp = FindFProperty<FProperty>(BP->GeneratedClass, FName(*VariableName));
+		if (!ChildProp) continue;
+
+		FString ChildVal;
+		ChildProp->ExportText_InContainer(0, ChildVal, CDO, CDO, CDO, PPF_None);
+		if (ChildVal == ParentVal) continue;
+
+		FBridgeCdoOverride Row;
+		Row.BlueprintPath = Path;
+		Row.VariableName  = VariableName;
+		Row.ParentValue   = ParentVal;
+		Row.ChildValue    = ChildVal;
+		Out.Add(MoveTemp(Row));
+	}
+	return Out;
+}
 
 bool UUnrealBridgeBlueprintLibrary::ChangeVariableTypeWithReport(
 	const FString& BlueprintPath, const FString& VariableName,

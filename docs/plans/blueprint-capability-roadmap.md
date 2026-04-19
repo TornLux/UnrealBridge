@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 在蓝图全生命周期（读取、理解、编辑、执行验证）上相对"AI 从自然语言自主生成蓝图"目标的能力缺口，按优先级排序。
 
-最后更新：2026-04-19（P1 #9/#10/#11/#12 + P2 #13/#14/#15/#16 + P3 #17/#19 一并落地后）
+最后更新：2026-04-19（反思清单 Top-5：batch_ops / insert-on-wire / graph-diff / 签名摩擦修复 / CDO override 查询 一并落地）
 
 ---
 
@@ -22,6 +22,7 @@
 - 活 Slate 几何：`get_rendered_node_info`
 - 行为验证：**`invoke_blueprint_function`** 在 transient 实例上直接 ProcessEvent（非 Actor = NewObject；Actor = 编辑器世界 SpawnActor），JSON 入参 / JSON 出参（`_return` + out-params），拒绝 latent/非 BlueprintCallable
 - 编辑器焦点快照：**`get_editor_focus_state`** 当前焦点 BP / 活动 graph / 选中节点 / 所有打开的 BP 编辑器
+- 图指纹 / 快照 / 语义 diff：**`get_graph_fingerprint`** + **`snapshot_graph_json`** + **`diff_graph_snapshots`** — 低成本检测 AI 编辑产生的变化
 
 ### 写
 - 变量/函数/Macro/接口/组件/dispatcher 全 CRUD + metadata 编辑
@@ -37,6 +38,10 @@
 - 变量类型：**change_variable_type_with_report**（自动抑制"是否搜索引用"对话框）
 - 跨 BP 重构：**rename_member_variable_global** / **rename_function_global** 按 owner class 过滤
 - 节点落点：任意 K2Node 按类名创建（**add_node_by_class_name**）、异步节点（**add_async_action_node**）、DataTableRowHandle 默认值助手（**set_data_table_row_handle_pin**）
+- 重构原语：**`insert_node_on_wire`**（A→B 中间插入第三个节点）+ **`replace_node_preserving_connections`**（换节点类同时保留同名 pin 连线）
+- 批量编辑：**`apply_graph_ops`** 单次 round-trip 跑多个 add/connect/set_default，支持 `$N` 回引用、结尾统一 compile
+- 入口摩擦修复：`get_function_signature` 现在接受 BP 路径（无需 `_C` 后缀）；**`ensure_function_exec_wired`** 把 Entry.then → Result.execute 自动接上
+- CDO 查询：**`find_cdo_variable_overrides`** 列出子 BP 中覆盖了父类默认值的变量（如 MaxHealth 被哪些子类改过）
 
 ---
 

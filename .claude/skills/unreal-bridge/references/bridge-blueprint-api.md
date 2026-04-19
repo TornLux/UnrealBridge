@@ -1961,6 +1961,256 @@ and (b) gives no signal about which references got clobbered. Prefer
 
 ---
 
+## Graph fingerprint + snapshot + diff
+
+Three sibling APIs for "did this graph change?" / "what changed?" —
+the first line of defense against reviewing AI-generated edits blind.
+
+### get_graph_fingerprint(blueprint_path, graph_name) -> str
+
+Stable SHA-1 of a graph's shape. Encodes every node's class / position /
+title plus every wire's endpoints in canonical (guid-sorted) order,
+then hashes the encoding. Two calls on the same graph return byte-
+identical hex. Cheap "has this graph moved since my last edit?" check.
+
+```python
+before = L.get_graph_fingerprint(bp, 'EventGraph')
+# ... do something that may or may not touch EventGraph ...
+after = L.get_graph_fingerprint(bp, 'EventGraph')
+if before != after:
+    print('EventGraph changed')
+```
+
+Returns empty string when the graph isn't found.
+
+### snapshot_graph_json(blueprint_path, graph_name) -> str
+
+Deterministic JSON dump of the graph's nodes + wires. Schema:
+
+```json
+{"nodes":[{"guid":"...","class":"K2Node_CallFunction",
+           "title":"...","x":0,"y":0}, ...],
+ "wires":[{"src":"guid","src_pin":"then",
+           "dst":"guid","dst_pin":"execute"}, ...]}
+```
+
+Nodes and wires are both guid-sorted so two snapshots of the same
+graph produce byte-identical output — diff-friendly. Use as input
+to `diff_graph_snapshots`, or store to disk for regression testing.
+
+### diff_graph_snapshots(before_json, after_json) -> FBridgeGraphDiff
+
+Compute set-difference between two snapshots. Node identity is by
+guid; wire identity is by (src_guid, src_pin, dst_guid, dst_pin).
+Node reordering doesn't count as a change.
+
+```python
+before = L.snapshot_graph_json(bp, 'EventGraph')
+# ... apply some batch of edits ...
+after = L.snapshot_graph_json(bp, 'EventGraph')
+diff = L.diff_graph_snapshots(before, after)
+print(f'+{len(diff.added_nodes)}/-{len(diff.removed_nodes)} nodes, '
+      f'+{len(diff.added_wires)}/-{len(diff.removed_wires)} wires')
+for n in diff.added_nodes:
+    print(f'  added {n.node_class}: {n.title}')
+```
+
+**Fields on `FBridgeGraphDiff`**: `added_nodes`, `removed_nodes`
+(lists of `{node_guid, node_class, title}`); `added_wires`,
+`removed_wires` (lists of `{src_node_guid, src_pin_name,
+dst_node_guid, dst_pin_name}`).
+
+Modified nodes (same guid, different position / title) aren't
+reported as a separate class — they'd show up as absent from both
+added and removed. If you care about position drift, compare
+snapshots field-by-field instead.
+
+---
+
+## Entry-friction fixes
+
+### ensure_function_exec_wired(blueprint_path, function_name) -> bool
+
+Wire `FunctionEntry.then` → `FunctionResult.execute` on a function
+graph if both nodes exist and the exec chain is missing. Workaround
+for the trap where `create_function_graph` + `add_function_parameter`
+leave a function that compiles clean but does nothing at runtime
+because the exec pins were never connected.
+
+```python
+L.create_function_graph(bp, 'MyFunc')
+L.add_function_parameter(bp, 'MyFunc', 'A', 'int', False)
+L.add_function_parameter(bp, 'MyFunc', 'Result', 'int', True)
+# Entry and Result both exist now but there's no exec wire — the function
+# would execute zero nodes between them.
+L.ensure_function_exec_wired(bp, 'MyFunc')
+```
+
+Returns false when: the wire already exists, Result node is missing
+(no return param added yet), or the graph isn't a function graph.
+
+### get_function_signature — BP-path auto-resolve
+
+`get_function_signature(class_path, function_name)` now accepts a
+Blueprint asset path directly, without requiring the `_C` generated-
+class suffix:
+
+```python
+# All three resolve to the same UClass now:
+L.get_function_signature('/Game/BP_X.BP_X',     'MyFunc')  # BP path
+L.get_function_signature('/Game/BP_X.BP_X_C',   'MyFunc')  # generated class
+L.get_function_signature('BP_X_C',              'MyFunc')  # short name
+```
+
+Previously the BP-path form silently returned `found=False`. The
+generated-class form still works identically; this just removes a
+footgun.
+
+---
+
+## Refactor primitives
+
+### insert_node_on_wire(blueprint_path, graph_name, src_node_guid, src_pin_name, dst_node_guid, dst_pin_name, insert_node_guid, insert_in_pin_name, insert_out_pin_name) -> bool
+
+Split an existing wire A→B by routing it through a third node X so
+the chain becomes A→X→B. Common pattern for inserting a Cast,
+validator, or debug PrintString into a live data-flow without
+hand-rewiring.
+
+```python
+# Insert an Abs_Int node between Add.ReturnValue and Result.Sum.
+abs_guid = L.add_call_function_node(bp, 'Compute',
+    '/Script/Engine.KismetMathLibrary', 'Abs_Int', 550, 0)
+ok = L.insert_node_on_wire(bp, 'Compute',
+    add_guid, 'ReturnValue', result_guid, 'Sum',
+    abs_guid, 'A', 'ReturnValue')
+```
+
+Returns false when any of the three nodes or pins can't be resolved,
+or when the A→B wire doesn't actually exist (use
+`get_node_pin_connections` to confirm first). Call on both exec and
+data wires; pin compatibility isn't re-checked (the caller vouches
+that X's pins are the right type).
+
+### replace_node_preserving_connections(blueprint_path, graph_name, old_node_guid, new_node_class_path) -> FBridgeReplaceNodeReport
+
+Swap a node's UClass while carrying over as many pin connections as
+possible. Pins are matched by exact name between old and new node;
+only pins whose type is schema-compatible (or exactly matches) get
+rewired. Dropped + reconnected pin names come back in the report so
+the caller can fix the remainder.
+
+```python
+rep = L.replace_node_preserving_connections(
+    bp, 'EventGraph', old_guid, 'K2Node_IfThenElse')
+if rep.success:
+    print(f'  new node: {rep.new_node_guid}')
+    print(f'  carried: {list(rep.reconnected_pins)}')
+    print(f'  dropped: {list(rep.dropped_pins)}')
+```
+
+**Dropped pin semantics.** Only pins that HAD connections appear in
+the dropped list — unused input pins with no wires aren't reported.
+So a clean report (`dropped=[]`) means every link from the old node
+was either carried over or had no wires to carry.
+
+**Limitation.** This is a "dumb" swap: it won't initialize K2Node
+subclass-specific fields (target function / cast class / variable
+ref). For swapping between two CallFunction nodes with different
+target functions, pair with `spawn_node_by_action_key` or set up
+the new target manually.
+
+---
+
+## Batch graph ops
+
+### apply_graph_ops(blueprint_path, ops_json) -> list[FBridgeGraphOpResult]
+
+Execute a sequence of graph mutations in a single bridge round-trip
+and compile the BP once at the end. Typical 5-node function build
+drops from 8+ exec calls to 1. Op results come back in input order
+with per-op success flags and any new-node guids.
+
+**Supported ops** (MVP subset):
+- `add_call_function` — `{graph, target_class, function_name, x, y}` → NewNodeGuid
+- `add_variable_node` — `{graph, variable, is_set, x, y}` → NewNodeGuid
+- `add_node_by_class` — `{graph, class, x, y}` → NewNodeGuid
+- `connect_pins` — `{graph, src_node, src_pin, dst_node, dst_pin}`
+- `set_pin_default` — `{graph, node, pin, value}`
+- `remove_node` — `{graph, node}`
+
+**Back-references.** Any `*_node` / `node` field accepts the literal
+string `$N` where N is the zero-based index of an earlier op. Lets a
+batch build up a tree of new nodes without knowing guids in advance:
+
+```python
+import json
+ops = [
+    # [0] Spawn Add node
+    {"op":"add_call_function", "graph":"Compute",
+     "target_class":"/Script/Engine.KismetMathLibrary",
+     "function_name":"Add_IntInt", "x":300, "y":0},
+    # [1] Wire Entry.A -> Add.A  (referenced by $0)
+    {"op":"connect_pins", "graph":"Compute",
+     "src_node": entry_guid, "src_pin":"A",
+     "dst_node":"$0",        "dst_pin":"A"},
+    # [2] Wire Entry.B -> Add.B
+    {"op":"connect_pins", "graph":"Compute",
+     "src_node": entry_guid, "src_pin":"B",
+     "dst_node":"$0",        "dst_pin":"B"},
+    # [3] Wire Add.Return -> Result.Sum
+    {"op":"connect_pins", "graph":"Compute",
+     "src_node":"$0",         "src_pin":"ReturnValue",
+     "dst_node": result_guid, "dst_pin":"Sum"},
+    # [4] Exec wire
+    {"op":"connect_pins", "graph":"Compute",
+     "src_node": entry_guid,  "src_pin":"then",
+     "dst_node": result_guid, "dst_pin":"execute"},
+]
+results = L.apply_graph_ops(bp, json.dumps(ops))
+for r in results:
+    print(r.index, r.op, r.success, r.new_node_guid, r.message)
+```
+
+**Failure mode.** Ops run sequentially; a failed op records its error
+in its result row and the remaining ops continue. Callers that want
+all-or-nothing semantics must walk the results and decide what to do
+(undo, abort, proceed).
+
+**Compilation.** The BP is compiled once at the end if any op
+succeeded. No per-op compile cost.
+
+---
+
+## CDO variable-override query
+
+### find_cdo_variable_overrides(defining_blueprint_path, variable_name, package_path) -> list[FBridgeCdoOverride]
+
+Scan every Blueprint under `package_path` that derives from the
+defining BP's class and return the ones whose CDO value for
+`variable_name` differs from the parent's CDO value. Lets an agent
+answer "which enemy BPs override MaxHealth?" without opening each BP.
+
+```python
+overrides = L.find_cdo_variable_overrides(
+    '/Game/BP_EnemyBase.BP_EnemyBase', 'MaxHealth', '/Game/Enemies')
+for o in overrides:
+    print(f'{o.blueprint_path}: parent={o.parent_value} child={o.child_value}')
+# /Game/Enemies/BP_Goblin.BP_Goblin: parent=100.0 child=75.0
+# /Game/Enemies/BP_Dragon.BP_Dragon: parent=100.0 child=2500.0
+```
+
+**Values are ExportText form.** Floats are formatted like
+`"100.000000"`, structs like `"(X=1.0,Y=0.0,Z=0.0)"`, object refs as
+asset paths. For deep-typed comparison, parse on the caller side.
+
+**Matching.** Child BPs must have a generated class that's a subclass
+of the defining BP's generated class. BPs that shadow the variable
+name without inheriting (rare) are skipped. The defining BP is not
+included in the result even though it has a CDO value.
+
+---
+
 ## Node layout (position / size / corners / pin coordinates)
 
 Read node geometry for layout purposes — placing new nodes adjacent to

@@ -1076,6 +1076,100 @@ struct FBridgeRenameReport
 	UPROPERTY(BlueprintReadOnly) FString Message;
 };
 
+/** Per-operation result row in an ApplyGraphOps batch. */
+USTRUCT(BlueprintType)
+struct FBridgeGraphOpResult
+{
+	GENERATED_BODY()
+
+	/** Index into the input ops array (mirrors the caller's order). */
+	UPROPERTY(BlueprintReadOnly) int32 Index = 0;
+
+	/** Op-kind string echoed from input ("add_call_function" etc.). */
+	UPROPERTY(BlueprintReadOnly) FString Op;
+
+	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+
+	/** GUID of a newly-spawned node, for ops that spawn nodes; empty otherwise. */
+	UPROPERTY(BlueprintReadOnly) FString NewNodeGuid;
+
+	/** Error detail on failure; empty on success. */
+	UPROPERTY(BlueprintReadOnly) FString Message;
+};
+
+/** Report of a replace-node-preserving-connections op. */
+USTRUCT(BlueprintType)
+struct FBridgeReplaceNodeReport
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+
+	/** GUID of the new node, or empty on failure. */
+	UPROPERTY(BlueprintReadOnly) FString NewNodeGuid;
+
+	/** Pins on the old node that were successfully rewired to the new node. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> ReconnectedPins;
+
+	/** Pins on the old node whose links could not be carried over (no matching
+	 *  pin on the new node, or types were incompatible). */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> DroppedPins;
+
+	/** Diagnostic text on failure. */
+	UPROPERTY(BlueprintReadOnly) FString Message;
+};
+
+/** Single node entry used in a graph diff's added/removed lists. */
+USTRUCT(BlueprintType)
+struct FBridgeGraphDiffNode
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly) FString NodeClass;
+	UPROPERTY(BlueprintReadOnly) FString Title;
+};
+
+/** Single wire entry used in a graph diff's added/removed lists. */
+USTRUCT(BlueprintType)
+struct FBridgeGraphDiffWire
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString SrcNodeGuid;
+	UPROPERTY(BlueprintReadOnly) FString SrcPinName;
+	UPROPERTY(BlueprintReadOnly) FString DstNodeGuid;
+	UPROPERTY(BlueprintReadOnly) FString DstPinName;
+};
+
+/** Result of comparing two graph snapshots. */
+USTRUCT(BlueprintType)
+struct FBridgeGraphDiff
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffNode> AddedNodes;
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffNode> RemovedNodes;
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffWire> AddedWires;
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffWire> RemovedWires;
+};
+
+/** Single CDO override row for FindCdoVariableOverrides. */
+USTRUCT(BlueprintType)
+struct FBridgeCdoOverride
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+	UPROPERTY(BlueprintReadOnly) FString VariableName;
+
+	/** Parent CDO's value (ExportText form). */
+	UPROPERTY(BlueprintReadOnly) FString ParentValue;
+
+	/** Child CDO's value (ExportText form) — differs from ParentValue. */
+	UPROPERTY(BlueprintReadOnly) FString ChildValue;
+};
+
 /** Reference site for a cross-Blueprint query — same fields as FBridgeReference
  *  plus the asset path of the containing Blueprint. */
 USTRUCT(BlueprintType)
@@ -2723,4 +2817,156 @@ public:
 	static bool ChangeVariableTypeWithReport(const FString& BlueprintPath,
 		const FString& VariableName, const FString& NewTypeString,
 		TArray<FString>& OutBrokenNodeGuids);
+
+	// ─── Graph fingerprint + snapshot + diff ────────────────────────
+
+	/**
+	 * Stable hash of a graph's shape. Encodes every node's class / position /
+	 * K2Node-subclass fields and every wire's endpoints, in a canonical
+	 * (guid-sorted) order, then SHA-1s the encoding. Cheap "did this graph
+	 * change since I last looked?" check that doesn't require a full re-read.
+	 *
+	 * @return 40-hex-char SHA-1, or empty string if the graph isn't found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString GetGraphFingerprint(const FString& BlueprintPath,
+		const FString& GraphName);
+
+	/**
+	 * Serialize a graph's nodes and wires to a canonical JSON string. The
+	 * output is deterministic (guid-sorted), so two calls on the same graph
+	 * produce byte-identical output. Pair with DiffGraphSnapshots to reason
+	 * about what changed between two edit states.
+	 *
+	 * Schema:
+	 *   {"nodes":[{"guid":"...","class":"K2Node_CallFunction","title":"...",
+	 *              "x":0,"y":0}, ...],
+	 *    "wires":[{"src":"guid","src_pin":"then","dst":"guid",
+	 *              "dst_pin":"execute"}, ...]}
+	 *
+	 * @return JSON string, or empty on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString SnapshotGraphJson(const FString& BlueprintPath,
+		const FString& GraphName);
+
+	/**
+	 * Compute the set difference between two graph snapshots. Node identity
+	 * is the NodeGuid; wire identity is (src_guid, src_pin, dst_guid, dst_pin).
+	 * Treats reordered nodes / wires as unchanged since order has no semantic
+	 * meaning.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeGraphDiff DiffGraphSnapshots(const FString& BeforeJson,
+		const FString& AfterJson);
+
+	// ─── Entry-friction fix (#4) ────────────────────────────────────
+
+	/**
+	 * Wire the first FunctionEntry's exec-out ("then") to the first
+	 * FunctionResult's exec-in ("execute") inside a function graph, if both
+	 * exist and the wire doesn't already exist. Returns false if no exec
+	 * wiring was necessary (already wired, missing Result, or the graph is
+	 * not a function graph).
+	 *
+	 * Workaround for the trap where CreateFunctionGraph + AddFunctionParameter
+	 * leave the graph with isolated Entry/Result nodes; calling the function
+	 * compiles clean but does nothing at runtime. Call this after shaping
+	 * the signature to guarantee a walkable exec path.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool EnsureFunctionExecWired(const FString& BlueprintPath,
+		const FString& FunctionName);
+
+	// ─── Refactor primitives (#2) ───────────────────────────────────
+
+	/**
+	 * Split an existing wire A→B by inserting a third node X such that
+	 * A→X and X→B carry the original wire's data. Breaks the original link
+	 * and adds the two new ones in a single call.
+	 *
+	 * @param SrcNodeGuid / SrcPinName  The upstream endpoint of the existing wire.
+	 * @param DstNodeGuid / DstPinName  The downstream endpoint of the existing wire.
+	 * @param InsertNodeGuid  The node to sit between them.
+	 * @param InsertInPinName  Pin on the insert node that takes the upstream side.
+	 * @param InsertOutPinName Pin on the insert node that feeds the downstream side.
+	 * @return true on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool InsertNodeOnWire(const FString& BlueprintPath,
+		const FString& GraphName,
+		const FString& SrcNodeGuid, const FString& SrcPinName,
+		const FString& DstNodeGuid, const FString& DstPinName,
+		const FString& InsertNodeGuid,
+		const FString& InsertInPinName, const FString& InsertOutPinName);
+
+	/**
+	 * Swap a node's UClass while carrying over as many pin connections as
+	 * possible. Pins are matched by exact name between old and new node;
+	 * only pins whose PinType is schema-compatible get rewired. Dropped
+	 * pins + reconnected pins are reported so the caller can fix orphans.
+	 *
+	 * @param OldNodeGuid  Node to replace.
+	 * @param NewNodeClassPath  `/Script/<Module>.<Class>` or short class name
+	 *                          of a UK2Node subclass.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeReplaceNodeReport ReplaceNodePreservingConnections(
+		const FString& BlueprintPath, const FString& GraphName,
+		const FString& OldNodeGuid, const FString& NewNodeClassPath);
+
+	// ─── Batch graph ops (#1) ───────────────────────────────────────
+
+	/**
+	 * Execute a sequence of graph mutations on one Blueprint in a single
+	 * bridge round-trip. Compiles the BP once at the end instead of once
+	 * per op.
+	 *
+	 * Input JSON: `[{"op":"...", ...args}, ...]`. Supported ops:
+	 *   - `{"op":"add_call_function", "graph":"<name>",
+	 *       "target_class":"<path or empty for self>",
+	 *       "function_name":"...", "x":0, "y":0}` → NewNodeGuid
+	 *   - `{"op":"add_variable_node", "graph":"<name>",
+	 *       "variable":"...", "is_set":false, "x":0, "y":0}` → NewNodeGuid
+	 *   - `{"op":"add_node_by_class", "graph":"<name>",
+	 *       "class":"K2Node_IfThenElse", "x":0, "y":0}` → NewNodeGuid
+	 *   - `{"op":"connect_pins", "graph":"<name>",
+	 *       "src_node":"<guid or $N>", "src_pin":"...",
+	 *       "dst_node":"<guid or $N>", "dst_pin":"..."}`
+	 *   - `{"op":"set_pin_default", "graph":"<name>",
+	 *       "node":"<guid or $N>", "pin":"...", "value":"..."}`
+	 *   - `{"op":"remove_node", "graph":"<name>", "node":"<guid or $N>"}`
+	 *
+	 * **Back-references.** Any `*_node` / `node` field accepts the literal
+	 * string `$N` where N is the zero-based index of an earlier op that
+	 * produced a NewNodeGuid. Lets a single batch build up a tree of
+	 * connected new nodes without knowing their guids in advance.
+	 *
+	 * Ops run sequentially. A failed op records its error in its result row
+	 * and the remaining ops continue; callers that want all-or-nothing
+	 * semantics should check each result before using the BP.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeGraphOpResult> ApplyGraphOps(
+		const FString& BlueprintPath, const FString& OpsJson);
+
+	// ─── CDO override query (#5) ────────────────────────────────────
+
+	/**
+	 * Find every Blueprint under `PackagePath` whose CDO value for
+	 * `VariableName` differs from the parent BP's CDO value for the same
+	 * variable. Use case: "show me all BP_Enemy children where MaxHealth is
+	 * overridden".
+	 *
+	 * @param DefiningBlueprintPath  The parent BP that owns the variable.
+	 * @param VariableName  The member variable to check.
+	 * @param PackagePath   Content root to scan (default "/Game" when empty).
+	 * @return One row per overriding child BP. The parent BP itself is not
+	 *         included even though it has a CDO value.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeCdoOverride> FindCdoVariableOverrides(
+		const FString& DefiningBlueprintPath,
+		const FString& VariableName,
+		const FString& PackagePath);
 };
