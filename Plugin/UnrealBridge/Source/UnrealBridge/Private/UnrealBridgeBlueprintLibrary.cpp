@@ -5680,19 +5680,35 @@ namespace BridgeBPPinAlignedImpl
 			}
 
 			// Recursively arrange and collect local pin offsets.
+			// EVisibility::All so intermediate widgets with HitTestInvisible
+			// or SelfHitTestInvisible (common for layout containers like
+			// SBorder, SOverlay) don't cut the walk short.
 			TMap<UEdGraphPin*, FVector2D> PinOffsets;
 			const FGeometry RootGeo = FGeometry::MakeRoot(Desired, FSlateLayoutTransform());
 			TFunction<void(TSharedRef<SWidget>, const FGeometry&)> Walk;
 			Walk = [&](TSharedRef<SWidget> W, const FGeometry& G2)
 			{
-				FArrangedChildren Kids(EVisibility::Visible);
+				// EVisibility::All so intermediate SelfHitTestInvisible /
+				// HitTestInvisible containers (common for layout-only
+				// wrappers like SBorder) don't get filtered out.
+				FArrangedChildren Kids(EVisibility::All);
 				W->ArrangeChildren(G2, Kids);
 				for (int32 ChildIdx = 0; ChildIdx < Kids.Num(); ++ChildIdx)
 				{
 					const FArrangedWidget& AC = Kids[ChildIdx];
 					if (UEdGraphPin** FoundPin = PinLookup.Find(&AC.Widget.Get()))
 					{
-						PinOffsets.Add(*FoundPin, FVector2D(AC.Geometry.GetAbsolutePosition()));
+						// Match the convention of SGraphPin::GetNodeOffset()
+						// from SGraphPin.cpp:933 —
+						//   offset = AbsPos/Scale - NodeUnscaledPos
+						//   offset.Y += Size.Y * 0.5
+						// i.e. return the pin's vertical CENTER, not its
+						// top. The rest of the layout code (KnotY,
+						// PlaceExecBackbone pin-to-pin alignment) all
+						// reads this center convention.
+						const FVector2D TopLeft = FVector2D(AC.Geometry.GetAbsolutePosition());
+						const FVector2D PinSize = FVector2D(AC.Geometry.GetLocalSize());
+						PinOffsets.Add(*FoundPin, FVector2D(TopLeft.X, TopLeft.Y + PinSize.Y * 0.5f));
 					}
 					else
 					{
@@ -5704,22 +5720,35 @@ namespace BridgeBPPinAlignedImpl
 
 			// Populate cache. Pin iteration order must match PinDirIndex's,
 			// so walk N->Pins again in declaration order.
+			//
+			// Value priority (most accurate first):
+			//   1. SGraphPin::GetNodeOffset() — Slate's arranged-and-painted
+			//      result, if non-zero. Only populated for nodes that have
+			//      been in the panel's visible viewport at least once, but
+			//      when available this is the authoritative render position
+			//      (SGraphPin.cpp:933 — center of pin, not top).
+			//   2. Walk's ArrangeChildren result — correct for many node
+			//      subclasses but can mis-model title-bar height or
+			//      conditional slot layout, leaving pins a few px off from
+			//      real render on some node types.
+			//   3. ComputePinLocalY formula (in PinLocalYFor's fall-through)
+			//      — rough estimate (~±20 px) when both above fail.
 			FRenderedGeom G;
 			G.Width  = int32(Desired.X);
 			G.Height = int32(Desired.Y);
 			for (UEdGraphPin* Pin : N->Pins)
 			{
 				if (!Pin || Pin->bHidden) continue;
-				FVector2D* OffPtr = PinOffsets.Find(Pin);
-				FVector2D Off = OffPtr ? *OffPtr : FVector2D::ZeroVector;
-				// If the recursive walk somehow missed this pin (e.g. a
-				// node subclass with unexpected layout), fall back to the
-				// cached NodeOffset member as a last resort.
-				if (!OffPtr)
+				FVector2D Off = FVector2D::ZeroVector;
+				if (TSharedPtr<SGraphPin> PW = NW->FindWidgetForPin(Pin))
 				{
-					if (TSharedPtr<SGraphPin> PW = NW->FindWidgetForPin(Pin))
+					Off = FVector2D(PW->GetNodeOffset());
+				}
+				if (Off.Y <= 0.0f)
+				{
+					if (FVector2D* OffPtr = PinOffsets.Find(Pin))
 					{
-						Off = FVector2D(PW->GetNodeOffset());
+						Off = *OffPtr;
 					}
 				}
 				if (Pin->Direction == EGPD_Input)
