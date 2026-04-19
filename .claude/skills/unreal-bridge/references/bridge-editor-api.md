@@ -987,3 +987,14 @@ print(r.status, r.completed, r.error)
 ```
 
 **Don't mix LC compiles with UBT:** running `Build.bat` while the editor is live will try to overwrite a locked DLL and fail. Either use LC *or* full rebuild+relaunch, never both at once.
+
+**Compile-error text is not programmatically accessible** when `Status="Failure"`. UE's `ILiveCodingModule` API only exposes the enum result — the MSVC `error C####` lines only render into the external `LiveCodingConsole.exe` GUI window's in-memory log widget, not to any capturable stream or disk log. Confirmed against UE 5.7 on 2026-04-20 by scanning:
+- `<Project>/Saved/Logs/<Project>.log` — only contains `LogLiveCoding: Error: Live coding failed, please see Live console for more information`.
+- `Engine/Programs/LiveCodingConsole/Saved/Logs/LiveCodingConsole.log` — contains the LC server's session trace but NOT the cl.exe output.
+- `AppData/Local/UnrealBuildTool/Log.txt` — UBT refuses to run while the LC mutex is held (`Unable to build while Live Coding is active`).
+
+When `trigger_live_coding_compile` reports `Failure`, options are:
+1. Look at the LiveCodingConsole GUI window (a separate black window that spawned alongside the editor) for `error C####` lines.
+2. Run `scripts/rebuild_relaunch.py` — the standalone `Build.bat` captures full compiler stdout, at the cost of restarting the editor.
+
+`hot_reload.py` automatically tails the editor log's `LogLiveCoding` entries on failure as a breadcrumb trail, but those only confirm *that* it failed, not *why*.
