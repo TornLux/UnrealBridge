@@ -5952,6 +5952,36 @@ namespace BridgeBPPinAlignedImpl
 		}
 	}
 
+	/** Walk every data node's PrimaryConsumerIdx chain to the first exec
+	 *  consumer and inherit that exec node's **current** RowId. Called
+	 *  initially from AssignRows, and again after
+	 *  ClusterDelegateBoundEvents has reassigned exec-subtree RowIds to
+	 *  Bind's row — without the re-propagation the cluster's pure data
+	 *  producers keep their stale RowId (their original event's now-empty
+	 *  row), which confuses ReBandRowsAfterClustering into yanking them
+	 *  into a spurious band far from their consumer. Cap the walk to
+	 *  avoid pathological data-cycle stalls. */
+	static void PropagateDataNodeRowIds(TArray<FPALayoutNode>& Nodes)
+	{
+		const int32 MaxHop = Nodes.Num() + 1;
+		for (int32 i = 0; i < Nodes.Num(); ++i)
+		{
+			if (Nodes[i].bHasExecPins) continue;
+			int32 Cur = Nodes[i].PrimaryConsumerIdx;
+			int32 Hop = 0;
+			while (Cur != INDEX_NONE && Hop < MaxHop)
+			{
+				if (Nodes[Cur].bHasExecPins)
+				{
+					Nodes[i].RowId = Nodes[Cur].RowId;
+					break;
+				}
+				Cur = Nodes[Cur].PrimaryConsumerIdx;
+				++Hop;
+			}
+		}
+	}
+
 	/** Group exec nodes into rows (swim lanes) seeded at layer-0 exec roots.
 	 *  Each row owns the exec subtree reachable from its root via
 	 *  ExecSuccessors. Data nodes inherit the RowId of their primary
@@ -6000,26 +6030,7 @@ namespace BridgeBPPinAlignedImpl
 			if (Nodes[i].RowId == -1) FloodRow(i);
 		}
 
-		// Data nodes: walk PrimaryConsumerIdx chain until we hit an exec
-		// node (whose RowId is already set). Cap the walk to avoid infinite
-		// loops on pathological data cycles.
-		const int32 MaxHop = Nodes.Num() + 1;
-		for (int32 i = 0; i < Nodes.Num(); ++i)
-		{
-			if (Nodes[i].bHasExecPins) continue;
-			int32 Cur = Nodes[i].PrimaryConsumerIdx;
-			int32 Hop = 0;
-			while (Cur != INDEX_NONE && Hop < MaxHop)
-			{
-				if (Nodes[Cur].bHasExecPins)
-				{
-					Nodes[i].RowId = Nodes[Cur].RowId;
-					break;
-				}
-				Cur = Nodes[Cur].PrimaryConsumerIdx;
-				++Hop;
-			}
-		}
+		PropagateDataNodeRowIds(Nodes);
 		return NextRowId;
 	}
 
@@ -7207,6 +7218,12 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 
 		PlaceExecBackbone(Nodes, LayerCount, RowLayerX, VSpace, Cache, IndexOf);
 		ClusterDelegateBoundEvents(Nodes, IndexOf, VSpace, Result.Warnings);
+		// Cluster may have reassigned exec-subtree RowIds. Refresh data-node
+		// RowIds so their PrimaryConsumer's new row is propagated down the
+		// data chain — otherwise pure data producers of a moved exec node
+		// still hold the stale original-event row and get yanked far from
+		// their consumer in ReBandRowsAfterClustering.
+		PropagateDataNodeRowIds(Nodes);
 		PlaceDataProducersPerConsumer(Nodes, DataHSpace, VSpace, Cache);
 		ReBandRowsAfterClustering(Nodes, RowCount, VSpace);
 
