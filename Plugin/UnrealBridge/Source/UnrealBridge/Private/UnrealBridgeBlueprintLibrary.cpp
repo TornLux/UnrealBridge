@@ -6561,25 +6561,127 @@ namespace BridgeBPPinAlignedImpl
 				continue;
 			}
 
-			// Apply delta to the whole subtree. Compute post-translation
-			// bottom to seed the next sibling's Y.
+			// Apply delta to the whole subtree and reassign RowId to Bind's
+			// row so the cluster becomes part of Bind's row for all later
+			// banding passes. Track post-translation bottom to seed the
+			// next sibling's Y and the push-down shift below.
+			const int32 BindRow = B.RowId;
 			int32 SubtreeMaxBottom = INT32_MIN;
 			for (int32 Idx : Subtree)
 			{
 				FPALayoutNode& LN = Nodes[Idx];
 				LN.NewX += DeltaX;
 				LN.NewY += DeltaY;
+				LN.RowId = BindRow;
 				const int32 Bottom = LN.NewY + LN.Height;
 				if (Bottom > SubtreeMaxBottom) SubtreeMaxBottom = Bottom;
 			}
 			BindNextY.Add(Bi, SubtreeMaxBottom + BlockGap);
 			++ClusteredCount;
+
+			// Push-down: shift every Bind-row exec node below Bind down by
+			// whatever it takes to clear the cluster bottom. Previously
+			// filtered by X-overlap with the cluster to save vertical
+			// space, but that left non-overlapping exec nodes (and their
+			// later-placed data producers) landing inside the cluster's
+			// Y band. Unfiltered uniform shift is a bit more generous
+			// vertically but keeps the cluster cleanly separated.
+			const int32 BindBottom = B.NewY + B.Height;
+			int32 TopmostDisp = INT32_MAX;
+			for (int32 k = 0; k < Nodes.Num(); ++k)
+			{
+				if (k == Bi) continue;
+				if (Subtree.Contains(k)) continue;
+				const FPALayoutNode& LN = Nodes[k];
+				if (!LN.bPlaced) continue;
+				if (LN.RowId != BindRow) continue;
+				if (LN.Node && LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+				if (LN.NewY <= BindBottom) continue;
+				if (LN.NewY < TopmostDisp) TopmostDisp = LN.NewY;
+			}
+			if (TopmostDisp != INT32_MAX)
+			{
+				const int32 Shift = (SubtreeMaxBottom + BlockGap) - TopmostDisp;
+				if (Shift > 0)
+				{
+					for (int32 k = 0; k < Nodes.Num(); ++k)
+					{
+						if (k == Bi) continue;
+						if (Subtree.Contains(k)) continue;
+						FPALayoutNode& LN = Nodes[k];
+						if (!LN.bPlaced) continue;
+						if (LN.RowId != BindRow) continue;
+						if (LN.Node && LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+						if (LN.NewY <= BindBottom) continue;
+						LN.NewY += Shift;
+					}
+				}
+			}
 		}
 		if (ClusteredCount > 0)
 		{
 			Warnings.Add(FString::Printf(
 				TEXT("pin_aligned: clustered %d delegate-bound CustomEvent subtree(s) with their Bind nodes"),
 				ClusteredCount));
+		}
+	}
+
+	/** Final pass: re-band rows vertically. Clustering and push-down may
+	 *  have extended some rows past their originally-assigned Y band, so
+	 *  row N's content can now sit on top of row N+1. Walk rows in order
+	 *  of their current topmost node, cascading a downward shift whenever
+	 *  row N's bottom + RowGap exceeds row N+1's top. Data producer and
+	 *  knot positions are finalized before this runs, so the shift moves
+	 *  the full visible content of each row including pure data chains.
+	 *  Comment boxes stay at authored positions (same policy as the rest
+	 *  of pin_aligned — moving a comment breaks its "encloses these
+	 *  specific nodes" anchor).
+	 *
+	 *  Without this pass, a cluster insertion could push Bind-row content
+	 *  down into the visual space that used to hold row N+1, producing
+	 *  cross-row overlap even when each row's internal layout is clean. */
+	static void ReBandRowsAfterClustering(TArray<FPALayoutNode>& Nodes,
+		int32 RowCount, int32 VSpace)
+	{
+		if (RowCount <= 1) return;
+
+		// Gather per-row [minY, maxY] from placed, non-comment nodes.
+		TArray<int32> RowMinY; RowMinY.Init(INT32_MAX, RowCount);
+		TArray<int32> RowMaxY; RowMaxY.Init(INT32_MIN, RowCount);
+		for (const FPALayoutNode& LN : Nodes)
+		{
+			if (!LN.bPlaced) continue;
+			if (LN.RowId < 0 || LN.RowId >= RowCount) continue;
+			if (LN.Node && LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+			RowMinY[LN.RowId] = FMath::Min(RowMinY[LN.RowId], LN.NewY);
+			RowMaxY[LN.RowId] = FMath::Max(RowMaxY[LN.RowId], LN.NewY + LN.Height);
+		}
+
+		// Order rows by current top. Empty rows (no members) are dropped.
+		TArray<int32> RowOrder;
+		for (int32 R = 0; R < RowCount; ++R)
+		{
+			if (RowMinY[R] != INT32_MAX) RowOrder.Add(R);
+		}
+		RowOrder.Sort([&](int32 A, int32 B) { return RowMinY[A] < RowMinY[B]; });
+
+		const int32 RowGap = VSpace * 3;
+		for (int32 i = 1; i < RowOrder.Num(); ++i)
+		{
+			const int32 PrevRow = RowOrder[i - 1];
+			const int32 CurRow  = RowOrder[i];
+			const int32 Required = RowMaxY[PrevRow] + RowGap;
+			const int32 Shift    = Required - RowMinY[CurRow];
+			if (Shift <= 0) continue;
+			for (FPALayoutNode& LN : Nodes)
+			{
+				if (!LN.bPlaced) continue;
+				if (LN.RowId != CurRow) continue;
+				if (LN.Node && LN.Node->IsA<UEdGraphNode_Comment>()) continue;
+				LN.NewY += Shift;
+			}
+			RowMinY[CurRow] += Shift;
+			RowMaxY[CurRow] += Shift;
 		}
 	}
 
@@ -7106,6 +7208,7 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 		PlaceExecBackbone(Nodes, LayerCount, RowLayerX, VSpace, Cache, IndexOf);
 		ClusterDelegateBoundEvents(Nodes, IndexOf, VSpace, Result.Warnings);
 		PlaceDataProducersPerConsumer(Nodes, DataHSpace, VSpace, Cache);
+		ReBandRowsAfterClustering(Nodes, RowCount, VSpace);
 
 		// Compute current-layout bounds, then park anything still unplaced.
 		int32 MinNewX = INT32_MAX, MinNewY = INT32_MAX, MaxNewX = INT32_MIN, MaxNewY = INT32_MIN;
