@@ -1068,6 +1068,15 @@ node = lib.add_branch_node(bp, 'EventGraph', 0, 0)
 lib.add_breakpoint(bp, 'EventGraph', node, True)
 ```
 
+> **⚠️ Automated-flow trap.** A live breakpoint can freeze the editor
+> in a way that bridge `exec` can't recover from — the break parks the
+> GameThread inside `FSlateApplication::EnterDebuggingMode`, and the
+> Python exec queue (FTSTicker) doesn't pump there. The `exec` that
+> triggered the break will time out, and **any subsequent `exec`
+> (including one that tries to call `resume_script_execution`) will
+> also time out** because it can't reach the GameThread. See "Recovery
+> from a stuck breakpoint pause" below.
+
 ### remove_breakpoint(blueprint_path, graph_name, node_guid) -> bool
 
 Remove a breakpoint previously set on a node. Returns `True` only if a breakpoint was actually found and removed; `False` is a no-op (not an error).
@@ -1084,6 +1093,24 @@ Remove every breakpoint on the Blueprint. Returns the count that were cleared. U
 n = lib.clear_all_breakpoints(bp)
 print(f'cleared {n} breakpoints')
 ```
+
+### clear_project_breakpoints(package_path) -> int
+
+Project-wide sweep — walks every Blueprint under `package_path`
+(default `/Game`) and deletes all breakpoints. Preventive hygiene
+for automated / unattended test flows: a stray breakpoint from an
+earlier session can freeze the editor when a test invokes the
+target function, and the bridge can't recover from that freeze via
+Python exec. Clear everything up front to avoid the trap.
+
+```python
+# At the start of an unattended test run:
+n = lib.clear_project_breakpoints('/Game')
+print(f'swept {n} breakpoints project-wide')
+```
+
+Returns the total count removed across all scanned BPs. BPs that
+had zero breakpoints are not loaded (cheap skip via AssetRegistry).
 
 ### get_breakpoints(blueprint_path) -> list[FBridgeBreakpointInfo]
 
@@ -1103,6 +1130,65 @@ for bp_info in lib.get_breakpoints(bp):
 | `node_guid` | str | NodeGuid in digits format, matches what `add_branch_node`/etc. return. |
 | `node_title` | str | User-facing node title (best effort; can be empty for detached nodes). |
 | `enabled` | bool | `True` if enabled by the user. Transient single-step state is filtered out. |
+
+### Recovery from a stuck breakpoint pause
+
+**Why this matters.** A BP breakpoint parks the GameThread inside
+`FSlateApplication::EnterDebuggingMode` — a nested Slate loop that
+keeps the editor UI responsive (so a human can click Resume) but
+does **not** pump the FTSTicker-based Python exec queue the bridge
+relies on. Consequence chain:
+
+1. Your `exec` that called a function hitting the break → blocks
+   inside `ProcessEvent` → never returns → Python client times out.
+2. Any *new* `exec` (from a new TCP connection or Python process)
+   → queued on FTSTicker → never dispatched → also times out.
+3. That includes `exec` calls that try to invoke
+   `resume_script_execution` or `ClearBreakpoints` — they can't
+   reach the GameThread either.
+
+Before the recovery path existed, the only way out was `taskkill`.
+
+**Recovery path — `python bridge.py resume`.** The bridge TCP server
+handles a special `debug_resume` command at the protocol level,
+bypassing the Python exec queue entirely. It dispatches two calls
+via AsyncTask (task graph **is** pumped during the nested Slate
+loop, unlike FTSTicker):
+
+- `FKismetDebugUtilities::RequestAbortingExecution()` — sets the
+  VM's abort flag so it unwinds instead of continuing past the
+  breakpoint (which would re-hit it).
+- `FSlateApplication::Get().LeaveDebuggingMode()` — exits the
+  nested loop so the VM can actually resume.
+
+```bash
+# From ANY terminal other than the one that triggered the break:
+python bridge.py resume
+# → "resume requested"
+```
+
+The blocked `exec` that triggered the break then completes
+normally (its result may be `{"error":"..."}` or empty depending on
+where the unwind happened — check it). No editor restart needed.
+
+> Note: `resume_script_execution()` (Python UFUNCTION) only calls
+> `RequestAbortingExecution` — it does NOT call
+> `LeaveDebuggingMode`, and it goes through the blocked exec queue.
+> Never rely on it to recover from a pause; use `bridge.py resume`
+> instead.
+
+**Prevention — checklist for automated flows:**
+
+1. At session start, sweep stale breakpoints:
+   ```python
+   BP_LIB.clear_project_breakpoints('/Game')
+   ```
+2. If your test needs breakpoints (e.g. verifying
+   `get_last_breakpoint_hit`), add them at the start of the test,
+   remove them at the end via `remove_breakpoint` /
+   `clear_all_breakpoints` — never leave them behind.
+3. Keep a second terminal open during exploratory sessions so
+   `bridge.py resume` is one keystroke away.
 
 ---
 
@@ -2294,43 +2380,14 @@ Companions: `clear` drops the stored snapshot so the next hit starts
 fresh; `resume` calls `FKismetDebugUtilities::RequestAbortingExecution`
 to unstick a paused execution path.
 
-**PIE-pause gotcha.** When a breakpoint fires, UE opens the BP
-editor and parks the GameThread in a nested Slate loop. During
-that loop the bridge's Python exec queue (FTSTicker-based) does
-**not** pump, so any `exec` call on the same or a different TCP
-connection will time out — including any attempt to call
-`resume_script_execution` **through Python**.
-
-**Recovery path — `bridge.py resume`.** The bridge TCP server
-handles a special `debug_resume` command at the protocol level,
-bypassing the Python exec queue entirely. It dispatches two calls
-via AsyncTask (which IS pumped during the nested Slate loop):
-`FKismetDebugUtilities::RequestAbortingExecution()` (unwinds the
-VM when it resumes) + `FSlateApplication::LeaveDebuggingMode()`
-(exits the nested loop). Together they pop the pause:
-
-```bash
-# From ANY terminal (not the one that triggered the break):
-python bridge.py resume
-# -> "resume requested"
-```
-
-The blocked `exec` that triggered the break then completes
-normally. No editor restart needed.
-
-**Prevention — `clear_project_breakpoints`.** For unattended
-runs, clear any stale breakpoints up front:
-
-```python
-n = BP_LIB.clear_project_breakpoints('/Game')  # returns count removed
-```
-
-**Workflow checklist for automated tests:**
-1. `clear_project_breakpoints(path)` at session start.
-2. Run your scenario.
-3. If a break slips through anyway (e.g. AI-generated BP set
-   one), recover via `python bridge.py resume` from a fresh
-   terminal.
+**Recovery when a break freezes the bridge.** When a breakpoint
+fires it parks the GameThread in a nested Slate loop that doesn't
+pump the Python exec queue — any `exec` that tries to recover will
+also time out. Use `python bridge.py resume` from a separate
+terminal (bypasses the exec queue at the TCP protocol level). See
+the **"Recovery from a stuck breakpoint pause"** section under the
+breakpoint APIs above for the full mechanism, the checklist, and
+the `clear_project_breakpoints` preventive sweep.
 
 ---
 
