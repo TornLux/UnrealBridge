@@ -2456,6 +2456,89 @@ namespace BridgeLevelImpl
 	// ─── Ground grid + root trajectory helpers ───────────────────
 
 	/**
+	 * Spawn real static-mesh geometry for the ground grid inside the preview
+	 * scene, so the renderer depth-tests the lines against the character
+	 * (character occludes the grid where it stands). Earlier versions drew
+	 * the grid as a 2D overlay in the pixel buffer AFTER capture, which
+	 * always rendered on top of everything.
+	 *
+	 * Each grid line becomes one UStaticMeshComponent using /Engine/BasicShapes/
+	 * Cube (100x100x100 cm base) scaled to LineLength × Thickness × Thickness
+	 * and rotated to align its local X with the line direction. Thickness is
+	 * expressed in world cm so the lines stay readable at typical framing
+	 * distances (2 cm ≈ 3–4 px in a 512-cell view at 4 m).
+	 *
+	 * Uses two materials to keep axis lines visually distinct without relying
+	 * on MID parameter support: the regular lines get the stock
+	 * BasicShapeMaterial (light lit neutral), axis lines get BlackUnlitMaterial
+	 * for high contrast.
+	 */
+	static void SpawnGroundGridGeometry(
+		FPreviewScene& PreviewScene,
+		const FVector& Center, float HalfExtent, float Spacing,
+		float LineThickness, float AxisThickness)
+	{
+		if (HalfExtent <= 0.0f || Spacing <= 0.0f) return;
+
+		UStaticMesh* CubeMesh = LoadObject<UStaticMesh>(
+			nullptr, TEXT("/Engine/BasicShapes/Cube.Cube"));
+		if (!CubeMesh) return;
+		UMaterialInterface* LineMat = LoadObject<UMaterialInterface>(
+			nullptr, TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
+		UMaterialInterface* AxisMat = LoadObject<UMaterialInterface>(
+			nullptr, TEXT("/Engine/EngineDebugMaterials/BlackUnlitMaterial.BlackUnlitMaterial"));
+		// Fall back to LineMat if the axis material is missing (non-default
+		// engine content). The axis stays visually distinct via thickness.
+		if (!AxisMat) AxisMat = LineMat;
+
+		const int32 NumSteps = FMath::CeilToInt(HalfExtent / Spacing);
+		const float AdjHalf  = NumSteps * Spacing;
+
+		auto AddLine = [&](const FVector& A, const FVector& B,
+			float Thickness, UMaterialInterface* Mat)
+		{
+			UStaticMeshComponent* MC = NewObject<UStaticMeshComponent>(GetTransientPackage());
+			MC->SetStaticMesh(CubeMesh);
+			if (Mat) MC->SetMaterial(0, Mat);
+			MC->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+			MC->SetCastShadow(false);
+			MC->bReceivesDecals = false;
+
+			const FVector   Mid  = (A + B) * 0.5f;
+			const FVector   Dir  = (B - A).GetSafeNormal();
+			const FQuat     Rot  = FRotationMatrix::MakeFromX(Dir).ToQuat();
+			const float     Len  = (B - A).Size();
+			const FTransform Xform(
+				Rot, Mid,
+				FVector(Len / 100.0f,
+				        Thickness / 100.0f,
+				        Thickness / 100.0f));
+			PreviewScene.AddComponent(MC, Xform);
+		};
+
+		const float Z = Center.Z;
+		for (int32 i = -NumSteps; i <= NumSteps; ++i)
+		{
+			const float X = Center.X + i * Spacing;
+			const FVector A(X, Center.Y - AdjHalf, Z);
+			const FVector B(X, Center.Y + AdjHalf, Z);
+			const bool bAxis = (i == 0);
+			AddLine(A, B, bAxis ? AxisThickness : LineThickness,
+			        bAxis ? AxisMat : LineMat);
+		}
+		for (int32 j = -NumSteps; j <= NumSteps; ++j)
+		{
+			const float Y = Center.Y + j * Spacing;
+			const FVector A(Center.X - AdjHalf, Y, Z);
+			const FVector B(Center.X + AdjHalf, Y, Z);
+			const bool bAxis = (j == 0);
+			AddLine(A, B, bAxis ? AxisThickness : LineThickness,
+			        bAxis ? AxisMat : LineMat);
+		}
+	}
+
+
+	/**
 	 * Derive the camera basis + vertical FOV tangent once, so line projection
 	 * doesn't repeat the work per call. Kept lightweight (raw struct) since
 	 * these helpers are tight loops.
@@ -2537,46 +2620,6 @@ namespace BridgeLevelImpl
 			FMath::RoundToInt(XA), FMath::RoundToInt(YA),
 			FMath::RoundToInt(XB), FMath::RoundToInt(YB),
 			Color, Thickness);
-	}
-
-	/**
-	 * Project a Z-constant XY grid into the cell. Grid is centred on
-	 * (Center.X, Center.Y) at height Center.Z, with 2·HalfExtent span
-	 * and fixed Spacing cm between lines. Axis lines (through Center)
-	 * drawn with a slightly brighter colour so the agent can tell
-	 * origin/direction.
-	 */
-	static void DrawGroundGridOnCell(
-		FColor* Pixels, int32 CellW, int32 CellH,
-		const FVector& Center, float HalfExtent, float Spacing,
-		const FVector& CamLoc, const FRotator& CamRot, float FOVDeg,
-		const FColor& LineColor, const FColor& AxisColor)
-	{
-		if (HalfExtent <= 0.0f || Spacing <= 0.0f) return;
-		const FCellProjector P(CamLoc, CamRot, FOVDeg, CellW, CellH);
-		// Round HalfExtent up to nearest spacing multiple so lines are symmetric.
-		const int32 NumSteps = FMath::CeilToInt(HalfExtent / Spacing);
-		const float AdjHalf = NumSteps * Spacing;
-		const float Z = Center.Z;
-
-		// Lines parallel to Y axis (X varies)
-		for (int32 i = -NumSteps; i <= NumSteps; ++i)
-		{
-			const float X = Center.X + i * Spacing;
-			const FVector A(X, Center.Y - AdjHalf, Z);
-			const FVector B(X, Center.Y + AdjHalf, Z);
-			const FColor& C = (i == 0) ? AxisColor : LineColor;
-			DrawWorldLineOnCell(Pixels, P, CellW, CellH, A, B, C, /*Thickness=*/ 1);
-		}
-		// Lines parallel to X axis (Y varies)
-		for (int32 j = -NumSteps; j <= NumSteps; ++j)
-		{
-			const float Y = Center.Y + j * Spacing;
-			const FVector A(Center.X - AdjHalf, Y, Z);
-			const FVector B(Center.X + AdjHalf, Y, Z);
-			const FColor& C = (j == 0) ? AxisColor : LineColor;
-			DrawWorldLineOnCell(Pixels, P, CellW, CellH, A, B, C, /*Thickness=*/ 1);
-		}
 	}
 
 	/**
@@ -2874,6 +2917,16 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 				XYBox.Max.X - XYBox.Min.X, XYBox.Max.Y - XYBox.Min.Y);
 			GroundHalfExtent = FMath::Max(300.0f, TrajHalf + 150.0f);
 		}
+
+		// Spawn the grid as real geometry in the preview scene so the
+		// renderer depth-tests it against the character (occlusion works
+		// correctly). Thickness in cm — tuned so the lines read clearly at
+		// typical 3–5 m framing distances. Regular 2 cm, axis 4 cm so the
+		// centre cross remains identifiable.
+		BridgeLevelImpl::SpawnGroundGridGeometry(
+			PreviewScene,
+			GroundCenter, GroundHalfExtent, /*Spacing=*/ 50.0f,
+			/*LineThickness=*/ 2.0f, /*AxisThickness=*/ 4.0f);
 	}
 
 	// 9. Allocate composite image.
@@ -2890,8 +2943,6 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 	}
 
 	// Overlay colours — consistent across pose-grid and timeline.
-	const FColor GridColor(150, 150, 160, 255);
-	const FColor GridAxisColor(90, 90, 110, 255);
 	const FColor TrajColor(40, 210, 80, 255);
 	const FColor TrajTickColor(255, 255, 255, 255);
 	const FColor TrajCurrentColor(255, 60, 60, 255);
@@ -2911,15 +2962,9 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimPoseGrid(
 			continue;
 		}
 
-		// Overlay order: ground grid (context) → trajectory → bones (foreground).
-		if (bGroundGrid)
-		{
-			BridgeLevelImpl::DrawGroundGridOnCell(
-				Pixels.GetData(), CellWidth, CellHeight,
-				GroundCenter, GroundHalfExtent, /*Spacing=*/ 50.0f,
-				CamLocs[ViewIdx], CamRots[ViewIdx], FOVDeg,
-				GridColor, GridAxisColor);
-		}
+		// Overlay order: ground grid is now real scene geometry (occluded by
+		// character naturally). Only trajectory + bones remain as 2D overlays
+		// drawn after capture.
 		if (bRootTrajectory && TrajGround.Num() >= 2)
 		{
 			// For pose grid there's one "current" time (Time).
@@ -3158,17 +3203,27 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 			RefSkel, SkelComp->GetComponentSpaceTransforms().Num(), BoneChains);
 	}
 
-	// 5c. Ground-grid centre + extent (covers motion path).
+	// 5c. Ground-grid centre + extent (covers motion path) + spawn geometry.
 	FVector GroundCenter(Centre.X, Centre.Y, GroundZ);
 	float GroundHalfExtent = 300.0f;
-	if (bGroundGrid && TrajGround.Num() >= 2)
+	if (bGroundGrid)
 	{
-		FBox XYBox(ForceInit);
-		for (const FVector& P : TrajGround) XYBox += P;
-		GroundCenter = FVector(XYBox.GetCenter().X, XYBox.GetCenter().Y, GroundZ);
-		const float TrajHalf = 0.5f * FMath::Max(
-			XYBox.Max.X - XYBox.Min.X, XYBox.Max.Y - XYBox.Min.Y);
-		GroundHalfExtent = FMath::Max(300.0f, TrajHalf + 150.0f);
+		if (TrajGround.Num() >= 2)
+		{
+			FBox XYBox(ForceInit);
+			for (const FVector& P : TrajGround) XYBox += P;
+			GroundCenter = FVector(XYBox.GetCenter().X, XYBox.GetCenter().Y, GroundZ);
+			const float TrajHalf = 0.5f * FMath::Max(
+				XYBox.Max.X - XYBox.Min.X, XYBox.Max.Y - XYBox.Min.Y);
+			GroundHalfExtent = FMath::Max(300.0f, TrajHalf + 150.0f);
+		}
+
+		// Spawn grid as real scene geometry so it's depth-tested against the
+		// character (occluded correctly) and stays legible at distance.
+		BridgeLevelImpl::SpawnGroundGridGeometry(
+			PreviewScene,
+			GroundCenter, GroundHalfExtent, /*Spacing=*/ 50.0f,
+			/*LineThickness=*/ 2.0f, /*AxisThickness=*/ 4.0f);
 	}
 
 	// 6. Allocate composite: rows = N (time), cols = NumViews.
@@ -3183,8 +3238,6 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 	}
 
 	// Overlay colours — consistent across pose-grid and timeline.
-	const FColor GridColor(150, 150, 160, 255);
-	const FColor GridAxisColor(90, 90, 110, 255);
 	const FColor TrajColor(40, 210, 80, 255);
 	const FColor TrajTickColor(255, 255, 255, 255);
 	const FColor TrajCurrentColor(255, 60, 60, 255);
@@ -3206,15 +3259,8 @@ bool UUnrealBridgeLevelLibrary::CaptureAnimMontageTimeline(
 				continue;
 			}
 
-			// Ground grid (context) → trajectory → bones (foreground).
-			if (bGroundGrid)
-			{
-				BridgeLevelImpl::DrawGroundGridOnCell(
-					Pixels.GetData(), CellWidth, CellHeight,
-					GroundCenter, GroundHalfExtent, /*Spacing=*/ 50.0f,
-					CamLocs[Col], CamRots[Col], FOVDeg,
-					GridColor, GridAxisColor);
-			}
+			// Ground grid is real scene geometry now (occluded by character).
+			// Only trajectory + bone overlays stay as 2D post-capture passes.
 			if (bRootTrajectory && TrajGround.Num() >= 2)
 			{
 				// Ticks on every row time; current-row time highlighted.
