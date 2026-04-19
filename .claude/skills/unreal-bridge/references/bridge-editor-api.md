@@ -106,9 +106,39 @@ Frame the viewport on the currently selected actor(s).
 
 Queue a high-res screenshot of the active level viewport. `resolution_multiplier` scales viewport size (1.0 = native). Output is written to `<Project>/Saved/Screenshots/WindowsEditor/` (engine-named). Returns True if the request was queued.
 
+Asynchronous — the file appears 1–2 frames later. Use `capture_active_viewport` when you need the bytes in-process.
+
 ```python
 unreal.UnrealBridgeEditorLibrary.take_high_res_screenshot(2.0)  # 2x native
 ```
+
+### capture_active_viewport(out_file_path, b_include_base64) -> FBridgeScreenshotResult
+
+**Synchronous** viewport capture → PNG on disk and/or base64. Picks the PIE game viewport when PIE is running, otherwise the active level editor viewport. Runs a `Draw()` + `ReadPixels` round-trip on the game thread.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `out_file_path` | str | Absolute path to the PNG. Pass `""` to skip disk (requires `b_include_base64=True`). Parent dirs are created. |
+| `b_include_base64` | bool | When True, returns the compressed PNG as base64 so callers can read pixels without touching the filesystem. Adds ~33% payload size. |
+
+FBridgeScreenshotResult fields (UE Python strips the `b` prefix from bool fields):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | True when a PNG was produced. |
+| `file_path` | str | Absolute path written (empty when `out_file_path` was empty). |
+| `width` / `height` | int | Captured pixel dimensions. |
+| `source` | str | Which viewport produced the capture: `"LevelEditor"` / `"PIE"` / `""`. |
+| `base64` | str | Base64 PNG bytes (empty unless `b_include_base64=True`). |
+| `error` | str | Failure reason. Empty on success. |
+
+```python
+r = unreal.UnrealBridgeEditorLibrary.capture_active_viewport(
+    'G:/Claude/UnrealBridge/temp/viewport.png', False)
+print(r.success, r.source, r.width, r.height, r.file_path)
+```
+
+Tip: when the caller is Claude Code wanting to "see" the viewport, pass a disk path and then `Read` the PNG — cheaper and more reliable than round-tripping the bytes through base64.
 
 ### set_viewport_realtime(realtime) -> bool
 
@@ -905,3 +935,55 @@ for r in results:
 | `path` | str | Blueprint path |
 | `b_success` | bool | Compile succeeded |
 | `error_message` | str | Error summary (empty on success) |
+
+---
+
+## Live Coding (C++ hot reload)
+
+Patch recompiled cpp changes into the running editor without restart. The TCP bridge, open assets, PIE state, and viewport camera all survive. **Windows only** — `trigger_live_coding_compile` returns `Status="Unavailable"` on other platforms.
+
+**When Live Coding cannot patch:** adding or removing UFUNCTION / UCLASS / UPROPERTY / USTRUCT members, or changing struct layouts. These still need a full editor restart — use `scripts/rebuild_relaunch.py`.
+
+**Typical flow** (the `hot_reload.py` wrapper bundles all of this):
+
+1. Edit cpp in `Plugin/UnrealBridge/Source/`
+2. Run `sync_plugin.bat` to copy into the project's `Plugins/` dir
+3. Call `trigger_live_coding_compile(True)` via the bridge
+4. Check the returned `Status`
+
+### is_live_coding_enabled() -> bool
+
+True when the LiveCoding module is loaded AND enabled for this session.
+
+### is_live_coding_compiling() -> bool
+
+True while an LC compile is running in the background.
+
+### trigger_live_coding_compile(b_wait_for_completion) -> FBridgeLiveCodingResult
+
+Kick a Live Coding compile. Auto-enables LC for the session if the module is loaded but disabled.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `b_wait_for_completion` | bool | When True, the engine blocks the game thread (pumps a modal loop) until the compile finishes. False returns immediately with `Status="InProgress"` — poll `is_live_coding_compiling()`. |
+
+FBridgeLiveCodingResult fields (UE Python strips the `b` prefix from bool fields):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `triggered` | bool | Compile request was accepted. False means another LC compile is already in flight or the module isn't ready. |
+| `completed` | bool | Only true when `b_wait_for_completion=True` AND status is `Success` or `NoChanges`. |
+| `status` | str | `Success` / `NoChanges` / `InProgress` / `CompileStillActive` / `NotStarted` / `Failure` / `Cancelled` / `Unavailable`. |
+| `error` | str | Human-readable failure detail. Empty on success. |
+
+```python
+r = unreal.UnrealBridgeEditorLibrary.trigger_live_coding_compile(True)
+print(r.status, r.completed, r.error)
+# Common outcomes:
+#   Success    — new DLL patched in
+#   NoChanges  — nothing to compile
+#   Failure    — cpp doesn't compile (see Output Log)
+#   NotStarted — Live Coding disabled in Editor Preferences
+```
+
+**Don't mix LC compiles with UBT:** running `Build.bat` while the editor is live will try to overwrite a locked DLL and fail. Either use LC *or* full rebuild+relaunch, never both at once.

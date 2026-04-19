@@ -59,6 +59,15 @@
 #include "ISourceControlProvider.h"
 #include "SourceControlOperations.h"
 #include "SourceControlHelpers.h"
+#include "IImageWrapper.h"
+#include "IImageWrapperModule.h"
+#include "Misc/Base64.h"
+#include "Misc/FileHelper.h"
+#include "UnrealClient.h"
+#include "Engine/GameViewportClient.h"
+#if PLATFORM_WINDOWS
+#include "ILiveCodingModule.h"
+#endif
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -901,6 +910,235 @@ bool UUnrealBridgeEditorLibrary::TakeHighResScreenshot(float ResolutionMultiplie
 		1.f);
 	VC->Viewport->TakeHighResScreenShot();
 	return true;
+}
+
+namespace BridgeEditorImpl
+{
+	// Prefer the PIE game-window viewport when PIE is running (that's the
+	// "game view" callers usually want); otherwise the active level editor
+	// viewport. In-place/Immersive PIE is also covered by the editor path
+	// because the level viewport there is the one the PIE world renders to.
+	FViewport* GetCaptureViewport(FString& OutSource)
+	{
+		if (GEditor && GEditor->PlayWorld && GEngine && GEngine->GameViewport && GEngine->GameViewport->Viewport)
+		{
+			OutSource = TEXT("PIE");
+			return GEngine->GameViewport->Viewport;
+		}
+		if (FLevelEditorViewportClient* VC = GetActiveViewportClient())
+		{
+			if (VC->Viewport)
+			{
+				OutSource = TEXT("LevelEditor");
+				return VC->Viewport;
+			}
+		}
+		OutSource.Reset();
+		return nullptr;
+	}
+}
+
+FBridgeScreenshotResult UUnrealBridgeEditorLibrary::CaptureActiveViewport(const FString& OutFilePath, bool bIncludeBase64)
+{
+	FBridgeScreenshotResult R;
+
+	FViewport* Viewport = BridgeEditorImpl::GetCaptureViewport(R.Source);
+	if (!Viewport)
+	{
+		R.Error = TEXT("No active viewport available.");
+		return R;
+	}
+
+	const FIntPoint Size = Viewport->GetSizeXY();
+	if (Size.X <= 0 || Size.Y <= 0)
+	{
+		R.Error = FString::Printf(TEXT("Viewport has zero size (%dx%d)."), Size.X, Size.Y);
+		return R;
+	}
+
+	if (OutFilePath.IsEmpty() && !bIncludeBase64)
+	{
+		R.Error = TEXT("Either OutFilePath must be non-empty or bIncludeBase64 must be true.");
+		return R;
+	}
+
+	// Force a redraw so ReadPixels sees a fresh frame even when the
+	// viewport isn't in realtime mode.
+	Viewport->Draw();
+
+	TArray<FColor> Bitmap;
+	FReadSurfaceDataFlags Flags;
+	Flags.SetLinearToGamma(false);
+	const FIntRect Rect(0, 0, Size.X, Size.Y);
+	if (!Viewport->ReadPixels(Bitmap, Flags, Rect) || Bitmap.Num() == 0)
+	{
+		R.Error = TEXT("Viewport->ReadPixels returned no data.");
+		return R;
+	}
+	// FColor from the viewport sometimes carries alpha=0; opaque PNGs are
+	// what callers want.
+	for (FColor& C : Bitmap)
+	{
+		C.A = 255;
+	}
+
+	IImageWrapperModule& IWM = FModuleManager::LoadModuleChecked<IImageWrapperModule>(TEXT("ImageWrapper"));
+	TSharedPtr<IImageWrapper> PNG = IWM.CreateImageWrapper(EImageFormat::PNG);
+	if (!PNG.IsValid() || !PNG->SetRaw(Bitmap.GetData(), Bitmap.Num() * sizeof(FColor), Size.X, Size.Y, ERGBFormat::BGRA, 8))
+	{
+		R.Error = TEXT("Failed to initialize PNG image wrapper.");
+		return R;
+	}
+	const TArray64<uint8>& Compressed = PNG->GetCompressed();
+	if (Compressed.Num() == 0)
+	{
+		R.Error = TEXT("PNG encoding produced no bytes.");
+		return R;
+	}
+
+	R.Width = Size.X;
+	R.Height = Size.Y;
+
+	if (!OutFilePath.IsEmpty())
+	{
+		FString AbsPath = FPaths::ConvertRelativePathToFull(OutFilePath);
+		const FString DirOnly = FPaths::GetPath(AbsPath);
+		if (!DirOnly.IsEmpty())
+		{
+			IFileManager::Get().MakeDirectory(*DirOnly, /*Tree=*/true);
+		}
+		if (!FFileHelper::SaveArrayToFile(Compressed, *AbsPath))
+		{
+			R.Error = FString::Printf(TEXT("Failed to write PNG to '%s'."), *AbsPath);
+			return R;
+		}
+		R.FilePath = AbsPath;
+	}
+
+	if (bIncludeBase64)
+	{
+		// FBase64 operates on 32-bit-sized buffers; PNG captures for editor
+		// viewports comfortably fit under 2 GB, but guard the cast anyway.
+		const int64 Num = Compressed.Num();
+		if (Num > (int64)MAX_int32)
+		{
+			R.Error = TEXT("PNG too large to base64-encode.");
+			return R;
+		}
+		R.Base64 = FBase64::Encode(Compressed.GetData(), (uint32)Num);
+	}
+
+	R.bSuccess = true;
+	return R;
+}
+
+// ─── Live Coding ───────────────────────────────────────────
+
+#if PLATFORM_WINDOWS
+namespace BridgeEditorImpl
+{
+	const TCHAR* LiveCodingResultToString(ELiveCodingCompileResult R)
+	{
+		switch (R)
+		{
+			case ELiveCodingCompileResult::Success:            return TEXT("Success");
+			case ELiveCodingCompileResult::NoChanges:          return TEXT("NoChanges");
+			case ELiveCodingCompileResult::InProgress:         return TEXT("InProgress");
+			case ELiveCodingCompileResult::CompileStillActive: return TEXT("CompileStillActive");
+			case ELiveCodingCompileResult::NotStarted:         return TEXT("NotStarted");
+			case ELiveCodingCompileResult::Failure:            return TEXT("Failure");
+			case ELiveCodingCompileResult::Cancelled:          return TEXT("Cancelled");
+		}
+		return TEXT("Unknown");
+	}
+
+	ILiveCodingModule* GetLiveCoding()
+	{
+		if (!FModuleManager::Get().IsModuleLoaded(TEXT("LiveCoding")))
+		{
+			return nullptr;
+		}
+		return FModuleManager::GetModulePtr<ILiveCodingModule>(TEXT("LiveCoding"));
+	}
+}
+#endif
+
+bool UUnrealBridgeEditorLibrary::IsLiveCodingEnabled()
+{
+#if PLATFORM_WINDOWS
+	if (ILiveCodingModule* LC = BridgeEditorImpl::GetLiveCoding())
+	{
+		return LC->IsEnabledForSession();
+	}
+#endif
+	return false;
+}
+
+bool UUnrealBridgeEditorLibrary::IsLiveCodingCompiling()
+{
+#if PLATFORM_WINDOWS
+	if (ILiveCodingModule* LC = BridgeEditorImpl::GetLiveCoding())
+	{
+		return LC->IsCompiling();
+	}
+#endif
+	return false;
+}
+
+FBridgeLiveCodingResult UUnrealBridgeEditorLibrary::TriggerLiveCodingCompile(bool bWaitForCompletion)
+{
+	FBridgeLiveCodingResult R;
+#if PLATFORM_WINDOWS
+	ILiveCodingModule* LC = BridgeEditorImpl::GetLiveCoding();
+	if (!LC)
+	{
+		R.Status = TEXT("NotStarted");
+		R.Error = TEXT("LiveCoding module not loaded. Check Editor Preferences → Live Coding.");
+		return R;
+	}
+	if (!LC->IsEnabledForSession())
+	{
+		if (!LC->CanEnableForSession())
+		{
+			R.Status = TEXT("NotStarted");
+			R.Error = LC->GetEnableErrorText().ToString();
+			if (R.Error.IsEmpty())
+			{
+				R.Error = TEXT("Live Coding cannot be enabled for this session.");
+			}
+			return R;
+		}
+		LC->EnableForSession(true);
+	}
+
+	ELiveCodingCompileResult Result = ELiveCodingCompileResult::NotStarted;
+	const ELiveCodingCompileFlags Flags = bWaitForCompletion
+		? ELiveCodingCompileFlags::WaitForCompletion
+		: ELiveCodingCompileFlags::None;
+	const bool bAccepted = LC->Compile(Flags, &Result);
+
+	R.bTriggered = bAccepted;
+	R.Status = BridgeEditorImpl::LiveCodingResultToString(Result);
+	R.bCompleted = (Result == ELiveCodingCompileResult::Success
+		|| Result == ELiveCodingCompileResult::NoChanges);
+
+	if (!bAccepted && Result == ELiveCodingCompileResult::CompileStillActive)
+	{
+		R.Error = TEXT("A Live Coding compile is already in progress.");
+	}
+	else if (Result == ELiveCodingCompileResult::Failure)
+	{
+		R.Error = TEXT("Live Coding compile failed. See Output Log for details.");
+	}
+	else if (Result == ELiveCodingCompileResult::Cancelled)
+	{
+		R.Error = TEXT("Live Coding compile was cancelled.");
+	}
+#else
+	R.Status = TEXT("Unavailable");
+	R.Error = TEXT("Live Coding is only available on Windows.");
+#endif
+	return R;
 }
 
 // ─── Viewport render / display ─────────────────────────────

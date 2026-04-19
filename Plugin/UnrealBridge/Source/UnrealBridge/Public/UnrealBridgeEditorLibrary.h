@@ -83,6 +83,73 @@ struct FBridgeViewportCamera
 	float FOV = 90.f;
 };
 
+// ─── Viewport screenshot ────────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeScreenshotResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bSuccess = false;
+
+	/** Absolute path of the written PNG. Empty when OutFilePath was empty (base64-only mode). */
+	UPROPERTY(BlueprintReadOnly)
+	FString FilePath;
+
+	/** Captured viewport pixel width. */
+	UPROPERTY(BlueprintReadOnly)
+	int32 Width = 0;
+
+	/** Captured viewport pixel height. */
+	UPROPERTY(BlueprintReadOnly)
+	int32 Height = 0;
+
+	/** Which viewport produced the capture: "LevelEditor" | "PIE" | "". */
+	UPROPERTY(BlueprintReadOnly)
+	FString Source;
+
+	/** Base64-encoded PNG bytes (empty unless bIncludeBase64 = true). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Base64;
+
+	/** Human-readable failure reason. Empty on success. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+};
+
+// ─── Live Coding compile ───────────────────────────────────
+USTRUCT(BlueprintType)
+struct FBridgeLiveCodingResult
+{
+	GENERATED_BODY()
+
+	/** True if the compile request was accepted (regardless of compile outcome). */
+	UPROPERTY(BlueprintReadOnly)
+	bool bTriggered = false;
+
+	/** True when bWaitForCompletion was set AND the compile finished cleanly (Success or NoChanges). */
+	UPROPERTY(BlueprintReadOnly)
+	bool bCompleted = false;
+
+	/**
+	 * Detailed LC state string, one of:
+	 *   "Success"            — patched, changes applied
+	 *   "NoChanges"          — nothing to rebuild
+	 *   "InProgress"         — async compile started; poll IsLiveCodingCompiling()
+	 *   "CompileStillActive" — a prior compile is already running
+	 *   "NotStarted"         — module not started / not enabled for session
+	 *   "Failure"            — compile errored (see Output Log for details)
+	 *   "Cancelled"          — user cancelled
+	 *   "Unavailable"        — Live Coding not supported on this platform
+	 */
+	UPROPERTY(BlueprintReadOnly)
+	FString Status;
+
+	/** Human-readable error (empty on success). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+};
+
 /**
  * Editor session / asset control via UnrealBridge.
  */
@@ -295,6 +362,49 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool TakeHighResScreenshot(float ResolutionMultiplier);
+
+	/**
+	 * Synchronously capture the currently-active viewport (PIE window when
+	 * PIE is running, otherwise the active level editor viewport) to a PNG.
+	 *
+	 * Runs on the game thread — flushes a Draw() + ReadPixels round-trip,
+	 * encodes PNG via IImageWrapper, optionally returns base64 so callers
+	 * can read the pixels in-process without touching the filesystem.
+	 *
+	 * @param OutFilePath      Absolute path to write the PNG to. Pass ""
+	 *                         to skip disk and only populate Base64 (requires
+	 *                         bIncludeBase64 = true).
+	 * @param bIncludeBase64   Fill FBridgeScreenshotResult::Base64 with the
+	 *                         compressed PNG bytes. Base64 inflates ~33%.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FBridgeScreenshotResult CaptureActiveViewport(const FString& OutFilePath, bool bIncludeBase64);
+
+	// ─── Live Coding (hot reload) ────────────────────────────
+	//
+	// Trigger the engine's Live Coding monitor to patch recompiled cpp
+	// changes into the running editor without a restart. Only works when
+	// edits don't add/remove UFUNCTIONs, UCLASSes, or UPROPERTYs —
+	// signature/layout changes still require a full relaunch.
+
+	/** True when the Live Coding module is loaded and enabled for this session. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsLiveCodingEnabled();
+
+	/** True if a Live Coding compile is currently in progress. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool IsLiveCodingCompiling();
+
+	/**
+	 * Kick a Live Coding compile. Auto-enables LC for the session if the
+	 * module is loaded but disabled.
+	 *
+	 * @param bWaitForCompletion  Block the game thread until the compile
+	 *                            finishes (engine pumps a modal progress
+	 *                            loop). Leave false for async / non-blocking.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FBridgeLiveCodingResult TriggerLiveCodingCompile(bool bWaitForCompletion);
 
 	// ─── Viewport render / display ───────────────────────
 
