@@ -1018,6 +1018,64 @@ struct FBridgeReference
 	UPROPERTY(BlueprintReadOnly) FString Kind;
 };
 
+/** Single selected node in the currently-focused Blueprint editor. */
+USTRUCT(BlueprintType)
+struct FBridgeSelectedNode
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly) FString NodeClass;
+	UPROPERTY(BlueprintReadOnly) FString Title;
+};
+
+/** Snapshot of the user's current Blueprint-editor focus. Empty fields when
+ *  no BP editor is active. */
+USTRUCT(BlueprintType)
+struct FBridgeEditorFocusState
+{
+	GENERATED_BODY()
+
+	/** Path of the BP currently shown in the focused editor tab. Empty when
+	 *  no BP editor has focus. */
+	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+
+	/** Name of the graph currently visible in the BP editor's main tab
+	 *  (function / macro / event graph). Empty when not resolvable. */
+	UPROPERTY(BlueprintReadOnly) FString FocusedGraphName;
+
+	/** "EventGraph" | "Function" | "Macro" | "" (when not in that BP). */
+	UPROPERTY(BlueprintReadOnly) FString FocusedGraphType;
+
+	/** Selected nodes in the focused graph. Empty array when nothing's
+	 *  selected or when no graph is focused. */
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeSelectedNode> SelectedNodes;
+
+	/** Paths of every BP currently open in an asset-editor tab (including
+	 *  non-focused ones). */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> OpenBlueprintPaths;
+};
+
+/** Summary of a cross-Blueprint rename operation. */
+USTRUCT(BlueprintType)
+struct FBridgeRenameReport
+{
+	GENERATED_BODY()
+
+	/** true when the defining-BP rename succeeded. False results leave the
+	 *  rest of the report empty. */
+	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+
+	/** Asset paths of BPs whose call/get/set sites were updated. */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> UpdatedBlueprints;
+
+	/** Total number of K2Node references rewritten across all BPs. */
+	UPROPERTY(BlueprintReadOnly) int32 UpdatedNodeCount = 0;
+
+	/** Diagnostic text when bSuccess is false, or warnings when partial. */
+	UPROPERTY(BlueprintReadOnly) FString Message;
+};
+
 /** Reference site for a cross-Blueprint query — same fields as FBridgeReference
  *  plus the asset path of the containing Blueprint. */
 USTRUCT(BlueprintType)
@@ -2431,4 +2489,238 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static int32 AutoInsertReroutes(const FString& BlueprintPath,
 		const FString& GraphName);
+
+	// ─── Typed pin helpers (#11) ────────────────────────────────────
+
+	/**
+	 * Set a `FDataTableRowHandle` pin to reference a specific DataTable row.
+	 * Emits the exported-text form `(DataTable="/Game/...",RowName="Row")`
+	 * so callers don't have to hand-format it.
+	 *
+	 * @param DataTablePath  Object path of the DataTable asset.
+	 * @param RowName        FName of the row to reference (empty = NAME_None).
+	 * @return true if the pin was found, was of type FDataTableRowHandle, and
+	 *         the default value parsed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetDataTableRowHandlePin(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid,
+		const FString& PinName,
+		const FString& DataTablePath, const FString& RowName);
+
+	// ─── Struct pin split / recombine (#12) ─────────────────────────
+
+	/**
+	 * Split a struct pin into its subfield pins on the node (the editor's
+	 * "Split Struct Pin" right-click action). Works on any pin whose
+	 * PinType is a struct recognised by the K2 schema.
+	 *
+	 * @return true if the pin was split. false if the pin was not found,
+	 *         not a struct, or not splittable.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SplitStructPin(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid,
+		const FString& PinName);
+
+	/**
+	 * Recombine a previously-split struct pin back into a single pin.
+	 * Pass the name of any one of the sub-pins; the schema locates the
+	 * parent pin and recombines.
+	 *
+	 * @return true if recombined.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RecombineStructPin(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid,
+		const FString& SubPinName);
+
+	// ─── Promote-to-Variable (#9) ───────────────────────────────────
+
+	/**
+	 * Create a new Blueprint variable matching the pin's type, then wire a
+	 * Get/Set node for that variable to the pin. Mirrors the editor's
+	 * "Promote to Variable" right-click command.
+	 *
+	 * - Input pin (including unconnected)  → spawns a Get node (for pure/
+	 *   data pins) or a Set node (for exec-flow input pins that expect a
+	 *   stored value) and wires it in.
+	 * - Output pin (data)  → spawns a Set node so the pin's value is
+	 *   captured into the new variable.
+	 *
+	 * @param VariableName    Desired name (uniquified against existing vars).
+	 * @param bToMemberVariable  true = add to BP's class-level variables;
+	 *                           false = add as a local variable on the
+	 *                           containing function graph.
+	 * @param OutNewVariableName  On success, the actual (possibly
+	 *                            uniquified) variable name.
+	 * @param OutNewNodeGuid      On success, the GUID of the spawned
+	 *                            Get/Set node.
+	 * @return true on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool PromotePinToVariable(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid,
+		const FString& PinName,
+		const FString& VariableName, bool bToMemberVariable,
+		FString& OutNewVariableName, FString& OutNewNodeGuid);
+
+	// ─── Function-signature editing (#14) ───────────────────────────
+
+	/**
+	 * Remove a user-defined parameter from a function graph. Deletes the
+	 * pin on FunctionEntry (for input params) or FunctionResult (for
+	 * return / out params), then recompiles.
+	 *
+	 * @return true when a pin with that name was removed from either
+	 *         scaffolding node.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool RemoveFunctionParameter(const FString& BlueprintPath,
+		const FString& FunctionName, const FString& ParamName);
+
+	/**
+	 * Reorder a user-defined parameter in a function graph. Moves the
+	 * named pin to `NewIndex` in the owning node's UserDefinedPins array
+	 * (inputs on FunctionEntry or outputs on FunctionResult). Pass -1 or
+	 * past-the-end to move to last.
+	 *
+	 * @return true when the pin was located + moved.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool ReorderFunctionParameter(const FString& BlueprintPath,
+		const FString& FunctionName, const FString& ParamName,
+		int32 NewIndex);
+
+	// ─── Collapse-to-Macro (#10) ────────────────────────────────────
+
+	/**
+	 * Companion to CollapseNodesToFunction — bundles the selection into a
+	 * new **macro** graph instead of a function graph. Useful for
+	 * control-flow patterns where a function's fixed exec in/out isn't
+	 * flexible enough (multi-out custom loops, exec-branching helpers).
+	 *
+	 * Same selection semantics as CollapseNodesToFunction: nodes must live
+	 * in the same graph; FunctionEntry / FunctionResult / Tunnel nodes
+	 * can't be collapsed.
+	 *
+	 * @param NewMacroName   Desired name; uniquified if taken.
+	 * @param OutNewGraphName  Set to the actual macro graph name on success.
+	 * @return GUID of the MacroInstance node spawned in the source graph,
+	 *         or "" on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString CollapseNodesToMacro(const FString& BlueprintPath,
+		const FString& SourceGraphName, const TArray<FString>& NodeGuids,
+		const FString& NewMacroName, FString& OutNewGraphName);
+
+	// ─── Async-action node creation (#13) ───────────────────────────
+
+	/**
+	 * Spawn a `K2Node_AsyncAction` wired to a factory function on a
+	 * `UBlueprintAsyncActionBase` subclass. Reliable alternative to
+	 * `SpawnNodeByActionKey` for async tasks whose action-key signatures
+	 * change across sessions.
+	 *
+	 * Typical factory classes:
+	 *   - `UAbilityAsync_WaitGameplayEvent` (GAS)
+	 *   - `UMoviePlayerAsyncTask`           (media)
+	 *   - Any user-defined
+	 *     `UBlueprintAsyncActionBase`-derived class.
+	 *
+	 * @param FactoryClassPath     `/Script/<Module>.<ClassName>` or short
+	 *                             class name.
+	 * @param FactoryFunctionName  Short name of the static factory UFUNCTION
+	 *                             on the factory class.
+	 * @return GUID of the new node, or "" on failure (bad class / function).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddAsyncActionNode(const FString& BlueprintPath,
+		const FString& GraphName, const FString& FactoryClassPath,
+		const FString& FactoryFunctionName, int32 NodePosX, int32 NodePosY);
+
+	// ─── Custom K2Node by class name (#19) ──────────────────────────
+
+	/**
+	 * Spawn an arbitrary K2Node subclass by class name. Fallback for
+	 * project-private nodes where `SpawnNodeByActionKey` is unstable
+	 * across sessions because action-key strings aren't guaranteed stable.
+	 *
+	 * @param NodeClassPath  `/Script/<Module>.<Class>` or short class name;
+	 *                       resolved via `FindFirstObject<UClass>`. Must
+	 *                       resolve to a `UK2Node` subclass.
+	 * @return GUID of the new node, or "" on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddNodeByClassName(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeClassPath,
+		int32 NodePosX, int32 NodePosY);
+
+	// ─── Editor focus-state query (#17) ─────────────────────────────
+
+	/**
+	 * Snapshot the active Blueprint editor's state: which BP is focused,
+	 * which graph is showing, and which nodes are selected. Used by
+	 * AI-assisted editing flows ("wrap the selection into a function",
+	 * "disable the selected nodes") where the agent needs the user's
+	 * current attention point, not a hard-coded graph name.
+	 *
+	 * Returns an empty struct (empty BlueprintPath / FocusedGraphName) when
+	 * no BP editor has focus.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeEditorFocusState GetEditorFocusState();
+
+	// ─── Cross-BP rename (#16) ──────────────────────────────────────
+
+	/**
+	 * Rename a member variable on the defining Blueprint and rewrite every
+	 * reference in every Blueprint under `PackagePath` (default "/Game").
+	 * Walks Get/Set nodes on every BP's graphs; for each match with
+	 * `VariableReference.MemberName == OldName` and a matching owner class
+	 * (the defining BP's generated class or a subclass), the reference is
+	 * rewritten to the new name and the node is reconstructed.
+	 *
+	 * Each updated BP is recompiled + marked dirty so the caller can save
+	 * with `save_asset`. The defining BP is also recompiled.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeRenameReport RenameMemberVariableGlobal(
+		const FString& DefiningBlueprintPath,
+		const FString& OldName, const FString& NewName,
+		const FString& PackagePath);
+
+	/**
+	 * Rename a user-defined function on the defining Blueprint and rewrite
+	 * every CallFunction / Message reference across Blueprints under
+	 * `PackagePath`. Uses the same scan strategy as
+	 * find_function_call_sites_global.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeRenameReport RenameFunctionGlobal(
+		const FString& DefiningBlueprintPath,
+		const FString& OldName, const FString& NewName,
+		const FString& PackagePath);
+
+	// ─── Variable-type change with explicit ref-fix report (#15) ────
+
+	/**
+	 * Change a member variable's type and return the list of K2 nodes
+	 * whose references were dropped as a result. Existing
+	 * `set_variable_type` relies on UE's `ChangeMemberVariableType` which
+	 * reconforms most Get/Set nodes but silently breaks wires on
+	 * incompatible type changes (e.g. int → bool). This wrapper compiles
+	 * after the change and reports every reference node that ended up with
+	 * broken pins so the agent can fix them up.
+	 *
+	 * @param OutBrokenNodeGuids  Node GUIDs (across all graphs) whose pins
+	 *                            became orphaned after the type change.
+	 *                            Empty when the change was pin-compatible.
+	 * @return true on a successful type change; false when the variable
+	 *         didn't exist or the type string didn't parse.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool ChangeVariableTypeWithReport(const FString& BlueprintPath,
+		const FString& VariableName, const FString& NewTypeString,
+		TArray<FString>& OutBrokenNodeGuids);
 };

@@ -68,6 +68,11 @@
 #include "JsonObjectConverter.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Engine/LatentActionManager.h"
+#include "Engine/DataTable.h"
+#include "K2Node_AsyncAction.h"
+#include "K2Node_EditablePinBase.h"
+#include "K2Node_Tunnel.h"
+#include "K2Node_Composite.h"
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -9541,4 +9546,814 @@ int32 UUnrealBridgeBlueprintLibrary::AutoInsertReroutes(
 
 	if (KnotsInserted > 0) FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return KnotsInserted;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   Extended BP editing: typed pins, struct split, promote, signature
+//   edit, collapse-to-macro, async-action, class-name node, editor
+//   focus state, cross-BP rename, type-change reporter.
+// ═══════════════════════════════════════════════════════════════════
+
+namespace BridgeBPExtImpl
+{
+	/** Resolve a UEdGraphPin on a specific node by name. */
+	static UEdGraphPin* ResolvePin(UBlueprint* BP, const FString& GraphName,
+		const FString& NodeGuidStr, const FString& PinName)
+	{
+		if (!BP) return nullptr;
+		UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+		if (!Graph) return nullptr;
+		UEdGraphNode* Node = BridgeBPCollapseImpl::FindNodeByGuid(Graph, NodeGuidStr);
+		if (!Node) return nullptr;
+		return Node->FindPin(FName(*PinName));
+	}
+
+	/** Locate a UClass by either `/Script/Module.Class`, `/Game/.../BP_C`, or a
+	 *  short class name via FindFirstObject. */
+	static UClass* ResolveClass(const FString& PathOrShortName)
+	{
+		if (PathOrShortName.IsEmpty()) return nullptr;
+		if (PathOrShortName.StartsWith(TEXT("/")))
+		{
+			if (UClass* C = LoadObject<UClass>(nullptr, *PathOrShortName)) return C;
+			// Fallback — maybe caller passed a BP path without the _C suffix.
+			if (UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *PathOrShortName))
+			{
+				return BP->GeneratedClass;
+			}
+			return nullptr;
+		}
+		return FindFirstObject<UClass>(*PathOrShortName, EFindFirstObjectOptions::NativeFirst);
+	}
+}
+
+// ─── #11 Set FDataTableRowHandle pin default ────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::SetDataTableRowHandlePin(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& PinName,
+	const FString& DataTablePath, const FString& RowName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraphPin* Pin = BridgeBPExtImpl::ResolvePin(BP, GraphName, NodeGuid, PinName);
+	if (!Pin) return false;
+
+	// Must be a struct pin of type FDataTableRowHandle.
+	if (Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Struct) return false;
+	const UScriptStruct* StructType = Cast<UScriptStruct>(Pin->PinType.PinSubCategoryObject.Get());
+	if (!StructType || StructType != FDataTableRowHandle::StaticStruct()) return false;
+
+	// Load the DataTable to validate (optional asset ref is allowed — just
+	// emit the path). Quote values that contain non-identifier chars.
+	FString Exported = FString::Printf(
+		TEXT("(DataTable=\"%s\",RowName=\"%s\")"),
+		*DataTablePath, *RowName);
+
+	const UEdGraphSchema* Schema = Pin->GetSchema();
+	if (!Schema) return false;
+	Schema->TrySetDefaultValue(*Pin, Exported);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+// ─── #12 Split / recombine struct pin ───────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::SplitStructPin(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& PinName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraphPin* Pin = BridgeBPExtImpl::ResolvePin(BP, GraphName, NodeGuid, PinName);
+	if (!Pin || Pin->bHidden) return false;
+	const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
+	if (!K2) return false;
+	if (!K2->CanSplitStructPin(*Pin)) return false;
+	K2->SplitPin(Pin, /*bNotify*/ true);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::RecombineStructPin(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& SubPinName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraphPin* Pin = BridgeBPExtImpl::ResolvePin(BP, GraphName, NodeGuid, SubPinName);
+	if (!Pin) return false;
+	// Find the split-root (sub-pins carry a ParentPin reference).
+	UEdGraphPin* Parent = Pin->ParentPin ? Pin->ParentPin : Pin;
+	// Walk up to the outermost parent in case of nested structs.
+	while (Parent->ParentPin) Parent = Parent->ParentPin;
+	const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
+	if (!K2) return false;
+	K2->RecombinePin(Parent->SubPins.Num() > 0 ? Parent->SubPins[0] : Parent);
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return true;
+}
+
+// ─── #9 Promote pin to variable ─────────────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::PromotePinToVariable(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeGuid, const FString& PinName,
+	const FString& VariableName, bool bToMemberVariable,
+	FString& OutNewVariableName, FString& OutNewNodeGuid)
+{
+	OutNewVariableName.Reset();
+	OutNewNodeGuid.Reset();
+
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = BridgeBPCollapseImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+	UEdGraphPin* Pin = Node->FindPin(FName(*PinName));
+	if (!Pin || Pin->bHidden) return false;
+
+	// Pin type copy — variables use the same PinType layout.
+	FEdGraphPinType VarType = Pin->PinType;
+	if (VarType.PinCategory == UEdGraphSchema_K2::PC_Exec) return false;
+	if (VarType.PinCategory == UEdGraphSchema_K2::PC_Wildcard) return false;
+
+	// Uniquify the requested name against existing BP member / local vars.
+	const FName Desired = FBlueprintEditorUtils::FindUniqueKismetName(BP,
+		VariableName.IsEmpty() ? TEXT("NewVar") : VariableName);
+
+	bool bCreated = false;
+	if (bToMemberVariable)
+	{
+		bCreated = FBlueprintEditorUtils::AddMemberVariable(BP, Desired, VarType);
+	}
+	else
+	{
+		// Local variable requires the function's UFunction scope.
+		UFunction* Scope = BP->SkeletonGeneratedClass
+			? BP->SkeletonGeneratedClass->FindFunctionByName(Graph->GetFName())
+			: nullptr;
+		if (!Scope) return false;
+		bCreated = FBlueprintEditorUtils::AddLocalVariable(BP, Graph, Desired, VarType, FString());
+	}
+	if (!bCreated) return false;
+
+	// Spawn a Get or Set node near the pin and wire it.
+	const bool bWantSet = (Pin->Direction == EGPD_Output);
+	UK2Node_Variable* VarNode = nullptr;
+	if (bWantSet)
+	{
+		UK2Node_VariableSet* SetNode = NewObject<UK2Node_VariableSet>(Graph);
+		SetNode->CreateNewGuid();
+		SetNode->NodePosX = Node->NodePosX + 260;
+		SetNode->NodePosY = Node->NodePosY;
+		if (bToMemberVariable)
+		{
+			SetNode->VariableReference.SetSelfMember(Desired);
+		}
+		else
+		{
+			UFunction* Scope = BP->SkeletonGeneratedClass
+				? BP->SkeletonGeneratedClass->FindFunctionByName(Graph->GetFName())
+				: nullptr;
+			SetNode->VariableReference.SetLocalMember(Desired, Scope, FGuid());
+		}
+		Graph->AddNode(SetNode, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+		SetNode->PostPlacedNewNode();
+		SetNode->AllocateDefaultPins();
+		VarNode = SetNode;
+	}
+	else
+	{
+		UK2Node_VariableGet* GetNode = NewObject<UK2Node_VariableGet>(Graph);
+		GetNode->CreateNewGuid();
+		GetNode->NodePosX = Node->NodePosX - 260;
+		GetNode->NodePosY = Node->NodePosY;
+		if (bToMemberVariable)
+		{
+			GetNode->VariableReference.SetSelfMember(Desired);
+		}
+		else
+		{
+			UFunction* Scope = BP->SkeletonGeneratedClass
+				? BP->SkeletonGeneratedClass->FindFunctionByName(Graph->GetFName())
+				: nullptr;
+			GetNode->VariableReference.SetLocalMember(Desired, Scope, FGuid());
+		}
+		Graph->AddNode(GetNode, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+		GetNode->PostPlacedNewNode();
+		GetNode->AllocateDefaultPins();
+		VarNode = GetNode;
+	}
+	if (!VarNode) return false;
+
+	// Wire the variable node's data pin to the user's pin.
+	UEdGraphPin* VarValuePin = VarNode->FindPin(Desired);
+	if (!VarValuePin)
+	{
+		// Fallback — any non-exec pin with matching direction.
+		for (UEdGraphPin* P : VarNode->Pins)
+		{
+			if (!P || P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+			if (bWantSet ? P->Direction == EGPD_Input : P->Direction == EGPD_Output) { VarValuePin = P; break; }
+		}
+	}
+	if (VarValuePin)
+	{
+		Pin->MakeLinkTo(VarValuePin);
+	}
+
+	OutNewVariableName = Desired.ToString();
+	OutNewNodeGuid = VarNode->NodeGuid.ToString(EGuidFormats::Digits);
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+// ─── #14 Remove / reorder function parameter ────────────────────
+
+namespace BridgeBPExtImpl
+{
+	/** Find the editable-pin-base node that owns the user-defined pin of
+	 *  the given name in a function graph (FunctionEntry for inputs,
+	 *  FunctionResult for outputs). */
+	static UK2Node_EditablePinBase* FindParamOwner(UEdGraph* Graph, const FName& ParamName, int32& OutIndex)
+	{
+		OutIndex = INDEX_NONE;
+		if (!Graph) return nullptr;
+		auto Scan = [&](UK2Node_EditablePinBase* N) -> UK2Node_EditablePinBase*
+		{
+			if (!N) return nullptr;
+			for (int32 i = 0; i < N->UserDefinedPins.Num(); ++i)
+			{
+				if (N->UserDefinedPins[i]->PinName == ParamName)
+				{
+					OutIndex = i;
+					return N;
+				}
+			}
+			return nullptr;
+		};
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (UK2Node_FunctionEntry* E = Cast<UK2Node_FunctionEntry>(N))
+			{
+				if (UK2Node_EditablePinBase* R = Scan(E)) return R;
+			}
+			if (UK2Node_FunctionResult* R = Cast<UK2Node_FunctionResult>(N))
+			{
+				if (UK2Node_EditablePinBase* Out = Scan(R)) return Out;
+			}
+		}
+		return nullptr;
+	}
+}
+
+bool UUnrealBridgeBlueprintLibrary::RemoveFunctionParameter(
+	const FString& BlueprintPath, const FString& FunctionName,
+	const FString& ParamName)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = nullptr;
+	const FName FnName(*FunctionName);
+	for (UEdGraph* G : BP->FunctionGraphs) { if (G && G->GetFName() == FnName) { Graph = G; break; } }
+	if (!Graph) return false;
+
+	int32 Idx = INDEX_NONE;
+	UK2Node_EditablePinBase* Owner = BridgeBPExtImpl::FindParamOwner(Graph, FName(*ParamName), Idx);
+	if (!Owner) return false;
+
+	Owner->Modify();
+	Owner->RemoveUserDefinedPinByName(FName(*ParamName));
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+bool UUnrealBridgeBlueprintLibrary::ReorderFunctionParameter(
+	const FString& BlueprintPath, const FString& FunctionName,
+	const FString& ParamName, int32 NewIndex)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	UEdGraph* Graph = nullptr;
+	const FName FnName(*FunctionName);
+	for (UEdGraph* G : BP->FunctionGraphs) { if (G && G->GetFName() == FnName) { Graph = G; break; } }
+	if (!Graph) return false;
+
+	int32 OldIdx = INDEX_NONE;
+	UK2Node_EditablePinBase* Owner = BridgeBPExtImpl::FindParamOwner(Graph, FName(*ParamName), OldIdx);
+	if (!Owner || OldIdx == INDEX_NONE) return false;
+
+	const int32 Count = Owner->UserDefinedPins.Num();
+	int32 Target = NewIndex;
+	if (Target < 0 || Target >= Count) Target = Count - 1;
+	if (Target == OldIdx) return true;
+
+	Owner->Modify();
+	TSharedPtr<FUserPinInfo> Moving = Owner->UserDefinedPins[OldIdx];
+	Owner->UserDefinedPins.RemoveAt(OldIdx);
+	Owner->UserDefinedPins.Insert(Moving, Target);
+	Owner->ReconstructNode();
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return true;
+}
+
+// ─── #10 Collapse to macro ──────────────────────────────────────
+
+FString UUnrealBridgeBlueprintLibrary::CollapseNodesToMacro(
+	const FString& BlueprintPath, const FString& SourceGraphName,
+	const TArray<FString>& NodeGuids, const FString& NewMacroName,
+	FString& OutNewGraphName)
+{
+	using namespace BridgeBPCollapseImpl;
+	using namespace BridgeBlueprintGraphWriteImpl;
+
+	OutNewGraphName.Empty();
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return FString();
+	UEdGraph* SourceGraph = FindGraphByName(BP, SourceGraphName);
+	if (!SourceGraph) return FString();
+
+	TSet<UEdGraphNode*> Selection;
+	int32 MinX = INT32_MAX, MinY = INT32_MAX, MaxX = INT32_MIN, MaxY = INT32_MIN;
+	int32 SumX = 0, SumY = 0;
+	for (const FString& GuidStr : NodeGuids)
+	{
+		UEdGraphNode* N = BridgeBPCollapseImpl::FindNodeByGuid(SourceGraph, GuidStr);
+		if (!N) return FString();
+		if (N->IsA<UK2Node_FunctionEntry>() || N->IsA<UK2Node_FunctionResult>()) return FString();
+		if (N->GetClass()->GetName().Contains(TEXT("Tunnel"))) return FString();
+		Selection.Add(N);
+		SumX += N->NodePosX; SumY += N->NodePosY;
+		MinX = FMath::Min(MinX, N->NodePosX); MinY = FMath::Min(MinY, N->NodePosY);
+		MaxX = FMath::Max(MaxX, N->NodePosX); MaxY = FMath::Max(MaxY, N->NodePosY);
+	}
+	if (Selection.Num() == 0) return FString();
+
+	// Create the macro graph (with Tunnel/Tunnel scaffolding).
+	const FName BaseName = FBlueprintEditorUtils::FindUniqueKismetName(
+		BP, NewMacroName.IsEmpty() ? TEXT("ExtractedMacro") : NewMacroName);
+	UEdGraph* DestGraph = FBlueprintEditorUtils::CreateNewGraph(
+		BP, BaseName, UEdGraph::StaticClass(), UEdGraphSchema_K2::StaticClass());
+	if (!DestGraph) return FString();
+	FBlueprintEditorUtils::AddMacroGraph(BP, DestGraph, /*bIsUserCreated*/ true, nullptr);
+
+	// Find the auto-created Entry / Exit tunnels.
+	UK2Node_Tunnel* Entry = nullptr;
+	UK2Node_Tunnel* Exit  = nullptr;
+	for (UEdGraphNode* N : DestGraph->Nodes)
+	{
+		if (UK2Node_Tunnel* T = Cast<UK2Node_Tunnel>(N))
+		{
+			if (T->bCanHaveInputs && !T->bCanHaveOutputs) { Exit = T; continue; }
+			if (T->bCanHaveOutputs && !T->bCanHaveInputs) { Entry = T; continue; }
+		}
+	}
+	if (!Entry || !Exit) return FString();
+
+	const int32 CenterX = SumX / Selection.Num();
+	const int32 CenterY = SumY / Selection.Num();
+
+	// Spawn the gateway MacroInstance in the source graph.
+	UK2Node_MacroInstance* Gateway = NewObject<UK2Node_MacroInstance>(SourceGraph);
+	Gateway->CreateNewGuid();
+	Gateway->NodePosX = CenterX;
+	Gateway->NodePosY = CenterY;
+	SourceGraph->AddNode(Gateway, false, false);
+	Gateway->SetMacroGraph(DestGraph);
+	Gateway->PostPlacedNewNode();
+	Gateway->AllocateDefaultPins();
+
+	// Move selected nodes + collect boundary pins.
+	TArray<UEdGraphPin*> GatewayPins;
+	SourceGraph->Modify();
+	DestGraph->Modify();
+	BP->Modify();
+
+	for (UEdGraphNode* N : Selection)
+	{
+		N->Modify();
+		SourceGraph->Nodes.Remove(N);
+		DestGraph->Nodes.Add(N);
+		N->Rename(nullptr, DestGraph);
+		for (UEdGraphPin* P : N->Pins)
+		{
+			if (!P || P->LinkedTo.Num() == 0) continue;
+			bool bCrosses = false;
+			for (UEdGraphPin* Linked : P->LinkedTo)
+			{
+				if (!Linked) continue;
+				if (!Selection.Contains(Linked->GetOwningNode())) { bCrosses = true; break; }
+			}
+			if (bCrosses) GatewayPins.Add(P);
+		}
+	}
+	BridgeBPCollapseImpl::SortPinsByPosition(GatewayPins);
+
+	// Thunk each boundary pin through Entry / Exit tunnels.
+	for (UEdGraphPin* LocalPin : GatewayPins)
+	{
+		const bool bIsExec = (LocalPin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+		UK2Node_EditablePinBase* Port = (LocalPin->Direction == EGPD_Input) ? (UK2Node_EditablePinBase*)Entry : (UK2Node_EditablePinBase*)Exit;
+
+		const FName UniquePortName = Gateway->CreateUniquePinName(LocalPin->PinName);
+		FEdGraphPinType PinType = LocalPin->PinType;
+		if (PinType.bIsWeakPointer && !PinType.IsContainer()) PinType.bIsWeakPointer = false;
+
+		UEdGraphPin* RemotePortPin = Gateway->CreatePin(LocalPin->Direction, PinType, UniquePortName);
+		UEdGraphPin* LocalPortPin  = Port->CreateUserDefinedPin(UniquePortName, PinType,
+			(LocalPin->Direction == EGPD_Input) ? EGPD_Output : EGPD_Input);
+		(void)bIsExec;
+		if (!RemotePortPin || !LocalPortPin) continue;
+
+		LocalPin->Modify();
+		for (int32 i = LocalPin->LinkedTo.Num() - 1; i >= 0; --i)
+		{
+			UEdGraphPin* RemotePin = LocalPin->LinkedTo[i];
+			if (!RemotePin) continue;
+			UEdGraphNode* RemoteOwner = RemotePin->GetOwningNode();
+			if (!RemoteOwner) continue;
+			if (Selection.Contains(RemoteOwner)) continue;
+
+			RemotePin->Modify();
+			RemotePin->LinkedTo.Remove(LocalPin);
+			RemotePin->MakeLinkTo(RemotePortPin);
+			LocalPin->LinkedTo.Remove(RemotePin);
+			LocalPin->MakeLinkTo(LocalPortPin);
+		}
+	}
+
+	// Reposition Entry / Exit around the moved nodes.
+	Entry->NodePosX = MinX - 260;
+	Entry->NodePosY = CenterY;
+	Exit->NodePosX  = MaxX + 300;
+	Exit->NodePosY  = CenterY;
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	Gateway->ReconstructNode();
+	FKismetEditorUtilities::CompileBlueprint(BP);
+
+	OutNewGraphName = DestGraph->GetName();
+	return Gateway->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── #13 Async action node ──────────────────────────────────────
+
+FString UUnrealBridgeBlueprintLibrary::AddAsyncActionNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& FactoryClassPath, const FString& FactoryFunctionName,
+	int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+	UClass* FactoryClass = BridgeBPExtImpl::ResolveClass(FactoryClassPath);
+	if (!FactoryClass) return FString();
+	UFunction* FactoryFn = FactoryClass->FindFunctionByName(FName(*FactoryFunctionName));
+	if (!FactoryFn) return FString();
+
+	UK2Node_AsyncAction* Node = NewObject<UK2Node_AsyncAction>(Graph);
+	Node->CreateNewGuid();
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+	Node->InitializeProxyFromFunction(FactoryFn);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+	Node->ReconstructNode();
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── #19 Add K2Node by class name ───────────────────────────────
+
+FString UUnrealBridgeBlueprintLibrary::AddNodeByClassName(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& NodeClassPath, int32 NodePosX, int32 NodePosY)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+	UClass* Cls = BridgeBPExtImpl::ResolveClass(NodeClassPath);
+	if (!Cls) return FString();
+	if (!Cls->IsChildOf(UK2Node::StaticClass())) return FString();
+	if (Cls->HasAnyClassFlags(CLASS_Abstract)) return FString();
+
+	UK2Node* Node = NewObject<UK2Node>(Graph, Cls);
+	Node->CreateNewGuid();
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── #17 Editor focus state ─────────────────────────────────────
+
+FBridgeEditorFocusState UUnrealBridgeBlueprintLibrary::GetEditorFocusState()
+{
+	FBridgeEditorFocusState Out;
+	UAssetEditorSubsystem* Sub = GEditor ? GEditor->GetEditorSubsystem<UAssetEditorSubsystem>() : nullptr;
+	if (!Sub) return Out;
+
+	const TArray<UObject*> EditedAssets = Sub->GetAllEditedAssets();
+	for (UObject* Asset : EditedAssets)
+	{
+		if (UBlueprint* BP = Cast<UBlueprint>(Asset))
+		{
+			Out.OpenBlueprintPaths.Add(BP->GetPathName());
+		}
+	}
+
+	// Find the BP editor currently in focus. AssetEditorSubsystem doesn't
+	// expose "active" directly — use the last-focused BP editor. We scan
+	// the open BP editors and pick the one whose FocusedGraph is non-null
+	// (means it has a graph tab active).
+	UBlueprint* FocusedBP = nullptr;
+	FBlueprintEditor* FocusedEditor = nullptr;
+	for (UObject* Asset : EditedAssets)
+	{
+		UBlueprint* BP = Cast<UBlueprint>(Asset);
+		if (!BP) continue;
+		IAssetEditorInstance* Inst = Sub->FindEditorForAsset(BP, /*bFocusIfOpen*/ false);
+		if (!Inst) continue;
+		FBlueprintEditor* BPEd = static_cast<FBlueprintEditor*>(Inst);
+		if (BPEd->GetFocusedGraph() != nullptr)
+		{
+			FocusedBP = BP;
+			FocusedEditor = BPEd;
+			break;
+		}
+	}
+
+	if (FocusedBP && FocusedEditor)
+	{
+		Out.BlueprintPath = FocusedBP->GetPathName();
+		if (UEdGraph* G = FocusedEditor->GetFocusedGraph())
+		{
+			Out.FocusedGraphName = G->GetName();
+			if (FocusedBP->UbergraphPages.Contains(G))      Out.FocusedGraphType = TEXT("EventGraph");
+			else if (FocusedBP->FunctionGraphs.Contains(G)) Out.FocusedGraphType = TEXT("Function");
+			else if (FocusedBP->MacroGraphs.Contains(G))    Out.FocusedGraphType = TEXT("Macro");
+		}
+
+		// Selected nodes in the focused graph panel.
+		const FGraphPanelSelectionSet Selected = FocusedEditor->GetSelectedNodes();
+		for (UObject* N : Selected)
+		{
+			if (UEdGraphNode* Node = Cast<UEdGraphNode>(N))
+			{
+				FBridgeSelectedNode S;
+				S.NodeGuid = Node->NodeGuid.ToString(EGuidFormats::Digits);
+				S.NodeClass = Node->GetClass()->GetName();
+				S.Title = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+				Out.SelectedNodes.Add(MoveTemp(S));
+			}
+		}
+	}
+	return Out;
+}
+
+// ─── #16 Cross-BP rename helpers ────────────────────────────────
+
+namespace BridgeBPExtImpl
+{
+	/** Enumerate all BPs under PackagePath via AssetRegistry. */
+	static void EnumerateBlueprints(const FString& PackagePath, TArray<UBlueprint*>& Out)
+	{
+		IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+		FString Root = PackagePath.IsEmpty() ? FString(TEXT("/Game")) : PackagePath;
+		if (!Root.StartsWith(TEXT("/"))) Root = TEXT("/") + Root;
+
+		FARFilter Filter;
+		Filter.bRecursivePaths = true;
+		Filter.PackagePaths.Add(FName(*Root));
+		Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+		Filter.bRecursiveClasses = true;
+
+		TArray<FAssetData> BpAssets;
+		Registry.GetAssets(Filter, BpAssets);
+		for (const FAssetData& Data : BpAssets)
+		{
+			if (UBlueprint* BP = Cast<UBlueprint>(Data.GetAsset()))
+			{
+				Out.Add(BP);
+			}
+		}
+	}
+
+	/** Check that the owner-class on a variable reference matches the defining
+	 *  BP (generated class or one of its parents). */
+	static bool ReferencesVariableOnBP(const FMemberReference& Ref, UClass* DefiningClass)
+	{
+		if (!DefiningClass) return false;
+		const UClass* MemberScope = Ref.GetMemberParentClass();
+		if (!MemberScope) return false;
+		// Covers the defining class AND subclasses that inherit the variable.
+		return DefiningClass->IsChildOf(MemberScope) || MemberScope->IsChildOf(DefiningClass);
+	}
+}
+
+FBridgeRenameReport UUnrealBridgeBlueprintLibrary::RenameMemberVariableGlobal(
+	const FString& DefiningBlueprintPath,
+	const FString& OldName, const FString& NewName,
+	const FString& PackagePath)
+{
+	FBridgeRenameReport Report;
+	UBlueprint* DefBP = LoadBP(DefiningBlueprintPath);
+	if (!DefBP || !DefBP->GeneratedClass)
+	{
+		Report.Message = TEXT("defining blueprint not found or not compiled");
+		return Report;
+	}
+	const FName Old(*OldName), New(*NewName);
+	if (Old.IsNone() || New.IsNone() || Old == New)
+	{
+		Report.Message = TEXT("invalid rename — old/new names must be distinct + non-empty");
+		return Report;
+	}
+	if (FBlueprintEditorUtils::FindNewVariableIndex(DefBP, Old) == INDEX_NONE)
+	{
+		Report.Message = TEXT("variable not found on defining blueprint");
+		return Report;
+	}
+
+	// Rename on the defining BP (this also rewrites its own call sites).
+	FBlueprintEditorUtils::RenameMemberVariable(DefBP, Old, New);
+	Report.UpdatedBlueprints.Add(DefBP->GetPathName());
+
+	// Scan every other BP under PackagePath for references and rewrite.
+	UClass* DefClass = DefBP->GeneratedClass;
+	TArray<UBlueprint*> All;
+	BridgeBPExtImpl::EnumerateBlueprints(PackagePath, All);
+	for (UBlueprint* BP : All)
+	{
+		if (!BP || BP == DefBP) continue;
+		bool bChanged = false;
+		for (const BridgeBPSummaryImpl::FAllGraphs& Entry : BridgeBPSummaryImpl::CollectAllGraphs(BP))
+		{
+			for (UEdGraphNode* Node : Entry.Graph->Nodes)
+			{
+				if (UK2Node_Variable* V = Cast<UK2Node_Variable>(Node))
+				{
+					if (V->VariableReference.GetMemberName() == Old &&
+						BridgeBPExtImpl::ReferencesVariableOnBP(V->VariableReference, DefClass))
+					{
+						V->Modify();
+						V->VariableReference.SetSelfMember(New);
+						V->ReconstructNode();
+						Report.UpdatedNodeCount += 1;
+						bChanged = true;
+					}
+				}
+			}
+		}
+		if (bChanged)
+		{
+			FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+			FKismetEditorUtilities::CompileBlueprint(BP);
+			Report.UpdatedBlueprints.Add(BP->GetPathName());
+		}
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(DefBP);
+	Report.bSuccess = true;
+	return Report;
+}
+
+FBridgeRenameReport UUnrealBridgeBlueprintLibrary::RenameFunctionGlobal(
+	const FString& DefiningBlueprintPath,
+	const FString& OldName, const FString& NewName,
+	const FString& PackagePath)
+{
+	FBridgeRenameReport Report;
+	UBlueprint* DefBP = LoadBP(DefiningBlueprintPath);
+	if (!DefBP || !DefBP->GeneratedClass)
+	{
+		Report.Message = TEXT("defining blueprint not found or not compiled");
+		return Report;
+	}
+	const FName Old(*OldName), New(*NewName);
+	if (Old.IsNone() || New.IsNone() || Old == New)
+	{
+		Report.Message = TEXT("invalid rename — old/new names must be distinct + non-empty");
+		return Report;
+	}
+
+	UEdGraph* FnGraph = nullptr;
+	for (UEdGraph* G : DefBP->FunctionGraphs)
+	{
+		if (G && G->GetFName() == Old) { FnGraph = G; break; }
+	}
+	if (!FnGraph)
+	{
+		Report.Message = TEXT("function graph not found on defining blueprint");
+		return Report;
+	}
+	// Uniqueness check on the defining BP.
+	if (FBlueprintEditorUtils::FindUniqueKismetName(DefBP, NewName) != New)
+	{
+		Report.Message = TEXT("new name collides with an existing kismet name");
+		return Report;
+	}
+
+	FBlueprintEditorUtils::RenameGraph(FnGraph, NewName);
+	Report.UpdatedBlueprints.Add(DefBP->GetPathName());
+
+	UClass* DefClass = DefBP->GeneratedClass;
+	TArray<UBlueprint*> All;
+	BridgeBPExtImpl::EnumerateBlueprints(PackagePath, All);
+	for (UBlueprint* BP : All)
+	{
+		if (!BP || BP == DefBP) continue;
+		bool bChanged = false;
+		for (const BridgeBPSummaryImpl::FAllGraphs& Entry : BridgeBPSummaryImpl::CollectAllGraphs(BP))
+		{
+			for (UEdGraphNode* Node : Entry.Graph->Nodes)
+			{
+				UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node);
+				if (!Call) continue;
+				if (Call->FunctionReference.GetMemberName() != Old) continue;
+				const UClass* Scope = Call->FunctionReference.GetMemberParentClass();
+				if (!Scope) continue;
+				if (!(DefClass->IsChildOf(Scope) || Scope->IsChildOf(DefClass))) continue;
+				Call->Modify();
+				Call->FunctionReference.SetExternalMember(New, DefClass);
+				Call->ReconstructNode();
+				Report.UpdatedNodeCount += 1;
+				bChanged = true;
+			}
+		}
+		if (bChanged)
+		{
+			FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+			FKismetEditorUtilities::CompileBlueprint(BP);
+			Report.UpdatedBlueprints.Add(BP->GetPathName());
+		}
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(DefBP);
+	Report.bSuccess = true;
+	return Report;
+}
+
+// ─── #15 Variable-type change with ref report ───────────────────
+
+bool UUnrealBridgeBlueprintLibrary::ChangeVariableTypeWithReport(
+	const FString& BlueprintPath, const FString& VariableName,
+	const FString& NewTypeString, TArray<FString>& OutBrokenNodeGuids)
+{
+	OutBrokenNodeGuids.Reset();
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
+	const FName VarName(*VariableName);
+	if (FBlueprintEditorUtils::FindNewVariableIndex(BP, VarName) == INDEX_NONE) return false;
+
+	FEdGraphPinType NewType;
+	if (!ParseTypeString(NewTypeString, NewType)) return false;
+
+	// FBlueprintEditorUtils::ChangeMemberVariableType pops a suppressible
+	// modal ("this could break connections — continue?") whenever the
+	// variable has active Get/Set nodes in any graph. Programmatic callers
+	// can't answer a modal — temporarily flip the suppression ini and
+	// restore afterwards so the dialog auto-confirms but we don't leak
+	// that choice into the user's persistent settings.
+	const TCHAR* DlgSection = TEXT("SuppressableDialogs");
+	const TCHAR* DlgKey     = TEXT("ChangeVariableType_Warning");
+	bool bPrev = false;
+	const bool bHadPrev = GConfig->GetBool(DlgSection, DlgKey, bPrev, GEditorPerProjectIni);
+	GConfig->SetBool(DlgSection, DlgKey, true, GEditorPerProjectIni);
+
+	FBlueprintEditorUtils::ChangeMemberVariableType(BP, VarName, NewType);
+
+	if (bHadPrev)
+	{
+		GConfig->SetBool(DlgSection, DlgKey, bPrev, GEditorPerProjectIni);
+	}
+	else
+	{
+		GConfig->RemoveKey(DlgSection, DlgKey, GEditorPerProjectIni);
+	}
+
+	FKismetEditorUtilities::CompileBlueprint(BP);
+
+	// Walk every Get/Set node for the variable; flag any whose value pin type
+	// doesn't match the new variable type (indicates a broken reconform).
+	for (const BridgeBPSummaryImpl::FAllGraphs& Entry : BridgeBPSummaryImpl::CollectAllGraphs(BP))
+	{
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
+		{
+			UK2Node_Variable* V = Cast<UK2Node_Variable>(Node);
+			if (!V) continue;
+			if (V->GetVarNameString() != VariableName) continue;
+			UEdGraphPin* ValuePin = V->FindPin(VarName);
+			if (!ValuePin) { OutBrokenNodeGuids.Add(Node->NodeGuid.ToString(EGuidFormats::Digits)); continue; }
+			if (ValuePin->PinType != NewType)
+			{
+				OutBrokenNodeGuids.Add(Node->NodeGuid.ToString(EGuidFormats::Digits));
+			}
+		}
+	}
+	return true;
 }

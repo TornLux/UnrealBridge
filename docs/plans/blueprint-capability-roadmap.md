@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 在蓝图全生命周期（读取、理解、编辑、执行验证）上相对"AI 从自然语言自主生成蓝图"目标的能力缺口，按优先级排序。
 
-最后更新：2026-04-19（#5 `invoke_blueprint_function` + #7 `find_function_call_sites_global` 落地后）
+最后更新：2026-04-19（P1 #9/#10/#11/#12 + P2 #13/#14/#15/#16 + P3 #17/#19 一并落地后）
 
 ---
 
@@ -21,6 +21,7 @@
 - 可生成节点发现：`list_spawnable_actions`
 - 活 Slate 几何：`get_rendered_node_info`
 - 行为验证：**`invoke_blueprint_function`** 在 transient 实例上直接 ProcessEvent（非 Actor = NewObject；Actor = 编辑器世界 SpawnActor），JSON 入参 / JSON 出参（`_return` + out-params），拒绝 latent/非 BlueprintCallable
+- 编辑器焦点快照：**`get_editor_focus_state`** 当前焦点 BP / 活动 graph / 选中节点 / 所有打开的 BP 编辑器
 
 ### 写
 - 变量/函数/Macro/接口/组件/dispatcher 全 CRUD + metadata 编辑
@@ -28,9 +29,14 @@
 - 通用兜底：`spawn_node_by_action_key` 任意节点
 - 引脚：连接/断开/默认值
 - 布局：位置、对齐、auto_layout（pin_aligned / exec_flow）、straighten、reroute、per-row 列宽、delegate 聚合
-- 节点编辑：颜色、enabled、comment、复制、删除、collapse-to-function
+- 节点编辑：颜色、enabled、comment、复制、删除、collapse-to-function、**collapse-to-macro**
 - 调试：断点
 - BP 层：reparent、metadata、编译
+- 函数签名：add/remove/reorder 参数，set metadata，rename graph
+- Pin 高级：struct pin **split / recombine**、**promote-to-variable**（member / local）
+- 变量类型：**change_variable_type_with_report**（自动抑制"是否搜索引用"对话框）
+- 跨 BP 重构：**rename_member_variable_global** / **rename_function_global** 按 owner class 过滤
+- 节点落点：任意 K2Node 按类名创建（**add_node_by_class_name**）、异步节点（**add_async_action_node**）、DataTableRowHandle 默认值助手（**set_data_table_row_handle_pin**）
 
 ---
 
@@ -53,43 +59,45 @@
 |---|---|---|
 | 7 | ~~**find_function_call_sites_global(func, class, max_results)**~~ | ✅ 2026-04-19 落地。AssetRegistry 枚举 BP → 遍历 UbergraphPages/FunctionGraphs/MacroGraphs，支持 owner class 过滤（短名或 `U*` 前缀名）+ PackagePath scope + MaxResults。 |
 | 8 | **find_usage_examples(class, func, n)** | 跨 BP 取 N 个真实调用点 + 上下游 2 层，让 AI 照样学。`get_function_signature` 只给文档不给实例。 |
-| 9 | **Promote-to-Variable** | 编辑器常见操作，Bridge 无对应。 |
-| 10 | **Collapse-to-Macro** | 有 Collapse-to-Function，缺 Macro 版本。 |
-| 11 | **DataTable / DataAsset pin 辅助** | `FDataTableRowHandle` 类型需同时指定 DataTable + RowName。无专用 helper，`set_pin_default_value` 需手写 exported text。 |
-| 12 | **结构体 pin 原地展开/收起** | Vector/Rotator 等可以"拆分结构体引脚"直接拿 X/Y/Z。现必须 Make/Break 节点，节点数翻倍。 |
+| 9 | ~~**Promote-to-Variable**~~ | ✅ 2026-04-19 落地 `promote_pin_to_variable`。支持 member / local variable；data pin → Get/Set 节点自动连线；唯一化变量名。 |
+| 10 | ~~**Collapse-to-Macro**~~ | ✅ 2026-04-19 落地 `collapse_nodes_to_macro`。对称 `collapse_nodes_to_function` 的 Tunnel/Tunnel 版本。 |
+| 11 | ~~**DataTable / DataAsset pin 辅助**~~ | ✅ 2026-04-19 落地 `set_data_table_row_handle_pin`。自动格式化 `(DataTable="...",RowName="...")` 导出文本。 |
+| 12 | ~~**结构体 pin 原地展开/收起**~~ | ✅ 2026-04-19 落地 `split_struct_pin` / `recombine_struct_pin`（通过 `UEdGraphSchema_K2::SplitPin`/`RecombinePin`）。 |
 
 ### P2 中优先级：写能力边角
 
 | # | 项目 | 影响 |
 |---|---|---|
-| 13 | **异步节点 K2Node_AsyncAction 创建** | `WaitGameplayEvent` / `OnlineAsyncTask` 等有 delegate 输出 + exec 续接。`SpawnNodeByActionKey` 可兜底但 action key 跨会话不稳。需专用 `add_async_action_node(factory_class, factory_function, x, y)`。 |
-| 14 | **修改已有函数签名** | 有 `add_function_parameter` 但无"删除参数 2""交换 A B 顺序"。签名微调做不到。 |
-| 15 | **变量类型变更 + 引用修复** | `set_variable_type` 改类型后，现有 Get/Set 节点和 wire 不自动修复，易编译错。 |
-| 16 | **跨 BP 重命名** | 单 BP 内 `rename_*` 存在；跨 BP（调用方、子类）不会自动更新。 |
+| 13 | ~~**异步节点 K2Node_AsyncAction 创建**~~ | ✅ 2026-04-19 落地 `add_async_action_node(factory_class_path, factory_function_name, x, y)`。直接 `InitializeProxyFromFunction`。 |
+| 14 | ~~**修改已有函数签名**~~ | ✅ 2026-04-19 落地 `remove_function_parameter` + `reorder_function_parameter`（`UserDefinedPins` 重排 + `ReconstructNode`）。 |
+| 15 | ~~**变量类型变更 + 引用修复**~~ | ✅ 2026-04-19 落地 `change_variable_type_with_report`。抑制 `ChangeVariableType_Warning` 对话框 + 扫描 Get/Set 节点 pin 类型不一致的 guid 列表。 |
+| 16 | ~~**跨 BP 重命名**~~ | ✅ 2026-04-19 落地 `rename_member_variable_global` / `rename_function_global`。AssetRegistry 枚举 → 按 owner class 过滤重写 K2Node + recompile。 |
 
 ### P3 低优先级：便利性
 
 | # | 项目 | 影响 |
 |---|---|---|
-| 17 | **当前编辑器状态查询** | "用户选中了哪些节点？焦点在哪个 graph？"——可做 AI 辅助编辑（"把我选中的打包成函数"）。 |
+| 17 | ~~**当前编辑器状态查询**~~ | ✅ 2026-04-19 落地 `get_editor_focus_state`。返回焦点 BP / 活动 graph / 选中节点 / 所有已打开 BP 列表。 |
 | 18 | **Dry-run / 预览变更** | 一组 add/connect 调用不实际写，返回"会发生什么"。现失败只能 undo 回滚。 |
-| 19 | **自定义 K2Node 命名创建** | 项目私有 K2Node（如 `QueryDataTable` 自定义节点）只能走 `SpawnNodeByActionKey`；action key 跨会话不稳。需稳定命名入口。 |
+| 19 | ~~**自定义 K2Node 命名创建**~~ | ✅ 2026-04-19 落地 `add_node_by_class_name(class_path, x, y)`。`FindFirstObject<UClass>` 解析短/长类名；拒绝非 UK2Node 或 abstract 类。 |
 
 ---
 
-## 推荐 Top-5 优先级（工程量 × 频次）
+## 当前剩余 TODO（2026-04-19 后）
 
-| 排名 | 项目 | 工程量 | 频次 | 理由 |
-|---|---|---|---|---|
-| ~~1~~ | ~~**#5 invoke_blueprint_function**~~ | ~~中~~ | ~~高~~ | ✅ 已落地 |
-| 1 | **#1 Timeline 轨道 CRUD** | 中-大 | 高 | 一大类 BP 写不了 |
-| ~~2~~ | ~~**#7 find_function_call_sites_global**~~ | ~~小~~ | ~~中-高~~ | ✅ 已落地 |
-| 2 | **#4 Enhanced Input 绑定** | 中 | 高 | 现代 UE 输入必经 |
-| 3 | **#2 AnimGraph 状态机写** | 大 | 高 | 角色 BP 品类解锁 |
-| 4 | **#6 运行时 BP 变量/参数快照** | 中 | 高 | 断点 + 快照配合才是完整调试环 |
-| 5 | **#3 GameplayAbility 图编辑** | 大 | 中-高 | GAS 项目解锁 |
+只剩 6 项。按工程量 × 频次排序：
 
-下一最性价比起点：**#6（运行时变量/参数快照）** 与 **#4（Enhanced Input）** — #6 直接配合已有的断点 API 补齐调试循环，#4 是现代 UE 项目的刚需。
+| 排名 | # | 项目 | 工程量 | 频次 | 理由 |
+|---|---|---|---|---|---|
+| 1 | #6  | 运行时 BP 变量/参数快照 | 中 | 高 | 断点 + 快照才是完整调试环 |
+| 2 | #4  | Enhanced Input 绑定 | 中 | 高 | 现代 UE 输入必经 |
+| 3 | #1  | Timeline 轨道 CRUD | 中-大 | 高 | 渐变/延时/过渡一大类 BP |
+| 4 | #8  | find_usage_examples | 小-中 | 中 | 跨 BP 真实例子 → AI 照样学 |
+| 5 | #2  | AnimGraph 状态机写 | 大 | 高 | 角色 BP 品类 |
+| 6 | #3  | GameplayAbility 图编辑 | 大 | 中-高 | GAS 项目 |
+| 7 | #18 | Dry-run / 预览变更 | 中 | 低 | 便利，非刚需 |
+
+下一最性价比起点：**#6（运行时变量/参数快照）** + **#8（find_usage_examples）** — 两者都是中小工程量，前者补完调试循环，后者把 `get_function_signature` 的"文档级"信息扩展成"实战样例"。
 
 ---
 

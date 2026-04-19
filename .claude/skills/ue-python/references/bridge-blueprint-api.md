@@ -1701,6 +1701,266 @@ executes correctly.
 
 ---
 
+## Typed pin helpers
+
+### set_data_table_row_handle_pin(blueprint_path, graph_name, node_guid, pin_name, data_table_path, row_name) -> bool
+
+Set a `FDataTableRowHandle` pin's default value in one call instead of
+hand-formatting `(DataTable="/Game/...",RowName="Row")`. Works on any
+pin whose PinType is the `DataTableRowHandle` struct (variable
+get/set pins, function-entry params, make-struct leaves).
+
+```python
+L.set_data_table_row_handle_pin(
+    bp, 'EventGraph', node_guid, 'Handle',
+    '/Game/Data/DT_Weapons.DT_Weapons', 'Pistol')
+# Pin default becomes: (DataTable="/Game/Data/DT_Weapons.DT_Weapons",RowName="Pistol")
+```
+
+Returns false when the pin can't be found or isn't a
+`FDataTableRowHandle` struct. The DataTable path is not validated —
+you can set a handle to an asset that doesn't exist yet (unusual but
+allowed, matching the schema).
+
+---
+
+## Struct pin split / recombine
+
+### split_struct_pin(blueprint_path, graph_name, node_guid, pin_name) -> bool
+### recombine_struct_pin(blueprint_path, graph_name, node_guid, sub_pin_name) -> bool
+
+"Split Struct Pin" / "Recombine Struct Pin" — the right-click editor
+commands that expose a struct's subfields directly on the node without
+a separate Make/Break node. Halves the node count on dense math graphs
+and keeps data-flow visually adjacent.
+
+```python
+L.split_struct_pin(bp, 'EventGraph', make_vec_guid, 'ReturnValue')
+# Node now exposes ReturnValue_X, ReturnValue_Y, ReturnValue_Z directly.
+
+# Recombine — pass ANY sub-pin name; the schema finds the parent.
+L.recombine_struct_pin(bp, 'EventGraph', make_vec_guid, 'ReturnValue_X')
+```
+
+Returns false when the pin isn't a struct or the schema rejects the
+split (e.g. hidden pins, or structs that opt out via the
+`NativeDisableSplitPin` metadata). Recombine walks up through
+`ParentPin` chains, so nested struct splits work too.
+
+---
+
+## Promote-to-Variable
+
+### promote_pin_to_variable(blueprint_path, graph_name, node_guid, pin_name, variable_name, to_member_variable) -> (new_variable_name, new_node_guid)
+
+Create a new BP variable matching the pin's type and spawn a Get/Set
+node wired to the pin. Mirrors the editor's right-click "Promote to
+Variable" command.
+
+- **Input pin** → spawns a `K2Node_VariableGet` to the left and wires
+  its output to the pin.
+- **Output pin** → spawns a `K2Node_VariableSet` to the right and
+  wires the pin into its input.
+
+```python
+new_var, new_node = L.promote_pin_to_variable(
+    bp, 'EventGraph', add_node_guid, 'ReturnValue',
+    'Accumulator', True)  # to_member_variable = True
+# 'Accumulator' now exists as a BP member variable of matching type.
+# A K2Node_VariableSet was placed at add.ReturnValue's end.
+```
+
+- `variable_name` is uniquified against existing BP/local vars —
+  check `new_variable_name` for the actual name used.
+- `to_member_variable=False` adds a **local variable** on the
+  containing function graph instead (requires the pin to live on a
+  function graph, not the EventGraph).
+- Rejects exec and wildcard pins.
+
+---
+
+## Function-signature editing
+
+### remove_function_parameter(blueprint_path, function_name, param_name) -> bool
+### reorder_function_parameter(blueprint_path, function_name, param_name, new_index) -> bool
+
+Trim / reshuffle the parameters added by `add_function_parameter`.
+`remove_*` deletes the pin on `FunctionEntry` (for inputs) or
+`FunctionResult` (for outputs), then recompiles. `reorder_*` moves
+the named parameter to `new_index` within its owning node's
+`UserDefinedPins` array — pass `-1` to move to last.
+
+```python
+L.remove_function_parameter(bp, 'Configure', 'DeprecatedArg')
+L.reorder_function_parameter(bp, 'Configure', 'Threshold', 0)  # to front
+L.reorder_function_parameter(bp, 'Configure', 'Threshold', -1) # to back
+```
+
+Reorder keeps inputs and outputs on their respective nodes — moving
+across the input/output boundary isn't supported (use `remove_*` +
+`add_function_parameter` with `is_return` flipped for that).
+
+---
+
+## Collapse-to-Macro
+
+### collapse_nodes_to_macro(blueprint_path, source_graph_name, node_guids, new_macro_name) -> (gateway_node_guid, new_graph_name)
+
+Companion to `collapse_nodes_to_function`. Bundles the selection into
+a new **macro graph** (Tunnel-in / Tunnel-out scaffolding) and
+replaces the selection with a `K2Node_MacroInstance` gateway. Useful
+for patterns that need custom exec branching (multi-output macros)
+that a function's fixed single-exec-in / single-exec-out can't
+express.
+
+```python
+gateway_guid, macro_name = L.collapse_nodes_to_macro(
+    bp, 'EventGraph', [ps_guid, branch_guid], 'HandleInput')
+```
+
+Same selection semantics as `collapse_nodes_to_function`:
+`FunctionEntry` / `FunctionResult` / `Tunnel` nodes can't be
+collapsed. Cross-boundary wires route through Tunnel entry/exit pins
+that get auto-created to match.
+
+---
+
+## Async-action / arbitrary K2Node spawning
+
+### add_async_action_node(blueprint_path, graph_name, factory_class_path, factory_function_name, x, y) -> str
+
+Spawn a `K2Node_AsyncAction` wired to a factory function on a
+`UBlueprintAsyncActionBase` subclass. Reliable alternative to
+`spawn_node_by_action_key` for async tasks (action-key strings aren't
+stable across editor sessions; class-path + function-name are).
+
+```python
+guid = L.add_async_action_node(
+    bp, 'EventGraph',
+    '/Script/Engine.AsyncActionLoadPrimaryAsset',
+    'AsyncLoadPrimaryAsset', 400, 200)
+```
+
+Returns "" when the factory class or function can't be resolved.
+`factory_class_path` accepts both `/Script/Module.Class` and short
+class names.
+
+### add_node_by_class_name(blueprint_path, graph_name, node_class_path, x, y) -> str
+
+Spawn any `UK2Node` subclass by class name. Fallback for project-
+private K2Nodes (custom `UQueryDataTable` etc.) where
+`spawn_node_by_action_key` is unstable across sessions.
+
+```python
+guid = L.add_node_by_class_name(bp, 'EventGraph',
+    'K2Node_IfThenElse', 200, 0)
+```
+
+Rejects abstract classes and non-`UK2Node` classes. Uses
+`FindFirstObject<UClass>` for short names, `LoadObject` for full
+paths. The node is spawned with default pins; you'll usually call
+`get_node_pins` next to learn what to wire.
+
+---
+
+## Editor focus-state query
+
+### get_editor_focus_state() -> FBridgeEditorFocusState
+
+Snapshot the currently-focused Blueprint editor — which BP is
+showing, which graph, and which nodes are selected. Powers
+"AI-assisted editing" flows where the agent's next action should
+target the user's current attention point rather than a hard-coded
+asset path.
+
+```python
+state = L.get_editor_focus_state()
+if state.blueprint_path:
+    print(f'Focused: {state.blueprint_path} / {state.focused_graph_name} '
+          f'({state.focused_graph_type})')
+    for s in state.selected_nodes:
+        print(f'  selected [{s.node_class}]: {s.title} ({s.node_guid})')
+else:
+    print('No BP editor has focus.')
+
+print(f'{len(state.open_blueprint_paths)} BP editors open total.')
+```
+
+Returns an empty `blueprint_path` (and zero selected nodes) when no
+BP editor has focus. `open_blueprint_paths` still lists every open
+BP tab for background visibility.
+
+---
+
+## Cross-Blueprint rename
+
+### rename_member_variable_global(defining_blueprint_path, old_name, new_name, package_path) -> FBridgeRenameReport
+### rename_function_global(defining_blueprint_path, old_name, new_name, package_path) -> FBridgeRenameReport
+
+Rename a variable or user-function on one BP and rewrite every
+reference across every BP under `package_path`. Uses the same scan
+strategy as `find_function_call_sites_global`. Each updated BP is
+recompiled and left dirty so the caller can choose to `save_asset`.
+
+```python
+rep = L.rename_function_global(
+    '/Game/BP_Lib.BP_Lib', 'Configure', 'ApplySettings', '/Game')
+print(rep.success, rep.updated_node_count, rep.updated_blueprints)
+```
+
+**Important — UE already handles loaded BPs.** When the defining BP
+is renamed, UE's own `RenameGraph` / `RenameMemberVariable` rewrites
+references in BPs that are *currently loaded in memory*. The
+bridge's cross-BP scan is the belt-and-suspenders layer for BPs that
+only exist on disk — `updated_node_count` may come back as 0 even
+though external sites were fixed (by UE, before our scan saw them).
+
+The `FBridgeRenameReport` fields: `success` (bool), `updated_node_count`
+(int — node refs rewritten by *our* scan), `updated_blueprints`
+(list of BP paths that got any changes, including the defining BP),
+`message` (diagnostic text on failure).
+
+**Matching.** Both APIs filter by owner class: a reference is
+rewritten only when its `MemberParentClass` is the defining BP's
+generated class or a subclass. This keeps renames from clobbering
+unrelated identically-named members on sibling BPs.
+
+---
+
+## Variable-type change with broken-ref report
+
+### change_variable_type_with_report(blueprint_path, variable_name, new_type_string) -> list[str]
+
+Change a member variable's type and return the list of Get/Set node
+GUIDs that couldn't reconform to the new type. UE's
+`ChangeMemberVariableType` normally pops a suppressible modal ("this
+could break connections — continue?") when live references exist;
+this wrapper flips that suppression on for the duration of the call
+and restores it afterwards so a programmatic path never sees a
+dialog.
+
+```python
+broken = L.change_variable_type_with_report(
+    bp, 'Counter', 'Vector')  # int -> Vector = incompatible
+for node_guid in broken:
+    print(f'orphaned node: {node_guid}')
+```
+
+Returns `None` on failure (variable not found, or type string didn't
+parse). Returns `[]` on a successful pin-compatible change, or a
+list of node GUIDs when pins couldn't reconform (usually when the
+type families differ — int↔Vector, bool↔object, etc.). A returned
+list doesn't mean the BP won't compile — just that those nodes may
+need manual fix-up. Follow with `get_compile_errors(bp)` for the
+authoritative break list.
+
+**Difference from `set_variable_type`.** `set_variable_type` does the
+same mutation but (a) would prompt the user on any live reference,
+and (b) gives no signal about which references got clobbered. Prefer
+`change_variable_type_with_report` for unattended agent flows.
+
+---
+
 ## Node layout (position / size / corners / pin coordinates)
 
 Read node geometry for layout purposes — placing new nodes adjacent to
