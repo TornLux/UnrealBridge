@@ -1280,9 +1280,9 @@ Serialise the graph to a JSON file at the given absolute path.
 Load a graph from a JSON file, replacing any in-memory graph.
 
 ```python
-Lv.nav_graph_save_json('G:/Claude/UnrealBridge/nav_graph.json')
+Lv.nav_graph_save_json('<absolute-path>/nav_graph.json')
 # ... later ...
-Lv.nav_graph_load_json('G:/Claude/UnrealBridge/nav_graph.json')
+Lv.nav_graph_load_json('<absolute-path>/nav_graph.json')
 ```
 
 ## Vision: render-to-file capture
@@ -1304,7 +1304,7 @@ one shot.
 ok = Lv.capture_ortho_top_down(
     unreal.Vector(25000, 18000, 0), 8000.0,
     512, 512,
-    'G:/Claude/UnrealBridge/.captures/topdown.png',
+    '<absolute-path>/.captures/topdown.png',
     5000.0)
 ```
 
@@ -1321,7 +1321,7 @@ ok = Lv.capture_from_pose(
     unreal.Vector(pl.x, pl.y, pl.z + 160),
     unreal.Rotator(-15, yaw, 0),   # slight downward pitch
     90.0, 640, 360,
-    'G:/Claude/UnrealBridge/.captures/perspective.png')
+    '<absolute-path>/.captures/perspective.png')
 ```
 
 **Duration semantics for both:** captures are synchronous — the PNG is
@@ -1367,7 +1367,7 @@ ok = Lv.capture_anim_pose_grid(
     root_trajectory=True,             # pelvis XY path + current-time marker
     ground_z=0.0,
     grid_cols=2, cell_width=512, cell_height=512,
-    file_path='G:/Claude/UnrealBridge/.captures/punch_0p35.png')
+    file_path='<absolute-path>/.captures/punch_0p35.png')
 ```
 
 Output: single 1024×1024 PNG (for 2×2 grid @ 512 cell). Figures against
@@ -1448,7 +1448,7 @@ ok = Lv.capture_anim_montage_timeline(
     root_trajectory=True,         # velocity profile visible from tick spacing
     ground_z=0.0,
     cell_width=384, cell_height=384,
-    file_path='G:/Claude/UnrealBridge/.captures/attack_timeline.png')
+    file_path='<absolute-path>/.captures/attack_timeline.png')
 # → PNG is (3 × 384) × (5 × 384) = 1152 × 1920
 ```
 

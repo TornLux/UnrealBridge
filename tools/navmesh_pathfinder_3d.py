@@ -30,7 +30,9 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
-DEFAULT_OBJ = r"G:\UEProjects\GameplayLocomotion\Saved\NavMeshExport.obj"
+# Path to the exported navmesh OBJ. Set via env var or --obj CLI flag —
+# do not hardcode a specific project path here.
+DEFAULT_OBJ = os.environ.get("NAVMESH_OBJ_PATH", "")
 
 
 # ─── OBJ parsing ───────────────────────────────────────────────────────────

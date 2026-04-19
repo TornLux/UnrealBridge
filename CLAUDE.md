@@ -15,7 +15,7 @@ UnrealBridge is a TCP bridge between external tools (Claude Code) and Unreal Eng
 ```bash
 sync_plugin.bat
 ```
-This mirrors `Plugin/UnrealBridge/` to `G:\UEProjects\GameplayLocomotion\Plugins\UnrealBridge\` (excluding Binaries/Intermediate), then UE recompiles on next editor launch or hot-reload.
+Mirrors `Plugin/UnrealBridge/` into the target project's `Plugins/UnrealBridge/` (excluding `Binaries`/`Intermediate`). The DST path lives in `sync_plugin.bat` itself — do not hardcode it anywhere else.
 
 **Test bridge connection:**
 ```bash
@@ -55,35 +55,40 @@ Length-prefixed JSON over TCP on port 9876 (localhost only).
 
 ## Development Workflow
 
-Edit C++ source in `Plugin/UnrealBridge/Source/`, then run the standard sync → compile → launch → verify → shutdown pipeline below. If the editor is already running when you start, close it first (a running editor locks the plugin DLL and blocks sync/compile).
+Edit C++ source in `Plugin/UnrealBridge/Source/`. Two canonical loops, picked by whether the edit touches reflection metadata:
 
-1. **Sync plugin to project**
-   ```bash
-   cmd.exe //c "G:\\Claude\\UnrealBridge\\sync_plugin.bat"
-   ```
-   Mirrors `Plugin/UnrealBridge/` → `G:\UEProjects\GameplayLocomotion\Plugins\UnrealBridge\`.
+### Hot reload (editor stays up) — body-only edits
 
-2. **Compile editor target** (headless, via UBT — no editor needed)
-   ```bash
-   cmd.exe //c "G:\\UEProjects\\GameplayLocomotion\\Build.bat"
-   ```
-   Defaults to `GameplayLocomotionEditor Win64 Development`. Stop and fix errors before proceeding — do not launch the editor on a failed build.
+```bash
+python .claude/skills/unreal-bridge/scripts/hot_reload.py
+```
 
-3. **Launch editor** (detached so the shell returns immediately)
-   ```bash
-   cmd.exe //c start "" "G:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealEditor.exe" "G:\UEProjects\GameplayLocomotion\GameplayLocomotion.uproject"
-   ```
+Syncs plugin source then triggers Live Coding via the bridge. Works when the edit only changed function bodies (no new `UFUNCTION` / `UCLASS` / `UPROPERTY` / `USTRUCT` members). LC patches the running editor in place — PIE, open assets, viewport camera all survive. Takes ~10–60s depending on how many TUs changed. On `Status="Failure"` the script tails recent `LogLiveCoding` entries; the actual MSVC error text only lives in the external LiveCodingConsole GUI window (see `bridge-editor-api.md` Live Coding section).
 
-4. **Wait for readiness, then verify new functionality**
-   - Poll `python .claude/skills/unreal-bridge/scripts/bridge.py ping` until it connects (TCP server comes up at `PostEngineInit`).
-   - Confirm Python is live: `bridge.py exec "import unreal; print(unreal.SystemLibrary.get_project_directory())"`.
-   - Exercise the feature you changed via `bridge.py exec` or `exec-file` (e.g. call the new `unreal.<Library>.<method>()`). Check return values and `LogUnrealBridge` output.
+### Full rebuild + relaunch — any reflection change
 
-5. **Shut down the editor cleanly**
-   ```bash
-   python .claude/skills/unreal-bridge/scripts/bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"
-   ```
-   Verify with `tasklist //FI "IMAGENAME eq UnrealEditor.exe"` — should report no matching process. Only fall back to `taskkill` if `quit_editor` fails to terminate.
+```bash
+python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py
+```
+
+Quits the editor → runs `sync_plugin.bat` → runs the target project's `Build.bat` → launches the editor detached → polls `bridge.py ping` until ready. Use when adding/removing `UFUNCTION` / `UCLASS` / `UPROPERTY`, changing struct layouts, or recovering from a failed LC compile. Build.bat's stdout captures full compiler output (this is the only way to surface MSVC errors when hot reload reports Failure). Takes ~2–5 minutes.
+
+The script resolves the editor exe from `--editor-exe` CLI arg → `UNREAL_EDITOR_EXE` env var → `UE_ROOT` env var. No hardcoded paths. Set one of those env vars before first use.
+
+### Verifying new functionality
+
+After either loop finishes:
+- `python .claude/skills/unreal-bridge/scripts/bridge.py ping` — confirm the bridge is up.
+- `bridge.py exec "import unreal; print(unreal.SystemLibrary.get_project_directory())"` — confirm Python is live.
+- Exercise the feature via `bridge.py exec` or `exec-file` (call the new `unreal.<Library>.<method>()`). Check return values and `LogUnrealBridge` output.
+
+### Clean shutdown (if needed)
+
+```bash
+python .claude/skills/unreal-bridge/scripts/bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"
+```
+
+Verify with `tasklist //FI "IMAGENAME eq UnrealEditor.exe"`. Only fall back to `taskkill` if `quit_editor` doesn't return.
 
 ## Important Notes
 

@@ -597,7 +597,7 @@ public:
 
 	/**
 	 * Title text of the editor's main frame window (e.g.
-	 * "GameplayLocomotion - Unreal Editor"). Empty string when the
+	 * "<ProjectName> - Unreal Editor"). Empty string when the
 	 * main frame module isn't yet available.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")

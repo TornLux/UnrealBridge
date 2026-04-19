@@ -41,19 +41,17 @@ If the primary library has fewer than ~2 meaningful additions available: try `(i
 
 Follow CLAUDE.md's pipeline with this retry policy:
 
-1. If UE Editor is running, close it first (it locks the plugin DLL). Try `bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"`, fall back to `taskkill //IM UnrealEditor.exe //F`.
-2. `cmd.exe //c "G:\\Claude\\UnrealBridge\\sync_plugin.bat"`
-3. `cmd.exe //c "G:\\UEProjects\\GameplayLocomotion\\Build.bat"`
-4. **If build fails**: read the UBT error, edit to fix, re-sync, re-build. **Max 3 attempts total** (initial + 2 retries).
+1. **Decide loop**: body-only edit → hot reload; new `UFUNCTION`/`UCLASS`/`UPROPERTY`/struct-layout change → rebuild.
+2. **Hot reload path**: `python .claude/skills/unreal-bridge/scripts/hot_reload.py` — syncs + triggers Live Coding. On `Status="NoChanges"` or `"Success"` skip to step 7.
+3. **Rebuild path**: `python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py` — quits editor, syncs, runs Build.bat, relaunches, polls ping. Takes 2–5 min.
+4. **If build fails**: read the captured compiler output (rebuild_relaunch streams it; hot_reload cannot — Fall through to rebuild path if you only ran hot_reload and got Failure). Edit to fix, rerun. **Max 3 attempts total** (initial + 2 retries).
 5. **If still failing after 3 attempts**:
    - `git diff --name-only -- "Plugin/UnrealBridge/Source/**"` to list touched C++ files
    - `git checkout HEAD -- <those files>` to revert C++ only (keep independent reference/SKILL.md edits)
-   - Re-sync, re-build to confirm green. If still broken: `git restore .` everything, log `ROLLBACK: build failed after retries` and go to Step 6 (NO-OP path — do not commit, but DO advance state).
-6. Build green → launch editor detached:
-   `cmd.exe //c start "" "G:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealEditor.exe" "G:\UEProjects\GameplayLocomotion\GameplayLocomotion.uproject"`
-7. Poll `python .claude/skills/unreal-bridge/scripts/bridge.py ping` until connected.
-8. For **each new UFUNCTION**, call it via `bridge.py exec "import unreal; ..."` and check the return / no exception. On failure: treat like a compile error (fix → re-sync → re-build → re-verify, up to 3 attempts; if still broken, revert C++ and abort to NO-OP path).
-9. Clean shutdown: `bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"` then verify `tasklist //FI "IMAGENAME eq UnrealEditor.exe"` shows no match.
+   - Rerun the relevant loop to confirm green. If still broken: `git restore .` everything, log `ROLLBACK: build failed after retries` and go to Step 6 (NO-OP path — do not commit, but DO advance state).
+6. Both loops end with the bridge already back up. Confirm with `python .claude/skills/unreal-bridge/scripts/bridge.py ping`.
+7. For **each new UFUNCTION**, call it via `bridge.py exec "import unreal; ..."` and check the return / no exception. On failure: treat like a compile error (fix → reload/rebuild → re-verify, up to 3 attempts; if still broken, revert C++ and abort to NO-OP path).
+8. Clean shutdown (if needed): `bridge.py exec "import unreal; unreal.SystemLibrary.quit_editor()"` then verify `tasklist //FI "IMAGENAME eq UnrealEditor.exe"` shows no match.
 
 ## Step 5 — Commit
 

@@ -15,7 +15,7 @@ Export the current editor world's `ARecastNavMesh` as a Wavefront OBJ (v/f only 
 
 **Returns** — tuple of:
 - `success` (bool): `True` if a NavMesh was found and the file was written.
-- `summary` (str): human-readable result, e.g. `wrote 'G:/…/NavMeshExport.obj' (navmesh=RecastNavMesh-Default tiles=128 verts=16384 tris=32768)` on success, or the failure reason (`no editor world`, `no ARecastNavMesh in current level`, `navmesh 'X' has no built tiles`, `failed to write 'Y'`).
+- `summary` (str): human-readable result, e.g. `wrote '<absolute-path>/NavMeshExport.obj' (navmesh=RecastNavMesh-Default tiles=128 verts=16384 tris=32768)` on success, or the failure reason (`no editor world`, `no ARecastNavMesh in current level`, `navmesh 'X' has no built tiles`, `failed to write 'Y'`).
 
 **Coordinate system** — UE native: cm, Z-up, left-handed. Consumers (Blender, Houdini, etc.) should import with a UE preset and remap axes there, not here. No per-tile color / area classification is emitted; `BuiltMeshIndices` is the fully-merged navigable surface.
 
@@ -31,7 +31,7 @@ Export the current editor world's `ARecastNavMesh` as a Wavefront OBJ (v/f only 
 import unreal
 ok, msg = unreal.UnrealBridgeNavigationLibrary.export_nav_mesh_to_obj('')
 print(msg)
-# wrote 'G:/UEProjects/.../Saved/NavMeshExport.obj' (navmesh=RecastNavMesh-Default tiles=12 verts=3420 tris=4988)
+# wrote '<project-root>/Saved/NavMeshExport.obj' (navmesh=RecastNavMesh-Default tiles=12 verts=3420 tris=4988)
 ```
 
 **Pitfalls**

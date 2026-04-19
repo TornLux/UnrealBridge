@@ -35,7 +35,20 @@ BRIDGE_PY  = SCRIPT_DIR / "bridge.py"
 REPO_ROOT  = SCRIPT_DIR.parents[3]
 SYNC_BAT   = REPO_ROOT / "sync_plugin.bat"
 
-DEFAULT_EDITOR_EXE = r"G:\UnrealEngine\UE_5.7\Engine\Binaries\Win64\UnrealEditor.exe"
+# Resolve UnrealEditor.exe in this order:
+#   1. --editor-exe CLI arg
+#   2. UNREAL_EDITOR_EXE env var (full path to UnrealEditor.exe)
+#   3. UE_ROOT env var (engine root; we append Binaries/Win64/UnrealEditor.exe)
+# No hardcoded default — paths are user-specific and should not land in
+# the repo.
+def resolve_default_editor_exe() -> str:
+    explicit = os.environ.get("UNREAL_EDITOR_EXE")
+    if explicit:
+        return explicit
+    ue_root = os.environ.get("UE_ROOT")
+    if ue_root:
+        return str(pathlib.Path(ue_root) / "Engine" / "Binaries" / "Win64" / "UnrealEditor.exe")
+    return ""
 
 
 def parse_project_dir_from_sync_bat() -> pathlib.Path | None:
@@ -201,8 +214,9 @@ def main() -> int:
     ap.add_argument("--uproject",
                     help="Explicit path to .uproject (default: first *.uproject "
                          "under --project-dir).")
-    ap.add_argument("--editor-exe", default=DEFAULT_EDITOR_EXE,
-                    help=f"UnrealEditor.exe path (default: {DEFAULT_EDITOR_EXE}).")
+    ap.add_argument("--editor-exe", default="",
+                    help="UnrealEditor.exe path. If omitted, falls back to "
+                         "UNREAL_EDITOR_EXE env var, then UE_ROOT env var.")
     ap.add_argument("--no-sync", action="store_true")
     ap.add_argument("--no-build", action="store_true",
                     help="Skip Build.bat. Useful if you've already compiled.")
@@ -245,7 +259,14 @@ def main() -> int:
         sys.stderr.write(f"uproject does not exist: {uproject}\n")
         return 5
 
-    editor_exe = pathlib.Path(args.editor_exe)
+    editor_exe_raw = args.editor_exe or resolve_default_editor_exe()
+    if not editor_exe_raw and not args.no_launch:
+        sys.stderr.write(
+            "UnrealEditor.exe path not provided.\n"
+            "Pass --editor-exe, or set UNREAL_EDITOR_EXE or UE_ROOT.\n"
+        )
+        return 5
+    editor_exe = pathlib.Path(editor_exe_raw) if editor_exe_raw else pathlib.Path()
     if not args.no_launch and not editor_exe.is_file():
         sys.stderr.write(f"UnrealEditor.exe not found at {editor_exe}\n")
         return 5

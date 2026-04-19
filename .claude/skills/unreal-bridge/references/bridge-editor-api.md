@@ -134,7 +134,7 @@ FBridgeScreenshotResult fields (UE Python strips the `b` prefix from bool fields
 
 ```python
 r = unreal.UnrealBridgeEditorLibrary.capture_active_viewport(
-    'G:/Claude/UnrealBridge/temp/viewport.png', False)
+    '<absolute-path>/viewport.png', False)
 print(r.success, r.source, r.width, r.height, r.file_path)
 ```
 
@@ -336,8 +336,7 @@ Empty string when unset.
 ### get_project_id() -> str
 
 Stable per-project identifier. Current implementation returns the
-project short name (e.g. `"GameplayLocomotion"`) — sufficient as a
-cache key. If you specifically need the .uproject GUID, parse the
+project short name — sufficient as a cache key. If you specifically need the .uproject GUID, parse the
 `.uproject` JSON yourself via `unreal.SystemLibrary.get_project_directory()`.
 
 ### get_auto_save_directory() -> str
@@ -665,7 +664,7 @@ remote providers — use sparingly in tight loops.
 ### get_engine_directory() -> str
 
 Absolute path to the engine installation's `Engine/` directory
-(e.g. `G:/UnrealEngine/UE_5.7/Engine/`).
+(e.g. `<ue-install-root>/Engine/`).
 
 ### get_project_content_directory() -> str
 
