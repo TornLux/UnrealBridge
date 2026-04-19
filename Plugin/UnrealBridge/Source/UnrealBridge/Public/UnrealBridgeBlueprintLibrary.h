@@ -76,6 +76,25 @@ struct FBridgeFunctionParam
 	/** True if this is a return / output parameter */
 	UPROPERTY(BlueprintReadOnly)
 	bool bIsOutput = false;
+
+	/** Declared default value when the function was exposed to Blueprint
+	 *  (stored as `CPP_Default_<ParamName>` metadata on the UFunction).
+	 *  Empty when no default was specified — the caller must wire a value.
+	 *  Only populated by GetFunctionSignature; older APIs (GetFunctionCallSignature
+	 *  / GetBlueprintFunctions) leave this empty. */
+	UPROPERTY(BlueprintReadOnly)
+	FString DefaultValue;
+
+	/** True when the parameter is passed by reference (`UPARAM(ref)` / `Foo&`).
+	 *  Relevant because Blueprint must wire a variable (not a literal) into
+	 *  the pin. Only populated by GetFunctionSignature. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsReference = false;
+
+	/** True when the parameter is `const` — some callers use this to decide
+	 *  whether a pin default is legal. Only populated by GetFunctionSignature. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsConst = false;
 };
 
 /** Describes a function or event defined in a Blueprint. */
@@ -927,6 +946,13 @@ struct FBridgePinInfo
 	UPROPERTY(BlueprintReadOnly) FString MapValueSubCategory;
 
 	UPROPERTY(BlueprintReadOnly) FString MapValueSubCategoryObjectPath;
+
+	/** Connected pins on the other side, each formatted `"<node_guid>:<pin_name>"`
+	 *  where node_guid is the 32-hex Digits form and pin_name is the target
+	 *  pin's internal FName. Empty if the pin has no links. Populated by
+	 *  DescribeNode; other pin-returning APIs may leave this empty for cost
+	 *  reasons (see their docs). */
+	UPROPERTY(BlueprintReadOnly) TArray<FString> LinkedTo;
 };
 
 /**
@@ -990,6 +1016,127 @@ struct FBridgeReference
 
 	/** "read" | "write" | "call" | "bind" | "unbind" | "event". */
 	UPROPERTY(BlueprintReadOnly) FString Kind;
+};
+
+/** Unified one-shot description of a single graph node. Combines title,
+ *  position, classification, pins (with link targets), and the
+ *  K2Node-subclass-specific fields a caller typically wants — all in a
+ *  single bridge round-trip. Returned by DescribeNode. */
+USTRUCT(BlueprintType)
+struct FBridgeNodeDescription
+{
+	GENERATED_BODY()
+
+	/** NodeGuid in 32-hex digits form. */
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+
+	/** `GetNodeTitle(ENodeTitleType::ListView)` — the palette-style name. */
+	UPROPERTY(BlueprintReadOnly) FString Title;
+
+	/** Coarse type from ClassifyNode: "FunctionCall", "VariableGet",
+	 *  "VariableSet", "Branch", "Cast", "Event", "CustomEvent", "Macro",
+	 *  "Spawn", "Timeline", "Knot", "MakeStruct", "BreakStruct", ... */
+	UPROPERTY(BlueprintReadOnly) FString NodeType;
+
+	/** Exact UE class name of the UEdGraphNode (e.g. "K2Node_CallFunction",
+	 *  "K2Node_VariableGet", "K2Node_IfThenElse"). Stable across UE versions;
+	 *  prefer this when dispatching on node type in code. */
+	UPROPERTY(BlueprintReadOnly) FString NodeClass;
+
+	UPROPERTY(BlueprintReadOnly) int32 PosX = 0;
+	UPROPERTY(BlueprintReadOnly) int32 PosY = 0;
+
+	/** Rendered size if Slate has arranged the node; else estimated. */
+	UPROPERTY(BlueprintReadOnly) int32 Width = 0;
+	UPROPERTY(BlueprintReadOnly) int32 Height = 0;
+
+	/** User-authored node comment (floating text above the node). */
+	UPROPERTY(BlueprintReadOnly) FString Comment;
+
+	/** "Enabled" | "Disabled" | "DevelopmentOnly". */
+	UPROPERTY(BlueprintReadOnly) FString EnabledState;
+
+	// ── Subclass-specific fields (populated based on NodeClass) ──
+
+	/** Function call: target class short name. Cast: target class.
+	 *  Empty when not applicable. */
+	UPROPERTY(BlueprintReadOnly) FString TargetClass;
+
+	/** Function call: function internal name. Event / CustomEvent: event name.
+	 *  Empty when not applicable. */
+	UPROPERTY(BlueprintReadOnly) FString TargetName;
+
+	/** VariableGet / VariableSet: the variable's internal name. */
+	UPROPERTY(BlueprintReadOnly) FString VariableName;
+
+	/** VariableGet / VariableSet: "member" (Blueprint class variable),
+	 *  "local" (function local), or "external" (inherited / foreign class). */
+	UPROPERTY(BlueprintReadOnly) FString VariableScope;
+
+	/** VariableGet / VariableSet: resolved variable type (PinTypeToHuman form). */
+	UPROPERTY(BlueprintReadOnly) FString VariableType;
+
+	/** Function call: `true` if pure (no exec pin). Cast: true for pure cast. */
+	UPROPERTY(BlueprintReadOnly) bool bIsPure = false;
+
+	/** Function call: true if the target UFunction is const. */
+	UPROPERTY(BlueprintReadOnly) bool bIsConst = false;
+
+	/** MakeStruct / BreakStruct: struct class path. */
+	UPROPERTY(BlueprintReadOnly) FString StructType;
+
+	/** Literal nodes (MakeLiteralInt / Bool / etc.): current literal value
+	 *  (from the corresponding pin's default). */
+	UPROPERTY(BlueprintReadOnly) FString LiteralValue;
+
+	/** Macro instance: the macro graph's display name, empty otherwise. */
+	UPROPERTY(BlueprintReadOnly) FString MacroGraph;
+
+	/** AddDelegate / RemoveDelegate / CallDelegate: the delegate property name. */
+	UPROPERTY(BlueprintReadOnly) FString DelegateName;
+
+	/** For fanout-style exec nodes (ExecutionSequence, Branch, Select):
+	 *  number of wired exec outputs. 0 for others. */
+	UPROPERTY(BlueprintReadOnly) int32 ExecOutCount = 0;
+
+	/** All visible pins with full type info, default value, and LinkedTo
+	 *  populated. Same ordering as GetNodePins. */
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgePinInfo> Pins;
+};
+
+/** UFunction signature query result: full parameter list with types and
+ *  declared default values, plus the blueprint-facing flags (pure, const,
+ *  static, latent). Returned by GetFunctionSignature. */
+USTRUCT(BlueprintType)
+struct FBridgeFunctionSignature
+{
+	GENERATED_BODY()
+
+	/** True when the function was found and the other fields are meaningful. */
+	UPROPERTY(BlueprintReadOnly) bool bFound = false;
+
+	UPROPERTY(BlueprintReadOnly) FString FunctionName;
+
+	/** Owning class short name (e.g. "KismetSystemLibrary", "Actor"). */
+	UPROPERTY(BlueprintReadOnly) FString OwningClass;
+
+	/** Full class path (e.g. "/Script/Engine.KismetSystemLibrary"). */
+	UPROPERTY(BlueprintReadOnly) FString OwningClassPath;
+
+	UPROPERTY(BlueprintReadOnly) bool bIsPure = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsConst = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsStatic = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsLatent = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsBlueprintCallable = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsBlueprintPure = false;
+	UPROPERTY(BlueprintReadOnly) bool bIsNative = false;
+
+	UPROPERTY(BlueprintReadOnly) FString Category;
+	UPROPERTY(BlueprintReadOnly) FString Tooltip;
+
+	/** Ordered parameter list. Includes inputs, outputs, and the return
+	 *  value (the return is marked with bIsOutput=true and Name="ReturnValue"). */
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeFunctionParam> Parameters;
 };
 
 // ─── Function Library ────────────────────────────────────────
@@ -1803,6 +1950,42 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static TArray<FBridgePinInfo> GetNodePins(const FString& BlueprintPath,
 		const FString& GraphName, const FString& NodeGuid);
+
+	/**
+	 * One-shot description of a single node. Combines title, position,
+	 * size, classification, K2Node-subclass fields (target class/function,
+	 * variable name, macro graph, etc.), and every pin (with types, defaults,
+	 * AND link targets) into one round-trip. Replaces the common pattern of
+	 * calling get_function_nodes + get_node_pins + get_node_pin_connections +
+	 * get_pin_default_value × N for a single node.
+	 *
+	 * Each pin's LinkedTo entries are formatted `"<node_guid>:<pin_name>"` so
+	 * the caller can navigate to the connected side without joining a
+	 * separate node list.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeNodeDescription DescribeNode(const FString& BlueprintPath,
+		const FString& GraphName, const FString& NodeGuid);
+
+	/**
+	 * Look up a UFunction's full signature — parameter names, types,
+	 * declared default values (stored as `CPP_Default_<ParamName>` metadata
+	 * on the UFunction), ref / const / out flags, and blueprint-facing
+	 * flags (pure / const / static / latent / callable / pure / native).
+	 *
+	 * @param ClassPath      Either a full path (`/Script/Engine.KismetSystemLibrary`)
+	 *                       or a short name (`KismetSystemLibrary`) — the
+	 *                       short name is resolved via `FindFirstObject<UClass>`.
+	 * @param FunctionName   Internal FName (e.g. "PrintString", "GetActorLocation").
+	 *                       Not the display name.
+	 *
+	 * Returns bFound=false when the class or function can't be resolved.
+	 * Use this before spawning a CallFunction node so the caller knows
+	 * exactly which pins to wire and which defaults to leave untouched.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeFunctionSignature GetFunctionSignature(const FString& ClassPath,
+		const FString& FunctionName);
 
 	// ─── Node layout (position / size / corners) ───────────
 

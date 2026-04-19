@@ -1417,6 +1417,141 @@ wire.
 
 ---
 
+### describe_node(blueprint_path, graph_name, node_guid) -> FBridgeNodeDescription
+
+One-shot description of a single node. Combines title, position, size,
+classification, K2Node-subclass-specific fields (target class / function,
+variable name + scope + type, cast target, event name, macro graph,
+struct type, delegate name, literal value), AND every pin with types,
+defaults, and **link targets** — all in a single bridge round-trip.
+Replaces the common pattern of chaining `get_function_nodes` +
+`get_node_pins` + `get_node_pin_connections` + `get_pin_default_value`
+for a single node.
+
+> **Prefer this** when you want to understand *one* specific node fully
+> (about to edit it, reason about its wiring, copy its signature). Use
+> `get_function_nodes` when you want a catalog of many nodes; use
+> `get_node_pin_connections` when you want the full wire graph.
+
+```python
+desc = unreal.UnrealBridgeBlueprintLibrary.describe_node(bp, fn, guid)
+print(f'{desc.title} ({desc.node_class}) at ({desc.pos_x}, {desc.pos_y})')
+if desc.node_type == 'FunctionCall':
+    print(f'  calls {desc.target_class}::{desc.target_name}  pure={desc.is_pure}')
+elif desc.node_type in ('VariableGet', 'VariableSet'):
+    print(f'  {desc.variable_scope} variable {desc.variable_name}: {desc.variable_type}')
+for p in desc.pins:
+    links = ' -> ' + ', '.join(p.linked_to) if p.linked_to else ''
+    print(f'  [{p.direction}] {p.name} : {p.type}{links}')
+```
+
+#### FBridgeNodeDescription fields
+
+| Field | Meaning |
+|-------|---------|
+| `node_guid` | 32-hex digits form |
+| `title` | palette-style display title |
+| `node_type` | coarse classification — `"FunctionCall"`, `"VariableGet"`, `"Branch"`, `"Cast"`, `"Event"`, `"CustomEvent"`, `"Macro"`, `"Spawn"`, `"Timeline"`, `"Knot"`, `"MakeStruct"`, `"BreakStruct"`, ... |
+| `node_class` | exact UE class name, e.g. `"K2Node_CallFunction"`, `"K2Node_IfThenElse"` — use this when dispatching on node type |
+| `pos_x`, `pos_y` | node origin in graph units |
+| `width`, `height` | stored size if Slate arranged it, else estimate |
+| `comment` | user-authored floating comment above the node (if any) |
+| `enabled_state` | `"Enabled"` / `"Disabled"` / `"DevelopmentOnly"` |
+| `target_class` | function call: target class short name. Cast: target class |
+| `target_name` | function call: function internal name. Event/CustomEvent: event name |
+| `variable_name` | VariableGet/Set: variable internal name |
+| `variable_scope` | `"member"` \| `"local"` \| `"external"` |
+| `variable_type` | resolved variable type string |
+| `is_pure` | function call pure flag / pure cast |
+| `is_const` | function call: target UFunction is const |
+| `struct_type` | MakeStruct/BreakStruct: struct class path |
+| `literal_value` | literal nodes (`MakeLiteral*`, `EnumLiteral`): current value string |
+| `macro_graph` | macro instance: referenced macro graph name |
+| `delegate_name` | Add/Remove/Call delegate nodes: delegate property name |
+| `exec_out_count` | wired-or-unwired exec-output pin count (fanout detection) |
+| `pins` | list of `FBridgePinInfo` with `linked_to` populated |
+
+#### Pin `linked_to`
+
+Each pin's `linked_to` is a list of strings `"<node_guid>:<pin_name>"`
+identifying the other end of every wire on that pin. Parse with
+`guid, pin = entry.split(':', 1)`; resolve via a subsequent
+`describe_node(bp, fn, guid)` or by looking up from a
+`get_function_nodes` result you already have cached.
+
+---
+
+### get_function_signature(class_path, function_name) -> FBridgeFunctionSignature
+
+Look up a `UFunction`'s full signature — parameter names, types,
+declared default values (read from `CPP_Default_<ParamName>` metadata
+on the UFunction), ref / const / out flags, and blueprint-facing flags
+(pure / const / static / latent / callable / native).
+
+**Use before spawning a CallFunction node** so the caller knows exactly
+which pins to wire and which defaults to leave untouched.
+
+```python
+sig = unreal.UnrealBridgeBlueprintLibrary.get_function_signature(
+    'KismetSystemLibrary', 'PrintString'
+)
+if sig.found:
+    print(f'{sig.owning_class}::{sig.function_name}  pure={sig.is_pure} static={sig.is_static}')
+    for p in sig.parameters:
+        tag = '<-' if p.is_output else '->'
+        default = f' = {p.default_value}' if p.default_value else ''
+        print(f'  {tag} {p.name}: {p.type}{default}  ref={p.is_reference}')
+# KismetSystemLibrary::PrintString  pure=False static=True
+#   -> WorldContextObject: Object<Object>  ref=False
+#   -> InString: String = Hello  ref=False
+#   -> bPrintToScreen: Bool = true  ref=False
+#   -> bPrintToLog: Bool = true  ref=False
+#   -> TextColor: LinearColor = (R=0.0,G=0.66,B=1.0,A=1.0)  ref=False
+#   -> Duration: Float = 2.0  ref=False
+#   -> Key: Name = None  ref=False
+```
+
+`class_path` accepts either a full path (`/Script/Engine.KismetSystemLibrary`)
+or a short class name (`KismetSystemLibrary`) — short names are resolved
+via `FindFirstObject<UClass>` so they work for any loaded class. For
+Blueprint-defined functions, pass the generated class path
+(`/Game/.../BP_X.BP_X_C`).
+
+`function_name` is the internal `FName` of the UFunction, not the
+display name. Use `get_blueprint_functions` or `list_spawnable_actions`
+to discover internal names when unsure.
+
+#### FBridgeFunctionSignature fields
+
+| Field | Meaning |
+|-------|---------|
+| `found` | false when class/function didn't resolve |
+| `function_name` | canonical `Func->GetName()` |
+| `owning_class` / `owning_class_path` | short name + full path |
+| `is_pure` | mirrors `FUNC_BlueprintPure` |
+| `is_const` | `FUNC_Const` |
+| `is_static` | `FUNC_Static` |
+| `is_latent` | has `"Latent"` metadata |
+| `is_blueprint_callable` | `FUNC_BlueprintCallable` |
+| `is_blueprint_pure` | `FUNC_BlueprintPure` |
+| `is_native` | `FUNC_Native` |
+| `category` | `"Category"` metadata |
+| `tooltip` | `"ToolTip"` metadata |
+| `parameters` | list of `FBridgeFunctionParam` (see below) |
+
+#### FBridgeFunctionParam fields (extended)
+
+| Field | Meaning |
+|-------|---------|
+| `name` | parameter name |
+| `type` | human type string |
+| `is_output` | true for out-params and return values |
+| `default_value` | stored `CPP_Default_<name>` metadata; empty when caller must wire |
+| `is_reference` | passed by ref — BP caller must wire a variable, not a literal |
+| `is_const` | declared const |
+
+---
+
 ## Node layout (position / size / corners / pin coordinates)
 
 Read node geometry for layout purposes — placing new nodes adjacent to

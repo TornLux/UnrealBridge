@@ -7603,24 +7603,16 @@ FBridgeLayoutResult UUnrealBridgeBlueprintLibrary::AutoLayoutGraph(
 	return Result;
 }
 
-TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
-	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+namespace BridgeBPDescribeImpl
 {
 	using namespace BridgeBPSummaryImpl;
-	TArray<FBridgePinInfo> Result;
-	UBlueprint* BP = LoadBP(BlueprintPath);
-	if (!BP) return Result;
-	UEdGraph* Graph = FindSingleGraphByName(BP, GraphName);
-	if (!Graph) return Result;
-	UEdGraphNode* Node = FindNodeInGraphByGuid(Graph, NodeGuid);
-	if (!Node) return Result;
 
-	const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
-
-	for (UEdGraphPin* Pin : Node->Pins)
+	/** Fill an FBridgePinInfo from a UEdGraphPin. Optionally populates the
+	 *  LinkedTo array with "<node_guid>:<pin_name>" strings for each link. */
+	static void FillPinInfo(UEdGraphPin* Pin, FBridgePinInfo& Info, bool bFillLinkedTo)
 	{
-		if (!Pin) continue;
-		FBridgePinInfo Info;
+		const UEdGraphSchema_K2* K2 = GetDefault<UEdGraphSchema_K2>();
+
 		Info.Name        = Pin->PinName.ToString();
 		Info.DisplayName = Pin->GetDisplayName().ToString();
 		Info.Type        = PinTypeToHuman(Pin->PinType);
@@ -7631,18 +7623,18 @@ TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
 		{
 			Info.SubCategoryObjectPath = SubObj->GetPathName();
 		}
-		Info.DefaultValue     = GetPinDefaultString(Pin);
+		Info.DefaultValue      = GetPinDefaultString(Pin);
 		Info.bHasDefaultObject = (Pin->DefaultObject != nullptr);
-		Info.bIsExec          = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
-		Info.bIsConnected     = (Pin->LinkedTo.Num() > 0);
-		Info.LinkCount        = Pin->LinkedTo.Num();
-		Info.bIsArray         = (Pin->PinType.ContainerType == EPinContainerType::Array);
-		Info.bIsSet           = (Pin->PinType.ContainerType == EPinContainerType::Set);
-		Info.bIsMap           = (Pin->PinType.ContainerType == EPinContainerType::Map);
-		Info.bIsReference     = Pin->PinType.bIsReference;
-		Info.bIsConst         = Pin->PinType.bIsConst;
-		Info.bIsHidden        = Pin->bHidden;
-		Info.bIsSelfPin       = (K2 && K2->IsSelfPin(*Pin));
+		Info.bIsExec           = (Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec);
+		Info.bIsConnected      = (Pin->LinkedTo.Num() > 0);
+		Info.LinkCount         = Pin->LinkedTo.Num();
+		Info.bIsArray          = (Pin->PinType.ContainerType == EPinContainerType::Array);
+		Info.bIsSet            = (Pin->PinType.ContainerType == EPinContainerType::Set);
+		Info.bIsMap            = (Pin->PinType.ContainerType == EPinContainerType::Map);
+		Info.bIsReference      = Pin->PinType.bIsReference;
+		Info.bIsConst          = Pin->PinType.bIsConst;
+		Info.bIsHidden         = Pin->bHidden;
+		Info.bIsSelfPin        = (K2 && K2->IsSelfPin(*Pin));
 
 		switch (Pin->PinType.ContainerType)
 		{
@@ -7652,10 +7644,6 @@ TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
 			default:                        Info.ContainerKind = TEXT("None");  break;
 		}
 
-		// Map V-side: only meaningful when this is a Map pin. PinValueType
-		// holds the value-side terminal info (key side lives in regular
-		// PinSubCategory*). Re-use PinTypeToHuman by faking a non-container
-		// FEdGraphPinType built from the value terminal.
 		if (Pin->PinType.ContainerType == EPinContainerType::Map)
 		{
 			FEdGraphPinType ValueProxy;
@@ -7671,9 +7659,272 @@ TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
 				Info.MapValueSubCategoryObjectPath = VObj->GetPathName();
 			}
 		}
+
+		if (bFillLinkedTo)
+		{
+			for (const UEdGraphPin* Linked : Pin->LinkedTo)
+			{
+				if (!Linked) continue;
+				const UEdGraphNode* Owner = Linked->GetOwningNode();
+				if (!Owner) continue;
+				Info.LinkedTo.Add(FString::Printf(TEXT("%s:%s"),
+					*Owner->NodeGuid.ToString(EGuidFormats::Digits),
+					*Linked->PinName.ToString()));
+			}
+		}
+	}
+}
+
+TArray<FBridgePinInfo> UUnrealBridgeBlueprintLibrary::GetNodePins(
+	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	using namespace BridgeBPSummaryImpl;
+	TArray<FBridgePinInfo> Result;
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Result;
+	UEdGraph* Graph = FindSingleGraphByName(BP, GraphName);
+	if (!Graph) return Result;
+	UEdGraphNode* Node = FindNodeInGraphByGuid(Graph, NodeGuid);
+	if (!Node) return Result;
+
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin) continue;
+		FBridgePinInfo Info;
+		BridgeBPDescribeImpl::FillPinInfo(Pin, Info, /*bFillLinkedTo=*/false);
 		Result.Add(Info);
 	}
 	return Result;
+}
+
+FBridgeNodeDescription UUnrealBridgeBlueprintLibrary::DescribeNode(
+	const FString& BlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	using namespace BridgeBPSummaryImpl;
+	FBridgeNodeDescription Out;
+
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP) return Out;
+	UEdGraph* Graph = FindSingleGraphByName(BP, GraphName);
+	if (!Graph) return Out;
+	UEdGraphNode* Node = FindNodeInGraphByGuid(Graph, NodeGuid);
+	if (!Node) return Out;
+
+	Out.NodeGuid = Node->NodeGuid.ToString(EGuidFormats::Digits);
+	Out.Title    = Node->GetNodeTitle(ENodeTitleType::ListView).ToString();
+	Out.NodeType = ClassifyNode(Node);
+	Out.NodeClass = Node->GetClass()->GetName();
+	Out.PosX = Node->NodePosX;
+	Out.PosY = Node->NodePosY;
+	// Stored size if Slate has touched it; else estimate.
+	{
+		int32 EstW = 0, EstH = 0;
+		EstimateNodeSize(Node, EstW, EstH);
+		Out.Width  = (Node->NodeWidth  > 0) ? Node->NodeWidth  : EstW;
+		Out.Height = (Node->NodeHeight > 0) ? Node->NodeHeight : EstH;
+	}
+	Out.Comment = Node->NodeComment;
+	switch (Node->GetDesiredEnabledState())
+	{
+		case ENodeEnabledState::Disabled:         Out.EnabledState = TEXT("Disabled"); break;
+		case ENodeEnabledState::DevelopmentOnly:  Out.EnabledState = TEXT("DevelopmentOnly"); break;
+		default:                                  Out.EnabledState = TEXT("Enabled"); break;
+	}
+
+	// ── Subclass-specific fields ────────────────────────────
+	if (const UK2Node_CallFunction* CF = Cast<UK2Node_CallFunction>(Node))
+	{
+		if (UFunction* Func = CF->GetTargetFunction())
+		{
+			Out.TargetName = Func->GetName();
+			Out.bIsConst   = Func->HasAnyFunctionFlags(FUNC_Const);
+			if (UClass* OwnerClass = Func->GetOwnerClass())
+			{
+				Out.TargetClass = OwnerClass->GetName();
+			}
+		}
+		else
+		{
+			Out.TargetName  = CF->FunctionReference.GetMemberName().ToString();
+			if (UClass* MC = CF->FunctionReference.GetMemberParentClass(nullptr))
+			{
+				Out.TargetClass = MC->GetName();
+			}
+		}
+		Out.bIsPure = CF->IsNodePure();
+	}
+	else if (const UK2Node_DynamicCast* DC = Cast<UK2Node_DynamicCast>(Node))
+	{
+		if (DC->TargetType)
+		{
+			Out.TargetClass = DC->TargetType->GetName();
+		}
+		Out.bIsPure = DC->IsNodePure();
+	}
+	else if (const UK2Node_VariableGet* VG = Cast<UK2Node_VariableGet>(Node))
+	{
+		Out.VariableName = VG->GetVarNameString();
+		// UE exposes a "Validated Get" variant of K2Node_VariableGet that
+		// has exec pins (execute / then / else) and runs a null check —
+		// those are NOT pure. Use IsNodePure() instead of assuming true.
+		Out.bIsPure = VG->IsNodePure();
+		if (FProperty* Prop = VG->GetPropertyForVariable())
+		{
+			Out.VariableType = ::PropertyTypeToString(Prop);
+			Out.VariableScope = VG->VariableReference.IsSelfContext() ? TEXT("member")
+				: (VG->VariableReference.IsLocalScope() ? TEXT("local") : TEXT("external"));
+		}
+	}
+	else if (const UK2Node_VariableSet* VS = Cast<UK2Node_VariableSet>(Node))
+	{
+		Out.VariableName = VS->GetVarNameString();
+		if (FProperty* Prop = VS->GetPropertyForVariable())
+		{
+			Out.VariableType = ::PropertyTypeToString(Prop);
+			Out.VariableScope = VS->VariableReference.IsSelfContext() ? TEXT("member")
+				: (VS->VariableReference.IsLocalScope() ? TEXT("local") : TEXT("external"));
+		}
+	}
+	else if (const UK2Node_CustomEvent* CE = Cast<UK2Node_CustomEvent>(Node))
+	{
+		Out.TargetName = CE->CustomFunctionName.ToString();
+	}
+	else if (const UK2Node_Event* EN = Cast<UK2Node_Event>(Node))
+	{
+		Out.TargetName = EN->GetFunctionName().ToString();
+		if (UClass* OwnerClass = EN->EventReference.GetMemberParentClass(nullptr))
+		{
+			Out.TargetClass = OwnerClass->GetName();
+		}
+	}
+	else if (const UK2Node_MacroInstance* MI = Cast<UK2Node_MacroInstance>(Node))
+	{
+		if (UEdGraph* MG = MI->GetMacroGraph())
+		{
+			Out.MacroGraph = MG->GetName();
+		}
+	}
+	else if (const UK2Node_MakeStruct* MS = Cast<UK2Node_MakeStruct>(Node))
+	{
+		if (MS->StructType) Out.StructType = MS->StructType->GetPathName();
+	}
+	else if (const UK2Node_BreakStruct* BS = Cast<UK2Node_BreakStruct>(Node))
+	{
+		if (BS->StructType) Out.StructType = BS->StructType->GetPathName();
+	}
+	else if (const UK2Node_AddDelegate* AD = Cast<UK2Node_AddDelegate>(Node))
+	{
+		Out.DelegateName = AD->GetPropertyName().ToString();
+	}
+	else if (const UK2Node_RemoveDelegate* RD = Cast<UK2Node_RemoveDelegate>(Node))
+	{
+		Out.DelegateName = RD->GetPropertyName().ToString();
+	}
+	else if (const UK2Node_CallDelegate* CD = Cast<UK2Node_CallDelegate>(Node))
+	{
+		Out.DelegateName = CD->GetPropertyName().ToString();
+	}
+
+	// ExecOutCount — count wired-OR-unwired exec-output pins (surface count,
+	// not connection count). Useful for fanout detection.
+	{
+		int32 NExecOut = 0;
+		for (UEdGraphPin* P : Node->Pins)
+		{
+			if (!P || P->bHidden) continue;
+			if (P->Direction != EGPD_Output) continue;
+			if (P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) ++NExecOut;
+		}
+		Out.ExecOutCount = NExecOut;
+	}
+
+	// LiteralValue for literal K2 nodes (MakeLiteralInt/Bool/Float/etc.):
+	// grab the "Value" output pin's default if present.
+	{
+		const FString ClassName = Node->GetClass()->GetName();
+		if (ClassName.StartsWith(TEXT("K2Node_MakeLiteral"))
+			|| ClassName == TEXT("K2Node_EnumLiteral"))
+		{
+			for (UEdGraphPin* P : Node->Pins)
+			{
+				if (!P || P->Direction != EGPD_Output) continue;
+				if (P->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec) continue;
+				Out.LiteralValue = GetPinDefaultString(P);
+				if (!Out.LiteralValue.IsEmpty()) break;
+			}
+		}
+	}
+
+	// Pins (with LinkedTo populated).
+	for (UEdGraphPin* Pin : Node->Pins)
+	{
+		if (!Pin) continue;
+		FBridgePinInfo Info;
+		BridgeBPDescribeImpl::FillPinInfo(Pin, Info, /*bFillLinkedTo=*/true);
+		Out.Pins.Add(Info);
+	}
+
+	return Out;
+}
+
+FBridgeFunctionSignature UUnrealBridgeBlueprintLibrary::GetFunctionSignature(
+	const FString& ClassPath, const FString& FunctionName)
+{
+	FBridgeFunctionSignature Out;
+	Out.FunctionName = FunctionName;
+
+	UClass* Cls = nullptr;
+	if (ClassPath.Contains(TEXT(".")) || ClassPath.StartsWith(TEXT("/")))
+	{
+		Cls = LoadObject<UClass>(nullptr, *ClassPath);
+	}
+	if (!Cls)
+	{
+		Cls = FindFirstObject<UClass>(*ClassPath, EFindFirstObjectOptions::None, ELogVerbosity::NoLogging);
+	}
+	if (!Cls) return Out;
+
+	UFunction* Func = Cls->FindFunctionByName(FName(*FunctionName));
+	if (!Func) return Out;
+
+	Out.bFound           = true;
+	Out.FunctionName     = Func->GetName();
+	Out.OwningClass      = Cls->GetName();
+	Out.OwningClassPath  = Cls->GetPathName();
+	Out.bIsConst         = Func->HasAnyFunctionFlags(FUNC_Const);
+	Out.bIsStatic        = Func->HasAnyFunctionFlags(FUNC_Static);
+	Out.bIsNative        = Func->HasAnyFunctionFlags(FUNC_Native);
+	Out.bIsBlueprintCallable = Func->HasAnyFunctionFlags(FUNC_BlueprintCallable);
+	Out.bIsBlueprintPure     = Func->HasAnyFunctionFlags(FUNC_BlueprintPure);
+	Out.bIsPure          = Out.bIsBlueprintPure;
+	Out.bIsLatent        = Func->HasMetaData(TEXT("Latent"));
+	Out.Category         = Func->HasMetaData(TEXT("Category")) ? Func->GetMetaData(TEXT("Category")) : FString();
+	Out.Tooltip          = Func->HasMetaData(TEXT("ToolTip")) ? Func->GetMetaData(TEXT("ToolTip")) : FString();
+
+	// Walk parameters. Include return/out params so the caller sees the
+	// output contract explicitly. Iterate all children then filter (safer
+	// than relying on locals coming after params in UFunction layout).
+	for (TFieldIterator<FProperty> It(Func); It; ++It)
+	{
+		FProperty* Prop = *It;
+		if (!Prop->HasAnyPropertyFlags(CPF_Parm)) continue;
+		FBridgeFunctionParam Param;
+		Param.Name          = Prop->GetName();
+		Param.Type          = ::PropertyTypeToString(Prop);
+		Param.bIsOutput     = Prop->HasAnyPropertyFlags(CPF_OutParm | CPF_ReturnParm);
+		Param.bIsReference  = Prop->HasAnyPropertyFlags(CPF_ReferenceParm);
+		Param.bIsConst      = Prop->HasAnyPropertyFlags(CPF_ConstParm);
+		// Declared default — UE stores BP-exposed defaults as metadata
+		// "CPP_Default_<ParamName>" on the UFunction.
+		const FString DefaultKey = FString::Printf(TEXT("CPP_Default_%s"), *Prop->GetName());
+		if (Func->HasMetaData(*DefaultKey))
+		{
+			Param.DefaultValue = Func->GetMetaData(*DefaultKey);
+		}
+		Out.Parameters.Add(Param);
+	}
+
+	return Out;
 }
 
 TArray<FBridgeReference> UUnrealBridgeBlueprintLibrary::FindEventHandlerSites(
