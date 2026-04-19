@@ -44,6 +44,7 @@
 #include "SGraphPanel.h"
 #include "SGraphNode.h"
 #include "SGraphPin.h"
+#include "Layout/ArrangedChildren.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Editor.h"
 #include "Kismet2/KismetDebugUtilities.h"
@@ -5647,25 +5648,80 @@ namespace BridgeBPPinAlignedImpl
 		if (!GraphEd.IsValid()) return;
 		SGraphPanel* Panel = GraphEd->GetGraphPanel();
 		if (!Panel) return;
+		// Read pin positions by manually running each SGraphNode's
+		// OnArrangeChildren cascade with a local root geometry. This bypasses
+		// SGraphPanel's viewport culling (which skips OnArrangeChildren for
+		// off-viewport nodes and leaves their SGraphPin::NodeOffset at 0).
+		// The cascade arranges the node's internal widget tree — title bar,
+		// pin boxes, individual SGraphPin widgets — and we read each pin's
+		// arranged AbsolutePosition. Because our root starts at (0,0), a
+		// child's arranged AbsolutePosition is exactly its local offset
+		// within the node, which is what we want to store.
 		for (UEdGraphNode* N : Graph->Nodes)
 		{
 			if (!N) continue;
 			TSharedPtr<SGraphNode> NW = Panel->GetNodeWidgetFromGuid(N->NodeGuid);
 			if (!NW.IsValid()) continue;
-			FRenderedGeom G;
-			const FVector2D Size = FVector2D(NW->GetDesiredSize());
-			G.Width  = int32(Size.X);
-			G.Height = int32(Size.Y);
-			if (G.Width <= 0 && G.Height <= 0) continue;
 
-			// Collect visible pins in two parallel arrays — the i-th visible
-			// input pin's offset goes at InputPinLocalYs[i].
+			// SlatePrepass first so DesiredSize is valid and pin widgets
+			// have their own sizes resolved (needed for inner layout).
+			NW->SlatePrepass();
+			const FVector2D Desired = FVector2D(NW->GetDesiredSize());
+			if (Desired.X <= 0 || Desired.Y <= 0) continue;
+
+			// Build reverse lookup: SGraphPin widget pointer -> UEdGraphPin*,
+			// so the recursive walk can identify pins it encounters.
+			TMap<const SWidget*, UEdGraphPin*> PinLookup;
 			for (UEdGraphPin* Pin : N->Pins)
 			{
 				if (!Pin || Pin->bHidden) continue;
 				TSharedPtr<SGraphPin> PW = NW->FindWidgetForPin(Pin);
-				if (!PW.IsValid()) continue;
-				const FVector2D Off = FVector2D(PW->GetNodeOffset());
+				if (PW.IsValid()) PinLookup.Add(&PW.ToSharedRef().Get(), Pin);
+			}
+
+			// Recursively arrange and collect local pin offsets.
+			TMap<UEdGraphPin*, FVector2D> PinOffsets;
+			const FGeometry RootGeo = FGeometry::MakeRoot(Desired, FSlateLayoutTransform());
+			TFunction<void(TSharedRef<SWidget>, const FGeometry&)> Walk;
+			Walk = [&](TSharedRef<SWidget> W, const FGeometry& G2)
+			{
+				FArrangedChildren Kids(EVisibility::Visible);
+				W->ArrangeChildren(G2, Kids);
+				for (int32 ChildIdx = 0; ChildIdx < Kids.Num(); ++ChildIdx)
+				{
+					const FArrangedWidget& AC = Kids[ChildIdx];
+					if (UEdGraphPin** FoundPin = PinLookup.Find(&AC.Widget.Get()))
+					{
+						PinOffsets.Add(*FoundPin, FVector2D(AC.Geometry.GetAbsolutePosition()));
+					}
+					else
+					{
+						Walk(AC.Widget, AC.Geometry);
+					}
+				}
+			};
+			Walk(StaticCastSharedRef<SWidget>(NW.ToSharedRef()), RootGeo);
+
+			// Populate cache. Pin iteration order must match PinDirIndex's,
+			// so walk N->Pins again in declaration order.
+			FRenderedGeom G;
+			G.Width  = int32(Desired.X);
+			G.Height = int32(Desired.Y);
+			for (UEdGraphPin* Pin : N->Pins)
+			{
+				if (!Pin || Pin->bHidden) continue;
+				FVector2D* OffPtr = PinOffsets.Find(Pin);
+				FVector2D Off = OffPtr ? *OffPtr : FVector2D::ZeroVector;
+				// If the recursive walk somehow missed this pin (e.g. a
+				// node subclass with unexpected layout), fall back to the
+				// cached NodeOffset member as a last resort.
+				if (!OffPtr)
+				{
+					if (TSharedPtr<SGraphPin> PW = NW->FindWidgetForPin(Pin))
+					{
+						Off = FVector2D(PW->GetNodeOffset());
+					}
+				}
 				if (Pin->Direction == EGPD_Input)
 				{
 					G.InputPinLocalXs.Add(int32(Off.X));
