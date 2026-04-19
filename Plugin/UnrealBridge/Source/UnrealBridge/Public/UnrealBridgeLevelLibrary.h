@@ -341,6 +341,35 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool SetActorProperty(const FString& ActorName, const FString& PropertyPath, const FString& ExportedValue);
 
+	/**
+	 * Call a UFunction on a LIVE actor (spawned into the editor world or placed
+	 * in the current level) via `ProcessEvent`. Companion to
+	 * `invoke_blueprint_function` — that one spawns a transient instance and
+	 * destroys it; this one targets an actor you already have. Use for
+	 * functional-test flows: `spawn_actor` → `set_actor_property` →
+	 * `invoke_function_on_actor` → `get_actor_property` → `destroy_actor`.
+	 *
+	 * Args / result JSON follow the same shape as `invoke_blueprint_function`
+	 * (input param names as keys; output keyed by param name or `_return` for
+	 * the return value). Errors surface as `{"error":"..."}` in the result
+	 * JSON so Python callers can see them.
+	 *
+	 * Safety gates: rejects non-BlueprintCallable/Pure functions (unless
+	 * user-defined on the actor's BP class) and latent functions — same rules
+	 * as `invoke_blueprint_function`.
+	 *
+	 * @return Always true for handled outcomes; inspect OutResultJson for
+	 *         `error` key to detect failure. False reserved for catastrophic
+	 *         C++ failures that can't produce a JSON payload.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static bool InvokeFunctionOnActor(
+		const FString& ActorName,
+		const FString& FunctionName,
+		const FString& ArgsJson,
+		FString& OutResultJson,
+		FString& OutError);
+
 	/** Recursive attachment hierarchy, one indented line per descendant. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static TArray<FString> GetAttachmentTree(const FString& ActorName);

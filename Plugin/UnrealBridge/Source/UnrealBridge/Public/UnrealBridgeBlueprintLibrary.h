@@ -1154,6 +1154,59 @@ struct FBridgeGraphDiff
 	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffWire> RemovedWires;
 };
 
+/** One per-node hit count from get_pie_node_coverage. */
+USTRUCT(BlueprintType)
+struct FBridgeNodeCoverageEntry
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+	UPROPERTY(BlueprintReadOnly) FString GraphName;
+	UPROPERTY(BlueprintReadOnly) int32 HitCount = 0;
+
+	/** FPlatformTime::Seconds() timestamp of the most recent sample. */
+	UPROPERTY(BlueprintReadOnly) double LastHitTime = 0.0;
+};
+
+/** One param / local / return value captured when a breakpoint hits. */
+USTRUCT(BlueprintType)
+struct FBridgeBreakpointHitValue
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString Name;
+	UPROPERTY(BlueprintReadOnly) FString Type;
+
+	/** ExportText form of the value at the instant the breakpoint hit. */
+	UPROPERTY(BlueprintReadOnly) FString Value;
+
+	/** "param" | "local" | "return". */
+	UPROPERTY(BlueprintReadOnly) FString Kind;
+};
+
+/** Snapshot of the most recent breakpoint hit for a Blueprint. */
+USTRUCT(BlueprintType)
+struct FBridgeBreakpointHit
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) bool bHasHit = false;
+	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+	UPROPERTY(BlueprintReadOnly) FString FunctionName;
+	UPROPERTY(BlueprintReadOnly) FString GraphName;
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+
+	/** Path of the object whose execution hit the breakpoint. */
+	UPROPERTY(BlueprintReadOnly) FString SelfPath;
+
+	/** FPlatformTime::Seconds() timestamp of the hit. */
+	UPROPERTY(BlueprintReadOnly) double HitTime = 0.0;
+
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeBreakpointHitValue> Values;
+};
+
 /** Single CDO override row for FindCdoVariableOverrides. */
 USTRUCT(BlueprintType)
 struct FBridgeCdoOverride
@@ -2969,4 +3022,75 @@ public:
 		const FString& DefiningBlueprintPath,
 		const FString& VariableName,
 		const FString& PackagePath);
+
+	// ─── PIE node coverage (#3 / runtime observability) ─────────────
+
+	/**
+	 * Aggregate per-node hit counts from UE's script-trace ring buffer.
+	 * The trace buffer is a live snapshot of the last ~1024 script-execution
+	 * samples; this walks that buffer, keeps samples whose owning UFunction
+	 * belongs to the given Blueprint's generated class (or a subclass), and
+	 * aggregates per-node hit-count + last-hit time.
+	 *
+	 * Use case: "which nodes actually ran during my last PIE session?"
+	 * Combine with `find_variable_references` / `find_function_call_sites`
+	 * to spot dead branches an AI-generated BP left behind.
+	 *
+	 * **Limits.** The underlying ring is 1024 samples total across the whole
+	 * editor, so very busy scripts overwrite earlier samples. Call soon after
+	 * the scenario of interest stops ticking, and scope to a focused BP.
+	 * Samples persist across PIE start/stop but reset on editor restart.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeNodeCoverageEntry> GetPIENodeCoverage(
+		const FString& BlueprintPath);
+
+	/**
+	 * Set which instance of a Blueprint the editor's trace-stack machinery
+	 * samples from. **Must be called before running a scenario** — UE's
+	 * `FKismetDebugUtilities` only records trace samples for
+	 * `ObjectBeingDebugged`, so without this, `get_pie_node_coverage`
+	 * returns empty.
+	 *
+	 * @param ActorName  Actor label in the editor world (or PIE world when
+	 *                   PIE is running) to pin as the debug object. Pass
+	 *                   empty string to clear.
+	 * @return true if the actor was found and set.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool SetBlueprintDebugObject(const FString& BlueprintPath,
+		const FString& ActorName);
+
+	// ─── Breakpoint-hit snapshot (#6 / runtime var capture) ────────
+
+	/**
+	 * Return the most recent breakpoint hit captured for this Blueprint.
+	 * The bridge subscribes to `FBlueprintCoreDelegates::OnScriptException`
+	 * at module startup; every time a breakpoint fires on a BP's graph, the
+	 * active function name, node GUID, self-path, and every param / local /
+	 * return value (serialized to ExportText) are snapshotted into a
+	 * per-BP slot.
+	 *
+	 * Pair with `add_breakpoint` to turn the existing breakpoint API into a
+	 * true debug loop: set a breakpoint, enter PIE, trigger, then pull the
+	 * snapshot to see what the actor's state was at that moment.
+	 *
+	 * @return `bHasHit = false` when no breakpoint has fired for this BP
+	 *         since editor start (or since `clear_last_breakpoint_hit`).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FBridgeBreakpointHit GetLastBreakpointHit(const FString& BlueprintPath);
+
+	/** Clear the stored snapshot so the next breakpoint hit starts fresh. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static void ClearLastBreakpointHit(const FString& BlueprintPath);
+
+	/**
+	 * Resume script execution after a breakpoint hit by requesting an abort
+	 * on the debugger. Useful for unsticking PIE / editor when a test
+	 * triggered a breakpoint and needs to continue. Does nothing if no
+	 * breakpoint is currently held.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static void ResumeScriptExecution();
 };

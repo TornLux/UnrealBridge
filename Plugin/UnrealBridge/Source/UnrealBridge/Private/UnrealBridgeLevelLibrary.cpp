@@ -30,6 +30,8 @@
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonWriter.h"
+#include "JsonObjectConverter.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Algo/Reverse.h"
@@ -926,6 +928,140 @@ bool UUnrealBridgeLevelLibrary::SetActorProperty(const FString& ActorName, const
 	{
 		Actor->PostEditChangeProperty(ChangeEvent);
 	}
+	return true;
+}
+
+// ─── Actor-targeted function invocation (functional-test driver) ──
+
+bool UUnrealBridgeLevelLibrary::InvokeFunctionOnActor(
+	const FString& ActorName,
+	const FString& FunctionName,
+	const FString& ArgsJson,
+	FString& OutResultJson,
+	FString& OutError)
+{
+	OutResultJson = TEXT("{}");
+	OutError.Reset();
+
+	// Mirror invoke_blueprint_function's "always true, error in JSON" contract
+	// so Python callers (which strip out-params on a false UFUNCTION return)
+	// can always read the payload.
+	auto Fail = [&OutResultJson, &OutError](const FString& Msg) -> bool
+	{
+		OutError = Msg;
+		const FString Escaped = Msg.ReplaceCharWithEscapedChar();
+		OutResultJson = FString::Printf(TEXT("{\"error\":\"%s\"}"), *Escaped);
+		return true;
+	};
+
+	UWorld* World = BridgeLevelImpl::GetEditorWorld();
+	AActor* Actor = BridgeLevelImpl::FindActor(World, ActorName);
+	if (!Actor)
+	{
+		return Fail(FString::Printf(TEXT("actor '%s' not found"), *ActorName));
+	}
+
+	UClass* Cls = Actor->GetClass();
+	UFunction* Func = Cls->FindFunctionByName(FName(*FunctionName));
+	if (!Func)
+	{
+		return Fail(TEXT("function not found on actor class"));
+	}
+	// Safety gates (matches invoke_blueprint_function): reject latent +
+	// reject non-BlueprintCallable/Pure unless the function lives on a BP.
+	for (TFieldIterator<FProperty> It(Func); It; ++It)
+	{
+		if (It->GetCPPType().Contains(TEXT("FLatentActionInfo")))
+		{
+			return Fail(TEXT("function is latent (FLatentActionInfo param); cannot invoke synchronously"));
+		}
+	}
+	if (!Func->HasAnyFunctionFlags(FUNC_BlueprintCallable | FUNC_BlueprintPure))
+	{
+		// Accept user-defined BP functions that land on BP FunctionGraphs.
+		bool bUserDefined = false;
+		if (UBlueprint* BP = Cast<UBlueprint>(Cls->ClassGeneratedBy))
+		{
+			for (UEdGraph* G : BP->FunctionGraphs)
+			{
+				if (G && G->GetFName() == Func->GetFName()) { bUserDefined = true; break; }
+			}
+		}
+		if (!bUserDefined)
+		{
+			return Fail(TEXT("function is not BlueprintCallable/Pure; refusing to invoke lifecycle events"));
+		}
+	}
+
+	TSharedPtr<FJsonObject> ArgsObj;
+	if (!ArgsJson.IsEmpty())
+	{
+		TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ArgsJson);
+		if (!FJsonSerializer::Deserialize(Reader, ArgsObj) || !ArgsObj.IsValid())
+		{
+			return Fail(TEXT("failed to parse ArgsJson"));
+		}
+	}
+
+	TArray<uint8> ParamBuffer;
+	ParamBuffer.SetNumZeroed(Func->ParmsSize);
+	uint8* ParamBuf = ParamBuffer.GetData();
+	for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+	{
+		It->InitializeValue_InContainer(ParamBuf);
+	}
+
+	if (ArgsObj.IsValid() && ArgsObj->Values.Num() > 0)
+	{
+		TMap<FString, TSharedPtr<FJsonValue>> InputsOnly;
+		for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			FProperty* Prop = *It;
+			const bool bIsReturn = Prop->HasAnyPropertyFlags(CPF_ReturnParm);
+			const bool bIsOut    = Prop->HasAnyPropertyFlags(CPF_OutParm);
+			const bool bIsRef    = Prop->HasAnyPropertyFlags(CPF_ReferenceParm);
+			if (bIsReturn) continue;
+			if (bIsOut && !bIsRef) continue;
+			TSharedPtr<FJsonValue> Val = ArgsObj->TryGetField(Prop->GetName());
+			if (Val.IsValid()) InputsOnly.Add(Prop->GetName(), Val);
+		}
+		FText FailReason;
+		if (InputsOnly.Num() > 0 &&
+			!FJsonObjectConverter::JsonAttributesToUStruct(InputsOnly, Func, ParamBuf, 0, 0, false, &FailReason))
+		{
+			for (TFieldIterator<FProperty> D(Func); D && D->HasAnyPropertyFlags(CPF_Parm); ++D)
+			{
+				D->DestroyValue_InContainer(ParamBuf);
+			}
+			return Fail(FString::Printf(TEXT("failed to import args: %s"), *FailReason.ToString()));
+		}
+	}
+
+	Actor->ProcessEvent(Func, ParamBuf);
+
+	TSharedRef<FJsonObject> ResultObj = MakeShared<FJsonObject>();
+	for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+	{
+		FProperty* Prop = *It;
+		const bool bIsReturn = Prop->HasAnyPropertyFlags(CPF_ReturnParm);
+		const bool bIsOut    = Prop->HasAnyPropertyFlags(CPF_OutParm);
+		if (!bIsReturn && !bIsOut) continue;
+		const void* Addr = Prop->ContainerPtrToValuePtr<void>(ParamBuf);
+		TSharedPtr<FJsonValue> Val = FJsonObjectConverter::UPropertyToJsonValue(Prop, Addr, 0, 0);
+		if (!Val.IsValid()) continue;
+		const FString Key = bIsReturn ? FString(TEXT("_return")) : Prop->GetName();
+		ResultObj->SetField(Key, Val);
+	}
+	for (TFieldIterator<FProperty> It(Func); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+	{
+		It->DestroyValue_InContainer(ParamBuf);
+	}
+
+	FString Out;
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+	FJsonSerializer::Serialize(ResultObj, Writer);
+	OutResultJson = Out;
 	return true;
 }
 

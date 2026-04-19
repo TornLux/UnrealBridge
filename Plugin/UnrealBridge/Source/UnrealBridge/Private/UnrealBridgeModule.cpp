@@ -3,10 +3,23 @@
 #include "Interfaces/IMainFrameModule.h"
 #include "Modules/ModuleManager.h"
 
+// Forward decls for the debug-hook registration that lives in the blueprint
+// library's .cpp (keeps the delegate handle private while still letting the
+// module control init / teardown lifetime).
+namespace BridgeDebugState
+{
+	void Register();
+	void Unregister();
+}
+
 #define LOCTEXT_NAMESPACE "FUnrealBridgeModule"
 
 void FUnrealBridgeModule::StartupModule()
 {
+	// Subscribe to FBlueprintCoreDelegates::OnScriptException so breakpoint hits
+	// are captured into the LastBreakpointHit snapshot table.
+	BridgeDebugState::Register();
+
 	Server = MakeShared<FUnrealBridgeServer>();
 
 	// TODO: Read port from project settings / developer settings once UUnrealBridgeSettings is added
@@ -47,6 +60,8 @@ void FUnrealBridgeModule::StartupModule()
 
 void FUnrealBridgeModule::ShutdownModule()
 {
+	BridgeDebugState::Unregister();
+
 	if (Server.IsValid())
 	{
 		Server->Stop();

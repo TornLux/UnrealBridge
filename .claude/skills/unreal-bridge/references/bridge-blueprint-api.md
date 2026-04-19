@@ -2211,6 +2211,104 @@ included in the result even though it has a CDO value.
 
 ---
 
+## Runtime verification loop
+
+Three APIs that turn `add_breakpoint` + `invoke_function_on_actor` into
+a real debug / coverage loop instead of a one-shot call.
+
+### get_pie_node_coverage(blueprint_path) -> list[FBridgeNodeCoverageEntry]
+
+Aggregate per-node hit counts from UE's script-trace ring buffer.
+Answers "which nodes actually ran during my last scenario?" for any
+Blueprint whose generated (or subclass) class had a debug object
+pinned while running.
+
+```python
+BP_LIB.set_blueprint_debug_object(bp, actor_label)
+# Run your scenario — invoke functions, enter PIE, drive events, etc.
+cov = BP_LIB.get_pie_node_coverage(bp)
+for c in cov:
+    print(f'{c.node_title} ({c.node_guid[:8]}): {c.hit_count} hits')
+# Set Speed (7167C083): 16 hits
+# Configure     (CBEABCDE): 16 hits
+```
+
+**`FBridgeNodeCoverageEntry` fields**: `node_guid`, `node_title`,
+`graph_name`, `hit_count`, `last_hit_time` (`FPlatformTime::Seconds`).
+
+**Critical: you must pin a debug object first.** UE only records
+trace samples for `ObjectBeingDebugged`. Without calling
+`set_blueprint_debug_object`, coverage is always empty.
+
+**Ring-buffer limits.** The underlying buffer holds 1024 samples
+total across the whole editor; busy scripts overwrite earlier
+samples. Read soon after the scenario, scope to one focused BP.
+Samples persist across PIE start/stop but reset on editor restart.
+
+### set_blueprint_debug_object(blueprint_path, actor_name) -> bool
+
+Pin which instance of the BP the trace-stack machinery samples from.
+Accepts actor label or internal name; searches both the editor world
+and any active PIE world. Pass `""` to clear.
+
+```python
+BP_LIB.set_blueprint_debug_object(bp, 'BP_TestActor0')   # editor
+BP_LIB.set_blueprint_debug_object(bp, '')                 # clear
+```
+
+### get_last_breakpoint_hit(blueprint_path) -> FBridgeBreakpointHit
+
+Return the most recent breakpoint-hit snapshot for this BP.
+UnrealBridge subscribes to `FBlueprintCoreDelegates::OnScriptException`
+at module startup, so every breakpoint hit captures: function name,
+graph name, node GUID, self actor path, and every param / local /
+return value (ExportText form) in `FFrame.Locals` at the instant
+the break fired.
+
+```python
+hit = BP_LIB.get_last_breakpoint_hit(bp)
+if hit.has_hit:
+    print(f'{hit.function_name}::{hit.node_title} on {hit.self_path}')
+    for v in hit.values:
+        print(f'  [{v.kind}] {v.name}: {v.type} = {v.value}')
+# Configure::Set Speed on /Game/Levels/DefaultLevel:PersistentLevel.BP_TestActor_C_0
+#   [param] NewSpeed: float = 42.500000
+```
+
+**Snapshot fields.** `bHasHit` (false when no hit since module load
+or `clear_last_breakpoint_hit`); `blueprint_path`, `function_name`,
+`graph_name`, `node_guid`, `node_title`; `self_path` (executing
+object); `hit_time` (`FPlatformTime::Seconds`); `values` — one per
+UFunction property, with `kind` = `"param"` / `"local"` / `"return"`
+and `value` as truncated ExportText (512 char cap).
+
+**Value truncation.** Object refs export to full paths which can
+easily exceed a line; values over 512 chars get a trailing `…`.
+For deep object graph inspection, use the `self_path` field +
+`get_actor_property` to drill down.
+
+### clear_last_breakpoint_hit(blueprint_path) -> None
+### resume_script_execution() -> None
+
+Companions: `clear` drops the stored snapshot so the next hit starts
+fresh; `resume` calls `FKismetDebugUtilities::RequestAbortingExecution`
+to unstick a paused execution path.
+
+**PIE-pause gotcha.** When a breakpoint fires on the editor's
+currently-debugged object, UE opens the BP editor and pauses the
+GameThread in a nested Slate loop — **the bridge TCP exec can't
+reach the GameThread during this pause**. The hit IS captured
+(our handler runs before UE's pause code), but reading the
+snapshot requires the editor to be in a responsive state. Options:
+- Trigger the scenario from inside PIE (PIE-pause freezes PIE,
+  editor stays responsive — bridge still works).
+- Have a human click Resume in the BP editor.
+- Call `resume_script_execution()` from a different bridge
+  session if it can reach the GameThread (rare — only the PIE
+  pause leaves the editor responsive enough).
+
+---
+
 ## Node layout (position / size / corners / pin coordinates)
 
 Read node geometry for layout purposes — placing new nodes adjacent to

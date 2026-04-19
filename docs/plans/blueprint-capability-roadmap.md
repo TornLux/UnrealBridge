@@ -23,6 +23,8 @@
 - 行为验证：**`invoke_blueprint_function`** 在 transient 实例上直接 ProcessEvent（非 Actor = NewObject；Actor = 编辑器世界 SpawnActor），JSON 入参 / JSON 出参（`_return` + out-params），拒绝 latent/非 BlueprintCallable
 - 编辑器焦点快照：**`get_editor_focus_state`** 当前焦点 BP / 活动 graph / 选中节点 / 所有打开的 BP 编辑器
 - 图指纹 / 快照 / 语义 diff：**`get_graph_fingerprint`** + **`snapshot_graph_json`** + **`diff_graph_snapshots`** — 低成本检测 AI 编辑产生的变化
+- 运行时调试闭环：**`set_blueprint_debug_object`** + **`get_pie_node_coverage`**（trace-ring 聚合 per-node 命中）+ **`get_last_breakpoint_hit`**（OnScriptException hook 捕获 FFrame.Locals）+ **`resume_script_execution`**
+- 功能测试原语：**`invoke_function_on_actor`**（在已放置/已 spawn 的 actor 上 ProcessEvent，区别于 `invoke_blueprint_function` 的 transient 实例）
 
 ### 写
 - 变量/函数/Macro/接口/组件/dispatcher 全 CRUD + metadata 编辑
@@ -56,7 +58,7 @@
 | 3 | **GameplayAbility 图编辑** | 只读 CDO 元数据。无法编辑 GA 激活图/GameplayEffect/GameplayCue。所有 GAS 项目卡死。 |
 | 4 | **Enhanced Input 绑定** | 无 IA/IMC 辅助。现代 UE 输入层只能走 raw `unreal.*`。 |
 | 5 | ~~**invoke_blueprint_function(bp, func, args) → result**~~ | ✅ 2026-04-19 落地。transient 实例 ProcessEvent；支持 Actor（SpawnActor）+ 普通 UObject；拒绝 latent / 非 BlueprintCallable；JSON 入参 + 出参。 |
-| 6 | **运行时 BP 变量/参数快照** | 断点 API 已有，但命中后无法看局部变量值、参数值、返回值。调试循环残缺。 |
+| 6 | ~~**运行时 BP 变量/参数快照**~~ | ✅ 2026-04-19 落地 `get_last_breakpoint_hit` + `get_pie_node_coverage` + `set_blueprint_debug_object` + `resume_script_execution`。OnScriptException hook 捕获 FFrame.Locals（param/local/return），trace-ring 聚合 per-node 命中数。 |
 
 ### P1 中优先级：常见重构与模板
 

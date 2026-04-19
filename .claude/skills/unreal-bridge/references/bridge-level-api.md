@@ -585,6 +585,45 @@ Attach `child_name` to `parent_name` (optionally at a socket).
 
 Set a property from an exported-text value. Dotted path supported. ⚠️ For transient struct fields (e.g. component `RelativeLocation`), prefer `set_actor_transform` / `move_actor` — direct struct writes don't trigger component update notifications.
 
+### invoke_function_on_actor(actor_name, function_name, args_json) -> (result_json, error)
+
+Call a UFunction on a **live actor** (one placed in the level or spawned
+into the editor world) via `ProcessEvent`. Companion to
+`invoke_blueprint_function` — that one spawns a transient instance and
+destroys it; this one targets an actor you already have. Ideal for
+functional-test flows:
+
+```python
+label = LV.spawn_actor(bp + '_C', unreal.Vector(0, 0, 0), unreal.Rotator.ZERO)
+LV.set_actor_property(label, 'Health', '100')
+result_json, err = LV.invoke_function_on_actor(label, 'TakeDamage', '{"Amount": 25}')
+current = LV.get_actor_property(label, 'Health')
+assert current == '75.000000', current
+LV.destroy_actor(label)
+```
+
+**Input / output JSON** follow the same contract as
+`invoke_blueprint_function`:
+- `args_json`: JSON object keyed by parameter name. Empty string = no args.
+- `result_json`: JSON object with out-params / return (return keyed as
+  `"_return"`). On handled failure: `{"error":"..."}`.
+
+**Safety gates.** Rejects non-BlueprintCallable/Pure functions (unless
+user-defined on the actor's BP class) and latent functions — same rules
+as `invoke_blueprint_function`.
+
+**Always-true return.** The bool return is always `true` for handled
+outcomes; Python callers should inspect `result_json` for an `error`
+key rather than rely on the bool (UE's Python binding strips out-params
+when a UFUNCTION returns false).
+
+**Pair with other APIs for full test flows:**
+- `spawn_actor` → set up
+- `set_actor_property` → preconditions
+- `invoke_function_on_actor` → drive behavior
+- `get_actor_property` → assert post-state
+- `destroy_actor` → teardown
+
 ---
 
 ## Write — Selection / Visibility / Labels
