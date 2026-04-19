@@ -2506,8 +2506,20 @@ namespace BridgeLevelImpl
 		// engine content). The axis stays visually distinct via thickness.
 		if (!AxisMat) AxisMat = LineMat;
 
+		// Snap the grid centre to the nearest spacing multiple so lines always
+		// pass through world X=0 and Y=0 when those are within extent. Without
+		// the snap, the grid centres on pelvis XY (or trajectory bbox) and the
+		// world-origin lines would fall between grid cells.
+		const float CX = FMath::RoundToFloat(Center.X / Spacing) * Spacing;
+		const float CY = FMath::RoundToFloat(Center.Y / Spacing) * Spacing;
+		const float Z  = Center.Z;
+
 		const int32 NumSteps = FMath::CeilToInt(HalfExtent / Spacing);
 		const float AdjHalf  = NumSteps * Spacing;
+
+		// "Axis" = the line that passes through world X=0 or Y=0. Use a small
+		// tolerance (1% of Spacing) so float-snap noise doesn't miss the hit.
+		const float AxisTol = Spacing * 0.01f;
 
 		auto AddLine = [&](const FVector& A, const FVector& B,
 			float Thickness, UMaterialInterface* Mat)
@@ -2531,22 +2543,23 @@ namespace BridgeLevelImpl
 			PreviewScene.AddComponent(MC, Xform);
 		};
 
-		const float Z = Center.Z;
+		// Lines parallel to Y axis (constant X). Axis line = world Y-axis at X=0.
 		for (int32 i = -NumSteps; i <= NumSteps; ++i)
 		{
-			const float X = Center.X + i * Spacing;
-			const FVector A(X, Center.Y - AdjHalf, Z);
-			const FVector B(X, Center.Y + AdjHalf, Z);
-			const bool bAxis = (i == 0);
+			const float X = CX + i * Spacing;
+			const FVector A(X, CY - AdjHalf, Z);
+			const FVector B(X, CY + AdjHalf, Z);
+			const bool bAxis = (FMath::Abs(X) <= AxisTol);
 			AddLine(A, B, bAxis ? AxisThickness : LineThickness,
 			        bAxis ? AxisMat : LineMat);
 		}
+		// Lines parallel to X axis (constant Y). Axis line = world X-axis at Y=0.
 		for (int32 j = -NumSteps; j <= NumSteps; ++j)
 		{
-			const float Y = Center.Y + j * Spacing;
-			const FVector A(Center.X - AdjHalf, Y, Z);
-			const FVector B(Center.X + AdjHalf, Y, Z);
-			const bool bAxis = (j == 0);
+			const float Y = CY + j * Spacing;
+			const FVector A(CX - AdjHalf, Y, Z);
+			const FVector B(CX + AdjHalf, Y, Z);
+			const bool bAxis = (FMath::Abs(Y) <= AxisTol);
 			AddLine(A, B, bAxis ? AxisThickness : LineThickness,
 			        bAxis ? AxisMat : LineMat);
 		}
