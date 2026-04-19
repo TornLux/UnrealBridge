@@ -11,6 +11,20 @@
 #include "HAL/FileManager.h"
 #include "Misc/PackageName.h"
 #include "UObject/TopLevelAssetPath.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshSocket.h"
+#include "Engine/SkeletalMesh.h"
+#include "Engine/SkeletalMeshSocket.h"
+#include "Engine/Texture2D.h"
+#include "Engine/SkinnedAssetCommon.h"
+#include "Sound/SoundWave.h"
+#include "Sound/SoundCue.h"
+#include "Animation/Skeleton.h"
+#include "PhysicsEngine/PhysicsAsset.h"
+#include "PixelFormat.h"
+#include "StaticMeshResources.h"
+#include "Rendering/SkeletalMeshRenderData.h"
+#include "Rendering/SkeletalMeshLODRenderData.h"
 
 // ─── Internal helpers ───────────────────────────────────────
 
@@ -1163,4 +1177,200 @@ void UUnrealBridgeAssetLibrary::GetPackageDependenciesRecursive(
 			Stack.Emplace(L, Current.Value + 1);
 		}
 	}
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   Asset introspection — StaticMesh / SkeletalMesh / Texture / Sound
+// ═══════════════════════════════════════════════════════════════════
+
+namespace BridgeAssetIntrospection
+{
+	/** Collect declared material slot names + bound material asset paths
+	 *  from a mesh that uses the shared FSkeletalMaterial / FStaticMaterial
+	 *  shape. Captures "slot missing material" as an empty path so the array
+	 *  stays 1:1 with MaterialSlotNames. */
+	template<typename TMeshMaterial>
+	static void CollectMaterials(const TArray<TMeshMaterial>& Mats,
+		TArray<FString>& OutSlotNames, TArray<FString>& OutAssetPaths)
+	{
+		OutSlotNames.Reserve(Mats.Num());
+		OutAssetPaths.Reserve(Mats.Num());
+		for (const TMeshMaterial& M : Mats)
+		{
+			OutSlotNames.Add(M.MaterialSlotName.ToString());
+			OutAssetPaths.Add(M.MaterialInterface ? M.MaterialInterface->GetPathName() : FString());
+		}
+	}
+}
+
+FBridgeStaticMeshInfo UUnrealBridgeAssetLibrary::GetStaticMeshInfo(const FString& AssetPath)
+{
+	FBridgeStaticMeshInfo Out;
+	Out.AssetPath = AssetPath;
+	UStaticMesh* Mesh = LoadObject<UStaticMesh>(nullptr, *AssetPath);
+	if (!Mesh) return Out;
+
+	Out.bFound = true;
+
+	const FBoxSphereBounds B = Mesh->GetBounds();
+	Out.BoundsOrigin = B.Origin;
+	Out.BoundsExtent = B.BoxExtent;
+	Out.BoundsSphereRadius = B.SphereRadius;
+
+	BridgeAssetIntrospection::CollectMaterials(Mesh->GetStaticMaterials(),
+		Out.MaterialSlotNames, Out.MaterialAssetPaths);
+
+	// LOD stats: walk render data if available; fall back to source data.
+	if (FStaticMeshRenderData* RD = Mesh->GetRenderData())
+	{
+		Out.NumLODs = RD->LODResources.Num();
+		for (int32 i = 0; i < RD->LODResources.Num(); ++i)
+		{
+			const FStaticMeshLODResources& LOD = RD->LODResources[i];
+			FBridgeMeshLODStats S;
+			S.LODIndex      = i;
+			S.VertexCount   = LOD.VertexBuffers.PositionVertexBuffer.GetNumVertices();
+			S.TriangleCount = LOD.GetNumTriangles();
+			for (const FStaticMeshSection& Sec : LOD.Sections)
+			{
+				S.MaterialIndices.Add(Sec.MaterialIndex);
+			}
+			if (i == 0)
+			{
+				Out.NumUVChannels = LOD.GetNumTexCoords();
+			}
+			Out.LODStats.Add(MoveTemp(S));
+		}
+	}
+
+	if (const UStaticMeshSocket* First = Mesh->Sockets.Num() > 0 ? Mesh->Sockets[0] : nullptr)
+	{
+		(void)First; // reach into socket array below
+	}
+	Out.NumSockets = Mesh->Sockets.Num();
+	for (const UStaticMeshSocket* S : Mesh->Sockets)
+	{
+		if (S) Out.SocketNames.Add(S->SocketName.ToString());
+	}
+
+	Out.bHasCollision = (Mesh->GetBodySetup() != nullptr) &&
+		(Mesh->GetBodySetup()->AggGeom.GetElementCount() > 0);
+	Out.bHasNaniteData = Mesh->IsNaniteEnabled();
+	return Out;
+}
+
+FBridgeSkeletalMeshInfo UUnrealBridgeAssetLibrary::GetSkeletalMeshInfo(const FString& AssetPath)
+{
+	FBridgeSkeletalMeshInfo Out;
+	Out.AssetPath = AssetPath;
+	USkeletalMesh* Mesh = LoadObject<USkeletalMesh>(nullptr, *AssetPath);
+	if (!Mesh) return Out;
+
+	Out.bFound = true;
+
+	const FBoxSphereBounds B = Mesh->GetBounds();
+	Out.BoundsOrigin = B.Origin;
+	Out.BoundsExtent = B.BoxExtent;
+	Out.BoundsSphereRadius = B.SphereRadius;
+
+	BridgeAssetIntrospection::CollectMaterials(Mesh->GetMaterials(),
+		Out.MaterialSlotNames, Out.MaterialAssetPaths);
+
+	if (FSkeletalMeshRenderData* RD = Mesh->GetResourceForRendering())
+	{
+		Out.NumLODs = RD->LODRenderData.Num();
+		for (int32 i = 0; i < RD->LODRenderData.Num(); ++i)
+		{
+			const FSkeletalMeshLODRenderData& LOD = RD->LODRenderData[i];
+			FBridgeMeshLODStats S;
+			S.LODIndex      = i;
+			S.VertexCount   = LOD.GetNumVertices();
+			// Triangle count = sum over sections of section NumTriangles.
+			int32 Tris = 0;
+			for (const FSkelMeshRenderSection& Sec : LOD.RenderSections)
+			{
+				Tris += Sec.NumTriangles;
+				S.MaterialIndices.Add(Sec.MaterialIndex);
+			}
+			S.TriangleCount = Tris;
+			Out.LODStats.Add(MoveTemp(S));
+		}
+	}
+
+	if (USkeleton* Skel = Mesh->GetSkeleton())
+	{
+		Out.SkeletonPath = Skel->GetPathName();
+		Out.NumBones = Skel->GetReferenceSkeleton().GetNum();
+	}
+
+	for (const USkeletalMeshSocket* S : Mesh->GetActiveSocketList())
+	{
+		if (S) Out.SocketNames.Add(S->SocketName.ToString());
+	}
+	Out.NumSockets = Out.SocketNames.Num();
+
+	Out.NumMorphTargets = Mesh->GetMorphTargets().Num();
+
+	if (UPhysicsAsset* Phys = Mesh->GetPhysicsAsset())
+	{
+		Out.PhysicsAssetPath = Phys->GetPathName();
+	}
+	return Out;
+}
+
+FBridgeTextureInfo UUnrealBridgeAssetLibrary::GetTextureInfo(const FString& AssetPath)
+{
+	FBridgeTextureInfo Out;
+	Out.AssetPath = AssetPath;
+	UTexture2D* Tex = LoadObject<UTexture2D>(nullptr, *AssetPath);
+	if (!Tex) return Out;
+
+	Out.bFound       = true;
+	Out.Width        = Tex->GetSizeX();
+	Out.Height       = Tex->GetSizeY();
+	Out.NumMips      = Tex->GetNumMips();
+	Out.PixelFormat  = GetPixelFormatString(Tex->GetPixelFormat());
+
+	const UEnum* CompEnum = StaticEnum<TextureCompressionSettings>();
+	Out.CompressionSettings = CompEnum ? CompEnum->GetNameStringByValue((int64)Tex->CompressionSettings) : FString();
+	const UEnum* GroupEnum = StaticEnum<TextureGroup>();
+	Out.LODGroup = GroupEnum ? GroupEnum->GetNameStringByValue((int64)Tex->LODGroup) : FString();
+
+	Out.bSRGB         = Tex->SRGB != 0;
+	Out.bNeverStream  = Tex->NeverStream != 0;
+	Out.ResourceSizeBytes = Tex->GetResourceSizeBytes(EResourceSizeMode::EstimatedTotal);
+	return Out;
+}
+
+FBridgeSoundInfo UUnrealBridgeAssetLibrary::GetSoundInfo(const FString& AssetPath)
+{
+	FBridgeSoundInfo Out;
+	Out.AssetPath = AssetPath;
+	UObject* Obj = LoadObject<UObject>(nullptr, *AssetPath);
+	if (!Obj) return Out;
+
+	if (USoundWave* Wave = Cast<USoundWave>(Obj))
+	{
+		Out.bFound          = true;
+		Out.SoundKind       = TEXT("SoundWave");
+		Out.DurationSeconds = Wave->GetDuration();
+		Out.SampleRate      = static_cast<int32>(Wave->GetSampleRateForCurrentPlatform());
+		Out.NumChannels     = Wave->NumChannels;
+		Out.bLooping        = Wave->bLooping;
+		Out.CompressedDataBytes =
+			Wave->GetResourceSizeBytes(EResourceSizeMode::EstimatedTotal);
+	}
+	else if (USoundCue* Cue = Cast<USoundCue>(Obj))
+	{
+		Out.bFound          = true;
+		Out.SoundKind       = TEXT("SoundCue");
+		Out.DurationSeconds = Cue->GetDuration();
+	}
+	else if (USoundBase* Base = Cast<USoundBase>(Obj))
+	{
+		Out.bFound          = true;
+		Out.SoundKind       = Base->GetClass()->GetName();
+		Out.DurationSeconds = Base->GetDuration();
+	}
+	return Out;
 }

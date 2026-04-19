@@ -449,3 +449,101 @@ direct = AL.get_package_dependencies(pkg, False)        # 174
 d3     = AL.get_package_dependencies_recursive(pkg, False, 3)  # 439
 all_   = AL.get_package_dependencies_recursive(pkg, False, 0)  # 864 (full closure)
 ```
+
+---
+
+## Asset introspection
+
+Per-asset metadata queries. Answer "what's in this mesh / texture / sound?"
+without loading the asset into Python and poking at raw `unreal.*`
+properties. Each returns `bFound = false` (Python: `.found`) when the
+path can't be resolved, otherwise a fully-populated struct.
+
+### get_static_mesh_info(asset_path) -> FBridgeStaticMeshInfo
+
+Per-LOD vertex / triangle counts + material-slot indices, mesh bounds,
+material slot names + bound material asset paths, socket list, UV
+channel count (LOD 0), Nanite-enabled flag, collision presence.
+
+```python
+sm = AL.get_static_mesh_info('/Game/Meshes/SM_Cylinder.SM_Cylinder')
+print(f'LODs={sm.num_lo_ds} UVs={sm.num_uv_channels} nanite={sm.has_nanite_data}')
+for lod in sm.lod_stats:
+    print(f'  LOD{lod.lod_index}: {lod.vertex_count} verts, {lod.triangle_count} tris')
+# LODs=1 UVs=2 nanite=False
+#   LOD0: 132 verts, 128 tris
+```
+
+> **Python naming quirk.** UE's reflection converts `NumLODs` →
+> `num_lo_ds` (the consecutive uppercase splits each char). All other
+> `num_*` fields (`num_sockets`, `num_uv_channels`, …) follow the
+> normal snake-case rule.
+
+**Fields:** `asset_path`, `found`, `bounds_origin`, `bounds_extent`,
+`bounds_sphere_radius`, `num_lo_ds`, `lod_stats[].{lod_index,
+vertex_count, triangle_count, material_indices}`, `material_slot_names`,
+`material_asset_paths`, `num_sockets`, `socket_names`, `has_collision`,
+`num_uv_channels`, `has_nanite_data`.
+
+### get_skeletal_mesh_info(asset_path) -> FBridgeSkeletalMeshInfo
+
+Same LOD-stats pattern as static meshes, plus skeleton binding, bone
+count, socket + morph-target counts, and the bound PhysicsAsset path.
+
+```python
+sk = AL.get_skeletal_mesh_info('/Game/Characters/MyChar/SK_Hero.SK_Hero')
+print(f'LODs={sk.num_lo_ds} bones={sk.num_bones} morphs={sk.num_morph_targets}')
+print(f'skeleton={sk.skeleton_path}  physics={sk.physics_asset_path}')
+# LODs=4 bones=354 morphs=0
+# skeleton=/Game/Characters/MyChar/Hero_Skeleton.Hero_Skeleton
+```
+
+**Fields:** same LOD / material / bounds fields as StaticMeshInfo,
+plus `skeleton_path`, `num_bones`, `num_morph_targets`,
+`physics_asset_path`, `num_sockets`, `socket_names`. Missing:
+`has_collision`, `has_nanite_data`, `num_uv_channels`.
+
+### get_texture_info(asset_path) -> FBridgeTextureInfo
+
+Dimensions, pixel format (EPixelFormat name), compression settings,
+LOD group, sRGB flag, mip count, never-stream flag, resident memory
+bytes.
+
+```python
+tx = AL.get_texture_info('/Game/Textures/T_Grid.T_Grid')
+print(f'{tx.width}x{tx.height} mips={tx.num_mips} fmt={tx.pixel_format}')
+print(f'compression={tx.compression_settings} group={tx.lod_group}')
+print(f'sRGB={tx.srgb} never_stream={tx.never_stream} bytes={tx.resource_size_bytes}')
+# 1024x1024 mips=11 fmt=PF_DXT1
+# compression=TC_Default group=TEXTUREGROUP_World
+# sRGB=True never_stream=False bytes=722288
+```
+
+**Fields:** `asset_path`, `found`, `width`, `height`, `num_mips`,
+`pixel_format` (e.g. `PF_DXT1`, `PF_BC7`, `PF_FloatRGBA`),
+`compression_settings` (e.g. `TC_Default`, `TC_NormalMap`),
+`lod_group` (e.g. `TEXTUREGROUP_World`, `TEXTUREGROUP_UI`), `srgb`,
+`never_stream`, `resource_size_bytes`.
+
+### get_sound_info(asset_path) -> FBridgeSoundInfo
+
+Duration, sample rate, channel count, loop flag, compressed bytes.
+Accepts `USoundWave`, `USoundCue`, or any `USoundBase` subclass.
+SampleRate / channels are only populated for `SoundWave`; cue / meta-
+sound return the computed total duration only.
+
+```python
+snd = AL.get_sound_info('/Game/Audio/Ambient/Birds.Birds')
+print(f'kind={snd.sound_kind} dur={snd.duration_seconds:.2f}s '
+      f'sr={snd.sample_rate}Hz ch={snd.num_channels} loop={snd.looping}')
+# kind=SoundWave dur=10000.00s sr=44100Hz ch=2 loop=True
+```
+
+**Duration caveat.** A `SoundWave` with `bLooping = true` reports a
+sentinel duration (typically `INDEFINITELY_LOOPING_DURATION`) that
+looks like 10000 s. Check the `looping` flag before trusting the
+duration.
+
+**Fields:** `asset_path`, `found`, `sound_kind` (`"SoundWave"` /
+`"SoundCue"` / `"MetaSound"` / other), `duration_seconds`,
+`sample_rate`, `num_channels`, `looping`, `compressed_data_bytes`.
