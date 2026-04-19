@@ -1101,6 +1101,26 @@ namespace BridgeEditorImpl
 	}
 }
 
+namespace BridgeEditorImpl
+{
+	// Core scene-capture render + encode path shared between the
+	// viewport-pose and explicit-pose channel capture APIs. Caller is
+	// responsible for resolving World, pose, dims, and channel spec;
+	// this function does the spawn → CaptureScene → readback → encode
+	// → write → cleanup cycle.
+	FBridgeChannelCaptureResult CaptureChannelInternal(
+		UWorld* World,
+		const FVector& CamLoc,
+		const FRotator& CamRot,
+		float FOV,
+		int32 W, int32 H,
+		const FChannelSpec& Spec,
+		const FString& ChannelEcho,
+		float MaxDepthClamp,
+		const FString& OutFilePath,
+		bool bIncludeBase64);
+}
+
 FBridgeChannelCaptureResult UUnrealBridgeEditorLibrary::CaptureViewportChannel(
 	const FString& Channel,
 	const FString& OutFilePath,
@@ -1124,7 +1144,7 @@ FBridgeChannelCaptureResult UUnrealBridgeEditorLibrary::CaptureViewportChannel(
 	FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
 	if (!VC || !VC->Viewport)
 	{
-		R.Error = TEXT("No active level editor viewport.");
+		R.Error = TEXT("No active level editor viewport. For PIE captures use CaptureChannelFromPose with an explicit pose.");
 		return R;
 	}
 
@@ -1135,15 +1155,37 @@ FBridgeChannelCaptureResult UUnrealBridgeEditorLibrary::CaptureViewportChannel(
 	const FIntPoint VpSize = VC->Viewport->GetSizeXY();
 	const int32 W = Width > 0 ? Width : VpSize.X;
 	const int32 H = Height > 0 ? Height : VpSize.Y;
-	if (W <= 0 || H <= 0)
+
+	UWorld* World = BridgeEditorImpl::GetCaptureWorld();
+	if (!World)
 	{
-		R.Error = FString::Printf(TEXT("Invalid resolution %dx%d."), W, H);
+		R.Error = TEXT("No capture world available.");
 		return R;
 	}
+	return BridgeEditorImpl::CaptureChannelInternal(
+		World, CamLoc, CamRot, FOV, W, H, Spec, Channel, MaxDepthClamp, OutFilePath, bIncludeBase64);
+}
 
-	if (OutFilePath.IsEmpty() && !bIncludeBase64)
+FBridgeChannelCaptureResult UUnrealBridgeEditorLibrary::CaptureChannelFromPose(
+	const FString& Channel,
+	FVector Location,
+	FRotator Rotation,
+	float FOV,
+	int32 Width,
+	int32 Height,
+	float MaxDepthClamp,
+	const FString& OutFilePath,
+	bool bIncludeBase64)
+{
+	FBridgeChannelCaptureResult R;
+	R.Channel = Channel;
+
+	BridgeEditorImpl::FChannelSpec Spec;
+	if (!BridgeEditorImpl::ResolveChannel(Channel, Spec))
 	{
-		R.Error = TEXT("Either OutFilePath must be non-empty or bIncludeBase64 must be true.");
+		R.Error = FString::Printf(
+			TEXT("Unknown channel '%s'. Valid: SceneColor, SceneColorHDR, Depth, DeviceDepth, Normal, BaseColor."),
+			*Channel);
 		return R;
 	}
 
@@ -1154,7 +1196,59 @@ FBridgeChannelCaptureResult UUnrealBridgeEditorLibrary::CaptureViewportChannel(
 		return R;
 	}
 
-	// 1) Spawn transient SceneCapture2D at the viewport pose.
+	// Resolve W/H: caller's value > active editor viewport size > 1920x1080.
+	int32 W = Width;
+	int32 H = Height;
+	if (W <= 0 || H <= 0)
+	{
+		FLevelEditorViewportClient* VC = BridgeEditorImpl::GetActiveViewportClient();
+		if (VC && VC->Viewport)
+		{
+			const FIntPoint VpSize = VC->Viewport->GetSizeXY();
+			if (W <= 0) { W = VpSize.X; }
+			if (H <= 0) { H = VpSize.Y; }
+		}
+		if (W <= 0) { W = 1920; }
+		if (H <= 0) { H = 1080; }
+	}
+
+	const float ResolvedFOV = FOV > 0.f ? FOV : 90.f;
+	return BridgeEditorImpl::CaptureChannelInternal(
+		World, Location, Rotation, ResolvedFOV, W, H, Spec, Channel, MaxDepthClamp, OutFilePath, bIncludeBase64);
+}
+
+FBridgeChannelCaptureResult BridgeEditorImpl::CaptureChannelInternal(
+	UWorld* World,
+	const FVector& CamLoc,
+	const FRotator& CamRot,
+	float FOV,
+	int32 W, int32 H,
+	const FChannelSpec& Spec,
+	const FString& ChannelEcho,
+	float MaxDepthClamp,
+	const FString& OutFilePath,
+	bool bIncludeBase64)
+{
+	FBridgeChannelCaptureResult R;
+	R.Channel = ChannelEcho;
+
+	if (!World)
+	{
+		R.Error = TEXT("No capture world.");
+		return R;
+	}
+	if (W <= 0 || H <= 0)
+	{
+		R.Error = FString::Printf(TEXT("Invalid resolution %dx%d."), W, H);
+		return R;
+	}
+	if (OutFilePath.IsEmpty() && !bIncludeBase64)
+	{
+		R.Error = TEXT("Either OutFilePath must be non-empty or bIncludeBase64 must be true.");
+		return R;
+	}
+
+	// 1) Spawn transient SceneCapture2D at the requested pose.
 	FActorSpawnParameters SpawnInfo;
 	SpawnInfo.ObjectFlags |= RF_Transient;
 	SpawnInfo.Name = MakeUniqueObjectName(

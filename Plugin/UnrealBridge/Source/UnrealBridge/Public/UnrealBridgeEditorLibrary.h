@@ -476,6 +476,40 @@ public:
 		bool bIncludeBase64);
 
 	/**
+	 * Same GBuffer channel capture as CaptureViewportChannel, but takes
+	 * an explicit world-space camera pose instead of reading the active
+	 * editor viewport. This is the PIE-compatible path — pair it with
+	 * UnrealBridgeGameplayLibrary to grab the player pawn's camera and
+	 * capture Depth / Normal / BaseColor from the player's perspective
+	 * at runtime.
+	 *
+	 * Uses PIE world when PIE is active, otherwise the editor world.
+	 * No dependence on FLevelEditorViewportClient, so Immersive-PIE
+	 * doesn't trip over a missing viewport client.
+	 *
+	 * @param Channel         Same values as CaptureViewportChannel.
+	 * @param Location        World-space camera location (cm).
+	 * @param Rotation        World-space camera rotation.
+	 * @param FOV             Horizontal FOV in degrees. <= 0 defaults to 90.
+	 * @param Width/Height    Pixel resolution. <= 0 falls back to the
+	 *                        active viewport size if available, else 1920x1080.
+	 * @param MaxDepthClamp   Depth only; see CaptureViewportChannel.
+	 * @param OutFilePath     Absolute path to write. "" = skip disk.
+	 * @param bIncludeBase64  Return compressed PNG bytes as base64.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FBridgeChannelCaptureResult CaptureChannelFromPose(
+		const FString& Channel,
+		FVector Location,
+		FRotator Rotation,
+		float FOV,
+		int32 Width,
+		int32 Height,
+		float MaxDepthClamp,
+		const FString& OutFilePath,
+		bool bIncludeBase64);
+
+	/**
 	 * Capture the editor viewport's HitProxy map — a per-pixel actor-ID
 	 * image. Unlike SceneCapture GBuffer channels, this uses the editor's
 	 * existing hit-test infrastructure (same mechanism click-to-select

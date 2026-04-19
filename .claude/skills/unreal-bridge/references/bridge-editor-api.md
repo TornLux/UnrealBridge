@@ -189,6 +189,42 @@ r = unreal.UnrealBridgeEditorLibrary.capture_viewport_channel(
 
 **Gotcha — SceneCapture readback is top-down (verified UE 5.7, 2026-04-20).** Unlike the `FLevelEditorViewportClient::Viewport::ReadPixels` path in `UnrealBridgeLevelLibrary::CaptureSceneToPng`, the render-target resource ReadPixels / ReadLinearColorPixels here returns rows top-down already — no vertical flip needed. If you adapt this pattern, do NOT add an extra flip or the output lands upside-down.
 
+**`capture_viewport_channel` during PIE is broken** — it reads the active editor viewport's pose, which is *not* the player camera. The PIE player lives in `GameViewport->Viewport`, not `FLevelEditorViewportClient`. During Immersive PIE the editor viewport client may be dormant entirely. For PIE captures use `capture_channel_from_pose` with an explicit player-camera pose (see below).
+
+### capture_channel_from_pose(channel, location, rotation, fov, width, height, max_depth_clamp, out_file_path, b_include_base64) -> FBridgeChannelCaptureResult
+
+Same GBuffer channel capture as `capture_viewport_channel`, but takes an explicit camera pose instead of reading the active viewport. **This is the PIE-compatible path** — pair with `UnrealBridgeGameplayLibrary` to grab the player's camera and capture Depth / Normal / BaseColor from the player's perspective at runtime.
+
+Uses PIE world when PIE is active, editor world otherwise. No dependence on `FLevelEditorViewportClient`, so Immersive-PIE doesn't trip over a missing viewport client.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `channel` | str | Same values as `capture_viewport_channel`. |
+| `location` | Vector | World-space camera location (cm). |
+| `rotation` | Rotator | World-space camera rotation. |
+| `fov` | float | Horizontal FOV in degrees. `<= 0` defaults to 90. |
+| `width` / `height` | int | Pixel resolution. `<= 0` falls back to the active editor viewport size if available, else 1920×1080. |
+| `max_depth_clamp` | float | Depth channels only; see `capture_viewport_channel`. |
+| `out_file_path` | str | Absolute path. `""` = skip disk. |
+| `b_include_base64` | bool | |
+
+```python
+# Full "agent sees what the player sees" pipeline during PIE:
+# 1. get player camera pose
+loc, rot = unreal.UnrealBridgeGameplayLibrary.get_camera_view_point()
+fov      = unreal.UnrealBridgeGameplayLibrary.get_camera_fov()
+
+# 2. capture Depth from that pose with sky clipped to 100m
+r = unreal.UnrealBridgeEditorLibrary.capture_channel_from_pose(
+    'Depth', loc, rot, fov, 1280, 720, 10000.0,
+    '<absolute-path>/pie_depth.png', False)
+print(r.depth_min, r.depth_max)
+```
+
+Note on `get_camera_view_point()`: UE Python absorbs the C++ `bool` return of "function with out-params" and returns the out-params directly — so the Python call returns `(location, rotation)` as a 2-tuple, not `(success, loc, rot)`. Check for `None` to detect failure.
+
+FOV is whatever the player camera reports (often project-default 80°, not 90°). If you want a fixed FOV regardless of the player's setup, pass it explicitly instead of using `get_camera_fov()`.
+
 ### capture_viewport_hit_proxy_map(out_file_path, b_include_base64) -> FBridgeScreenshotResult
 
 Per-pixel actor-ID pass. Uses the **editor viewport's HitProxy cache** (the same mechanism click-to-select uses), so every pixel resolves to an exact `AActor*`. Distinct actors get distinct colors (deterministic via golden-angle hue stepping). Black pixels = no actor (sky / empty).
