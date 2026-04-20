@@ -672,6 +672,79 @@ Key bridges between this library and the reactive framework:
 
 ---
 
+## GameplayAbility Blueprint CDO writes (M1 of graph-editing roadmap)
+
+Mutate the 10 tag containers, instancing / net-execution policy, cost / cooldown GE refs, and trigger list on a `UGameplayAbility` Blueprint's CDO. Every write path: modify CDO → `FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified` → `FKismetEditorUtilities::CompileBlueprint` → `MarkPackageDirty`. Save the package yourself via `unreal.EditorAssetLibrary.save_asset` to persist.
+
+### set_ability_tag_container(ability_blueprint_path, container_name, tags) -> int32
+
+Overwrite one of the 10 `FGameplayTagContainer` UPROPERTYs on the ability's CDO. Returns the count of tags actually written (unregistered tags are skipped with a warning), or `-1` on invalid input.
+
+| `container_name` | Runtime effect |
+|---|---|
+| `AbilityTags` | aka "AssetTags"; granted to activated instances, queryable via `list_abilities_by_tag` |
+| `CancelAbilitiesWithTag` | abilities with any of these are cancelled when this activates |
+| `BlockAbilitiesWithTag` | abilities with any of these are blocked while this is active |
+| `ActivationOwnedTags` | applied to the activating owner while this is active |
+| `ActivationRequiredTags` | owner must have all of these to activate |
+| `ActivationBlockedTags` | blocked if owner has any of these |
+| `SourceRequiredTags` / `SourceBlockedTags` | source actor filters |
+| `TargetRequiredTags` / `TargetBlockedTags` | target actor filters |
+
+Pass an empty `tags` list to clear a container.
+
+```python
+import unreal
+L = unreal.UnrealBridgeGameplayAbilityLibrary
+L.set_ability_tag_container("/Game/GA/BP_Fireball.BP_Fireball",
+                            "AbilityTags", ["Ability.Combat.Fire", "Ability.Type.Projectile"])
+L.set_ability_tag_container("/Game/GA/BP_Fireball.BP_Fireball",
+                            "BlockAbilitiesWithTag", ["Ability.Combat.Fire"])  # single-cast lock
+```
+
+### set_ability_instancing_policy(path, policy) -> bool
+
+`"InstancedPerActor"` (recommended) / `"InstancedPerExecution"` / `"NonInstanced"` (deprecated since UE 5.5 — warns). Case-insensitive.
+
+### set_ability_net_execution_policy(path, policy) -> bool
+
+`"LocalPredicted"` / `"LocalOnly"` / `"ServerInitiated"` / `"ServerOnly"`. Case-insensitive.
+
+### set_ability_cost(path, cost_ge_class_path) -> bool
+
+Set `CostGameplayEffectClass`. `cost_ge_class_path` accepts either a native class (`/Script/MyModule.GE_FireCost`) or a BP asset path (`/Game/GE/BP_FireCost.BP_FireCost`). Pass empty string to clear.
+
+### set_ability_cooldown(path, cooldown_ge_class_path) -> bool
+
+Same as cost but writes `CooldownGameplayEffectClass`.
+
+### add_ability_trigger(path, trigger_tag, trigger_source) -> int32
+
+Append an `FAbilityTriggerData` entry. Returns the new array length, or `-1` on invalid input (unregistered tag or unknown source).
+
+`trigger_source`: `"GameplayEvent"` / `"OwnedTagAdded"` / `"OwnedTagPresent"` (case-insensitive).
+
+```python
+L.add_ability_trigger("/Game/GA/BP_Reaction.BP_Reaction", "Event.Combat.Hit", "GameplayEvent")
+L.add_ability_trigger("/Game/GA/BP_LowHealth.BP_LowHealth", "State.HealthLow", "OwnedTagAdded")
+```
+
+### remove_ability_trigger_by_tag(path, trigger_tag) -> int32
+
+Remove every entry whose `trigger_tag` equals `trigger_tag` (exact string match). Returns count removed.
+
+### clear_ability_triggers(path) -> int32
+
+Empty the array. Returns count removed.
+
+**Pitfalls**
+- Every write triggers a BP recompile. Don't loop-update in a hot path — batch tag container edits by building the full list and calling `set_ability_tag_container` once per container.
+- Tag strings must already be registered with `UGameplayTagsManager`. Use `is_valid_gameplay_tag` to pre-check; unregistered tags are silently skipped with a `LogTemp` warning.
+- The CDO change is in-memory until you save the BP package — integrate with `unreal.EditorAssetLibrary.save_loaded_asset` or `unreal.EditorAssetLibrary.save_asset(path)`.
+- For `NonInstanced`: deprecated in UE 5.5. The write still works for parity with the read side but logs a warning; use `InstancedPerActor` for new abilities.
+
+---
+
 ## Native UE Python fallbacks
 
 ```python

@@ -1,6 +1,7 @@
 #include "UnrealBridgeGameplayAbilityLibrary.h"
 #include "UnrealBridgeTestAttributeSet.h"
 #include "Abilities/GameplayAbility.h"
+#include "Abilities/GameplayAbilityTypes.h"
 #include "AbilitySystemComponent.h"
 #include "AbilitySystemInterface.h"
 #include "AttributeSet.h"
@@ -21,6 +22,8 @@
 #include "GameplayEffectComponent.h"
 #include "GameplayTagContainer.h"
 #include "GameplayTagsManager.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "UObject/UnrealType.h"
 
 namespace BridgeGameplayAbilityImpl
@@ -1901,5 +1904,415 @@ bool UUnrealBridgeGameplayAbilityLibrary::SetActorAttributeValue(const FString& 
 		}
 	}
 	return false;
+}
+
+// ─── GA Blueprint CDO writes (M1) ───────────────────────────
+
+namespace BridgeGAWriteImpl
+{
+	/** Valid FGameplayTagContainer UPROPERTY names on UGameplayAbility. */
+	static const TSet<FString>& KnownTagContainers()
+	{
+		static const TSet<FString> S = {
+			TEXT("AbilityTags"),
+			TEXT("CancelAbilitiesWithTag"),
+			TEXT("BlockAbilitiesWithTag"),
+			TEXT("ActivationOwnedTags"),
+			TEXT("ActivationRequiredTags"),
+			TEXT("ActivationBlockedTags"),
+			TEXT("SourceRequiredTags"),
+			TEXT("SourceBlockedTags"),
+			TEXT("TargetRequiredTags"),
+			TEXT("TargetBlockedTags"),
+		};
+		return S;
+	}
+
+	/** Load the UBlueprint + verify it's a UGameplayAbility. */
+	static UBlueprint* LoadAbilityBP(const FString& Path, UClass** OutGenClass = nullptr)
+	{
+		UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *Path);
+		if (!BP || !BP->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: could not load ability BP '%s'"), *Path);
+			return nullptr;
+		}
+		if (!BP->GeneratedClass->IsChildOf(UGameplayAbility::StaticClass()))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("UnrealBridge: '%s' is not a UGameplayAbility subclass"), *Path);
+			return nullptr;
+		}
+		if (OutGenClass) *OutGenClass = BP->GeneratedClass;
+		return BP;
+	}
+
+	/** After mutating CDO: mark BP modified, compile to regenerate, mark dirty for save. */
+	static void FinalizeBlueprintCDOChange(UBlueprint* BP)
+	{
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+		// Compile so the CDO change is baked into any subsequent package save
+		// and so editors listening for BP-compiled events see the new state.
+		FKismetEditorUtilities::CompileBlueprint(BP);
+		BP->MarkPackageDirty();
+	}
+
+	/** Convert a tag-container field name to the FProperty on UGameplayAbility. */
+	static FStructProperty* FindTagContainerProperty(UClass* GenClass, const FString& ContainerName)
+	{
+		FProperty* Prop = GenClass->FindPropertyByName(FName(*ContainerName));
+		if (!Prop) return nullptr;
+		FStructProperty* Struct = CastField<FStructProperty>(Prop);
+		if (!Struct || Struct->Struct != TBaseStructure<FGameplayTagContainer>::Get())
+		{
+			return nullptr;
+		}
+		return Struct;
+	}
+
+	PRAGMA_DISABLE_DEPRECATION_WARNINGS
+	static EGameplayAbilityInstancingPolicy::Type ParseInstancingPolicy(const FString& S, bool& bOk)
+	{
+		bOk = true;
+		if (S.Equals(TEXT("InstancedPerActor"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityInstancingPolicy::InstancedPerActor;
+		if (S.Equals(TEXT("InstancedPerExecution"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityInstancingPolicy::InstancedPerExecution;
+		if (S.Equals(TEXT("NonInstanced"), ESearchCase::IgnoreCase))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("UnrealBridge: NonInstanced is deprecated since UE 5.5 — prefer InstancedPerActor."));
+			// Deprecated in UE 5.5; kept for parity with the existing
+			// GetGameplayAbilityBlueprintInfo read side.
+			return EGameplayAbilityInstancingPolicy::NonInstanced;
+		}
+		bOk = false;
+		return EGameplayAbilityInstancingPolicy::InstancedPerActor;
+	}
+	PRAGMA_ENABLE_DEPRECATION_WARNINGS
+
+	static EGameplayAbilityNetExecutionPolicy::Type ParseNetExecutionPolicy(const FString& S, bool& bOk)
+	{
+		bOk = true;
+		if (S.Equals(TEXT("LocalPredicted"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityNetExecutionPolicy::LocalPredicted;
+		if (S.Equals(TEXT("LocalOnly"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityNetExecutionPolicy::LocalOnly;
+		if (S.Equals(TEXT("ServerInitiated"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityNetExecutionPolicy::ServerInitiated;
+		if (S.Equals(TEXT("ServerOnly"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityNetExecutionPolicy::ServerOnly;
+		bOk = false;
+		return EGameplayAbilityNetExecutionPolicy::LocalPredicted;
+	}
+
+	static EGameplayAbilityTriggerSource::Type ParseTriggerSource(const FString& S, bool& bOk)
+	{
+		bOk = true;
+		if (S.Equals(TEXT("GameplayEvent"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityTriggerSource::GameplayEvent;
+		if (S.Equals(TEXT("OwnedTagAdded"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityTriggerSource::OwnedTagAdded;
+		if (S.Equals(TEXT("OwnedTagPresent"), ESearchCase::IgnoreCase))
+			return EGameplayAbilityTriggerSource::OwnedTagPresent;
+		bOk = false;
+		return EGameplayAbilityTriggerSource::GameplayEvent;
+	}
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::SetAbilityTagContainer(
+	const FString& AbilityBlueprintPath,
+	const FString& ContainerName,
+	const TArray<FString>& Tags)
+{
+	using namespace BridgeGAWriteImpl;
+
+	if (!KnownTagContainers().Contains(ContainerName))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: SetAbilityTagContainer unknown container '%s'"), *ContainerName);
+		return -1;
+	}
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return -1;
+
+	FStructProperty* Prop = FindTagContainerProperty(GenClass, ContainerName);
+	if (!Prop)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: container '%s' not found on '%s'"), *ContainerName, *GenClass->GetName());
+		return -1;
+	}
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	if (!CDO) return -1;
+
+	BP->Modify();
+	CDO->Modify();
+
+	FGameplayTagContainer* Dest = Prop->ContainerPtrToValuePtr<FGameplayTagContainer>(CDO);
+	Dest->Reset();
+
+	int32 Applied = 0;
+	for (const FString& TagStr : Tags)
+	{
+		const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagStr), false);
+		if (!Tag.IsValid())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("UnrealBridge: skipping unregistered tag '%s' for %s.%s"),
+				*TagStr, *GenClass->GetName(), *ContainerName);
+			continue;
+		}
+		Dest->AddTag(Tag);
+		++Applied;
+	}
+
+	FinalizeBlueprintCDOChange(BP);
+	return Applied;
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::SetAbilityInstancingPolicy(
+	const FString& AbilityBlueprintPath,
+	const FString& Policy)
+{
+	using namespace BridgeGAWriteImpl;
+
+	bool bParseOk = false;
+	const EGameplayAbilityInstancingPolicy::Type Val = ParseInstancingPolicy(Policy, bParseOk);
+	if (!bParseOk)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown InstancingPolicy '%s'"), *Policy);
+		return false;
+	}
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return false;
+
+	FProperty* Prop = GenClass->FindPropertyByName(TEXT("InstancingPolicy"));
+	FByteProperty* ByteP = CastField<FByteProperty>(Prop);
+	if (!ByteP)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: InstancingPolicy not a TEnumAsByte on '%s'"), *GenClass->GetName());
+		return false;
+	}
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	BP->Modify();
+	CDO->Modify();
+	*ByteP->ContainerPtrToValuePtr<uint8>(CDO) = static_cast<uint8>(Val);
+
+	FinalizeBlueprintCDOChange(BP);
+	return true;
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::SetAbilityNetExecutionPolicy(
+	const FString& AbilityBlueprintPath,
+	const FString& Policy)
+{
+	using namespace BridgeGAWriteImpl;
+
+	bool bParseOk = false;
+	const EGameplayAbilityNetExecutionPolicy::Type Val = ParseNetExecutionPolicy(Policy, bParseOk);
+	if (!bParseOk)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown NetExecutionPolicy '%s'"), *Policy);
+		return false;
+	}
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return false;
+
+	FProperty* Prop = GenClass->FindPropertyByName(TEXT("NetExecutionPolicy"));
+	FByteProperty* ByteP = CastField<FByteProperty>(Prop);
+	if (!ByteP) return false;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	BP->Modify();
+	CDO->Modify();
+	*ByteP->ContainerPtrToValuePtr<uint8>(CDO) = static_cast<uint8>(Val);
+
+	FinalizeBlueprintCDOChange(BP);
+	return true;
+}
+
+namespace BridgeGAWriteImpl
+{
+	/** Shared helper for Cost / Cooldown which are both TSubclassOf<UGameplayEffect>. */
+	static bool SetGEClassRef(
+		const FString& AbilityBlueprintPath,
+		const FString& FieldName,
+		const FString& GameplayEffectClassPath)
+	{
+		UClass* GenClass = nullptr;
+		UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+		if (!BP) return false;
+
+		FProperty* Prop = GenClass->FindPropertyByName(FName(*FieldName));
+		FClassProperty* ClassP = CastField<FClassProperty>(Prop);
+		if (!ClassP) return false;
+
+		UClass* GEClass = nullptr;
+		if (!GameplayEffectClassPath.IsEmpty())
+		{
+			GEClass = BridgeGameplayAbilityImpl::ResolveClassByPath(GameplayEffectClassPath);
+			if (!GEClass)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("UnrealBridge: could not resolve GE class '%s'"), *GameplayEffectClassPath);
+				return false;
+			}
+			if (!GEClass->IsChildOf(UGameplayEffect::StaticClass()))
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("UnrealBridge: '%s' is not a UGameplayEffect subclass"), *GameplayEffectClassPath);
+				return false;
+			}
+		}
+
+		UObject* CDO = GenClass->GetDefaultObject();
+		BP->Modify();
+		CDO->Modify();
+		ClassP->SetObjectPropertyValue_InContainer(CDO, GEClass);
+
+		FinalizeBlueprintCDOChange(BP);
+		return true;
+	}
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::SetAbilityCost(
+	const FString& AbilityBlueprintPath,
+	const FString& CostGameplayEffectClassPath)
+{
+	return BridgeGAWriteImpl::SetGEClassRef(
+		AbilityBlueprintPath, TEXT("CostGameplayEffectClass"), CostGameplayEffectClassPath);
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::SetAbilityCooldown(
+	const FString& AbilityBlueprintPath,
+	const FString& CooldownGameplayEffectClassPath)
+{
+	return BridgeGAWriteImpl::SetGEClassRef(
+		AbilityBlueprintPath, TEXT("CooldownGameplayEffectClass"), CooldownGameplayEffectClassPath);
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::AddAbilityTrigger(
+	const FString& AbilityBlueprintPath,
+	const FString& TriggerTag,
+	const FString& TriggerSource)
+{
+	using namespace BridgeGAWriteImpl;
+
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TriggerTag), false);
+	if (!Tag.IsValid())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddAbilityTrigger '%s' is not a registered tag"), *TriggerTag);
+		return -1;
+	}
+
+	bool bParseOk = false;
+	const EGameplayAbilityTriggerSource::Type Source = ParseTriggerSource(TriggerSource, bParseOk);
+	if (!bParseOk)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddAbilityTrigger unknown source '%s' (expect GameplayEvent/OwnedTagAdded/OwnedTagPresent)"),
+			*TriggerSource);
+		return -1;
+	}
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return -1;
+
+	FProperty* Prop = GenClass->FindPropertyByName(TEXT("AbilityTriggers"));
+	FArrayProperty* ArrayP = CastField<FArrayProperty>(Prop);
+	if (!ArrayP) return -1;
+	FStructProperty* ElemP = CastField<FStructProperty>(ArrayP->Inner);
+	if (!ElemP || ElemP->Struct != FAbilityTriggerData::StaticStruct()) return -1;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	BP->Modify();
+	CDO->Modify();
+
+	FScriptArrayHelper ArrayHelper(ArrayP, ArrayP->ContainerPtrToValuePtr<void>(CDO));
+	const int32 NewIdx = ArrayHelper.AddValue();
+	FAbilityTriggerData* Elem = reinterpret_cast<FAbilityTriggerData*>(ArrayHelper.GetRawPtr(NewIdx));
+	Elem->TriggerTag = Tag;
+	Elem->TriggerSource = Source;
+
+	const int32 NewNum = ArrayHelper.Num();
+	FinalizeBlueprintCDOChange(BP);
+	return NewNum;
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::RemoveAbilityTriggerByTag(
+	const FString& AbilityBlueprintPath,
+	const FString& TriggerTag)
+{
+	using namespace BridgeGAWriteImpl;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return 0;
+
+	FProperty* Prop = GenClass->FindPropertyByName(TEXT("AbilityTriggers"));
+	FArrayProperty* ArrayP = CastField<FArrayProperty>(Prop);
+	if (!ArrayP) return 0;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	FScriptArrayHelper ArrayHelper(ArrayP, ArrayP->ContainerPtrToValuePtr<void>(CDO));
+
+	int32 Removed = 0;
+	for (int32 i = ArrayHelper.Num() - 1; i >= 0; --i)
+	{
+		FAbilityTriggerData* Elem = reinterpret_cast<FAbilityTriggerData*>(ArrayHelper.GetRawPtr(i));
+		if (Elem && Elem->TriggerTag.ToString() == TriggerTag)
+		{
+			if (Removed == 0)
+			{
+				BP->Modify();
+				CDO->Modify();
+			}
+			ArrayHelper.RemoveValues(i, 1);
+			++Removed;
+		}
+	}
+
+	if (Removed > 0)
+	{
+		FinalizeBlueprintCDOChange(BP);
+	}
+	return Removed;
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::ClearAbilityTriggers(const FString& AbilityBlueprintPath)
+{
+	using namespace BridgeGAWriteImpl;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return 0;
+
+	FProperty* Prop = GenClass->FindPropertyByName(TEXT("AbilityTriggers"));
+	FArrayProperty* ArrayP = CastField<FArrayProperty>(Prop);
+	if (!ArrayP) return 0;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	FScriptArrayHelper ArrayHelper(ArrayP, ArrayP->ContainerPtrToValuePtr<void>(CDO));
+
+	const int32 N = ArrayHelper.Num();
+	if (N == 0) return 0;
+
+	BP->Modify();
+	CDO->Modify();
+	ArrayHelper.EmptyValues();
+	FinalizeBlueprintCDOChange(BP);
+	return N;
 }
 

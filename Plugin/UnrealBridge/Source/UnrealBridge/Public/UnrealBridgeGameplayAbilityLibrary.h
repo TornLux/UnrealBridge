@@ -653,4 +653,98 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
 	static bool SetActorAttributeValue(const FString& ActorName, const FString& AttributeName, float Value);
+
+	// ─── GameplayAbility Blueprint CDO writes (M1) ─────────────
+
+	/**
+	 * Overwrite one of the ten FGameplayTagContainer UPROPERTYs on a
+	 * UGameplayAbility Blueprint's CDO. The `ContainerName` is the C++ field
+	 * name (case-sensitive). Any existing tags in that container are replaced
+	 * — pass an empty `Tags` array to clear.
+	 *
+	 * Accepted container names:
+	 *   AbilityTags           — aka "AssetTags" in the editor; grants these tags to
+	 *                           activated instances and lets ListAbilitiesByTag find them.
+	 *   CancelAbilitiesWithTag— abilities with any of these tags are cancelled when
+	 *                           this one activates.
+	 *   BlockAbilitiesWithTag — abilities with any of these tags are blocked while
+	 *                           this one is active.
+	 *   ActivationOwnedTags   — tags applied to the activating owner while active.
+	 *   ActivationRequiredTags — owner must have all of these to activate.
+	 *   ActivationBlockedTags — blocked if owner has any of these.
+	 *   SourceRequiredTags    — source actor must have all of these.
+	 *   SourceBlockedTags     — blocked if source actor has any.
+	 *   TargetRequiredTags    — target actor must have all of these.
+	 *   TargetBlockedTags     — blocked if target actor has any.
+	 *
+	 * Unregistered tags are silently skipped with a warning log; the final
+	 * container contains only the tags that resolved. Returns the number of
+	 * tags actually written, or -1 if the BP / container / policy is invalid.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 SetAbilityTagContainer(
+		const FString& AbilityBlueprintPath,
+		const FString& ContainerName,
+		const TArray<FString>& Tags);
+
+	/**
+	 * Set the ability's InstancingPolicy. Accepted values:
+	 *   "InstancedPerActor"     (default / recommended)
+	 *   "InstancedPerExecution"
+	 *   "NonInstanced"          (deprecated since UE 5.5 — warns)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool SetAbilityInstancingPolicy(const FString& AbilityBlueprintPath, const FString& Policy);
+
+	/**
+	 * Set the ability's NetExecutionPolicy. Accepted values:
+	 *   "LocalPredicted" | "LocalOnly" | "ServerInitiated" | "ServerOnly"
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool SetAbilityNetExecutionPolicy(const FString& AbilityBlueprintPath, const FString& Policy);
+
+	/**
+	 * Set the cost GameplayEffect class on a UGameplayAbility CDO. Pass an
+	 * empty string to clear (no cost).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool SetAbilityCost(
+		const FString& AbilityBlueprintPath,
+		const FString& CostGameplayEffectClassPath);
+
+	/**
+	 * Set the cooldown GameplayEffect class on a UGameplayAbility CDO. Pass
+	 * an empty string to clear (no cooldown).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool SetAbilityCooldown(
+		const FString& AbilityBlueprintPath,
+		const FString& CooldownGameplayEffectClassPath);
+
+	/**
+	 * Append an FAbilityTriggerData entry to the ability's AbilityTriggers
+	 * array (no dedup — a duplicate tag is allowed). Returns the new array
+	 * length on success, -1 on invalid input.
+	 *
+	 * @param TriggerSource   "GameplayEvent" | "OwnedTagAdded" | "OwnedTagPresent".
+	 *                        Short name or case-insensitive match is accepted.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 AddAbilityTrigger(
+		const FString& AbilityBlueprintPath,
+		const FString& TriggerTag,
+		const FString& TriggerSource);
+
+	/**
+	 * Remove every entry in the AbilityTriggers array whose `TriggerTag`
+	 * matches `TriggerTag` exactly. Returns the number of entries removed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 RemoveAbilityTriggerByTag(
+		const FString& AbilityBlueprintPath,
+		const FString& TriggerTag);
+
+	/** Clear every FAbilityTriggerData entry. Returns the number removed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 ClearAbilityTriggers(const FString& AbilityBlueprintPath);
 };
