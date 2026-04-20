@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 作为 agent ↔ UE 编辑器桥梁的能力缺口，按"能补 / 代价高但理论可行 / 根本补不了"三档划分。用于指导后续投资方向。
 
-最后更新：2026-04-20（A1-#2 GBuffer 通道截图已交付 — `capture_viewport_channel` / `capture_channel_from_pose` + HitProxy actor-ID pass）
+最后更新：2026-04-20（A1-#2 GBuffer 通道截图 + A1-#3 Perf 快照均已交付 — `capture_viewport_channel` / `capture_channel_from_pose` + HitProxy actor-ID pass；`UnrealBridgePerfLibrary.get_frame_timing` / `get_render_counters` / `get_memory_stats` / `get_u_object_stats` / `get_perf_snapshot`）
 
 ---
 
@@ -33,7 +33,7 @@ Bridge 已覆盖的主要领域（详见各 `bridge-*-api.md`）：
 |---|---|---|---|---|
 | 1 | **PIE 视频 / 帧序列抓取** | 中 | 高 | `capture_active_viewport` 现在只出单帧。真的要看 agent 在玩、调试运动 / VFX / cutscene 的时候必须是序列。做法：加 `begin_frame_capture(fps)` + `end_frame_capture()`，内部 `FRenderTarget` + 按帧写 PNG 序列到 `<Saved>/Captures/`，返回路径清单；或直接 mux 成 MP4（需 `FFmpegCapture` 或第三方）。**→ 单一功能解锁最大新信息量**。 |
 | 2 | **GBuffer / 深度 / 法线 / ID pass** ✅ | — | — | **已交付 2026-04-20**：`capture_viewport_channel` / `capture_channel_from_pose` 提供 Depth（linear cm, 16-bit PNG）/ DeviceDepth / Normal（world-space, 8-bit RGB）/ BaseColor 四通道，走 `ASceneCapture2D` + `UTextureRenderTarget2D`。ID pass 走 HitProxy（`capture_hit_proxy_map`），比原计划的 `SCS_ObjectID` 更精确 — 每像素直接映射回 `AActor*`。 |
-| 3 | **Perf 快照结构化输出** | 小-中 | 中 | `stat unit` / GPU frame / draw call count / 内存分 class 分布。做法：封装 `FStatsData` + `FCsvProfiler` + `FMemory::GetStats`，返回 struct 而不是需要解析的字符串。性能回归测试必备。 |
+| 3 | **Perf 快照结构化输出** ✅ | — | — | **已交付 2026-04-20**：`UnrealBridgePerfLibrary` 提供 `get_frame_timing`（FPS / GT / RT / GPU / RHI ms，raw + stat-unit 智能切换）/ `get_render_counters`（draw calls + primitives，summed across MAX_NUM_GPUS）/ `get_memory_stats`（working set / peak / available, MiB）/ `get_u_object_stats`（TObjectIterator class histogram，132k 对象 ~5ms）/ `get_perf_snapshot`（聚合 + ISO-8601 timestamp，两档成本选 uobject）。结构化 USTRUCT 而非字符串。 |
 | 4 | **LC 编译错误文本捕获** | 中 | 高 | 2026-04-20 验证 UE 5.7 的 `ILiveCodingModule` 不返回编译器 stdout。要拿到只能 fork `LiveCodingConsole.exe` 走命名管道拦截，或改走"关 editor → UBT build → 读 stdout → 重启 editor" 的链路（已经是 `rebuild_relaunch.py`）。LC 这路暂时走不通，优先级降。 |
 
 ### A2. 内容生成类（最大空白，整类品类卡死）

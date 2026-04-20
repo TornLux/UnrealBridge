@@ -51,6 +51,7 @@ public class UnrealBridge : ModuleRules
 			"ImageCore",
 			"ImageWrapper",
 			"RenderCore",
+			"RHI",
 		});
 
 		// Live Coding is a Windows-only editor module. Guard the dep so
