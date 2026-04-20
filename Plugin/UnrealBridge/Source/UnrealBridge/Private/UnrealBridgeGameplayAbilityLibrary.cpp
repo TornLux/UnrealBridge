@@ -5,8 +5,12 @@
 #include "Abilities/Tasks/AbilityTask.h"
 #include "AbilitySystemComponent.h"
 #include "EdGraph/EdGraph.h"
+#include "Engine/BlueprintGeneratedClass.h"
+#include "FileHelpers.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_LatentAbilityCall.h"
+#include "Misc/PackageName.h"
+#include "UObject/Package.h"
 #include "AbilitySystemInterface.h"
 #include "AttributeSet.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -2498,6 +2502,93 @@ FString UUnrealBridgeGameplayAbilityLibrary::AddAbilityTaskNode(
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 	BP->MarkPackageDirty();
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── Create GA Blueprint (M3) ──────────────────────────────
+
+FString UUnrealBridgeGameplayAbilityLibrary::CreateGameplayAbilityBlueprint(
+	const FString& DestContentPath,
+	const FString& AssetName,
+	const FString& ParentClassPath)
+{
+	if (DestContentPath.IsEmpty() || AssetName.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: CreateGameplayAbilityBlueprint requires both DestContentPath and AssetName"));
+		return FString();
+	}
+	if (!DestContentPath.StartsWith(TEXT("/")))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: DestContentPath must start with '/' (e.g. '/Game/GA')"));
+		return FString();
+	}
+
+	// Resolve parent class — default to UGameplayAbility.
+	UClass* ParentClass = UGameplayAbility::StaticClass();
+	if (!ParentClassPath.IsEmpty())
+	{
+		ParentClass = BridgeGameplayAbilityImpl::ResolveClassByPath(ParentClassPath);
+		if (!ParentClass)
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("UnrealBridge: CreateGameplayAbilityBlueprint could not resolve parent '%s'"),
+				*ParentClassPath);
+			return FString();
+		}
+		if (!ParentClass->IsChildOf(UGameplayAbility::StaticClass()))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("UnrealBridge: '%s' is not a UGameplayAbility subclass"),
+				*ParentClassPath);
+			return FString();
+		}
+	}
+
+	const FString PackageName = DestContentPath + TEXT("/") + AssetName;
+	const FString ObjectPath = PackageName + TEXT(".") + AssetName;
+
+	if (FPackageName::DoesPackageExist(PackageName))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: asset already exists at '%s'"), *PackageName);
+		return FString();
+	}
+
+	UPackage* Package = CreatePackage(*PackageName);
+	if (!Package)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: CreatePackage failed for '%s'"), *PackageName);
+		return FString();
+	}
+
+	UBlueprint* BP = FKismetEditorUtilities::CreateBlueprint(
+		ParentClass,
+		Package,
+		FName(*AssetName),
+		BPTYPE_Normal,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass(),
+		FName(TEXT("UnrealBridge")));
+
+	if (!BP)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: FKismetEditorUtilities::CreateBlueprint returned null for '%s'"),
+			*PackageName);
+		return FString();
+	}
+
+	// Register with the asset registry so Content Browser picks it up; save
+	// the package via UEditorLoadingAndSavingUtils (same API the File→Save
+	// Dirty menu uses, the existing UnrealBridgeEditorLibrary save UFUNCTIONs
+	// also funnel through this).
+	FAssetRegistryModule::AssetCreated(BP);
+	BP->MarkPackageDirty();
+	UEditorLoadingAndSavingUtils::SavePackages({ Package }, /*bOnlyDirty*/ false);
+
+	return ObjectPath;
 }
 
 FString UUnrealBridgeGameplayAbilityLibrary::AddAbilityCallFunctionNode(

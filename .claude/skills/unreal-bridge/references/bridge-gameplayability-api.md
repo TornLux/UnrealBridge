@@ -815,6 +815,48 @@ end    = L.add_ability_call_function_node(bp, "EventGraph", "K2_EndAbility", 600
 
 ---
 
+## Create GameplayAbility Blueprint (M3 of graph-editing roadmap)
+
+### create_gameplay_ability_blueprint(dest_content_path, asset_name, parent_class_path) -> str
+
+One-call scaffolding — create + save a new `UGameplayAbility` Blueprint. Wraps `FKismetEditorUtilities::CreateBlueprint` + `FAssetRegistryModule::AssetCreated` + `UEditorLoadingAndSavingUtils::SavePackages`. Returns the new BP's object path on success, empty string on failure.
+
+| Param | Notes |
+|---|---|
+| `dest_content_path` | Content-browser folder (`"/Game/GA"`). Must start with `/`. |
+| `asset_name` | BP filename without path / extension (`"BP_Fireball"`). Must not already exist at dest. |
+| `parent_class_path` | Native or BP class path. Empty = default to `/Script/GameplayAbilities.GameplayAbility`. Must resolve to a `UGameplayAbility` subclass. |
+
+```python
+L = unreal.UnrealBridgeGameplayAbilityLibrary
+
+# 1. Scaffold a new ability from scratch
+path = L.create_gameplay_ability_blueprint("/Game/GA", "BP_Fireball", "")
+# "/Game/GA/BP_Fireball.BP_Fireball"
+
+# 2. Configure CDO via M1
+L.set_ability_tag_container(path, "AbilityTags", ["Ability.Combat.Fire"])
+L.set_ability_instancing_policy(path, "InstancedPerActor")
+L.set_ability_cooldown(path, "/Game/GE/GE_FireCooldown.GE_FireCooldown")
+
+# 3. Author activation graph via M2
+commit = L.add_ability_call_function_node(path, "EventGraph", "CommitAbility", -200, 0)
+wait   = L.add_ability_task_node(path, "EventGraph",
+             "/Script/GameplayAbilities.AbilityTask_WaitGameplayEvent",
+             "WaitGameplayEvent", 200, 0)
+end    = L.add_ability_call_function_node(path, "EventGraph", "K2_EndAbility", 600, 0)
+
+# 4. Persist
+unreal.EditorAssetLibrary.save_asset(path.split('.')[0])
+```
+
+**Pitfalls**
+- The new BP has no nodes on its EventGraph by default — UE 5.7 doesn't auto-populate `ActivateAbility` event nodes. Spawn an `Event_ActivateAbility` node explicitly if you want the canonical entry point (`add_ability_call_function_node` with `"K2_ActivateAbility"`).
+- Creating a BP under a non-existent folder (`/Game/NewFolder`) works — the folder is auto-created. But nested missing folders are not recursively created; create each level or use an existing root.
+- The save goes through the normal editor save path, which respects source control. On a Perforce-connected project without a current changelist, the save may prompt for a check-out list the first time.
+
+---
+
 ## Native UE Python fallbacks
 
 ```python

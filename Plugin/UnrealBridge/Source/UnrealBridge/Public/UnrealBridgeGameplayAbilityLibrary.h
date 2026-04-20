@@ -809,4 +809,30 @@ public:
 		const FString& FunctionName,
 		int32 NodePosX,
 		int32 NodePosY);
+
+	// ─── Create GA Blueprint (M3) ──────────────────────────────
+
+	/**
+	 * Create a new `UGameplayAbility` Blueprint asset and save it. This is
+	 * the "scaffolding" entry point — pair with `set_ability_tag_container`,
+	 * `set_ability_cost` / `set_ability_cooldown`, and the M2 graph-node
+	 * UFUNCTIONs to build a complete ability from scratch in one bridge
+	 * session.
+	 *
+	 * @param DestContentPath     Content-browser folder, e.g. "/Game/GA".
+	 *                            Must start with "/Game" (or a mounted plugin path).
+	 * @param AssetName           BP asset name without path or extension, e.g. "BP_Fireball".
+	 *                            Must not already exist at DestContentPath.
+	 * @param ParentClassPath     Native or BP path to the parent class. Empty =
+	 *                            use `/Script/GameplayAbilities.GameplayAbility`.
+	 *                            Must resolve to a UGameplayAbility-derived UClass.
+	 *
+	 * @return Full object path of the new BP ("/Game/GA/BP_Fireball.BP_Fireball"),
+	 *         or empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static FString CreateGameplayAbilityBlueprint(
+		const FString& DestContentPath,
+		const FString& AssetName,
+		const FString& ParentClassPath);
 };
