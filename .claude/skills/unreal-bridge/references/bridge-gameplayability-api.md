@@ -745,6 +745,76 @@ Empty the array. Returns count removed.
 
 ---
 
+## GameplayAbility graph node writes (M2 of graph-editing roadmap)
+
+Author the `ActivateAbility` / `ActivateAbilityFromEvent` / `EndAbility` / `CanActivateAbility` graphs on a `UGameplayAbility` Blueprint — spawn `UAbilityTask_*` async nodes and `K2Node_CallFunction` nodes pointing at GA methods. Pair these with the node-connection UFUNCTIONs in `bridge-blueprint-api.md` (`connect_pins`, `disconnect_pins`) to wire a complete activation flow.
+
+### list_ability_task_classes(filter, max_results) -> list[str]
+
+Discover `UAbilityTask` subclasses — native + already-loaded BP. Filter is case-insensitive substring on class path. `max_results=0` with a non-empty filter = unlimited; empty filter + 0 is refused.
+
+```python
+tasks = unreal.UnrealBridgeGameplayAbilityLibrary.list_ability_task_classes("Wait", 10)
+# ['/Script/GameplayAbilities.AbilityTask_WaitGameplayEvent', ...]
+```
+
+### list_ability_task_factories(task_class_path) -> list[str]
+
+Enumerate the static BlueprintCallable spawn functions on a UAbilityTask subclass — each is a valid `factory_function_name` for `add_ability_task_node`. A task may expose multiple factories; pick the one that matches the pin signature you want.
+
+```python
+factories = unreal.UnrealBridgeGameplayAbilityLibrary.list_ability_task_factories(
+    "/Script/GameplayAbilities.AbilityTask_WaitGameplayEvent")
+# ['WaitGameplayEvent']
+```
+
+### add_ability_task_node(ability_bp_path, graph_name, task_class_path, factory_function_name, x, y) -> str
+
+Spawn a `UK2Node_LatentAbilityCall` wrapping the given factory function. The node auto-expands:
+
+- **input pins** — the factory function's parameters (e.g. `OwningAbility`, `EventTag`, `OptionalExternalTarget` for `WaitGameplayEvent`)
+- **output exec pins** — one per `FMulticastInlineDelegate` on the returned proxy class (e.g. `EventReceived` on `WaitGameplayEvent`; `OnBlendOut` / `OnCompleted` / `OnInterrupted` / `OnCancelled` on `PlayMontageAndWait`)
+- **output data pins** — the delegate's payload parameters (e.g. `Payload` of type `FGameplayEventData` on `WaitGameplayEvent`)
+- **AsyncTaskProxy** output — the task object itself, for manual control paths
+
+Returns the new node's GUID or empty string on failure. **The target graph must belong to a UGameplayAbility-derived Blueprint** (`UK2Node_LatentAbilityCall::IsCompatibleWithGraph` enforces this at compile time).
+
+```python
+guid = unreal.UnrealBridgeGameplayAbilityLibrary.add_ability_task_node(
+    "/Game/GA/BP_Fireball.BP_Fireball",
+    "EventGraph",
+    "/Script/GameplayAbilities.AbilityTask_WaitGameplayEvent",
+    "WaitGameplayEvent",
+    200, 0)
+```
+
+### add_ability_call_function_node(ability_bp_path, graph_name, function_name, x, y) -> str
+
+Spawn a plain `K2Node_CallFunction` targeting a method on the GA generated class. Covers the common ActivateAbility building blocks: `CommitAbility` (alias of `K2_CommitAbility`), `K2_EndAbility`, `K2_ApplyGameplayEffectToSelf`, `K2_ApplyGameplayEffectToTarget`, `BP_ApplyCooldown`, `MakeOutgoingGameplayEffectSpec`, etc.
+
+Function name resolution order:
+1. `UFunction::GetName()` — the C++ internal name (`K2_EndAbility`).
+2. `meta=(DisplayName="…")` — the editor-facing label (`"End Ability"`).
+3. `meta=(ScriptName="…")` — the Python/BP-visible alias (`"EndAbility"`).
+
+So `CommitAbility`, `K2_CommitAbility`, and `Commit Ability` all resolve to the same function.
+
+```python
+L = unreal.UnrealBridgeGameplayAbilityLibrary
+# Typical canonical activation-graph skeleton — user still connects pins
+# via unreal.UnrealBridgeBlueprintLibrary.connect_pins.
+commit = L.add_ability_call_function_node(bp, "EventGraph", "CommitAbility", -200, 0)
+apply  = L.add_ability_call_function_node(bp, "EventGraph", "K2_ApplyGameplayEffectToSelf", 200, 0)
+end    = L.add_ability_call_function_node(bp, "EventGraph", "K2_EndAbility", 600, 0)
+```
+
+**Pitfalls**
+- The node spawner doesn't auto-connect `OwningAbility` pins — async tasks all have an `OwningAbility` input that defaults to the containing BP's `self`, but the connection only happens at compile time if left unconnected. For explicit wiring, grab a `Self` reference via `unreal.UnrealBridgeBlueprintLibrary.add_self_node` and connect it.
+- For multi-delegate async tasks (`PlayMontageAndWait` etc.), agents often miss wiring one of the outputs and the graph compiles but the ability never finishes. Query the spawned node's pins via `describe_node` and confirm you've attached an `end_ability` (or equivalent) to every output path.
+- `UK2Node_LatentAbilityCall` only validates at *compile* time that the parent graph belongs to a GA — spawning it on a non-GA BP's graph succeeds silently; BP compile then errors. Use `get_gameplay_ability_blueprint_info` to verify the parent class before calling these.
+
+---
+
 ## Native UE Python fallbacks
 
 ```python

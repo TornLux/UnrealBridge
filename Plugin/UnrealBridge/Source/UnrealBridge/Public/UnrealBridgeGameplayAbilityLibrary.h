@@ -747,4 +747,66 @@ public:
 	/** Clear every FAbilityTriggerData entry. Returns the number removed. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
 	static int32 ClearAbilityTriggers(const FString& AbilityBlueprintPath);
+
+	// ─── GA graph node writes (M2) ─────────────────────────────
+
+	/**
+	 * Enumerate UAbilityTask subclasses discoverable via TObjectIterator<UClass>
+	 * (native + already-loaded BP subclasses). Useful for agents to find e.g.
+	 * `WaitGameplayEvent`, `PlayMontageAndWait`, `WaitTargetData` before
+	 * spawning nodes.
+	 * @param Filter       Case-insensitive substring on class name; "" matches all (requires MaxResults > 0).
+	 * @param MaxResults   0 = unlimited (only when Filter is non-empty).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> ListAbilityTaskClasses(const FString& Filter, int32 MaxResults);
+
+	/**
+	 * List the static BlueprintCallable factory UFUNCTIONs on a UAbilityTask
+	 * subclass — each one is a valid `factory_function_name` for
+	 * `AddAbilityTaskNode`. A task may expose multiple factories (e.g.
+	 * `UAbilityTask_PlayMontageAndWait::CreatePlayMontageAndWaitProxy`
+	 * vs `UAbilityTask_PlayMontageAndWaitForEvent::PlayMontageAndWaitForEvent`).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static TArray<FString> ListAbilityTaskFactories(const FString& TaskClassPath);
+
+	/**
+	 * Spawn a `UK2Node_LatentAbilityCall` node wrapping a UAbilityTask
+	 * factory function. Allocates default pins (factory input params on
+	 * the left, output exec pins from multicast delegates on the right:
+	 * OnSuccess / OnInterrupted / OnEnd / etc. depending on the task).
+	 *
+	 * The target graph must be a UGameplayAbility's ubergraph or macro
+	 * (`UK2Node_LatentAbilityCall::IsCompatibleWithGraph` enforces this
+	 * at compile-time via `ValidateNodeDuringCompilation`).
+	 *
+	 * Returns the new node's GUID (32 hex digits) or empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static FString AddAbilityTaskNode(
+		const FString& AbilityBlueprintPath,
+		const FString& GraphName,
+		const FString& TaskClassPath,
+		const FString& FactoryFunctionName,
+		int32 NodePosX,
+		int32 NodePosY);
+
+	/**
+	 * Spawn a `K2Node_CallFunction` targeting a BlueprintCallable function on
+	 * `UGameplayAbility` itself — convenience for the common cases
+	 * `CommitAbility`, `K2_EndAbility`, `K2_ApplyGameplayEffectToSelf`,
+	 * `K2_ApplyGameplayEffectToTarget`, `BP_ApplyCooldown`,
+	 * `MakeOutgoingGameplayEffectSpec`, etc. The function name is resolved
+	 * against `UGameplayAbility::StaticClass()`.
+	 *
+	 * Returns the new node's GUID or empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static FString AddAbilityCallFunctionNode(
+		const FString& AbilityBlueprintPath,
+		const FString& GraphName,
+		const FString& FunctionName,
+		int32 NodePosX,
+		int32 NodePosY);
 };

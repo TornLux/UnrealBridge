@@ -2,7 +2,11 @@
 #include "UnrealBridgeTestAttributeSet.h"
 #include "Abilities/GameplayAbility.h"
 #include "Abilities/GameplayAbilityTypes.h"
+#include "Abilities/Tasks/AbilityTask.h"
 #include "AbilitySystemComponent.h"
+#include "EdGraph/EdGraph.h"
+#include "K2Node_CallFunction.h"
+#include "K2Node_LatentAbilityCall.h"
 #include "AbilitySystemInterface.h"
 #include "AttributeSet.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -2314,5 +2318,244 @@ int32 UUnrealBridgeGameplayAbilityLibrary::ClearAbilityTriggers(const FString& A
 	ArrayHelper.EmptyValues();
 	FinalizeBlueprintCDOChange(BP);
 	return N;
+}
+
+// ─── GA graph node writes (M2) ──────────────────────────────
+
+namespace BridgeGAGraphWriteImpl
+{
+	using namespace BridgeGameplayAbilityImpl;
+	using namespace BridgeGAWriteImpl;
+
+	/** Find a graph on a BP by case-insensitive short name. Matches
+	 *  `UbergraphPages + FunctionGraphs + MacroGraphs`. */
+	static UEdGraph* FindGraphByName(UBlueprint* BP, const FString& Name)
+	{
+		auto Match = [&Name](UEdGraph* G) { return G && G->GetName().Equals(Name, ESearchCase::IgnoreCase); };
+		for (UEdGraph* G : BP->UbergraphPages) if (Match(G)) return G;
+		for (UEdGraph* G : BP->FunctionGraphs) if (Match(G)) return G;
+		for (UEdGraph* G : BP->MacroGraphs)    if (Match(G)) return G;
+		return nullptr;
+	}
+
+	/** Set a protected FNameProperty on an already-allocated node via reflection. */
+	static bool SetNameFieldByReflection(UObject* Node, const TCHAR* FieldName, FName Value)
+	{
+		FProperty* Prop = Node->GetClass()->FindPropertyByName(FName(FieldName));
+		FNameProperty* NameP = CastField<FNameProperty>(Prop);
+		if (!NameP) return false;
+		*NameP->ContainerPtrToValuePtr<FName>(Node) = Value;
+		return true;
+	}
+
+	/** Set a protected TObjectPtr<UClass> property on a node via reflection. */
+	static bool SetClassFieldByReflection(UObject* Node, const TCHAR* FieldName, UClass* Value)
+	{
+		FProperty* Prop = Node->GetClass()->FindPropertyByName(FName(FieldName));
+		FClassProperty* ClassP = CastField<FClassProperty>(Prop);
+		if (!ClassP) return false;
+		ClassP->SetObjectPropertyValue_InContainer(Node, Value);
+		return true;
+	}
+
+	/** Return true iff Func looks like a UAbilityTask static factory:
+	 *  static, BlueprintCallable, returns a pointer to a UAbilityTask subtype. */
+	static bool IsAbilityTaskFactory(UFunction* Func)
+	{
+		if (!Func) return false;
+		if (!Func->HasAnyFunctionFlags(FUNC_Static | FUNC_BlueprintCallable)) return false;
+		FObjectProperty* RetProp = CastField<FObjectProperty>(Func->GetReturnProperty());
+		if (!RetProp || !RetProp->PropertyClass) return false;
+		return RetProp->PropertyClass->IsChildOf(UAbilityTask::StaticClass());
+	}
+}
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAbilityTaskClasses(const FString& Filter, int32 MaxResults)
+{
+	TArray<FString> Result;
+	if (Filter.IsEmpty() && MaxResults <= 0)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: ListAbilityTaskClasses refused empty filter + unlimited — pass a filter or MaxResults>0"));
+		return Result;
+	}
+
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Cls = *It;
+		if (!Cls || !Cls->IsChildOf(UAbilityTask::StaticClass())) continue;
+		if (Cls == UAbilityTask::StaticClass()) continue;
+		if (Cls->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated | CLASS_NewerVersionExists)) continue;
+
+		const FString Path = Cls->GetPathName();
+		if (!Filter.IsEmpty() && !Path.Contains(Filter, ESearchCase::IgnoreCase)) continue;
+
+		Result.Add(Path);
+		if (MaxResults > 0 && Result.Num() >= MaxResults) break;
+	}
+	Result.Sort();
+	return Result;
+}
+
+TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAbilityTaskFactories(const FString& TaskClassPath)
+{
+	using namespace BridgeGAGraphWriteImpl;
+
+	TArray<FString> Result;
+	UClass* TaskClass = BridgeGameplayAbilityImpl::ResolveClassByPath(TaskClassPath);
+	if (!TaskClass || !TaskClass->IsChildOf(UAbilityTask::StaticClass()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: ListAbilityTaskFactories '%s' is not a UAbilityTask subclass"),
+			*TaskClassPath);
+		return Result;
+	}
+
+	for (TFieldIterator<UFunction> F(TaskClass); F; ++F)
+	{
+		UFunction* Fn = *F;
+		if (!IsAbilityTaskFactory(Fn)) continue;
+		// Skip inherited ones unless they live on this exact class.
+		if (Fn->GetOuterUClass() != TaskClass) continue;
+		Result.Add(Fn->GetName());
+	}
+	Result.Sort();
+	return Result;
+}
+
+FString UUnrealBridgeGameplayAbilityLibrary::AddAbilityTaskNode(
+	const FString& AbilityBlueprintPath,
+	const FString& GraphName,
+	const FString& TaskClassPath,
+	const FString& FactoryFunctionName,
+	int32 NodePosX,
+	int32 NodePosY)
+{
+	using namespace BridgeGAGraphWriteImpl;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return FString();
+
+	UEdGraph* Graph = FindGraphByName(BP, GraphName);
+	if (!Graph)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddAbilityTaskNode graph '%s' not found on '%s'"),
+			*GraphName, *AbilityBlueprintPath);
+		return FString();
+	}
+
+	UClass* TaskClass = BridgeGameplayAbilityImpl::ResolveClassByPath(TaskClassPath);
+	if (!TaskClass || !TaskClass->IsChildOf(UAbilityTask::StaticClass()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddAbilityTaskNode '%s' is not a UAbilityTask subclass"),
+			*TaskClassPath);
+		return FString();
+	}
+
+	UFunction* FactoryFn = TaskClass->FindFunctionByName(FName(*FactoryFunctionName));
+	if (!FactoryFn || !IsAbilityTaskFactory(FactoryFn))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddAbilityTaskNode '%s' has no BlueprintCallable static factory '%s' returning a UAbilityTask*"),
+			*TaskClassPath, *FactoryFunctionName);
+		return FString();
+	}
+
+	FObjectProperty* ReturnProp = CastField<FObjectProperty>(FactoryFn->GetReturnProperty());
+	if (!ReturnProp || !ReturnProp->PropertyClass) return FString();
+
+	// The proxy factory usually lives on the task class; ProxyFactoryClass is
+	// `Func->GetOuterUClass()`. ProxyClass is the return-type pointee.
+	UClass* ProxyFactoryClass = FactoryFn->GetOuterUClass();
+	UClass* ProxyClass = ReturnProp->PropertyClass;
+
+	UK2Node_LatentAbilityCall* Node = NewObject<UK2Node_LatentAbilityCall>(Graph);
+	Node->CreateNewGuid();
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+
+	// ProxyFactory* fields are protected on UK2Node_BaseAsyncTask — write
+	// via reflection so we don't need inheritance access.
+	if (!SetNameFieldByReflection(Node, TEXT("ProxyFactoryFunctionName"), FactoryFn->GetFName()) ||
+		!SetClassFieldByReflection(Node, TEXT("ProxyFactoryClass"), ProxyFactoryClass) ||
+		!SetClassFieldByReflection(Node, TEXT("ProxyClass"), ProxyClass))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddAbilityTaskNode reflection set of ProxyFactory* failed on '%s'"),
+			*Node->GetClass()->GetName());
+		Graph->RemoveNode(Node);
+		return FString();
+	}
+
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+	Node->ReconstructNode();
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	BP->MarkPackageDirty();
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeGameplayAbilityLibrary::AddAbilityCallFunctionNode(
+	const FString& AbilityBlueprintPath,
+	const FString& GraphName,
+	const FString& FunctionName,
+	int32 NodePosX,
+	int32 NodePosY)
+{
+	using namespace BridgeGAGraphWriteImpl;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadAbilityBP(AbilityBlueprintPath, &GenClass);
+	if (!BP) return FString();
+
+	UEdGraph* Graph = FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+
+	// Look up function on the GA generated class (covers both native
+	// UGameplayAbility functions and any Blueprint-defined ones inherited).
+	UFunction* Func = GenClass->FindFunctionByName(FName(*FunctionName));
+	if (!Func)
+	{
+		// Fallback: match by DisplayName or ScriptName metadata — lets agents
+		// pass "CommitAbility" and find `K2_CommitAbility`
+		// (DisplayName="CommitAbility", ScriptName="CommitAbility").
+		for (TFieldIterator<UFunction> It(GenClass); It; ++It)
+		{
+			UFunction* F = *It;
+			if (!F) continue;
+			if (F->GetMetaData(TEXT("DisplayName")) == FunctionName ||
+				F->GetMetaData(TEXT("ScriptName")) == FunctionName)
+			{
+				Func = F;
+				break;
+			}
+		}
+	}
+	if (!Func)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddAbilityCallFunctionNode '%s' not found on '%s' (tried internal name + DisplayName + ScriptName)"),
+			*FunctionName, *GenClass->GetName());
+		return FString();
+	}
+
+	UK2Node_CallFunction* Node = NewObject<UK2Node_CallFunction>(Graph);
+	Node->CreateNewGuid();
+	Node->FunctionReference.SetFromField<UFunction>(Func, /*bIsConsideredSelfContext*/ true);
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+	Node->ReconstructNode();
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	BP->MarkPackageDirty();
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
 }
 
