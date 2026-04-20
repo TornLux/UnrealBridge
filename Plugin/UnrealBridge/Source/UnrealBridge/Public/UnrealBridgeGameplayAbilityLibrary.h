@@ -364,6 +364,64 @@ struct FBridgeActiveAbilityInfo
 	int32 ActiveCount = 0;
 };
 
+/** One captured GameplayTag use site found by FindGameplayTagReferences. */
+USTRUCT(BlueprintType)
+struct FBridgeTagReference
+{
+	GENERATED_BODY()
+
+	/** Asset object path, e.g. "/Game/GA/BP_Foo.BP_Foo". */
+	UPROPERTY(BlueprintReadOnly) FString AssetPath;
+
+	/** "Blueprint" / "DataTable" / "DataAsset" / etc. — short class name of the asset. */
+	UPROPERTY(BlueprintReadOnly) FString AssetClass;
+
+	/**
+	 * Field path inside the asset where the tag was found, e.g.
+	 *   "AbilityTags"
+	 *   "AbilityTriggers[2].TriggerTag"
+	 *   "GEComponents[0]->InheritableAssetTags.Added"
+	 *   "Pin: TagPin"
+	 */
+	UPROPERTY(BlueprintReadOnly) FString Location;
+
+	/**
+	 * Extra context — for BP graph hits: "Graph: <name>, Node: <title>".
+	 * For DataTable rows: "Row: <name>". For CDO scans: "CDO".
+	 */
+	UPROPERTY(BlueprintReadOnly) FString Context;
+
+	/** The actual tag string found (may be a child of TagQuery when bMatchExact=false). */
+	UPROPERTY(BlueprintReadOnly) FString MatchedTag;
+};
+
+/** Aggregate report from FindGameplayTagReferences. */
+USTRUCT(BlueprintType)
+struct FBridgeTagReferenceReport
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) FString TagQuery;
+
+	UPROPERTY(BlueprintReadOnly) bool bMatchExact = true;
+
+	/** Number of assets walked (may be < total under PackagePath if MaxResults hit). */
+	UPROPERTY(BlueprintReadOnly) int32 AssetsScanned = 0;
+
+	/** Number of distinct assets that contained at least one match. */
+	UPROPERTY(BlueprintReadOnly) int32 AssetsMatched = 0;
+
+	/** Total reference rows in `References` (may be capped at MaxResults). */
+	UPROPERTY(BlueprintReadOnly) int32 ReferenceCount = 0;
+
+	/** True when the scan stopped because MaxResults was reached. */
+	UPROPERTY(BlueprintReadOnly) bool bTruncated = false;
+
+	UPROPERTY(BlueprintReadOnly) float ScanDurationMs = 0.f;
+
+	UPROPERTY(BlueprintReadOnly) TArray<FBridgeTagReference> References;
+};
+
 /**
  * GameplayAbilitySystem introspection via UnrealBridge.
  */
@@ -951,4 +1009,47 @@ public:
 	static bool SetGameplayCueTag(
 		const FString& CueNotifyBlueprintPath,
 		const FString& TagString);
+
+	// ─── Cross-asset GameplayTag reference scanner ────────────
+
+	/**
+	 * Find every place a GameplayTag is referenced across the project.
+	 * Walks every Blueprint + DataTable + DataAsset under `PackagePath`,
+	 * recursively scanning each asset's CDO / row struct for any
+	 * `FGameplayTag` or `FGameplayTagContainer` field whose value matches
+	 * the query. Also walks Blueprint graph node pins typed as
+	 * `FGameplayTag` (literal pin defaults).
+	 *
+	 * Recurses into:
+	 *   • nested USTRUCTs (so `FAbilityTriggerData.TriggerTag` inside an
+	 *     `AbilityTriggers` array is found)
+	 *   • instanced subobjects whose outer is the container (so
+	 *     `GEComponents[i]->InheritableAssetTags.Added` is found)
+	 *   • TArray<FStruct> elements (recurses on each entry)
+	 *
+	 * Use this before renaming or deleting a tag — answers "is anything
+	 * still using `Ability.Combat.Fire`?" across GA / GE / GC / DT / BP
+	 * literal pins in one call.
+	 *
+	 * @param TagQuery       Tag to look for. Must be registered with
+	 *                       UGameplayTagsManager.
+	 * @param PackagePath    Content root, default "/Game". Empty string =
+	 *                       "/Game". Recursive.
+	 * @param bMatchExact    true → only exact `TagQuery` matches.
+	 *                       false → also matches descendants (e.g. query
+	 *                       "Ability.Combat" matches "Ability.Combat.Fire").
+	 * @param MaxResults     Caps the result list. 0 or negative → 5000
+	 *                       (a hard limit; tag-heavy projects hit big numbers).
+	 *                       When the cap is reached, `bTruncated` is true.
+	 *
+	 * Cost: O(N_assets × CDO_size). Loads each candidate asset
+	 * synchronously — expect 5–60 seconds on a mid-size GAS project. Best
+	 * called once per tag-rename or as a one-off audit, not in a hot loop.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static FBridgeTagReferenceReport FindGameplayTagReferences(
+		const FString& TagQuery,
+		const FString& PackagePath,
+		bool bMatchExact,
+		int32 MaxResults);
 };

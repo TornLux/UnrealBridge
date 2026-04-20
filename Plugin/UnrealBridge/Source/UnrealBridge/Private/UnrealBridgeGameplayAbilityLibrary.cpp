@@ -5,7 +5,11 @@
 #include "Abilities/Tasks/AbilityTask.h"
 #include "AbilitySystemComponent.h"
 #include "EdGraph/EdGraph.h"
+#include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/DataTable.h"
+#include "HAL/PlatformTime.h"
 #include "FileHelpers.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_LatentAbilityCall.h"
@@ -3159,5 +3163,350 @@ bool UUnrealBridgeGameplayAbilityLibrary::SetGameplayCueTag(
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 	BP->MarkPackageDirty();
 	return true;
+}
+
+// ─── Cross-asset GameplayTag reference scanner ─────────────
+
+namespace BridgeTagScanImpl
+{
+	/** Stop runaway recursion. CDO graphs can hit deeply-nested struct trees. */
+	static constexpr int32 MaxRecursionDepth = 32;
+	/** Hard ceiling — even with MaxResults=0 we never collect more than this. */
+	static constexpr int32 AbsoluteCap = 5000;
+
+	struct FScanState
+	{
+		FGameplayTag QueryTag;
+		bool bMatchExact = true;
+		int32 MaxResults = 5000;
+		bool bTruncated = false;
+		TArray<FBridgeTagReference> Refs;
+		TSet<UObject*> VisitedObjects; // cycle protection per top-level asset
+	};
+
+	static bool TagMatches(const FGameplayTag& Found, const FGameplayTag& Query, bool bExact)
+	{
+		if (!Found.IsValid()) return false;
+		if (bExact) return Found == Query;
+		// Non-exact: Found is the same as Query OR a descendant of Query.
+		return Found.MatchesTag(Query);
+	}
+
+	static void RecordRef(FScanState& S, const FString& AssetPath, const FString& AssetClass,
+		const FString& Location, const FString& Context, const FGameplayTag& Tag)
+	{
+		if (S.Refs.Num() >= S.MaxResults || S.Refs.Num() >= AbsoluteCap)
+		{
+			S.bTruncated = true;
+			return;
+		}
+		FBridgeTagReference R;
+		R.AssetPath   = AssetPath;
+		R.AssetClass  = AssetClass;
+		R.Location    = Location;
+		R.Context     = Context;
+		R.MatchedTag  = Tag.ToString();
+		S.Refs.Add(MoveTemp(R));
+	}
+
+	static void ScanContainerForTags(
+		FScanState& S,
+		UStruct* Struct, void* ContainerPtr,
+		const FString& AssetPath, const FString& AssetClass,
+		const FString& Context, const FString& PathPrefix,
+		int32 Depth);
+
+	static void ScanProperty(
+		FScanState& S,
+		FProperty* P, void* ValuePtr,
+		const FString& AssetPath, const FString& AssetClass,
+		const FString& Context, const FString& FieldPath,
+		int32 Depth)
+	{
+		if (S.bTruncated || Depth > MaxRecursionDepth) return;
+
+		if (FStructProperty* SP = CastField<FStructProperty>(P))
+		{
+			UScriptStruct* Type = SP->Struct;
+
+			// Direct FGameplayTag
+			if (Type == TBaseStructure<FGameplayTag>::Get())
+			{
+				const FGameplayTag* Tag = static_cast<const FGameplayTag*>(ValuePtr);
+				if (TagMatches(*Tag, S.QueryTag, S.bMatchExact))
+				{
+					RecordRef(S, AssetPath, AssetClass, FieldPath, Context, *Tag);
+				}
+				return;
+			}
+			// FGameplayTagContainer
+			if (Type == TBaseStructure<FGameplayTagContainer>::Get())
+			{
+				const FGameplayTagContainer* TC = static_cast<const FGameplayTagContainer*>(ValuePtr);
+				for (const FGameplayTag& T : *TC)
+				{
+					if (TagMatches(T, S.QueryTag, S.bMatchExact))
+					{
+						RecordRef(S, AssetPath, AssetClass, FieldPath, Context, T);
+						if (S.bTruncated) return;
+					}
+				}
+				return;
+			}
+			// Nested struct — recurse.
+			ScanContainerForTags(S, Type, ValuePtr, AssetPath, AssetClass, Context, FieldPath, Depth + 1);
+			return;
+		}
+
+		if (FArrayProperty* AP = CastField<FArrayProperty>(P))
+		{
+			FScriptArrayHelper AH(AP, ValuePtr);
+			for (int32 i = 0; i < AH.Num(); ++i)
+			{
+				if (S.bTruncated) return;
+				const FString IdxPath = FString::Printf(TEXT("%s[%d]"), *FieldPath, i);
+				ScanProperty(S, AP->Inner, AH.GetRawPtr(i), AssetPath, AssetClass, Context, IdxPath, Depth + 1);
+			}
+			return;
+		}
+
+		if (FMapProperty* MP = CastField<FMapProperty>(P))
+		{
+			FScriptMapHelper MH(MP, ValuePtr);
+			for (FScriptMapHelper::FIterator It(MH); It; ++It)
+			{
+				if (S.bTruncated) return;
+				const FString KeyPath = FieldPath + TEXT("[<key>]");
+				const FString ValPath = FieldPath + TEXT("[<value>]");
+				ScanProperty(S, MP->KeyProp,   MH.GetKeyPtr(It),   AssetPath, AssetClass, Context, KeyPath, Depth + 1);
+				ScanProperty(S, MP->ValueProp, MH.GetValuePtr(It), AssetPath, AssetClass, Context, ValPath, Depth + 1);
+			}
+			return;
+		}
+
+		if (FSetProperty* SetP = CastField<FSetProperty>(P))
+		{
+			FScriptSetHelper SH(SetP, ValuePtr);
+			for (FScriptSetHelper::FIterator It(SH); It; ++It)
+			{
+				if (S.bTruncated) return;
+				const FString ElemPath = FieldPath + TEXT("[<elem>]");
+				ScanProperty(S, SetP->ElementProp, SH.GetElementPtr(It), AssetPath, AssetClass, Context, ElemPath, Depth + 1);
+			}
+			return;
+		}
+
+		if (FObjectProperty* OP = CastField<FObjectProperty>(P))
+		{
+			UObject* Inner = OP->GetObjectPropertyValue(ValuePtr);
+			if (!Inner) return;
+			// Only recurse into instanced subobjects (component-style ownership)
+			// to avoid following arbitrary references into the wider asset graph.
+			// The outer chain test is the canonical UE pattern for "this object
+			// is owned by the container".
+			if (S.VisitedObjects.Contains(Inner)) return;
+
+			// Heuristic: recurse only if the property is marked Instanced or
+			// the inner object's outer is the container we came from. The
+			// container itself might not be a UObject (it could be a struct
+			// embedded in one), so rely on Instanced/PersistentInstance flags.
+			const bool bIsInstanced = OP->HasAnyPropertyFlags(CPF_InstancedReference | CPF_PersistentInstance);
+			if (!bIsInstanced) return;
+
+			S.VisitedObjects.Add(Inner);
+			ScanContainerForTags(S, Inner->GetClass(), Inner, AssetPath, AssetClass, Context,
+				FieldPath + TEXT("->"), Depth + 1);
+			return;
+		}
+
+		// Scalar / enum / string / etc. — no tag content possible.
+	}
+
+	static void ScanContainerForTags(
+		FScanState& S,
+		UStruct* Struct, void* ContainerPtr,
+		const FString& AssetPath, const FString& AssetClass,
+		const FString& Context, const FString& PathPrefix,
+		int32 Depth)
+	{
+		if (!Struct || !ContainerPtr || S.bTruncated || Depth > MaxRecursionDepth) return;
+		for (TFieldIterator<FProperty> It(Struct); It; ++It)
+		{
+			FProperty* P = *It;
+			// Don't insert '.' when PathPrefix already ends with a separator
+			// (the "->" object-recursion marker, or empty).
+			FString FieldPath;
+			if (PathPrefix.IsEmpty() || PathPrefix.EndsWith(TEXT("->")))
+			{
+				FieldPath = PathPrefix + P->GetName();
+			}
+			else
+			{
+				FieldPath = PathPrefix + TEXT(".") + P->GetName();
+			}
+			ScanProperty(S, P, P->ContainerPtrToValuePtr<void>(ContainerPtr),
+				AssetPath, AssetClass, Context, FieldPath, Depth + 1);
+			if (S.bTruncated) return;
+		}
+	}
+
+	/** Pin default values for tag-typed pins serialize as `(TagName="Foo.Bar")`. */
+	static bool ParseTagFromPinDefault(const FString& PinDefault, FGameplayTag& OutTag)
+	{
+		if (PinDefault.IsEmpty()) return false;
+		const int32 Start = PinDefault.Find(TEXT("TagName=\""));
+		if (Start == INDEX_NONE) return false;
+		const int32 NameStart = Start + 9; // length of TagName="
+		const int32 EndQuote = PinDefault.Find(TEXT("\""), ESearchCase::CaseSensitive,
+			ESearchDir::FromStart, NameStart);
+		if (EndQuote == INDEX_NONE) return false;
+		const FString TagStr = PinDefault.Mid(NameStart, EndQuote - NameStart);
+		if (TagStr.IsEmpty()) return false;
+		OutTag = FGameplayTag::RequestGameplayTag(FName(*TagStr), false);
+		return OutTag.IsValid();
+	}
+
+	static void ScanBlueprintGraphs(FScanState& S, UBlueprint* BP, const FString& AssetPath)
+	{
+		auto ScanGraph = [&](UEdGraph* Graph)
+		{
+			if (!Graph) return;
+			const FString GraphName = Graph->GetName();
+			for (UEdGraphNode* Node : Graph->Nodes)
+			{
+				if (S.bTruncated) return;
+				if (!Node) continue;
+				for (UEdGraphPin* Pin : Node->Pins)
+				{
+					if (S.bTruncated) return;
+					if (!Pin) continue;
+					// Only tag-typed pins
+					UScriptStruct* SubObj = Cast<UScriptStruct>(Pin->PinType.PinSubCategoryObject.Get());
+					if (!SubObj || SubObj != TBaseStructure<FGameplayTag>::Get()) continue;
+					if (Pin->LinkedTo.Num() > 0) continue; // computed at runtime
+					FGameplayTag Found;
+					if (ParseTagFromPinDefault(Pin->DefaultValue, Found) &&
+						TagMatches(Found, S.QueryTag, S.bMatchExact))
+					{
+						const FString Loc = FString::Printf(TEXT("Pin: %s"), *Pin->PinName.ToString());
+						const FString Ctx = FString::Printf(TEXT("Graph: %s, Node: %s"),
+							*GraphName, *Node->GetNodeTitle(ENodeTitleType::ListView).ToString());
+						RecordRef(S, AssetPath, TEXT("Blueprint"), Loc, Ctx, Found);
+					}
+				}
+			}
+		};
+
+		for (UEdGraph* G : BP->UbergraphPages)  ScanGraph(G);
+		for (UEdGraph* G : BP->FunctionGraphs)  ScanGraph(G);
+		for (UEdGraph* G : BP->MacroGraphs)     ScanGraph(G);
+	}
+}
+
+FBridgeTagReferenceReport UUnrealBridgeGameplayAbilityLibrary::FindGameplayTagReferences(
+	const FString& TagQuery,
+	const FString& PackagePath,
+	bool bMatchExact,
+	int32 MaxResults)
+{
+	using namespace BridgeTagScanImpl;
+
+	FBridgeTagReferenceReport Report;
+	Report.TagQuery = TagQuery;
+	Report.bMatchExact = bMatchExact;
+
+	const double T0 = FPlatformTime::Seconds();
+
+	const FGameplayTag QueryTag = FGameplayTag::RequestGameplayTag(FName(*TagQuery), false);
+	if (!QueryTag.IsValid())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: FindGameplayTagReferences '%s' is not a registered tag"), *TagQuery);
+		Report.ScanDurationMs = (FPlatformTime::Seconds() - T0) * 1000.0;
+		return Report;
+	}
+
+	FScanState S;
+	S.QueryTag = QueryTag;
+	S.bMatchExact = bMatchExact;
+	S.MaxResults = (MaxResults <= 0) ? AbsoluteCap : FMath::Min(MaxResults, AbsoluteCap);
+
+	FString Root = PackagePath.IsEmpty() ? FString(TEXT("/Game")) : PackagePath;
+	if (!Root.StartsWith(TEXT("/"))) Root = TEXT("/") + Root;
+
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(FName(*Root));
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.ClassPaths.Add(UDataTable::StaticClass()->GetClassPathName());
+	Filter.ClassPaths.Add(UDataAsset::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+
+	TArray<FAssetData> Assets;
+	Registry.GetAssets(Filter, Assets);
+
+	int32 PrevRefCount = 0;
+	for (const FAssetData& Data : Assets)
+	{
+		if (S.bTruncated) break;
+
+		UObject* Asset = Data.GetAsset();
+		++Report.AssetsScanned;
+		if (!Asset) continue;
+
+		S.VisitedObjects.Reset();
+		const FString AssetPath = Data.GetSoftObjectPath().ToString();
+
+		if (UBlueprint* BP = Cast<UBlueprint>(Asset))
+		{
+			S.VisitedObjects.Add(BP);
+			if (BP->GeneratedClass)
+			{
+				UObject* CDO = BP->GeneratedClass->GetDefaultObject();
+				if (CDO)
+				{
+					S.VisitedObjects.Add(CDO);
+					ScanContainerForTags(S, BP->GeneratedClass, CDO, AssetPath, TEXT("Blueprint"),
+						TEXT("CDO"), TEXT(""), 0);
+				}
+			}
+			ScanBlueprintGraphs(S, BP, AssetPath);
+		}
+		else if (UDataTable* DT = Cast<UDataTable>(Asset))
+		{
+			if (DT->RowStruct)
+			{
+				const TMap<FName, uint8*>& Rows = DT->GetRowMap();
+				for (const TPair<FName, uint8*>& Pair : Rows)
+				{
+					if (S.bTruncated) break;
+					const FString RowCtx = FString::Printf(TEXT("Row: %s"), *Pair.Key.ToString());
+					ScanContainerForTags(S, DT->RowStruct, Pair.Value, AssetPath, TEXT("DataTable"),
+						RowCtx, TEXT(""), 0);
+				}
+			}
+		}
+		else
+		{
+			// Generic UObject (DataAsset / UPrimaryDataAsset / etc.) — scan instance.
+			S.VisitedObjects.Add(Asset);
+			ScanContainerForTags(S, Asset->GetClass(), Asset, AssetPath, Asset->GetClass()->GetName(),
+				TEXT("Asset"), TEXT(""), 0);
+		}
+
+		if (S.Refs.Num() > PrevRefCount)
+		{
+			++Report.AssetsMatched;
+			PrevRefCount = S.Refs.Num();
+		}
+	}
+
+	Report.bTruncated      = S.bTruncated;
+	Report.ReferenceCount  = S.Refs.Num();
+	Report.References      = MoveTemp(S.Refs);
+	Report.ScanDurationMs  = static_cast<float>((FPlatformTime::Seconds() - T0) * 1000.0);
+	return Report;
 }
 

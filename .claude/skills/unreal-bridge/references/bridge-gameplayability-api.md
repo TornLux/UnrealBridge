@@ -1010,6 +1010,69 @@ Set the `GameplayCueTag` field on an `AGameplayCueNotify_Actor` or `UGameplayCue
 
 ---
 
+## Cross-asset GameplayTag reference scanner
+
+### find_gameplay_tag_references(tag_query, package_path, b_match_exact, max_results) -> FBridgeTagReferenceReport
+
+Walks every Blueprint + DataTable + DataAsset under `package_path` and returns every place the tag is used. Designed for "is anything still using this tag?" before a rename or delete.
+
+Catches tags in:
+- GA Blueprint CDO — `AbilityTags`, all 9 activation/source/target tag containers, `AbilityTriggers[i].TriggerTag`
+- GE Blueprint CDO — `InheritableGameplayEffectTags` (the GE's own tags) plus every `InheritableXxxTags.Added` / `.CombinedTags` field on every `GEComponents[i]` instanced subobject
+- GC Notify Blueprint CDO — `GameplayCueTag`
+- DataTable rows — every `FGameplayTag` / `FGameplayTagContainer` field on the row struct
+- Generic DataAsset / UPrimaryDataAsset CDO fields
+- Blueprint graph node pin literals — pins typed `FGameplayTag` with non-empty `DefaultValue` (matches `(TagName="...")` serialization)
+
+Recurses into nested structs, TArray<FStruct>, TMap, TSet, and instanced UObject subobjects (CPF_InstancedReference / CPF_PersistentInstance). Cycle protection via per-asset visited set, depth cap at 32 levels.
+
+| Param | Notes |
+|---|---|
+| `tag_query` | Must be registered with `UGameplayTagsManager`. Unregistered → empty report (with warning log). |
+| `package_path` | Content root; `"/Game"` by default. Recursive. |
+| `b_match_exact` | `True` → only exact matches. `False` → also matches descendants of `tag_query` (e.g. query `"Ability.Combat"` matches `"Ability.Combat.Fire"`). |
+| `max_results` | Caps `references` at this count and sets `truncated=True`. `0` or negative → 5000 (the absolute hard cap). |
+
+Returned `FBridgeTagReferenceReport`:
+
+| Field | Notes |
+|---|---|
+| `tag_query` / `match_exact` | Echo of input. |
+| `assets_scanned` | Count of assets walked. |
+| `assets_matched` | Distinct assets with at least one reference. |
+| `reference_count` | Total rows in `references` (≤ `max_results`). |
+| `truncated` | `True` when the cap was hit before the walk finished. |
+| `scan_duration_ms` | Wall-clock cost. |
+| `references` | List of `FBridgeTagReference`: `asset_path`, `asset_class`, `location` (e.g. `"GEComponents[0]->InheritableAssetTags.Added"`), `context` (`"CDO"` / `"Row: <name>"` / `"Graph: X, Node: Y"`), `matched_tag` (the actual tag found — useful when `b_match_exact=False`). |
+
+**Cost** — first call cold-loads every BP + DT under `package_path`, expect 5–60s on a mid-size GAS project. Subsequent calls (within the same editor session, against assets already in memory) drop to milliseconds. Don't hammer in a hot loop — use for one-shot audits.
+
+```python
+import unreal
+GA = unreal.UnrealBridgeGameplayAbilityLibrary
+
+# "Can I delete this tag?" — look everywhere
+r = GA.find_gameplay_tag_references("Ability.Combat.Fire", "/Game", True, 0)
+print(f"{r.reference_count} references across {r.assets_matched} assets ({r.scan_duration_ms:.0f}ms)")
+for x in r.references:
+    print(f"  [{x.asset_class}] {x.asset_path}")
+    print(f"    {x.location}  ({x.context})  matched: {x.matched_tag}")
+
+# "What does the Ability.Combat tag tree touch?" — match the whole subtree
+r2 = GA.find_gameplay_tag_references("Ability.Combat", "/Game", False, 0)
+# Group by leaf tag actually found
+from collections import Counter
+print(Counter(x.matched_tag for x in r2.references))
+```
+
+**Pitfalls**
+- Catches `InheritableXxxTags.CombinedTags` *and* `.Added` for every `FInheritedTagContainer` field — these are two different in-memory copies of the same logical assignment. If you're auditing for "what to change", look at `.Added` rows; ignore `.CombinedTags` (engine-derived, will refresh on next compile).
+- BP graph pin scan only catches *literal* defaults (`Make_LiteralGameplayTag` style). Tags computed at runtime (e.g. read from a variable, returned from a function) are invisible — you'd need execution-tracing for that, which the bridge doesn't have.
+- C++ source-code references aren't covered. For those, fall back to filesystem grep (e.g. via `scripts/audit_tech_debt.py` extended with your own regex, or `Grep` from the host).
+- Blueprint variable defaults are caught via the CDO scan (variable defaults end up as UPROPERTY values). But variable types that wrap tag containers (e.g. an array of custom struct that holds a tag container) work too — recursion handles arbitrary nesting up to depth 32.
+
+---
+
 ## Native UE Python fallbacks
 
 ```python
