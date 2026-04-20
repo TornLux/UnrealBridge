@@ -7,9 +7,12 @@
 #include "Async/Async.h"
 #include "SocketSubsystem.h"
 #include "Misc/Base64.h"
+#include "Misc/DateTime.h"
+#include "Misc/ScopeExit.h"
 #include "Editor.h"
 #include "Kismet2/KismetDebugUtilities.h"
 #include "Framework/Application/SlateApplication.h"
+#include "UnrealBridgeCallLog.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridge, Log, All);
 
@@ -272,6 +275,24 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 	}
 	const double T0 = FPlatformTime::Seconds();
 
+	// Per-request telemetry collected throughout this function and flushed
+	// to the bridge-call ring buffer right before we return. Written-to in
+	// several branches below — see each `else if` for where the fields
+	// are populated. See UnrealBridgeCallLog.h.
+	FBridgeCallRecord CallRecord;
+	CallRecord.Endpoint = EndpointStr;
+	{
+		// ToUnixTimestamp truncates to whole seconds; compute fractional by
+		// subtracting the epoch as FTimespan and using GetTotalSeconds().
+		static const FDateTime UnixEpoch(1970, 1, 1);
+		CallRecord.UnixSeconds = (FDateTime::UtcNow() - UnixEpoch).GetTotalSeconds();
+	}
+	ON_SCOPE_EXIT
+	{
+		CallRecord.TotalDurationMs = (FPlatformTime::Seconds() - T0) * 1000.0;
+		FBridgeCallLog::Get().Append(MoveTemp(CallRecord));
+	};
+
 	// 1. Read 4-byte length prefix (big-endian)
 	uint8 LenBuf[4];
 	if (!RecvAll(ClientSocket, LenBuf, 4, 5.0f))
@@ -334,6 +355,7 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 	{
 		RequestId = TEXT("<missing>");
 	}
+	CallRecord.RequestId = RequestId;
 
 	// 4. Build response
 	TSharedRef<FJsonObject> Response = MakeShared<FJsonObject>();
@@ -341,6 +363,7 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 
 	FString Command;
 	Request->TryGetStringField(TEXT("command"), Command); // optional
+	CallRecord.Command = Command.IsEmpty() ? TEXT("exec") : Command;
 
 	UE_LOG(LogUnrealBridge, Verbose,
 		TEXT("[%s] request id=%s cmd=%s payload=%u"),
@@ -466,9 +489,15 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 			Request->TryGetNumberField(TEXT("timeout"), TimeoutNum);
 			const float Timeout = FMath::Clamp((float)TimeoutNum, 0.1f, 300.0f);
 
+			// Capture a preview of the script for the call-log ring. Cap at
+			// ~80 chars; newlines collapse to spaces so the log stays
+			// single-line-scannable.
+			CallRecord.ScriptPreview = Script.Left(80).Replace(TEXT("\n"), TEXT(" ")).Replace(TEXT("\r"), TEXT(""));
+
 			const double ExecT0 = FPlatformTime::Seconds();
 			FExecResult Result = EnqueueAndWaitForExec(Script, Timeout, RequestId);
 			const double ExecMs = (FPlatformTime::Seconds() - ExecT0) * 1000.0;
+			CallRecord.ExecDurationMs = ExecMs;
 
 			UE_LOG(LogUnrealBridge, Log,
 				TEXT("[%s] exec id=%s ok=%s out=%dB err=%dB took=%.1fms"),
@@ -480,6 +509,24 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 			Response->SetStringField(TEXT("output"), Result.Output);
 			Response->SetStringField(TEXT("error"), Result.Error);
 			Response->SetBoolField(TEXT("ready"), true);
+		}
+	}
+
+	// Mirror the authoritative Response fields into the call record so
+	// every branch (ping / resume / exec / rejected-not-ready / etc.)
+	// logs consistent success/output/error sizes without bespoke wiring.
+	{
+		bool bOk = false;
+		Response->TryGetBoolField(TEXT("success"), bOk);
+		CallRecord.bSuccess = bOk;
+		FString OutStr, ErrStr;
+		Response->TryGetStringField(TEXT("output"), OutStr);
+		Response->TryGetStringField(TEXT("error"), ErrStr);
+		CallRecord.OutputBytes = OutStr.Len();
+		CallRecord.ErrorBytes = ErrStr.Len();
+		if (!bOk)
+		{
+			CallRecord.ErrorPreview = ErrStr.Left(200);
 		}
 	}
 

@@ -76,6 +76,9 @@
 #if PLATFORM_WINDOWS
 #include "ILiveCodingModule.h"
 #endif
+#include "UnrealBridgeCallLog.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "UObject/UnrealType.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"
 
@@ -2826,6 +2829,231 @@ bool UUnrealBridgeEditorLibrary::BringEditorToFront()
 	Active->BringToFront(/*bForce=*/ true);
 	Active->HACK_ForceToFront();
 	return true;
+}
+
+// ─── Bridge call log UFUNCTIONs ──────────────────────────────
+
+namespace BridgeCallLogImpl
+{
+	static FBridgeCallLogEntry ToUStruct(const FBridgeCallRecord& R)
+	{
+		FBridgeCallLogEntry E;
+		E.RequestId        = R.RequestId;
+		E.Command          = R.Command;
+		E.ScriptPreview    = R.ScriptPreview;
+		E.UnixSecondsUtc   = R.UnixSeconds;
+		E.TotalDurationMs  = static_cast<float>(R.TotalDurationMs);
+		E.ExecDurationMs   = static_cast<float>(R.ExecDurationMs);
+		E.bSuccess         = R.bSuccess;
+		E.OutputBytes      = R.OutputBytes;
+		E.ErrorBytes       = R.ErrorBytes;
+		E.Endpoint         = R.Endpoint;
+		E.ErrorPreview     = R.ErrorPreview;
+		return E;
+	}
+}
+
+TArray<FBridgeCallLogEntry> UUnrealBridgeEditorLibrary::GetBridgeCallLog(int32 MaxEntries)
+{
+	const TArray<FBridgeCallRecord> Snap = FBridgeCallLog::Get().Snapshot(MaxEntries);
+	TArray<FBridgeCallLogEntry> Out;
+	Out.Reserve(Snap.Num());
+	for (const FBridgeCallRecord& R : Snap)
+	{
+		Out.Add(BridgeCallLogImpl::ToUStruct(R));
+	}
+	return Out;
+}
+
+FBridgeCallStats UUnrealBridgeEditorLibrary::GetBridgeCallStats()
+{
+	FBridgeCallStats S;
+	const TArray<FBridgeCallRecord> Snap = FBridgeCallLog::Get().Snapshot(0);
+	S.TotalCalls = Snap.Num();
+	S.Capacity = FBridgeCallLog::Get().GetCapacity();
+	S.TotalDropped = FBridgeCallLog::Get().GetTotalDropped();
+
+	if (Snap.Num() == 0)
+	{
+		return S;
+	}
+
+	double Total = 0.0;
+	double Mx = 0.0;
+	double Mn = TNumericLimits<double>::Max();
+	TArray<double> Durations;
+	Durations.Reserve(Snap.Num());
+	for (const FBridgeCallRecord& R : Snap)
+	{
+		Total += R.TotalDurationMs;
+		Mx = FMath::Max(Mx, R.TotalDurationMs);
+		Mn = FMath::Min(Mn, R.TotalDurationMs);
+		Durations.Add(R.TotalDurationMs);
+		if (R.bSuccess) ++S.SuccessCount; else ++S.FailureCount;
+	}
+	S.AvgDurationMs = static_cast<float>(Total / Snap.Num());
+	S.MaxDurationMs = static_cast<float>(Mx);
+	S.MinDurationMs = static_cast<float>(Mn);
+
+	Durations.Sort();
+	const int32 P95Idx = FMath::Clamp(
+		FMath::FloorToInt32(0.95f * (Durations.Num() - 1)),
+		0, Durations.Num() - 1);
+	S.P95DurationMs = static_cast<float>(Durations[P95Idx]);
+
+	return S;
+}
+
+int32 UUnrealBridgeEditorLibrary::ClearBridgeCallLog()
+{
+	return FBridgeCallLog::Get().Clear();
+}
+
+int32 UUnrealBridgeEditorLibrary::GetBridgeCallLogCapacity()
+{
+	return FBridgeCallLog::Get().GetCapacity();
+}
+
+int32 UUnrealBridgeEditorLibrary::SetBridgeCallLogCapacity(int32 Capacity)
+{
+	const int32 Clamped = FMath::Clamp(Capacity, 10, 5000);
+	return FBridgeCallLog::Get().SetCapacity(Clamped);
+}
+
+// ─── Signature registry dump ──────────────────────────────────
+
+namespace BridgeSignatureImpl
+{
+	/** Pythonize by inserting `_` at every lower→upper boundary, then lowercasing.
+	 *  This mirrors the observed behaviour of UE's internal PythonizeName for
+	 *  the bridge's naming style (CamelCase / UObject-style initialisms).
+	 *  Not a perfect copy of the engine's CamelCaseBreakIterator (which fuses
+	 *  runs of uppercase), but matches what agents actually see in `unreal.*`. */
+	static FString ToPythonName(const FString& Name)
+	{
+		FString Out;
+		Out.Reserve(Name.Len() + 8);
+		for (int32 i = 0; i < Name.Len(); ++i)
+		{
+			const TCHAR C = Name[i];
+			if (i > 0 && FChar::IsUpper(C))
+			{
+				Out.AppendChar(TEXT('_'));
+			}
+			Out.AppendChar(FChar::ToLower(C));
+		}
+		return Out;
+	}
+
+	static TSharedRef<FJsonObject> ParamToJson(FProperty* Prop, UFunction* Func)
+	{
+		TSharedRef<FJsonObject> PObj = MakeShared<FJsonObject>();
+		PObj->SetStringField(TEXT("name"), Prop->GetName());
+		PObj->SetStringField(TEXT("python_name"), ToPythonName(Prop->GetName()));
+
+		FString TypeStr;
+		if (Prop->IsA<FStrProperty>()) TypeStr = TEXT("FString");
+		else if (Prop->IsA<FTextProperty>()) TypeStr = TEXT("FText");
+		else if (Prop->IsA<FNameProperty>()) TypeStr = TEXT("FName");
+		else TypeStr = Prop->GetCPPType();
+		PObj->SetStringField(TEXT("type"), TypeStr);
+
+		if (Prop->HasAnyPropertyFlags(CPF_ReturnParm))
+		{
+			PObj->SetBoolField(TEXT("is_return"), true);
+		}
+		else if (Prop->HasAnyPropertyFlags(CPF_OutParm) && !Prop->HasAnyPropertyFlags(CPF_ConstParm))
+		{
+			PObj->SetBoolField(TEXT("is_out"), true);
+		}
+
+		// UHT stores default values as "CPP_Default_<ParamName>" metadata on the function.
+		const FString DefKey = FString::Printf(TEXT("CPP_Default_%s"), *Prop->GetName());
+		if (Func->HasMetaData(*DefKey))
+		{
+			PObj->SetStringField(TEXT("default"), Func->GetMetaData(*DefKey));
+		}
+		return PObj;
+	}
+}
+
+FString UUnrealBridgeEditorLibrary::DumpBridgeSignatureRegistry()
+{
+	using namespace BridgeSignatureImpl;
+
+	TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
+	Root->SetStringField(TEXT("generated_utc"), FDateTime::UtcNow().ToIso8601());
+	Root->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString());
+
+	TArray<TSharedPtr<FJsonValue>> LibrariesArr;
+
+	// Collect eligible library classes: subclasses of UBlueprintFunctionLibrary
+	// that live in the /Script/UnrealBridge package (i.e. our own module).
+	TArray<UClass*> LibClasses;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* Cls = *It;
+		if (!Cls || !Cls->IsChildOf(UBlueprintFunctionLibrary::StaticClass())) continue;
+		if (Cls == UBlueprintFunctionLibrary::StaticClass()) continue;
+		if (Cls->HasAnyClassFlags(CLASS_Abstract | CLASS_NewerVersionExists | CLASS_Deprecated)) continue;
+		UPackage* Pkg = Cls->GetPackage();
+		if (!Pkg) continue;
+		if (Pkg->GetName() != TEXT("/Script/UnrealBridge")) continue;
+		LibClasses.Add(Cls);
+	}
+
+	LibClasses.Sort([](const UClass& A, const UClass& B)
+	{
+		return A.GetName() < B.GetName();
+	});
+
+	for (UClass* Cls : LibClasses)
+	{
+		TSharedRef<FJsonObject> LibObj = MakeShared<FJsonObject>();
+		// Cls->GetName() already drops the "U" prefix (UE convention) — no extra strip needed.
+		LibObj->SetStringField(TEXT("class_name"), Cls->GetName());
+		LibObj->SetStringField(TEXT("python_name"), ToPythonName(Cls->GetName()));
+
+		TArray<UFunction*> Funcs;
+		for (TFieldIterator<UFunction> F(Cls, EFieldIteratorFlags::ExcludeSuper); F; ++F)
+		{
+			UFunction* Func = *F;
+			if (!Func->HasAnyFunctionFlags(FUNC_BlueprintCallable)) continue;
+			Funcs.Add(Func);
+		}
+		Funcs.Sort([](const UFunction& A, const UFunction& B)
+		{
+			return A.GetName() < B.GetName();
+		});
+
+		TArray<TSharedPtr<FJsonValue>> FuncArr;
+		for (UFunction* Func : Funcs)
+		{
+			TSharedRef<FJsonObject> FObj = MakeShared<FJsonObject>();
+			FObj->SetStringField(TEXT("name"), Func->GetName());
+			FObj->SetStringField(TEXT("python_name"), ToPythonName(Func->GetName()));
+			FObj->SetStringField(TEXT("category"), Func->GetMetaData(TEXT("Category")));
+			FObj->SetStringField(TEXT("tooltip"), Func->GetMetaData(TEXT("ToolTip")));
+
+			TArray<TSharedPtr<FJsonValue>> Params;
+			for (TFieldIterator<FProperty> P(Func); P && P->HasAnyPropertyFlags(CPF_Parm); ++P)
+			{
+				Params.Add(MakeShared<FJsonValueObject>(ParamToJson(*P, Func)));
+			}
+			FObj->SetArrayField(TEXT("params"), Params);
+			FuncArr.Add(MakeShared<FJsonValueObject>(FObj));
+		}
+		LibObj->SetArrayField(TEXT("functions"), FuncArr);
+		LibrariesArr.Add(MakeShared<FJsonValueObject>(LibObj));
+	}
+
+	Root->SetArrayField(TEXT("libraries"), LibrariesArr);
+
+	FString Out;
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+	FJsonSerializer::Serialize(Root, Writer);
+	return Out;
 }
 
 #undef LOCTEXT_NAMESPACE

@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 作为 agent ↔ UE 编辑器桥梁的能力缺口，按"能补 / 代价高但理论可行 / 根本补不了"三档划分。用于指导后续投资方向。
 
-最后更新：2026-04-20（A1-#2 GBuffer 通道截图 + A1-#3 Perf 快照 + A7-#28 TODO / debug print 审计均已交付 — `capture_viewport_channel`+`capture_channel_from_pose`+HitProxy actor-ID；`UnrealBridgePerfLibrary.*`；`find_blueprint_debug_prints` + `scripts/audit_tech_debt.py`）
+最后更新：2026-04-20（已交付：A1-#2 GBuffer + A1-#3 Perf 快照 + A7-#28 TODO 审计 + A12-#45 Bridge 调用日志 + A12-#46 Signature registry dump + A11-#42 Webhook 通知）
 
 ---
 
@@ -134,7 +134,7 @@ Houdini 风格的 placement 原语，让 agent 能批量组装关卡而不是逐
 
 | # | 项目 | 工程量 | 频次 | 说明 |
 |---|---|---|---|---|
-| 42 | **Webhook on completion** | 小 | 中 | Cook / build / 长跑测试完 POST 到 Slack / Discord / email / 自定义 URL。一行 HTTP 的事但解锁异步工作流。 |
+| 42 | **Webhook on completion** ✅ | — | — | **已交付 2026-04-20**：`scripts/notify.py` — stdlib-only POST，URL 自动识别 Slack / Discord / generic 格式；`--exit-status $?` 自动 success/failure；`UNREALBRIDGE_WEBHOOK_URL` env 默认。 |
 | 43 | **JIRA / Linear / GitHub Issue 自动开票** | 小-中 | 中 | crash dump / test failure / lint violation 直接成 ticket 带 repro 步骤。减少"agent 跑完不知道去哪跟进"的断链。 |
 | 44 | **Perforce / Git LFS 辅助** | 中 | 中-高 | check-out、submit、conflict 检测的 bridge 封装（现在的 SourceControl API 太薄，只有 state 查询 + checkout）。大项目必需。 |
 
@@ -144,8 +144,8 @@ Houdini 风格的 placement 原语，让 agent 能批量组装关卡而不是逐
 
 | # | 项目 | 工程量 | 频次 | 说明 |
 |---|---|---|---|---|
-| 45 | **Bridge 调用日志 + 性能** | 小 | 中 | 每次 `UnrealBridge*Library.*` 调用记 name / duration / success / payload size，本地 ring buffer + 可导出。"哪个 API 调得最多 / 最慢 / 最容易超时"的数据基础。 |
-| 46 | **Signature registry dump** | 极小 | 高 | 启动时把所有 UFUNCTION 的参数名 / 类型 / 默认值 / tooltip 导出成 JSON。agent 一次拉走 ≈ 不再反复 Read 各 `bridge-*-api.md`。**消除"TypeError → 再读 → 再试"这一整类浪费**。 |
+| 45 | **Bridge 调用日志 + 性能** ✅ | — | — | **已交付 2026-04-20**：`UnrealBridgeServer` 在 HandleClient 末尾追加到 `FBridgeCallLog` ring buffer（默认 500 条，可调 [10, 5000]）；`UnrealBridgeEditorLibrary` 暴露 `get_bridge_call_log` / `get_bridge_call_stats`（avg/min/max/p95 + 总丢弃数）/ `clear_bridge_call_log` / 容量 get/set。每条记 request_id, command, script_preview, total/exec ms, success, output/error bytes, endpoint, error_preview。 |
+| 46 | **Signature registry dump** ✅ | — | — | **已交付 2026-04-20**：`UnrealBridgeEditorLibrary.dump_bridge_signature_registry()` 一次返回 JSON 描述全部 13 个 `UUnrealBridge*Library` 的 ~688 个 BlueprintCallable UFUNCTION（class、function、python_name、category、tooltip、params 含 type/default/is_out/is_return）。 |
 | 47 | **Bridge API changelog 自动生成** | 小 | 低-中 | 每次合并时 diff `UnrealBridge*Library.h` 之间的 UFUNCTION 列表，生成 Markdown changelog。不再靠记忆回忆"上周加了啥"。 |
 | 48 | **单 call dry-run / trace** | 中 | 低-中 | "这个 bridge 调用会动哪些 asset / 改哪些 UObject"，真跑前预览。蓝图 dry-run（#15）的通用版本。 |
 
@@ -197,9 +197,9 @@ Houdini 风格的 placement 原语，让 agent 能批量组装关卡而不是逐
 
 优先做这批，基础设施投入，对后续所有特性都是乘数。
 
-1. **Signature registry dump（A12-#46）** — 极小工程量，永久消除"读 doc → TypeError → 再读 → 再试"这一整类浪费。**性价比第一，先做**。
+1. ~~Signature registry dump（A12-#46）~~ ✅ 已交付 2026-04-20。
 2. **CSV / JSON → DataTable 批量导入（A8-#31）** — 数据驱动项目的基石，工程量小。
-3. **Webhook on completion（A11-#42）** — 一行 HTTP，长跑任务的异步体验全变。
+3. ~~Webhook on completion（A11-#42）~~ ✅ 已交付 2026-04-20。
 4. **Editor state 快照 / 恢复（A10-#39）** — 让 agent 能"分支尝试"，不再每步不可逆。
 5. **Snap-to-surface + 法线对齐（A9-#36）** — Scatter / level dressing 的原子，单独也很好用。
 6. ~~TODO / debug print 审计（A7-#28）~~ ✅ 已交付 2026-04-20。

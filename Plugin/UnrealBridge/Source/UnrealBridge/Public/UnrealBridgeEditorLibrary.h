@@ -200,6 +200,67 @@ struct FBridgeLiveCodingResult
 	FString Error;
 };
 
+// ─── Bridge call log ────────────────────────────────────────
+
+/** Captured bridge TCP request record. */
+USTRUCT(BlueprintType)
+struct FBridgeCallLogEntry
+{
+	GENERATED_BODY()
+
+	/** Request id from the client (uuid4 when produced by bridge.py). */
+	UPROPERTY(BlueprintReadOnly) FString RequestId;
+
+	/** "exec" | "ping" | "debug_resume" | "gamethread_ping" | other. */
+	UPROPERTY(BlueprintReadOnly) FString Command;
+
+	/** First ~80 chars of the Python script for `exec` calls; empty otherwise. */
+	UPROPERTY(BlueprintReadOnly) FString ScriptPreview;
+
+	/** UTC fractional seconds since the Unix epoch (FDateTime::UtcNow() projected). */
+	UPROPERTY(BlueprintReadOnly) double UnixSecondsUtc = 0;
+
+	/** Wall-clock time for the whole HandleClient run (recv → send), ms. */
+	UPROPERTY(BlueprintReadOnly) float TotalDurationMs = 0;
+
+	/** Time spent inside Python exec (queue wait + run). 0 for non-exec commands. */
+	UPROPERTY(BlueprintReadOnly) float ExecDurationMs = 0;
+
+	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+
+	UPROPERTY(BlueprintReadOnly) int32 OutputBytes = 0;
+	UPROPERTY(BlueprintReadOnly) int32 ErrorBytes = 0;
+
+	/** Client endpoint, e.g. "127.0.0.1:51234". */
+	UPROPERTY(BlueprintReadOnly) FString Endpoint;
+
+	/** First ~200 chars of the error message (populated when bSuccess=false). */
+	UPROPERTY(BlueprintReadOnly) FString ErrorPreview;
+};
+
+/** Aggregated bridge-call statistics across the current ring buffer. */
+USTRUCT(BlueprintType)
+struct FBridgeCallStats
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) int32 TotalCalls = 0;
+	UPROPERTY(BlueprintReadOnly) int32 SuccessCount = 0;
+	UPROPERTY(BlueprintReadOnly) int32 FailureCount = 0;
+
+	UPROPERTY(BlueprintReadOnly) float AvgDurationMs = 0;
+	UPROPERTY(BlueprintReadOnly) float MinDurationMs = 0;
+	UPROPERTY(BlueprintReadOnly) float MaxDurationMs = 0;
+	/** 95th-percentile total duration across the buffered entries. */
+	UPROPERTY(BlueprintReadOnly) float P95DurationMs = 0;
+
+	/** Max entries the ring buffer holds (configurable via SetBridgeCallLogCapacity). */
+	UPROPERTY(BlueprintReadOnly) int32 Capacity = 0;
+
+	/** Number of entries evicted because the ring filled up — across the whole session. */
+	UPROPERTY(BlueprintReadOnly) int32 TotalDropped = 0;
+};
+
 /**
  * Editor session / asset control via UnrealBridge.
  */
@@ -1103,4 +1164,56 @@ public:
 	/** True when the editor was launched with `-Unattended` (automation / CI). */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool IsUnattendedMode();
+
+	// ─── Bridge call log ─────────────────────────────────────
+
+	/**
+	 * Return up to `MaxEntries` most recent bridge TCP calls (newest last).
+	 * Pass 0 for "everything currently buffered" — clamped to the ring's
+	 * capacity. Each entry captures request id, command kind, timing,
+	 * success, I/O sizes, client endpoint, and an error preview.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static TArray<FBridgeCallLogEntry> GetBridgeCallLog(int32 MaxEntries = 100);
+
+	/** Aggregate stats across all currently-buffered bridge calls. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FBridgeCallStats GetBridgeCallStats();
+
+	/** Drop every buffered bridge-call record. Returns the number of dropped entries. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 ClearBridgeCallLog();
+
+	/** Current ring-buffer capacity (default 500). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 GetBridgeCallLogCapacity();
+
+	/**
+	 * Resize the ring buffer. `Capacity` is clamped to [10, 5000]. Shrinking
+	 * discards the oldest entries. Returns the new capacity.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static int32 SetBridgeCallLogCapacity(int32 Capacity);
+
+	// ─── Signature registry ─────────────────────────────────
+
+	/**
+	 * Enumerate every BlueprintCallable UFUNCTION on classes inside the
+	 * `/Script/UnrealBridge` package and return a JSON summary: class,
+	 * function name, Python-binding name, category, tooltip, and the full
+	 * parameter list (name, C++ type, default, out/return flags). Intended
+	 * as a one-call alternative to paging through `bridge-*-api.md` docs
+	 * when an agent wants to know the complete API surface.
+	 *
+	 * The JSON shape is:
+	 *   { "generated_utc": "...", "engine_version": "...",
+	 *     "libraries": [ { "class_name": "UUnrealBridgeXxxLibrary",
+	 *                      "functions": [ { "name": "...", "python_name": "...",
+	 *                                       "category": "...", "tooltip": "...",
+	 *                                       "params": [ { "name": "...", "type": "...",
+	 *                                                     "default": "...",
+	 *                                                     "is_out": bool, "is_return": bool } ] } ] } ] }
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static FString DumpBridgeSignatureRegistry();
 };

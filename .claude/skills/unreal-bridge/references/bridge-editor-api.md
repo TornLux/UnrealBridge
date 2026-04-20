@@ -1130,3 +1130,144 @@ When `trigger_live_coding_compile` reports `Failure`, options are:
 2. Run `scripts/rebuild_relaunch.py` — the standalone `Build.bat` captures full compiler stdout, at the cost of restarting the editor.
 
 `hot_reload.py` automatically tails the editor log's `LogLiveCoding` entries on failure as a breadcrumb trail, but those only confirm *that* it failed, not *why*.
+
+---
+
+## Bridge call log
+
+Every TCP request to the bridge is captured in a session-local ring buffer (default capacity 500). Use this to answer "what's the bridge being asked to do?", "which `exec` calls take the longest?", or "did that recent failure hit the server at all?" without grepping `Saved/Logs/<Project>.log`.
+
+Captured fields per entry:
+
+| Field | Type | Notes |
+|---|---|---|
+| `request_id` | str | UUID4 sent by `bridge.py` (or `<missing>` for raw clients). |
+| `command` | str | `"exec"` (default) / `"ping"` / `"debug_resume"` / `"gamethread_ping"` / other. |
+| `script_preview` | str | First ~80 chars of the Python script for `exec`; newlines collapsed to spaces. Empty for non-exec commands. |
+| `unix_seconds_utc` | float | Fractional seconds since the Unix epoch — for plotting / time-series. |
+| `total_duration_ms` | float | Wall-clock for the whole HandleClient run (recv → send). |
+| `exec_duration_ms` | float | Time spent inside Python exec (queue wait + run). 0 for non-exec commands. |
+| `success` | bool | The `success` field that went back to the client. |
+| `output_bytes` / `error_bytes` | int32 | Lengths of the response's `output` and `error` strings. |
+| `endpoint` | str | Client `IP:port` from the listener. |
+| `error_preview` | str | First ~200 chars of the error message when `success=false`. |
+
+### get_bridge_call_log(max_entries=100) -> list[FBridgeCallLogEntry]
+
+Newest-last list of recent calls. `max_entries=0` returns everything currently buffered.
+
+```python
+import unreal
+for e in unreal.UnrealBridgeEditorLibrary.get_bridge_call_log(20):
+    print(f"[{e.command:5}] ok={int(e.success)} {e.total_duration_ms:6.1f}ms {e.script_preview!r}")
+```
+
+### get_bridge_call_stats() -> FBridgeCallStats
+
+Aggregates over the buffered entries.
+
+| Field | Type | Notes |
+|---|---|---|
+| `total_calls` | int32 | Number of buffered entries. |
+| `success_count` / `failure_count` | int32 | Bucketed by the `success` field. |
+| `avg_duration_ms` / `min_duration_ms` / `max_duration_ms` / `p95_duration_ms` | float | Total-duration distribution. |
+| `capacity` | int32 | Current ring-buffer size. |
+| `total_dropped` | int32 | Lifetime count of entries evicted because the ring was full. Useful for "did I lose anything between two snapshots?" |
+
+### clear_bridge_call_log() -> int32
+
+Drops every buffered record. Returns how many were dropped. Use before a benchmark to get a clean window.
+
+### get_bridge_call_log_capacity() / set_bridge_call_log_capacity(capacity) -> int32
+
+Capacity is clamped to `[10, 5000]`. Shrinking discards the oldest entries.
+
+**Pitfalls**
+- The current `exec` (the one running this code) is **not** in the log yet — it's appended after the response sends. To see your own call, do `get_bridge_call_log` from a separate `bridge.py exec` invocation.
+- `total_duration_ms` is server-side only and excludes network RTT. For wall-clock-from-the-client, time `bridge.py exec` itself.
+- The ring is in-memory and process-local — restart loses everything. Persist to disk via `bridge.py exec` + `json.dumps` if you need cross-session data.
+
+---
+
+## Signature registry dump
+
+### dump_bridge_signature_registry() -> str (JSON)
+
+Returns a single condensed-JSON string describing every BlueprintCallable UFUNCTION on every `UUnrealBridge*Library` class. Intended as a one-call alternative to paging through the `bridge-*-api.md` docs when an agent needs the complete API surface (parameters, defaults, return types).
+
+```python
+import unreal, json
+data = json.loads(unreal.UnrealBridgeEditorLibrary.dump_bridge_signature_registry())
+print(f"{len(data['libraries'])} libraries, {sum(len(L['functions']) for L in data['libraries'])} UFUNCTIONs")
+# Find every function whose tooltip mentions PIE
+for L in data['libraries']:
+    for f in L['functions']:
+        if 'PIE' in f['tooltip']:
+            print(f"{L['class_name']}.{f['python_name']}")
+```
+
+JSON shape:
+
+```
+{ "generated_utc": "...", "engine_version": "...",
+  "libraries": [
+    { "class_name": "UnrealBridgeEditorLibrary",
+      "python_name": "unreal_bridge_editor_library",
+      "functions": [
+        { "name": "GetBridgeCallLog",
+          "python_name": "get_bridge_call_log",
+          "category": "UnrealBridge|Editor",
+          "tooltip": "...",
+          "params": [
+            { "name": "MaxEntries", "python_name": "max_entries",
+              "type": "int32", "default": "100" },
+            { "name": "ReturnValue", "python_name": "return_value",
+              "type": "TArray", "is_return": true }
+          ] } ] } ] }
+```
+
+**What's covered.** Every BlueprintCallable UFUNCTION whose owning class lives in the `/Script/UnrealBridge` package — i.e. all `UUnrealBridge*Library` classes. Current count: ~688 UFUNCTIONs across 13 libraries.
+
+**What's not covered (yet).**
+- USTRUCT field layouts (return / param types include the struct name, but not its UPROPERTY list).
+- Inherited UFUNCTIONs — `EFieldIteratorFlags::ExcludeSuper` is in effect.
+
+**Pitfalls**
+- `python_name` is computed by inserting `_` at every lower→upper boundary and lowercasing. Matches what `dir(unreal.UUnrealBridgeXxxLibrary)` shows in practice, but is a simpler rule than UE's internal `CamelCaseBreakIterator` — for adjacent uppercase runs (e.g. `UMG`) you get one underscore per character (`u_m_g_library`). If a function's `python_name` doesn't match what `dir()` reports, trust `dir()`.
+- Tooltips are the raw doxygen-style `///` comments. Newlines preserved; no Markdown stripping.
+
+---
+
+## Webhook notifier (scripts/notify.py)
+
+Stand-alone Python notifier — POSTs a payload to a webhook URL with auto-detected Slack / Discord / generic format. Lives at `.claude/skills/unreal-bridge/scripts/notify.py`. No bridge call needed — runs from the host shell so it works whether the editor is up or not.
+
+Typical pattern is "ping me when this long script finishes":
+
+```bash
+python rebuild_relaunch.py
+python notify.py --exit-status $? --title "Editor rebuild" --body "see logs in Saved/Logs/"
+```
+
+**Auto-detection.** URLs containing `hooks.slack.com` → Slack format. URLs containing `discord.com/api/webhooks` (or `discordapp.com`) → Discord. Anything else → a generic JSON envelope `{title, body, status, source, timestamp_utc, fields}` (handy for self-hosted receivers).
+
+**CLI options**
+- `--url <url>` — required, or set `UNREALBRIDGE_WEBHOOK_URL` env var.
+- `--title` / `--body` — content. Pass `--body -` to read body from stdin.
+- `--status success|failure|warning|info` — controls emoji / color where the format supports it. `info` is default.
+- `--exit-status N` — when set, `--status` defaults to `success` (0) or `failure` (non-zero). Pair with `$?`.
+- `--field key=value` — repeatable structured field.
+- `--format auto|slack|discord|generic|raw` — force a shape. `raw` sends `--raw-body` JSON verbatim.
+- `--raw-body <json>` — full custom payload (also accepts `-` for stdin).
+- `--source` — footer / attribution. Default `UnrealBridge@<hostname>`.
+- `--quiet` — suppress success print.
+
+**Exit codes**
+- `0` HTTP 2xx
+- `1` webhook rejected (HTTP 4xx/5xx) — body printed to stderr
+- `2` bad arguments
+
+**Pitfalls**
+- stdlib only (`urllib.request`) — no retry on transient errors. Wrap in shell `until` if your webhook is flaky.
+- Slack / Discord rate limits apply — don't notify per-frame from a hot loop. Once-per-completion is the intended pattern.
+- The default `--source` includes hostname — sensitive deployments should override with a fixed string.
