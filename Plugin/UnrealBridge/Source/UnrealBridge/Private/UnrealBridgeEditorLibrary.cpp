@@ -18,6 +18,7 @@
 #include "Engine/Blueprint.h"
 #include "Engine/ObjectLibrary.h"
 #include "UObject/ObjectRedirector.h"
+#include "Kismet2/BlueprintEditorUtils.h"
 #include "Kismet2/KismetEditorUtilities.h"
 #include "AssetToolsModule.h"
 #include "IAssetTools.h"
@@ -708,6 +709,15 @@ TArray<FBridgeCompileResult> UUnrealBridgeEditorLibrary::CompileBlueprints(const
 		Out.Add(R);
 	}
 	return Out;
+}
+
+bool UUnrealBridgeEditorLibrary::RecompileBlueprint(const FString& BlueprintPath)
+{
+	UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *BlueprintPath);
+	if (!BP) return false;
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	FKismetEditorUtilities::CompileBlueprint(BP);
+	return BP->Status == BS_UpToDate || BP->Status == BS_UpToDateWithWarnings;
 }
 
 TArray<FString> UUnrealBridgeEditorLibrary::ListCVars(const FString& Keyword)

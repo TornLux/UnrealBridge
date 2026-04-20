@@ -410,6 +410,24 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static TArray<FBridgeCompileResult> CompileBlueprints(const TArray<FString>& BlueprintPaths);
 
+	/**
+	 * Mark a Blueprint structurally modified and run a full compile — the
+	 * "flush CDO edits" step agents need after writing UPROPERTY defaults
+	 * on a loaded Blueprint's generated-class CDO via `set_editor_property`
+	 * from Python. Without this step, Python-side CDO writes hang in memory
+	 * but aren't baked into the BP's class-defaults table, so a subsequent
+	 * reload (or editor restart) discards them.
+	 *
+	 * Does NOT save — pair with `SaveAsset(path)` once you're ready to
+	 * persist to disk. Keeping the two separate mirrors the editor UX:
+	 * compile happens on every structural edit, save is user-driven.
+	 *
+	 * Returns true when Blueprint->Status is BS_UpToDate or
+	 * BS_UpToDateWithWarnings after compile.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool RecompileBlueprint(const FString& BlueprintPath);
+
 	// ─── Dirty-state tracking ────────────────────────────
 
 	/** Package names of all currently-dirty `/Game/...` packages. */

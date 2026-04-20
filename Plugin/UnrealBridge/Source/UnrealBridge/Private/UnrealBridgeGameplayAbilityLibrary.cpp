@@ -26,6 +26,8 @@
 #include "GameFramework/PlayerController.h"
 #include "GameFramework/PlayerState.h"
 #include "GameplayAbilitySpec.h"
+#include "GameplayCueNotify_Actor.h"
+#include "GameplayCueNotify_Static.h"
 #include "GameplayEffect.h"
 #include "GameplayEffectComponent.h"
 #include "GameplayTagContainer.h"
@@ -2648,5 +2650,514 @@ FString UUnrealBridgeGameplayAbilityLibrary::AddAbilityCallFunctionNode(
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 	BP->MarkPackageDirty();
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── GameplayEffect CDO writes (targeted helpers) ───────────
+
+namespace BridgeGEWriteImpl
+{
+	static UBlueprint* LoadEffectBP(const FString& Path, UClass** OutGenClass = nullptr)
+	{
+		UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *Path);
+		if (!BP || !BP->GeneratedClass)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: could not load GE BP '%s'"), *Path);
+			return nullptr;
+		}
+		if (!BP->GeneratedClass->IsChildOf(UGameplayEffect::StaticClass()))
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("UnrealBridge: '%s' is not a UGameplayEffect subclass"), *Path);
+			return nullptr;
+		}
+		if (OutGenClass) *OutGenClass = BP->GeneratedClass;
+		return BP;
+	}
+
+	/** Reflection write: set the inner ScalableFloat.Value of a struct field
+	 *  named `MagField` (must be FGameplayEffectModifierMagnitude). Bypasses
+	 *  EditDefaultsOnly + protected. */
+	static bool WriteScalableMagnitudeStruct(
+		UStruct* OwnerStruct, void* OwnerPtr,
+		const TCHAR* MagField, float Value)
+	{
+		FProperty* MagProp = OwnerStruct->FindPropertyByName(FName(MagField));
+		FStructProperty* MagSP = CastField<FStructProperty>(MagProp);
+		if (!MagSP) return false;
+		void* MagPtr = MagSP->ContainerPtrToValuePtr<void>(OwnerPtr);
+
+		FStructProperty* SfSP = CastField<FStructProperty>(
+			MagSP->Struct->FindPropertyByName(TEXT("ScalableFloatMagnitude")));
+		if (!SfSP) return false;
+		void* SfPtr = SfSP->ContainerPtrToValuePtr<void>(MagPtr);
+
+		FFloatProperty* ValFP = CastField<FFloatProperty>(
+			SfSP->Struct->FindPropertyByName(TEXT("Value")));
+		if (!ValFP) return false;
+
+		// Reset MagnitudeCalculationType to ScalableFloat (enum 0) so any
+		// previously-set Attribute-based magnitude doesn't override us.
+		FProperty* TypeP = MagSP->Struct->FindPropertyByName(TEXT("MagnitudeCalculationType"));
+		if (FEnumProperty* EnumP = CastField<FEnumProperty>(TypeP))
+		{
+			EnumP->GetUnderlyingProperty()->SetIntPropertyValue(
+				EnumP->ContainerPtrToValuePtr<void>(MagPtr), (int64)0);
+		}
+		else if (FByteProperty* ByteP = CastField<FByteProperty>(TypeP))
+		{
+			*ByteP->ContainerPtrToValuePtr<uint8>(MagPtr) = 0;
+		}
+
+		*ValFP->ContainerPtrToValuePtr<float>(SfPtr) = Value;
+		return true;
+	}
+
+	static FProperty* FindAttributeProperty(UClass* AttrSetClass, const FString& FieldName)
+	{
+		for (TFieldIterator<FProperty> It(AttrSetClass); It; ++It)
+		{
+			FProperty* P = *It;
+			FStructProperty* SP = CastField<FStructProperty>(P);
+			if (!SP) continue;
+			if (SP->Struct != FGameplayAttributeData::StaticStruct()) continue;
+			if (SP->GetName() == FieldName) return P;
+		}
+		return nullptr;
+	}
+
+	static bool ParseModOp(const FString& S, EGameplayModOp::Type& OutOp)
+	{
+		if (S.Equals(TEXT("Additive"), ESearchCase::IgnoreCase))       { OutOp = EGameplayModOp::Additive; return true; }
+		if (S.Equals(TEXT("Multiplicitive"), ESearchCase::IgnoreCase)) { OutOp = EGameplayModOp::Multiplicitive; return true; }
+		if (S.Equals(TEXT("Division"), ESearchCase::IgnoreCase))       { OutOp = EGameplayModOp::Division; return true; }
+		if (S.Equals(TEXT("Override"), ESearchCase::IgnoreCase))       { OutOp = EGameplayModOp::Override; return true; }
+		return false;
+	}
+
+	static void FinalizeGEBP(UBlueprint* BP)
+	{
+		// Mark structurally modified so the next compile picks the change up;
+		// don't compile or save here — caller drives those via the
+		// recompile_blueprint + save_asset two-step flow.
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+		BP->MarkPackageDirty();
+	}
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::SetGEScalableFloatField(
+	const FString& GameplayEffectBlueprintPath,
+	const FString& FieldName,
+	float FlatValue)
+{
+	using namespace BridgeGEWriteImpl;
+
+	const FString RealField =
+		(FieldName == TEXT("duration_magnitude") || FieldName == TEXT("DurationMagnitude"))     ? FString(TEXT("DurationMagnitude")) :
+		(FieldName == TEXT("max_duration_magnitude") || FieldName == TEXT("MaxDurationMagnitude")) ? FString(TEXT("MaxDurationMagnitude")) :
+		(FieldName == TEXT("period")              || FieldName == TEXT("Period"))                ? FString(TEXT("Period")) :
+		FString();
+	if (RealField.IsEmpty())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: SetGEScalableFloatField unknown field '%s' (expect DurationMagnitude / MaxDurationMagnitude / Period)"),
+			*FieldName);
+		return false;
+	}
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadEffectBP(GameplayEffectBlueprintPath, &GenClass);
+	if (!BP) return false;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	BP->Modify();
+	CDO->Modify();
+
+	// Period is a raw FScalableFloat; the others wrap it in
+	// FGameplayEffectModifierMagnitude. Branch by struct shape.
+	FStructProperty* OuterSP = CastField<FStructProperty>(GenClass->FindPropertyByName(FName(*RealField)));
+	if (!OuterSP)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: '%s' missing on %s"), *RealField, *GenClass->GetName());
+		return false;
+	}
+
+	bool bOk = false;
+	if (OuterSP->Struct == TBaseStructure<FScalableFloat>::Get() ||
+		OuterSP->Struct->GetFName() == TEXT("ScalableFloat"))
+	{
+		void* SfPtr = OuterSP->ContainerPtrToValuePtr<void>(CDO);
+		FFloatProperty* ValFP = CastField<FFloatProperty>(OuterSP->Struct->FindPropertyByName(TEXT("Value")));
+		if (ValFP)
+		{
+			*ValFP->ContainerPtrToValuePtr<float>(SfPtr) = FlatValue;
+			bOk = true;
+		}
+	}
+	else
+	{
+		bOk = WriteScalableMagnitudeStruct(GenClass, CDO, *RealField, FlatValue);
+	}
+
+	if (!bOk)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: SetGEScalableFloatField reflection walk failed on %s.%s"),
+			*GenClass->GetName(), *RealField);
+		return false;
+	}
+
+	FinalizeGEBP(BP);
+	return true;
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::AddGEModifierScalable(
+	const FString& GameplayEffectBlueprintPath,
+	const FString& AttributeSetClassPath,
+	const FString& AttributeFieldName,
+	const FString& ModOp,
+	float FlatMagnitude)
+{
+	using namespace BridgeGEWriteImpl;
+
+	UClass* AttrSetClass = BridgeGameplayAbilityImpl::ResolveClassByPath(AttributeSetClassPath);
+	if (!AttrSetClass || !AttrSetClass->IsChildOf(UAttributeSet::StaticClass()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: AddGEModifierScalable '%s' is not a UAttributeSet subclass"),
+			*AttributeSetClassPath);
+		return -1;
+	}
+
+	FProperty* AttrProp = FindAttributeProperty(AttrSetClass, AttributeFieldName);
+	if (!AttrProp)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: attribute '%s' not found on '%s'"),
+			*AttributeFieldName, *AttrSetClass->GetName());
+		return -1;
+	}
+
+	EGameplayModOp::Type Op;
+	if (!ParseModOp(ModOp, Op))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: unknown mod op '%s' (Additive/Multiplicitive/Division/Override)"),
+			*ModOp);
+		return -1;
+	}
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadEffectBP(GameplayEffectBlueprintPath, &GenClass);
+	if (!BP) return -1;
+
+	FArrayProperty* ArrP = CastField<FArrayProperty>(GenClass->FindPropertyByName(TEXT("Modifiers")));
+	FStructProperty* ElemP = ArrP ? CastField<FStructProperty>(ArrP->Inner) : nullptr;
+	if (!ArrP || !ElemP || ElemP->Struct != FGameplayModifierInfo::StaticStruct()) return -1;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	BP->Modify();
+	CDO->Modify();
+
+	FScriptArrayHelper AH(ArrP, ArrP->ContainerPtrToValuePtr<void>(CDO));
+	const int32 NewIdx = AH.AddValue();
+	FGameplayModifierInfo* Mod = reinterpret_cast<FGameplayModifierInfo*>(AH.GetRawPtr(NewIdx));
+	Mod->Attribute = FGameplayAttribute(AttrProp);
+	Mod->ModifierOp = Op;
+
+	if (!WriteScalableMagnitudeStruct(ElemP->Struct, Mod, TEXT("ModifierMagnitude"), FlatMagnitude))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddGEModifierScalable failed to write magnitude"));
+		AH.RemoveValues(NewIdx, 1);
+		return -1;
+	}
+
+	const int32 NewLen = AH.Num();
+	FinalizeGEBP(BP);
+	return NewLen;
+}
+
+bool UUnrealBridgeGameplayAbilityLibrary::RemoveGEModifier(
+	const FString& GameplayEffectBlueprintPath,
+	int32 Index)
+{
+	using namespace BridgeGEWriteImpl;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadEffectBP(GameplayEffectBlueprintPath, &GenClass);
+	if (!BP) return false;
+
+	FArrayProperty* ArrP = CastField<FArrayProperty>(GenClass->FindPropertyByName(TEXT("Modifiers")));
+	if (!ArrP) return false;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	FScriptArrayHelper AH(ArrP, ArrP->ContainerPtrToValuePtr<void>(CDO));
+	const int32 Actual = (Index < 0) ? (AH.Num() - 1) : Index;
+	if (Actual < 0 || Actual >= AH.Num()) return false;
+
+	BP->Modify();
+	CDO->Modify();
+	AH.RemoveValues(Actual, 1);
+	FinalizeGEBP(BP);
+	return true;
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::ClearGEModifiers(
+	const FString& GameplayEffectBlueprintPath)
+{
+	using namespace BridgeGEWriteImpl;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadEffectBP(GameplayEffectBlueprintPath, &GenClass);
+	if (!BP) return 0;
+
+	FArrayProperty* ArrP = CastField<FArrayProperty>(GenClass->FindPropertyByName(TEXT("Modifiers")));
+	if (!ArrP) return 0;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	FScriptArrayHelper AH(ArrP, ArrP->ContainerPtrToValuePtr<void>(CDO));
+	const int32 N = AH.Num();
+	if (N == 0) return 0;
+
+	BP->Modify();
+	CDO->Modify();
+	AH.EmptyValues();
+	FinalizeGEBP(BP);
+	return N;
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::AddGEComponent(
+	const FString& GameplayEffectBlueprintPath,
+	const FString& ComponentClassPath)
+{
+	using namespace BridgeGEWriteImpl;
+
+	UClass* CompClass = BridgeGameplayAbilityImpl::ResolveClassByPath(ComponentClassPath);
+	if (!CompClass || !CompClass->IsChildOf(UGameplayEffectComponent::StaticClass()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: '%s' is not a UGameplayEffectComponent subclass"),
+			*ComponentClassPath);
+		return -1;
+	}
+	if (CompClass->HasAnyClassFlags(CLASS_Abstract))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: '%s' is abstract"), *ComponentClassPath);
+		return -1;
+	}
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadEffectBP(GameplayEffectBlueprintPath, &GenClass);
+	if (!BP) return -1;
+
+	FArrayProperty* ArrP = CastField<FArrayProperty>(GenClass->FindPropertyByName(TEXT("GEComponents")));
+	if (!ArrP)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: 'GEComponents' array not found on %s"), *GenClass->GetName());
+		return -1;
+	}
+	FObjectProperty* ObjP = CastField<FObjectProperty>(ArrP->Inner);
+	if (!ObjP) return -1;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	BP->Modify();
+	CDO->Modify();
+
+	UGameplayEffectComponent* Comp = NewObject<UGameplayEffectComponent>(
+		CDO, CompClass, NAME_None, RF_Public | RF_ArchetypeObject | RF_DefaultSubObject);
+
+	FScriptArrayHelper AH(ArrP, ArrP->ContainerPtrToValuePtr<void>(CDO));
+	const int32 NewIdx = AH.AddValue();
+	ObjP->SetObjectPropertyValue(AH.GetRawPtr(NewIdx), Comp);
+
+	const int32 NewLen = AH.Num();
+	FinalizeGEBP(BP);
+	return NewLen;
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::RemoveGEComponentsByClass(
+	const FString& GameplayEffectBlueprintPath,
+	const FString& ComponentClassPath)
+{
+	using namespace BridgeGEWriteImpl;
+
+	UClass* CompClass = BridgeGameplayAbilityImpl::ResolveClassByPath(ComponentClassPath);
+	if (!CompClass) return 0;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadEffectBP(GameplayEffectBlueprintPath, &GenClass);
+	if (!BP) return 0;
+
+	FArrayProperty* ArrP = CastField<FArrayProperty>(GenClass->FindPropertyByName(TEXT("GEComponents")));
+	FObjectProperty* ObjP = ArrP ? CastField<FObjectProperty>(ArrP->Inner) : nullptr;
+	if (!ArrP || !ObjP) return 0;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	FScriptArrayHelper AH(ArrP, ArrP->ContainerPtrToValuePtr<void>(CDO));
+
+	int32 Removed = 0;
+	for (int32 i = AH.Num() - 1; i >= 0; --i)
+	{
+		UObject* Entry = ObjP->GetObjectPropertyValue(AH.GetRawPtr(i));
+		if (Entry && Entry->GetClass() == CompClass)
+		{
+			if (Removed == 0)
+			{
+				BP->Modify();
+				CDO->Modify();
+			}
+			AH.RemoveValues(i, 1);
+			++Removed;
+		}
+	}
+	if (Removed > 0)
+	{
+		FinalizeGEBP(BP);
+	}
+	return Removed;
+}
+
+int32 UUnrealBridgeGameplayAbilityLibrary::SetGEComponentInheritedTags(
+	const FString& GameplayEffectBlueprintPath,
+	int32 ComponentIndex,
+	const FString& FieldName,
+	const TArray<FString>& Tags)
+{
+	using namespace BridgeGEWriteImpl;
+
+	UClass* GenClass = nullptr;
+	UBlueprint* BP = LoadEffectBP(GameplayEffectBlueprintPath, &GenClass);
+	if (!BP) return -1;
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	FArrayProperty* ArrP = CastField<FArrayProperty>(GenClass->FindPropertyByName(TEXT("GEComponents")));
+	FObjectProperty* ObjP = ArrP ? CastField<FObjectProperty>(ArrP->Inner) : nullptr;
+	if (!ArrP || !ObjP) return -1;
+
+	FScriptArrayHelper AH(ArrP, ArrP->ContainerPtrToValuePtr<void>(CDO));
+	if (ComponentIndex < 0 || ComponentIndex >= AH.Num())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: SetGEComponentInheritedTags index %d out of range (count=%d)"),
+			ComponentIndex, AH.Num());
+		return -1;
+	}
+
+	UObject* Comp = ObjP->GetObjectPropertyValue(AH.GetRawPtr(ComponentIndex));
+	if (!Comp)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GE component at index %d is null"), ComponentIndex);
+		return -1;
+	}
+
+	FStructProperty* ITCProp = CastField<FStructProperty>(Comp->GetClass()->FindPropertyByName(FName(*FieldName)));
+	if (!ITCProp)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: field '%s' not found on '%s'"),
+			*FieldName, *Comp->GetClass()->GetName());
+		return -1;
+	}
+	// Validate it's an FInheritedTagContainer.
+	const bool bIsITC = (ITCProp->Struct && ITCProp->Struct->GetFName() == TEXT("InheritedTagContainer"));
+	if (!bIsITC)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: field '%s' on '%s' is not an FInheritedTagContainer (got %s)"),
+			*FieldName, *Comp->GetClass()->GetName(),
+			ITCProp->Struct ? *ITCProp->Struct->GetName() : TEXT("null"));
+		return -1;
+	}
+
+	BP->Modify();
+	CDO->Modify();
+	Comp->Modify();
+
+	void* ITCPtr = ITCProp->ContainerPtrToValuePtr<void>(Comp);
+
+	// Set Added field
+	FStructProperty* AddedSP = CastField<FStructProperty>(ITCProp->Struct->FindPropertyByName(TEXT("Added")));
+	if (!AddedSP) return -1;
+	FGameplayTagContainer* Added = AddedSP->ContainerPtrToValuePtr<FGameplayTagContainer>(ITCPtr);
+	Added->Reset();
+
+	int32 Applied = 0;
+	for (const FString& TagStr : Tags)
+	{
+		const FGameplayTag T = FGameplayTag::RequestGameplayTag(FName(*TagStr), false);
+		if (!T.IsValid())
+		{
+			UE_LOG(LogTemp, Warning,
+				TEXT("UnrealBridge: skipping unregistered tag '%s' on %s.%s"),
+				*TagStr, *Comp->GetClass()->GetName(), *FieldName);
+			continue;
+		}
+		Added->AddTag(T);
+		++Applied;
+	}
+
+	// Also refresh CombinedTags via the struct's helper. Without it, runtime
+	// queries against the GE's tags read stale data. Use ApplyTo with an
+	// empty parent container to populate CombinedTags from Added/Removed.
+	FStructProperty* CombSP = CastField<FStructProperty>(ITCProp->Struct->FindPropertyByName(TEXT("CombinedTags")));
+	if (CombSP)
+	{
+		FGameplayTagContainer* Comb = CombSP->ContainerPtrToValuePtr<FGameplayTagContainer>(ITCPtr);
+		Comb->Reset();
+		Comb->AppendTags(*Added);
+	}
+
+	FinalizeGEBP(BP);
+	return Applied;
+}
+
+// ─── GameplayCue helper ───────────────────────────────────
+
+bool UUnrealBridgeGameplayAbilityLibrary::SetGameplayCueTag(
+	const FString& CueNotifyBlueprintPath,
+	const FString& TagString)
+{
+	UBlueprint* BP = LoadObject<UBlueprint>(nullptr, *CueNotifyBlueprintPath);
+	if (!BP || !BP->GeneratedClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: SetGameplayCueTag could not load '%s'"), *CueNotifyBlueprintPath);
+		return false;
+	}
+	UClass* GenClass = BP->GeneratedClass;
+	if (!GenClass->IsChildOf(AGameplayCueNotify_Actor::StaticClass()) &&
+		!GenClass->IsChildOf(UGameplayCueNotify_Static::StaticClass()))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: '%s' is not a AGameplayCueNotify_Actor/_Static subclass"),
+			*CueNotifyBlueprintPath);
+		return false;
+	}
+
+	const FGameplayTag Tag = FGameplayTag::RequestGameplayTag(FName(*TagString), false);
+	if (!Tag.IsValid())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: SetGameplayCueTag '%s' is not a registered tag"), *TagString);
+		return false;
+	}
+
+	FStructProperty* TagProp = CastField<FStructProperty>(
+		GenClass->FindPropertyByName(TEXT("GameplayCueTag")));
+	if (!TagProp || TagProp->Struct != TBaseStructure<FGameplayTag>::Get())
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: GameplayCueTag FGameplayTag UPROPERTY not found on %s"),
+			*GenClass->GetName());
+		return false;
+	}
+
+	UObject* CDO = GenClass->GetDefaultObject();
+	BP->Modify();
+	CDO->Modify();
+	*TagProp->ContainerPtrToValuePtr<FGameplayTag>(CDO) = Tag;
+
+	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
+	BP->MarkPackageDirty();
+	return true;
 }
 

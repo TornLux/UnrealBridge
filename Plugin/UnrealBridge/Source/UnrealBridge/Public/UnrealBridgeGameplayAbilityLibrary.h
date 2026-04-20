@@ -835,4 +835,120 @@ public:
 		const FString& DestContentPath,
 		const FString& AssetName,
 		const FString& ParentClassPath);
+
+	// ─── GameplayEffect CDO writes (targeted C++ helpers) ──────────
+
+	/**
+	 * Write a flat scalable-float magnitude into one of the GE CDO's
+	 * `FGameplayEffectModifierMagnitude` fields (`duration_magnitude` or
+	 * `period`). These fields are `protected EditDefaultsOnly` at the C++
+	 * level — Python's `set_editor_property` refuses them, so this helper
+	 * goes through reflection to write the inner `ScalableFloatMagnitude`.
+	 *
+	 * @param FieldName   "duration_magnitude" or "period".
+	 * @return true on success; logs + false on bad BP / bad field.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool SetGEScalableFloatField(
+		const FString& GameplayEffectBlueprintPath,
+		const FString& FieldName,
+		float FlatValue);
+
+	/**
+	 * Append a flat-scalable-float Modifier entry to the GE's `Modifiers`
+	 * array. Covers the 80% case — "Additive +5 Health", "Multiplicitive
+	 * *1.25 AttackSpeed", etc. For Attribute-based / custom-magnitude /
+	 * SetByCaller, edit the returned Modifier via Python `set_editor_property`
+	 * on the indexed entry afterwards (most sub-fields on `FGameplayModifierInfo`
+	 * are Python-writable — only the magnitude struct is the hard blocker).
+	 *
+	 * @param AttributeSetClassPath  Native or BP class path of the owning AttributeSet.
+	 * @param AttributeFieldName     Attribute UPROPERTY name on the AttributeSet
+	 *                               (e.g. "Health", "MaxMana").
+	 * @param ModOp                  "Additive" | "Multiplicitive" | "Division" | "Override".
+	 * @return                       New array length, -1 on error.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 AddGEModifierScalable(
+		const FString& GameplayEffectBlueprintPath,
+		const FString& AttributeSetClassPath,
+		const FString& AttributeFieldName,
+		const FString& ModOp,
+		float FlatMagnitude);
+
+	/** Remove the Modifier at `Index`. Returns true on success. Index -1 removes the last. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool RemoveGEModifier(const FString& GameplayEffectBlueprintPath, int32 Index);
+
+	/** Empty the GE's Modifiers array. Returns number removed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 ClearGEModifiers(const FString& GameplayEffectBlueprintPath);
+
+	/**
+	 * Instantiate a UGameplayEffectComponent subclass and append it to the GE's
+	 * `Components` array. The component's own fields (e.g. asset tags on
+	 * `UAssetTagsGameplayEffectComponent`) are Python-writable after this call
+	 * — fetch via `cdo.get_editor_property('components')[index]` and use
+	 * `set_editor_property` on the component.
+	 *
+	 * @param ComponentClassPath  Full class path, e.g.
+	 *                            "/Script/GameplayAbilities.AssetTagsGameplayEffectComponent".
+	 * @return New array length, -1 on error (class not found, not a subclass of
+	 *         UGameplayEffectComponent, etc.).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 AddGEComponent(
+		const FString& GameplayEffectBlueprintPath,
+		const FString& ComponentClassPath);
+
+	/** Remove every GEComponent whose class matches `ComponentClassPath` (exact). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 RemoveGEComponentsByClass(
+		const FString& GameplayEffectBlueprintPath,
+		const FString& ComponentClassPath);
+
+	/**
+	 * Set the `Added` tag list of an `FInheritedTagContainer` field on a
+	 * `UGameplayEffectComponent` instance. Covers the 80% case for component
+	 * configuration: AssetTags (`InheritableAssetTags` on `UAssetTagsGameplayEffectComponent`),
+	 * blocked/cancel ability tags, target-tag requirements, etc. — all of
+	 * which use the `FInheritedTagContainer` wrapper around an
+	 * `FGameplayTagContainer`.
+	 *
+	 * Needed because GE components' UPROPERTYs are typically `EditDefaultsOnly`
+	 * without `BlueprintReadable`, which makes them invisible to Python's
+	 * `set_editor_property`.
+	 *
+	 * @param ComponentIndex   Index into GE's `GEComponents` array.
+	 * @param FieldName        Field name on the component (case-sensitive C++ name).
+	 *                         Examples: `"InheritableAssetTags"` (UAssetTagsGE),
+	 *                         `"RequiredTagsContainer"`, `"IgnoredTagsContainer"`.
+	 *                         Must resolve to an `FInheritedTagContainer`.
+	 * @param Tags             Tag strings to write. Unregistered tags warn + skip.
+	 *                         Pass empty list to clear.
+	 *
+	 * @return Number of tags actually written, -1 on error.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static int32 SetGEComponentInheritedTags(
+		const FString& GameplayEffectBlueprintPath,
+		int32 ComponentIndex,
+		const FString& FieldName,
+		const TArray<FString>& Tags);
+
+	// ─── GameplayCue helpers ──────────────────────────────────────
+
+	/**
+	 * Set the `GameplayCueTag` on a `AGameplayCueNotify_Actor` / _Static BP CDO.
+	 * The tag is stored as an `FGameplayTag` wrapped in `FGameplayCueTag`
+	 * (protected inner member), so Python can't reach it through
+	 * `set_editor_property` alone.
+	 *
+	 * @param TagString  e.g. "GameplayCue.Combat.Hit". Must be registered.
+	 * @return true on success.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|GameplayAbility")
+	static bool SetGameplayCueTag(
+		const FString& CueNotifyBlueprintPath,
+		const FString& TagString);
 };

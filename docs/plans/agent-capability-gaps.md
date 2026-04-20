@@ -44,7 +44,7 @@ Bridge 已覆盖的主要领域（详见各 `bridge-*-api.md`）：
 | 6 | **Niagara 系统 + emitter + module 编辑** | 大 | 中-高 | 零覆盖。`FNiagaraSystemViewModel` + `FNiagaraEmitterHandle` + `UNiagaraScript`。VFX 整类无法 agent 化。先读后写，写的时候可以复用 Material Graph 的节点创建原语。 |
 | 7 | **Sequencer / 过场** | 大 | 中 | 零覆盖。`UMovieScene` + `UMovieSceneTrack*` 子类。cutscene / 相机脚本 / trailer 都要人开 Sequencer 编辑器。API 结构清晰，主要工作量在各种 track 类型的封装。 |
 | 8 | **AnimGraph / 状态机写** | 大 | 高 | 只读。`UAnimStateNodeBase` / `UAnimGraphNode_*`，做法与 BP 同构。角色 BP 品类需要。 |
-| 9 | **GameplayAbility 图编辑** ✅ | — | — | **全部交付 2026-04-20**：M1 八个 CDO 写（`set_ability_tag_container` 统一 10 containers / instancing / net / cost / cooldown / triggers × 3）；M2 四个图节点写（`list_ability_task_classes` / `list_ability_task_factories` / `add_ability_task_node` 带 async delegate pin 展开 / `add_ability_call_function_node` 带 DisplayName/ScriptName fallback）；M3 `create_gameplay_ability_blueprint`（工厂 + 自动注册 + 保存）。端到端验证：创建 → tags → policy → 节点 → save 一套走通。 |
+| 9 | **GameplayAbility / GameplayEffect / GameplayCue 图编辑** ✅ | — | — | **GA 全交付 2026-04-20**（M1 CDO + M2 图节点 + M3 工厂）；**GE + GC 配置交付 2026-04-21**：通用 `recompile_blueprint`（与 save 解耦）+ GE 七个 helper（`set_ge_scalable_float_field` / `add_ge_modifier_scalable` / `remove_ge_modifier` / `clear_ge_modifiers` / `add_ge_component` / `remove_ge_components_by_class` / `set_ge_component_inherited_tags`）+ GC `set_gameplay_cue_tag`。设计原则：top-level CDO 字段走 Python `set_editor_property`，被 EditDefaultsOnly+protected 挡住的（magnitude wrappers / GEComponent 内部字段 / GameplayCueTag）走 C++ helper。 |
 | 10 | **Control Rig / IK Rig / IK Retargeter** | 大 | 中 | 零覆盖。跨骨架重定向每次人工。`URigBlueprint` + `FRigHierarchy` 编辑，UE 官方也在快速迭代，API 面偏不稳。 |
 
 ### A3. 运行时观测 / 调试

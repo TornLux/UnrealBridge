@@ -857,6 +857,159 @@ unreal.EditorAssetLibrary.save_asset(path.split('.')[0])
 
 ---
 
+## GameplayEffect Blueprint authoring
+
+Mostly Python-native via `unreal.BlueprintFactory` + `cdo.set_editor_property(...)`. The exception is anything wrapping `FGameplayEffectModifierMagnitude` (Duration, Period, per-Modifier magnitude) or living inside a `UGameplayEffectComponent` — those fields are `EditDefaultsOnly` without `BlueprintReadable`, so Python's `set_editor_property` can't see them. Bridge ships a small set of targeted C++ helpers for exactly those blockers; everything else stays in Python.
+
+**End-to-end recipe**:
+
+```python
+import unreal
+GA = unreal.UnrealBridgeGameplayAbilityLibrary
+BE = unreal.UnrealBridgeEditorLibrary
+
+# 1. Create the GE BP — pure Python via BlueprintFactory + AssetTools
+tools = unreal.AssetToolsHelpers.get_asset_tools()
+fac = unreal.BlueprintFactory()
+fac.set_editor_property('parent_class', unreal.GameplayEffect)
+bp = tools.create_asset("GE_Fireball", "/Game/GE", unreal.Blueprint, fac)
+unreal.EditorAssetLibrary.save_asset("/Game/GE/GE_Fireball")
+
+ge_path = "/Game/GE/GE_Fireball.GE_Fireball"
+
+# 2. Top-level CDO fields — pure Python (these are BlueprintReadable enough)
+cls = unreal.EditorAssetLibrary.load_blueprint_class("/Game/GE/GE_Fireball")
+cdo = unreal.get_default_object(cls)
+cdo.set_editor_property('duration_policy', unreal.GameplayEffectDurationType.HAS_DURATION)
+cdo.set_editor_property('stacking_type', unreal.GameplayEffectStackingType.AGGREGATE_BY_SOURCE)
+cdo.set_editor_property('stack_limit_count', 3)
+
+# 3. Wrapped magnitude structs — bridge C++ helpers (Python blocked)
+GA.set_ge_scalable_float_field(ge_path, "DurationMagnitude", 5.0)  # 5 seconds
+GA.set_ge_scalable_float_field(ge_path, "Period", 1.0)             # 1 sec ticks
+
+# 4. Modifiers — bridge C++ helper
+GA.add_ge_modifier_scalable(
+    ge_path,
+    "/Script/MyGame.MyAttributeSet", "Health",
+    "Additive", -10.0)
+# (To remove: GA.remove_ge_modifier(path, index) or GA.clear_ge_modifiers(path).)
+
+# 5. GEComponents — add via bridge, configure inner tags via bridge
+GA.add_ge_component(ge_path,
+    "/Script/GameplayAbilities.AssetTagsGameplayEffectComponent")
+GA.set_ge_component_inherited_tags(ge_path, 0, "InheritableAssetTags",
+    ["Ability.Combat.Fire", "Ability.Type.Projectile"])
+
+# 6. Compile + save (separate steps — recompile bakes CDO changes;
+#    save persists to disk).
+BE.recompile_blueprint(ge_path)
+BE.save_asset(ge_path)
+```
+
+### set_ge_scalable_float_field(ge_blueprint_path, field_name, flat_value) -> bool
+
+Set a flat scalable-float magnitude on the GE CDO. Field names: `"DurationMagnitude"` / `"MaxDurationMagnitude"` (wrapped in `FGameplayEffectModifierMagnitude`) or `"Period"` (raw `FScalableFloat`). Snake-case (`"duration_magnitude"`, `"period"`) is also accepted. For Duration variants, also resets `MagnitudeCalculationType` to `ScalableFloat` so prior attribute-based config doesn't override.
+
+### add_ge_modifier_scalable(path, attr_set_class, attr_field, mod_op, flat_magnitude) -> int32
+
+Append a flat-scalable Modifier. `mod_op`: `"Additive"` / `"Multiplicitive"` / `"Division"` / `"Override"` (case-insensitive). `attr_set_class` accepts native class path (`/Script/MyMod.MyAttrSet`) or BP path. Returns new array length, `-1` on error.
+
+### remove_ge_modifier(path, index) -> bool
+
+`index < 0` removes the last entry.
+
+### clear_ge_modifiers(path) -> int32
+
+Returns count removed.
+
+### add_ge_component(path, component_class_path) -> int32
+
+Instantiate a `UGameplayEffectComponent` subclass (under the GE CDO as outer) and append to `GEComponents`. `component_class_path` is the full path. Common ones:
+
+| Class | Purpose |
+|---|---|
+| `/Script/GameplayAbilities.AssetTagsGameplayEffectComponent` | Tags the GE itself owns (queryable via `find_active_effects_by_tag`) |
+| `/Script/GameplayAbilities.TargetTagsGameplayEffectComponent` | Tags applied to the *target* actor while the GE is active |
+| `/Script/GameplayAbilities.TargetTagRequirementsGameplayEffectComponent` | Required / blocked / ignored tags on the target |
+| `/Script/GameplayAbilities.BlockAbilityTagsGameplayEffectComponent` | Block matching abilities while the GE is active |
+| `/Script/GameplayAbilities.CancelAbilityTagsGameplayEffectComponent` | Cancel matching abilities when the GE applies |
+| `/Script/GameplayAbilities.ChanceToApplyGameplayEffectComponent` | Random-chance application gate |
+| `/Script/GameplayAbilities.ImmunityGameplayEffectComponent` | Block matching incoming GEs while this one is active |
+| `/Script/GameplayAbilities.AdditionalEffectsGameplayEffectComponent` | Apply additional GEs on apply / on remove |
+| `/Script/GameplayAbilities.RemoveOtherGameplayEffectComponent` | Remove other GEs on apply |
+| `/Script/GameplayAbilities.CustomCanApplyGameplayEffectComponent` | Custom UFunction gate |
+| `/Script/GameplayAbilities.AbilitiesGameplayEffectComponent` | Grant / remove abilities while active |
+
+### remove_ge_components_by_class(path, component_class_path) -> int32
+
+Remove every component matching the given class. Returns count removed.
+
+### set_ge_component_inherited_tags(path, component_index, field_name, tags) -> int32
+
+Set the `Added` tag list on an `FInheritedTagContainer` field of a GE component. The field name must match the C++ UPROPERTY name (case-sensitive). Common pairings:
+
+| Component class | Useful field names |
+|---|---|
+| `AssetTagsGameplayEffectComponent` | `InheritableAssetTags` |
+| `TargetTagsGameplayEffectComponent` | `InheritableOwnedTagsContainer` |
+| `TargetTagRequirementsGameplayEffectComponent` | `RequiredTagsContainer`, `IgnoredTagsContainer` |
+| `BlockAbilityTagsGameplayEffectComponent` | `InheritableBlockedAbilityTagsContainer` |
+| `CancelAbilityTagsGameplayEffectComponent` | `InheritableCancelAbilityTagsContainer` |
+
+Pass an empty `tags` list to clear. Returns tags actually applied (unregistered tags warn + skip), `-1` on error.
+
+**Pitfalls**
+- GE component UPROPERTYs are mostly `EditDefaultsOnly` without `BlueprintReadable` — Python's `set_editor_property` and `get_editor_property` both fail with `Failed to find property '…'`. This is a UE Python visibility rule, not a bug. Use the bridge helpers above for tag fields; for non-tag config (e.g. `ChanceToApplyGameplayEffectComponent.ChanceToApplyToTarget`, an `FScalableFloat`), no helper exists yet — fall back to opening the GE in the editor and configuring by hand, or extend `bridge-gameplayability-api.md` cookbook with a new helper.
+- The two-step `recompile_blueprint` + `save_asset` is intentional. `recompile_blueprint` bakes in-memory CDO edits into the BP's class-defaults table; `save_asset` writes the package to disk. Skipping the recompile means the next package reload (or editor restart) discards your edits.
+- Field name lookup is case-sensitive and uses C++ UPROPERTY names — *not* Python snake_case (`InheritableAssetTags`, not `inheritable_asset_tags`). The few exceptions accepted in snake_case are documented per function (Duration / Period).
+- `add_ge_component` creates the component as `RF_Public | RF_ArchetypeObject | RF_DefaultSubObject` under the GE CDO. Saved with the BP package. Don't `unreal.delete_object` it — use `remove_ge_components_by_class`.
+
+---
+
+## GameplayCueNotify Blueprint authoring
+
+GC notify BPs (`AGameplayCueNotify_Actor` for spawned-actor cues, `UGameplayCueNotify_Static` for cheap fire-and-forget) carry a single `FGameplayTag GameplayCueTag` UPROPERTY that hooks them into the cue dispatch system. That field is `EditDefaultsOnly` without `BlueprintReadable` (same Python visibility limit as GE components), so the bridge ships a dedicated setter.
+
+```python
+import unreal
+GA = unreal.UnrealBridgeGameplayAbilityLibrary
+BE = unreal.UnrealBridgeEditorLibrary
+
+# 1. Create the GC notify BP. Use AGameplayCueNotify_Actor for spawned VFX/SFX
+#    actors; UGameplayCueNotify_Static for one-shot stateless cues.
+tools = unreal.AssetToolsHelpers.get_asset_tools()
+fac = unreal.BlueprintFactory()
+fac.set_editor_property('parent_class', unreal.GameplayCueNotify_Static)
+bp = tools.create_asset("GC_HitImpact", "/Game/GC", unreal.Blueprint, fac)
+unreal.EditorAssetLibrary.save_asset("/Game/GC/GC_HitImpact")
+
+cue_path = "/Game/GC/GC_HitImpact.GC_HitImpact"
+
+# 2. Hook into the cue tag tree
+GA.set_gameplay_cue_tag(cue_path, "GameplayCue.Combat.Hit")
+
+# 3. Compile + save
+BE.recompile_blueprint(cue_path)
+BE.save_asset(cue_path)
+
+# (For BP-side OnExecute / OnActive / WhileActive / OnRemove implementations,
+# open the BP in the editor — graph authoring on cue notifies isn't covered by
+# the bridge yet; fall back to bridge-blueprint-api.md generic node-write
+# UFUNCTIONs if you must do it programmatically.)
+```
+
+### set_gameplay_cue_tag(cue_blueprint_path, tag_string) -> bool
+
+Set the `GameplayCueTag` field on an `AGameplayCueNotify_Actor` or `UGameplayCueNotify_Static` BP CDO. `tag_string` must be a registered tag.
+
+**Pitfalls**
+- Reading `cue_cdo.get_editor_property('gameplay_cue_tag')` from Python after writing returns an empty `FGameplayTag` struct — same EditDefaultsOnly visibility issue. The write *did* succeed (helper returns `True` and the next BP-editor open shows the tag); use the editor or write a future C++ read helper to verify.
+- `AGameplayCueNotify_Actor` is an `AActor` — its CDO carries actor-component scaffolding. Be wary of editing the CDO's component template tree from Python; use the BP editor.
+- The cue tag must already be registered in the project's GameplayCue tag table. If unregistered, the helper warns + returns `False`.
+
+---
+
 ## Native UE Python fallbacks
 
 ```python
