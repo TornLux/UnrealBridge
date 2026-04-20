@@ -4,6 +4,30 @@ Module: `unreal.UnrealBridgeEditorLibrary`
 
 Editor session control: state query, asset open/save, Content Browser, viewport, PIE, undo/redo, console/CVars, redirector fixup, Blueprint compile.
 
+## Bridge protocol commands (non-`exec`)
+
+These are **server-level** commands, not Library functions — they're handled directly by `FUnrealBridgeServer::HandleClient` and bypass the FTSTicker exec queue. Use them when an `exec` is hung and you need to know *why* without queueing behind the stuck script.
+
+Each is a separate TCP connection (workers are per-connection, capped at 16). Send via `bridge.py` subcommand or by hand-crafting the JSON request:
+
+| Command JSON | CLI | Purpose |
+|---|---|---|
+| `{"command":"ping"}` | `bridge.py ping` | TCP-only liveness — proves the server process and accept loop are alive. Returns `pong` plus `ready: bool` (false during the editor's startup window before main frame creation). |
+| `{"command":"gamethread_ping","timeout":2.0}` | `bridge.py gamethread-ping [--probe-timeout S]` | GameThread liveness — dispatches a no-op `AsyncTask(GameThread)` and waits up to `timeout` seconds (default 2s, max 10s). Response includes `latency_ms`. |
+| `{"command":"debug_resume"}` | `bridge.py resume` | Recover from a stuck Blueprint breakpoint. Calls `FKismetDebugUtilities::RequestAbortingExecution` + `FSlateApplication::LeaveDebuggingMode` via `AsyncTask(GameThread)`. Fire-and-forget. |
+
+### `gamethread_ping` diagnostic table
+
+| Result | latency_ms | What it means | Why |
+|---|---|---|---|
+| `alive` | <50 | GT idle, exec queue healthy | AsyncTask fired the next frame |
+| `alive` | hundreds–seconds | GT mid-exec but pumping TaskGraph | Python script triggered a nested pump (asset load, BP compile). Editor is not deadlocked, but the FTSTicker exec queue still cannot drain until the current `exec` returns. |
+| `unresponsive` | == probe timeout | GT cannot pump TaskGraph at all | Modal dialog open, deadlock, pure-Python tight loop holding the GIL inside `IPythonScriptPlugin::ExecPythonCommandEx`, or Slate nested debug loop (try `bridge.py resume` for the last case). |
+
+Why this distinction matters: a hung `exec` doesn't tell you whether to wait it out or take recovery action. `gamethread_ping`'s latency does. It also confirms whether new `exec` calls have any chance of landing — they won't until the GT is responsive *and* the FTSTicker drains, which only happens at `FEngineLoop::Tick` boundaries (not nested TaskGraph pumps).
+
+Implementation: `Plugin/UnrealBridge/Source/UnrealBridge/Private/UnrealBridgeServer.cpp` — `HandleClient` command dispatch.
+
 ## Editor State
 
 ### get_editor_state() -> FBridgeEditorState

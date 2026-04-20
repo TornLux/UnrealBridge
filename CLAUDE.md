@@ -34,7 +34,10 @@ python .claude/skills/unreal-bridge/scripts/bridge.py exec-file script.py
 Length-prefixed JSON over TCP on port 9876 (localhost only).
 - Request: `[4 bytes big-endian length][JSON: {"id":"...", "script":"...", "timeout":30}]`
 - Response: `[4 bytes big-endian length][JSON: {"id":"...", "success":bool, "output":"...", "error":"..."}]`
-- Special command: `{"id":"...", "command":"ping"}` returns pong
+- Special commands (handled inline on the worker thread, bypass the Python exec queue):
+  - `{"id":"...", "command":"ping"}` → `pong` (TCP-only liveness)
+  - `{"id":"...", "command":"gamethread_ping", "timeout":2.0}` → `alive`/`unresponsive` + `latency_ms` (GT liveness)
+  - `{"id":"...", "command":"debug_resume"}` → unsticks a paused BP breakpoint via `FKismetDebugUtilities::RequestAbortingExecution`
 
 ### Plugin Module Structure
 - **UnrealBridgeModule** — Module entry point; starts TCP server on port 9876 at PostEngineInit

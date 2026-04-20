@@ -98,6 +98,50 @@ def cmd_ping(args):
     return 0
 
 
+def cmd_gt_ping(args):
+    """Probe whether the UE GameThread is responsive.
+
+    Bypasses the FTSTicker-based exec queue: dispatches a no-op
+    AsyncTask(GameThread) on the server side and waits up to
+    --probe-timeout seconds. Use this from a *separate* terminal
+    while a long `exec` is in flight to distinguish three states:
+
+      - alive,  low latency : GT idle, queue healthy
+      - alive,  high latency: GT mid-exec but pumping TaskGraph
+      - unresponsive        : GT fully stuck (modal, deadlock, GIL loop)
+    """
+    payload = {
+        "id": str(uuid.uuid4()),
+        "command": "gamethread_ping",
+        "timeout": args.probe_timeout,
+    }
+    try:
+        # Connection-level timeout sits a bit above the server-side probe
+        # timeout so we always get a structured "unresponsive" response
+        # rather than a client-side socket timeout.
+        resp = send_request(args.host, args.port, payload, args.probe_timeout + 3.0)
+    except Exception as e:
+        if args.json:
+            print(json.dumps({"success": False, "error": str(e)}))
+        else:
+            print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        print(json.dumps(resp, ensure_ascii=False))
+    else:
+        state = resp.get("output") or "unknown"
+        latency = resp.get("latency_ms")
+        if latency is not None:
+            print(f"{state} ({latency:.1f} ms)")
+        else:
+            print(state)
+        err = resp.get("error")
+        if err:
+            print(err, file=sys.stderr)
+    return 0 if resp.get("success") else 1
+
+
 def cmd_resume(args):
     """Unstick a paused Blueprint breakpoint.
 
@@ -233,6 +277,18 @@ def main():
         help="Resume a paused BP breakpoint (bypasses the exec queue)",
     )
 
+    # gamethread-ping — probe GT liveness independently of the exec queue
+    gtp_parser = subparsers.add_parser(
+        "gamethread-ping",
+        help="Probe GameThread liveness (bypasses the exec queue)",
+    )
+    gtp_parser.add_argument(
+        "--probe-timeout",
+        type=float,
+        default=2.0,
+        help="Server-side wait for the GT to ack the probe (default: 2.0s, max 10.0s)",
+    )
+
     args = parser.parse_args()
 
     if args.command == "ping":
@@ -243,6 +299,8 @@ def main():
         sys.exit(cmd_exec_file(args))
     elif args.command == "resume":
         sys.exit(cmd_resume(args))
+    elif args.command == "gamethread-ping":
+        sys.exit(cmd_gt_ping(args))
 
 
 if __name__ == "__main__":

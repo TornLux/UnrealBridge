@@ -391,6 +391,44 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		Response->SetStringField(TEXT("error"), TEXT(""));
 		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
 	}
+	else if (Command == TEXT("gamethread_ping"))
+	{
+		// Probe whether the GameThread is responsive without going through
+		// the FTSTicker exec queue. Submits a no-op AsyncTask(GameThread)
+		// and waits with a short bounded timeout (default 2s, max 10s).
+		//
+		// Diagnostic interpretation:
+		//   - alive, low latency (~ms): GT idle, exec queue healthy
+		//   - alive, high latency (~hundreds ms): GT mid-exec but TaskGraph
+		//     is being pumped (asset load / BP compile inside Python) —
+		//     editor is not deadlocked but the exec queue may be backed up
+		//   - unresponsive: GT is fully stuck (modal dialog, deadlock,
+		//     pure-Python tight loop holding the GIL with no TG pump). The
+		//     FTSTicker exec queue cannot drain in this state.
+		double ProbeTimeoutNum = 2.0;
+		Request->TryGetNumberField(TEXT("timeout"), ProbeTimeoutNum);
+		const float ProbeTimeout = FMath::Clamp((float)ProbeTimeoutNum, 0.1f, 10.0f);
+
+		auto Probe = MakeShared<TPromise<bool>, ESPMode::ThreadSafe>();
+		TFuture<bool> ProbeFuture = Probe->GetFuture();
+		const double ProbeT0 = FPlatformTime::Seconds();
+
+		AsyncTask(ENamedThreads::GameThread, [Probe]()
+		{
+			Probe->SetValue(true);
+		});
+
+		const bool bAlive = ProbeFuture.WaitFor(FTimespan::FromSeconds(ProbeTimeout));
+		const double LatencyMs = (FPlatformTime::Seconds() - ProbeT0) * 1000.0;
+
+		Response->SetBoolField(TEXT("success"), bAlive);
+		Response->SetStringField(TEXT("output"), bAlive ? TEXT("alive") : TEXT("unresponsive"));
+		Response->SetStringField(TEXT("error"), bAlive
+			? TEXT("")
+			: FString::Printf(TEXT("GameThread did not respond within %.1fs"), ProbeTimeout));
+		Response->SetNumberField(TEXT("latency_ms"), LatencyMs);
+		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+	}
 	else if (!bEditorReady)
 	{
 		// Reject Python exec while the editor is still initializing.

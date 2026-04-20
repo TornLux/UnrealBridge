@@ -16,11 +16,21 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 
 | Command | Example | Purpose |
 |---------|---------|---------|
-| `ping` | `bridge.py ping` | Check UE connection |
+| `ping` | `bridge.py ping` | Check UE connection (TCP-only, doesn't touch GameThread) |
 | `exec` | `bridge.py exec "print('hi')"` | Execute inline Python |
 | `exec-file` | `bridge.py exec-file script.py` | Execute a .py file |
+| `gamethread-ping` | `bridge.py gamethread-ping` | Probe GameThread liveness (bypasses exec queue) |
+| `resume` | `bridge.py resume` | Unstick a paused BP breakpoint (bypasses exec queue) |
 
 Options: `--host`, `--port` (default 9876), `--timeout` (default 30), `--json`
+
+### Diagnosing a stuck `exec`
+
+`exec` is serialized through a single GameThread ticker queue, so when a script blocks the GT (modal dialog, pure-Python loop, deadlock), all further `exec` calls just sit in the queue and the client eventually sees a recv timeout with no diagnostic. Use these **non-exec** commands from a *separate terminal* to find out what state the editor is in:
+
+- `bridge.py ping` — TCP works → server process is alive
+- `bridge.py gamethread-ping` — also dispatches to GT but with its own short timeout (default 2s, `--probe-timeout` to override). Returns `alive (X ms)` or `unresponsive`. High latency on `alive` means the GT is mid-exec but pumping TaskGraph (asset load / BP compile inside Python) — the queue will drain when that exec finishes.
+- `bridge.py resume` — recovery for the specific case where a Blueprint breakpoint has paused execution inside the editor's nested Slate debug loop.
 
 ## Workflow
 
