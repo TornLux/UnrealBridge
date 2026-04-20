@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 作为 agent ↔ UE 编辑器桥梁的能力缺口，按"能补 / 代价高但理论可行 / 根本补不了"三档划分。用于指导后续投资方向。
 
-最后更新：2026-04-20（新增 A6-A12：测试 / 卫生 / 资源流水线 / 程序化场景 / 状态持续 / 外部集成 / Bridge 元工具）
+最后更新：2026-04-20（A1-#2 GBuffer 通道截图已交付 — `capture_viewport_channel` / `capture_channel_from_pose` + HitProxy actor-ID pass）
 
 ---
 
@@ -32,7 +32,7 @@ Bridge 已覆盖的主要领域（详见各 `bridge-*-api.md`）：
 | # | 项目 | 工程量 | 频次 | 说明 |
 |---|---|---|---|---|
 | 1 | **PIE 视频 / 帧序列抓取** | 中 | 高 | `capture_active_viewport` 现在只出单帧。真的要看 agent 在玩、调试运动 / VFX / cutscene 的时候必须是序列。做法：加 `begin_frame_capture(fps)` + `end_frame_capture()`，内部 `FRenderTarget` + 按帧写 PNG 序列到 `<Saved>/Captures/`，返回路径清单；或直接 mux 成 MP4（需 `FFmpegCapture` 或第三方）。**→ 单一功能解锁最大新信息量**。 |
-| 2 | **GBuffer / 深度 / 法线 / ID pass** | 中 | 中-高 | 现在 screenshot 只给 final color。GBuffer 通道让 agent 量化判断："actor X 在画面上占多少像素"、"玩家到目标的深度距离"、"屏幕中心指着哪个 actor"。做法：`ASceneCapture2D` 用 `ESceneCaptureSource::SCS_DeviceDepth` / `SCS_WorldNormal` / `SCS_ObjectID`，读 RT → PNG / EXR。 |
+| 2 | **GBuffer / 深度 / 法线 / ID pass** ✅ | — | — | **已交付 2026-04-20**：`capture_viewport_channel` / `capture_channel_from_pose` 提供 Depth（linear cm, 16-bit PNG）/ DeviceDepth / Normal（world-space, 8-bit RGB）/ BaseColor 四通道，走 `ASceneCapture2D` + `UTextureRenderTarget2D`。ID pass 走 HitProxy（`capture_hit_proxy_map`），比原计划的 `SCS_ObjectID` 更精确 — 每像素直接映射回 `AActor*`。 |
 | 3 | **Perf 快照结构化输出** | 小-中 | 中 | `stat unit` / GPU frame / draw call count / 内存分 class 分布。做法：封装 `FStatsData` + `FCsvProfiler` + `FMemory::GetStats`，返回 struct 而不是需要解析的字符串。性能回归测试必备。 |
 | 4 | **LC 编译错误文本捕获** | 中 | 高 | 2026-04-20 验证 UE 5.7 的 `ILiveCodingModule` 不返回编译器 stdout。要拿到只能 fork `LiveCodingConsole.exe` 走命名管道拦截，或改走"关 editor → UBT build → 读 stdout → 重启 editor" 的链路（已经是 `rebuild_relaunch.py`）。LC 这路暂时走不通，优先级降。 |
 
@@ -209,7 +209,7 @@ Houdini 风格的 placement 原语，让 agent 能批量组装关卡而不是逐
 这批每个都能解锁一整个工作流，季度级别的大投入。
 
 1. **PIE 视频 / 帧序列抓取（A1-#1）** — 感知从"单帧静态"升到"动作连续性"。所有调试 / 验证 / demo 场景受益。
-2. **GBuffer 通道截图（A1-#2）** — 从"能看"升到"能量化测量"。永久收益。
+2. ~~GBuffer 通道截图（A1-#2）~~ ✅ 已交付 2026-04-20。
 3. **Golden-image 回归（A6-#23）** — 配合 A1-#1 和 `capture_anim_pose_grid`，agent 第一次有了"改完没破东西"的自证能力。
 4. **UE Automation Framework 对接（A6-#21）** — CI 味道的测试一键跑。与 golden-image 互补（一个覆盖渲染，一个覆盖逻辑）。
 5. **PIE state 快照（A10-#40）** — 让 agent 能"回到那个关键瞬间"调试 / 比较方案，不用每次从头玩。
