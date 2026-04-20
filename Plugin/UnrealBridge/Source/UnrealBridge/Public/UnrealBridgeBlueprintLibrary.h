@@ -1247,6 +1247,38 @@ struct FBridgeGlobalReference
 	UPROPERTY(BlueprintReadOnly) FString Kind;
 };
 
+/** One debug-print call site found by FindBlueprintDebugPrints. */
+USTRUCT(BlueprintType)
+struct FBridgeDebugPrintSite
+{
+	GENERATED_BODY()
+
+	/** Full object path of the containing Blueprint (e.g. "/Game/BP_X.BP_X"). */
+	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+
+	UPROPERTY(BlueprintReadOnly) FString GraphName;
+
+	/** "EventGraph" | "Function" | "Macro". */
+	UPROPERTY(BlueprintReadOnly) FString GraphType;
+
+	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+
+	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+
+	/** Short name of the KismetSystemLibrary function — "PrintString", "PrintText",
+	 *  "PrintWarning". Lets callers bucket prints by flavour. */
+	UPROPERTY(BlueprintReadOnly) FString FunctionName;
+
+	/** Literal default of the `InString` / `InText` pin when it's not wired to
+	 *  another node. Empty when the pin is connected (dynamic message) or when
+	 *  the default is the engine's placeholder "Hello". */
+	UPROPERTY(BlueprintReadOnly) FString StringLiteral;
+
+	/** True when `InString` / `InText` is connected to another node — the
+	 *  message is computed at runtime, not a static literal. */
+	UPROPERTY(BlueprintReadOnly) bool bHasConnectedInput = false;
+};
+
 /** Unified one-shot description of a single graph node. Combines title,
  *  position, classification, pins (with link targets), and the
  *  K2Node-subclass-specific fields a caller typically wants — all in a
@@ -2168,6 +2200,22 @@ public:
 	static TArray<FBridgeGlobalReference> FindFunctionCallSitesGlobal(
 		const FString& FunctionName,
 		const FString& OwningClassFilter,
+		const FString& PackagePath,
+		int32 MaxResults);
+
+	/**
+	 * Tech-debt audit helper. Scans Blueprints under `PackagePath` for every
+	 * call to `KismetSystemLibrary::PrintString` / `PrintText` / `PrintWarning`
+	 * and returns each call site with the literal string argument extracted
+	 * (when static). Used by `scripts/audit_tech_debt.py` alongside a
+	 * filesystem scan for `// TODO` / `// HACK` / `// FIXME` / `UE_LOG(LogTemp`
+	 * to produce a pre-release cleanup checklist.
+	 *
+	 * @param PackagePath   Content root (default "/Game"). "/Engine" for engine BPs.
+	 * @param MaxResults    Cap (0 or negative → 1000).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static TArray<FBridgeDebugPrintSite> FindBlueprintDebugPrints(
 		const FString& PackagePath,
 		int32 MaxResults);
 

@@ -4744,6 +4744,110 @@ TArray<FBridgeGlobalReference> UUnrealBridgeBlueprintLibrary::FindFunctionCallSi
 	return Result;
 }
 
+// ─── find_blueprint_debug_prints ───────────────────────────────
+
+TArray<FBridgeDebugPrintSite> UUnrealBridgeBlueprintLibrary::FindBlueprintDebugPrints(
+	const FString& PackagePath,
+	int32 MaxResults)
+{
+	using namespace BridgeBPSummaryImpl;
+
+	TArray<FBridgeDebugPrintSite> Result;
+
+	const int32 EffectiveMax = (MaxResults > 0) ? MaxResults : 1000;
+	FString Root = PackagePath.IsEmpty() ? FString(TEXT("/Game")) : PackagePath;
+	if (!Root.StartsWith(TEXT("/"))) Root = TEXT("/") + Root;
+
+	IAssetRegistry& Registry = FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry").Get();
+
+	FARFilter Filter;
+	Filter.bRecursivePaths = true;
+	Filter.PackagePaths.Add(FName(*Root));
+	Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = true;
+
+	TArray<FAssetData> BpAssets;
+	Registry.GetAssets(Filter, BpAssets);
+
+	for (const FAssetData& Data : BpAssets)
+	{
+		if (Result.Num() >= EffectiveMax) break;
+
+		const FString ObjectPath = Data.GetSoftObjectPath().ToString();
+		UBlueprint* BP = LoadBP(ObjectPath);
+		if (!BP) continue;
+
+		for (const FAllGraphs& Entry : CollectAllGraphs(BP))
+		{
+			if (Result.Num() >= EffectiveMax) break;
+			for (UEdGraphNode* Node : Entry.Graph->Nodes)
+			{
+				if (Result.Num() >= EffectiveMax) break;
+
+				const UK2Node_CallFunction* Call = Cast<UK2Node_CallFunction>(Node);
+				if (!Call) continue;
+
+				UFunction* TF = Call->GetTargetFunction();
+				if (!TF) continue;
+
+				const UClass* Owner = TF->GetOuterUClass();
+				if (!Owner) continue;
+				const FString OwnerName = Owner->GetName();
+				// UKismetSystemLibrary — accept the "U"-prefixed real name.
+				if (OwnerName != TEXT("KismetSystemLibrary")) continue;
+
+				const FString FuncName = TF->GetName();
+				const bool bIsPrintString  = (FuncName == TEXT("PrintString"));
+				const bool bIsPrintText    = (FuncName == TEXT("PrintText"));
+				const bool bIsPrintWarning = (FuncName == TEXT("PrintWarning"));
+				if (!bIsPrintString && !bIsPrintText && !bIsPrintWarning) continue;
+
+				FBridgeDebugPrintSite Site;
+				const FBridgeReference Ref = MakeRefFromNode(Entry.Graph, Entry.Type, Node, TEXT("call"));
+				Site.BlueprintPath   = ObjectPath;
+				Site.GraphName       = Ref.GraphName;
+				Site.GraphType       = Ref.GraphType;
+				Site.NodeGuid        = Ref.NodeGuid;
+				Site.NodeTitle       = Ref.NodeTitle;
+				Site.FunctionName    = FuncName;
+
+				// Find the input pin: "InString" for PrintString/PrintWarning,
+				// "InText" for PrintText.
+				const TCHAR* PinName = bIsPrintText ? TEXT("InText") : TEXT("InString");
+				const UEdGraphPin* InputPin = nullptr;
+				for (const UEdGraphPin* P : Node->Pins)
+				{
+					if (P && P->Direction == EGPD_Input && P->PinName.ToString() == PinName)
+					{
+						InputPin = P;
+						break;
+					}
+				}
+
+				if (InputPin)
+				{
+					Site.bHasConnectedInput = InputPin->LinkedTo.Num() > 0;
+					if (!Site.bHasConnectedInput)
+					{
+						// Prefer DefaultTextValue for FText pins, DefaultValue for FString.
+						if (!InputPin->DefaultTextValue.IsEmpty())
+						{
+							Site.StringLiteral = InputPin->DefaultTextValue.ToString();
+						}
+						else
+						{
+							Site.StringLiteral = InputPin->DefaultValue;
+						}
+					}
+				}
+
+				Result.Add(MoveTemp(Site));
+			}
+		}
+	}
+	return Result;
+}
+
 // ─── invoke_blueprint_function (#5) ────────────────────────────
 
 namespace BridgeBPInvokeImpl

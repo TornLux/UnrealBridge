@@ -1463,6 +1463,40 @@ hits = L.find_function_call_sites_global('PrintString', '', '/Game/AI', 500)
 breakage; when reverse-engineering a codebase to find usage examples of
 an API; when collecting training data for AI-driven BP authoring.
 
+### find_blueprint_debug_prints(package_path, max_results) -> list[FBridgeDebugPrintSite]
+
+Tech-debt audit helper. Scans Blueprints under `package_path` for every call to `KismetSystemLibrary::PrintString` / `PrintText` / `PrintWarning` and returns each site with the literal input argument extracted (when static). Purpose-built for pre-release cleanup passes — pair with `scripts/audit_tech_debt.py`, which also scans source files for `// TODO` / `// HACK` / `// FIXME` / `UE_LOG(LogTemp`.
+
+Unlike `find_function_call_sites_global`, this call pulls the `InString` / `InText` pin's default value so an agent can distinguish "leftover `PrintString("test")` debug" from a legitimate runtime-dynamic user message.
+
+```python
+L = unreal.UnrealBridgeBlueprintLibrary
+for s in L.find_blueprint_debug_prints('/Game', 500):
+    arg = '<connected>' if s.has_connected_input else (s.string_literal or '<empty>')
+    print(f'{s.blueprint_path}  {s.function_name}({arg!r})  {s.graph_type}:{s.graph_name}')
+```
+
+**Parameters**
+- `package_path` — content-browser root; `"/Game"` by default. `"/Engine"` adds engine BPs (rarely useful).
+- `max_results` — cap; `0` or negative → 1000.
+
+**Returns** — list of `FBridgeDebugPrintSite`:
+
+| Field | Meaning |
+|-------|---------|
+| `blueprint_path` | full asset path of the BP |
+| `graph_name` / `graph_type` | containing graph |
+| `node_guid` | 32-hex digits |
+| `node_title` | palette-style title |
+| `function_name` | `"PrintString"` \| `"PrintText"` \| `"PrintWarning"` |
+| `string_literal` | the `InString`/`InText` default when the pin is unconnected and non-empty |
+| `has_connected_input` | `True` when `InString`/`InText` is wired — message is computed at runtime |
+
+**Pitfalls**
+- "Dynamic" prints (those with `has_connected_input=True`) still count as tech debt most of the time — a PrintString wired to an Append of debug values is the classic shipped-by-accident pattern. The literal just isn't recoverable without symbolic execution.
+- Does **not** find `UE_LOG(LogBlueprintUserMessages, ...)` from C++ — that's a C++ log category, scan source files for it separately.
+- `PrintWarning` is flagged `BlueprintInternalUseOnly` and is rarely called from user BPs; a hit there usually means someone reached deep into `K2Node` internals.
+
 **Cost.** O(# BPs in scope × nodes per BP). Every BP in the scope gets
 loaded if it isn't already — on large projects prefer scoping to a
 subfolder. Subsequent calls reuse the loaded BPs via UE's object cache.

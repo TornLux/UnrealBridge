@@ -2,7 +2,7 @@
 
 盘点 UnrealBridge 作为 agent ↔ UE 编辑器桥梁的能力缺口，按"能补 / 代价高但理论可行 / 根本补不了"三档划分。用于指导后续投资方向。
 
-最后更新：2026-04-20（A1-#2 GBuffer 通道截图 + A1-#3 Perf 快照均已交付 — `capture_viewport_channel` / `capture_channel_from_pose` + HitProxy actor-ID pass；`UnrealBridgePerfLibrary.get_frame_timing` / `get_render_counters` / `get_memory_stats` / `get_u_object_stats` / `get_perf_snapshot`）
+最后更新：2026-04-20（A1-#2 GBuffer 通道截图 + A1-#3 Perf 快照 + A7-#28 TODO / debug print 审计均已交付 — `capture_viewport_channel`+`capture_channel_from_pose`+HitProxy actor-ID；`UnrealBridgePerfLibrary.*`；`find_blueprint_debug_prints` + `scripts/audit_tech_debt.py`）
 
 ---
 
@@ -92,7 +92,7 @@ Agent 最大的痛点是"改完不知道有没有坏东西"。这一组直接给
 |---|---|---|---|---|
 | 26 | **命名 / 目录约定扫描器** | 小-中 | 中 | 按项目 style（如 "BP_* 必须在 /Content/Blueprints/"、"IA_* 是 InputAction"）扫全库，列违规 + 自动修复。规则用 JSON 配置。 |
 | 27 | **死代码 / 孤立 asset 检测** | 小-中 | 中 | 无引用 asset、从未被调用的 BP 函数、从未被 broadcast 的 dispatcher、从未被 bind 的 event。基于 AssetRegistry + `find_function_call_sites_global` 已有原语。cleanup 前必跑。 |
-| 28 | **TODO / debug print 审计** | 小 | 中 | 跨 BP + C++ 扫 `PrintString` / `UE_LOG(LogTemp, ...)` / `// TODO` / `// HACK`，发布前清单。 |
+| 28 | **TODO / debug print 审计** ✅ | — | — | **已交付 2026-04-20**：`UnrealBridgeBlueprintLibrary.find_blueprint_debug_prints` 跨 BP 扫 `PrintString`/`PrintText`/`PrintWarning` 并提取静态字面量；`scripts/audit_tech_debt.py` 编排 BP 扫 + 文件系统 regex 扫 `TODO`/`HACK`/`FIXME`/`XXX` + `UE_LOG(LogTemp`，文本 + JSON 双输出。首次跑 plugin 自身代码即找出 75 处 LOG_TEMP + 1 TODO。 |
 | 29 | **依赖图可视化** | 小 | 低-中 | 基于现有 reference tracking 生成 mermaid / DOT，定位循环依赖。Agent 能自己读图判断结构风险。 |
 | 30 | **跨版本 BP 语义 diff** | 中 | 中 | git 看 `.uasset` 是二进制 diff 读不懂。已有 `snapshot_graph_json` + `diff_graph_snapshots`，扩成跨 git commit 的 BP diff（"这个 PR 加了哪些节点 / 改了哪个 pin 默认值 / 删了哪条连线"）直接用于 PR review。 |
 
@@ -202,7 +202,7 @@ Houdini 风格的 placement 原语，让 agent 能批量组装关卡而不是逐
 3. **Webhook on completion（A11-#42）** — 一行 HTTP，长跑任务的异步体验全变。
 4. **Editor state 快照 / 恢复（A10-#39）** — 让 agent 能"分支尝试"，不再每步不可逆。
 5. **Snap-to-surface + 法线对齐（A9-#36）** — Scatter / level dressing 的原子，单独也很好用。
-6. **TODO / debug print 审计（A7-#28）** — 发布前清单，小扫描大心安。
+6. ~~TODO / debug print 审计（A7-#28）~~ ✅ 已交付 2026-04-20。
 
 ### 解锁新物种（中-大工程量，整类能力上线）
 
