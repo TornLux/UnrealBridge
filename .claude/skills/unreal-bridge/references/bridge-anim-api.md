@@ -2,6 +2,8 @@
 
 Module: `unreal.UnrealBridgeAnimLibrary`
 
+> **Authoring or modifying an ABP?** Jump to [**Authoring an Animation Blueprint (agent workflow)**](#authoring-an-animation-blueprint-agent-workflow) before touching any write op. That section is the ordered recipe (plan → vars → SM → states → rules → outer graph → layout → verify) with the pitfalls that otherwise cost round-trips: UE 5 float→double rename, rule-graph naming collisions, pose-pin plurality, `bCanEnterTransition` wiring, and the post-authoring verification checklist.
+
 > **Reactive framework:** this library *inspects* animations statically.
 > To run a Python script **when** an `AnimNotify` plays or a montage
 > section triggers during PIE, use
@@ -37,6 +39,224 @@ Module: `unreal.UnrealBridgeAnimLibrary`
 > montages where multiple strikes chain. **Do NOT** answer an
 > "analyze pose" / "analyze animation" question from metadata alone;
 > render the grid first, look at it, then correlate against metadata.
+
+---
+
+## Authoring an Animation Blueprint (agent workflow)
+
+> **Read this entire section before writing or modifying an ABP.** It replaces "just call the write ops" with a verified-correct recipe. Skipping it routinely produces ABPs that compile-warn (`"transition will never be taken"`), have collision-named rule graphs, or leave the Output Pose floating unconnected.
+
+The AnimGraph write ops in this file + the graph-write ops in `bridge-blueprint-api.md` are the authoring surface. State machines, states, conduits, transitions, rule logic, and the outer blend graph can all be authored from a single `exec-file` script. Reads (`list_anim_graphs`, `find_anim_graph_node_by_class`, `get_anim_graph_info`) bridge the gaps when write ops need node GUIDs you haven't stored in a variable.
+
+### Workflow (in order — each step depends on the previous)
+
+**1. Plan on paper first.** Before any bridge call, write down in text:
+- State list + which is default + which sequence each state plays.
+- Transition edges: `from -> to`, crossfade duration, and the rule condition ("Speed > 200").
+- Outer graph topology: what sits between the state machine output and `Output Pose` (Slot? LayeredBoneBlend? ApplyAdditive?) and where secondary pose sources plug in.
+- Driving variables: name + type + default (e.g. `Speed : Float = 0.0`, `IsAiming : Bool = false`).
+
+An ABP authored from a complete plan compiles clean. An ABP authored incrementally usually has orphan nodes and missing default-state links.
+
+**2. Create the ABP asset (raw `unreal` — there's no bridge wrapper for this):**
+```python
+f = unreal.AnimBlueprintFactory()
+f.set_editor_property('target_skeleton', unreal.load_asset(SKELETON_PATH))
+unreal.AssetToolsHelpers.get_asset_tools().create_asset(
+    ABP_SHORT_NAME, ABP_PACKAGE_PATH, unreal.AnimBlueprint, f)
+```
+`set_editor_property('target_skeleton', ...)` is required — `target_skeleton = skel` raises `AttributeError`.
+
+**3. Add ABP variables** via the BP library (`blib.add_blueprint_variable(abp, name, 'Float', '0.0')`). Type strings: `"Bool"`, `"Int"`, `"Float"`, `"Double"`, `"String"`, `"Name"`, `"Vector"`, `"Rotator"`, `"Transform"`, class path for object refs, `"Array of Float"` for arrays.
+
+**4. Build the state machine shell:**
+```python
+sm = alib.add_anim_graph_node_state_machine(ABP, 'AnimGraph', 'Locomotion', x, y)
+for name, px in [('Idle', 0), ('Walk', 400), ('Run', 800)]:
+    alib.add_anim_state(ABP, 'Locomotion', name, px, 0)
+alib.set_anim_state_default(ABP, 'Locomotion', 'Idle')  # REQUIRED — an SM with no default fails at runtime
+```
+Two invariants to check:
+- The `graph_name` argument for every subsequent state-machine op is the **interior graph name** (the second arg to `add_anim_graph_node_state_machine`), **not** the outer SM node's GUID.
+- Every state's inner anim graph is addressed by the **state name** (same string you passed to `add_anim_state`) because `UAnimStateNode::GetStateName() == BoundGraph->GetName()`.
+
+**5. Author transitions (endpoints only, properties, then rule logic):**
+```python
+for fr, to, cx in EDGES:
+    alib.add_anim_transition(ABP, 'Locomotion', fr, to)
+    alib.set_anim_transition_properties(ABP, 'Locomotion', fr, to, cx, 0, False)
+# Rule graphs are auto-named "Rule_<From>_to_<To>". Do NOT hard-code that
+# string — query via get_anim_transition_rule_graph_name for future-proofing.
+```
+
+**6. Fill each state's inner anim graph.** At minimum every state needs one pose source wired to its auto-created `StateResult`:
+```python
+for state, seq in STATE_SEQS:
+    sp = alib.add_anim_graph_node_sequence_player(ABP, state, seq, -400, 0)
+    result = alib.find_anim_graph_node_by_class(ABP, state, 'AnimGraphNode_StateResult')
+    alib.connect_anim_graph_pins(ABP, state, sp, 'Pose', result, 'Result')
+```
+Conduits use a bool-rule graph internally (same shape as a transition rule), not an anim graph — don't try to drop a SequencePlayer in a conduit.
+
+**7. Author each transition's rule** (this is the step that's easy to skip — compile still succeeds, but the ABP never moves between states):
+```python
+MATH = '/Script/Engine.KismetMathLibrary'
+def author_speed_gt(fr, to, rhs):
+    rg = alib.get_anim_transition_rule_graph_name(ABP, 'Locomotion', fr, to)
+    var = blib.add_variable_node(ABP, rg, 'Speed', False, -400, 0)
+    cmp = blib.add_call_function_node(ABP, rg, MATH, 'Greater_DoubleDouble', -150, 0)
+    res = alib.find_anim_graph_node_by_class(ABP, rg, 'AnimGraphNode_TransitionResult')
+    blib.connect_graph_pins(ABP, rg, var, 'Speed',       cmp, 'A')
+    blib.set_pin_default_value(ABP, rg, cmp, 'B', str(rhs))
+    blib.connect_graph_pins(ABP, rg, cmp, 'ReturnValue', res, 'bCanEnterTransition')
+```
+For "always true" / "never" rules, skip the node authoring and use `alib.set_anim_transition_const_rule(abp, sm, fr, to, bool_value)` instead. That's the only time the const-rule shortcut is correct — use it sparingly (it's useless for anything real).
+
+**Boolean combinations.** AND / OR between multiple comparators: author both comparators, then a `BooleanAND` / `BooleanOR` call into the result pin. Use `Not_PreBool` for negation. All live in `KismetMathLibrary`.
+
+**Re-querying rules from `get_anim_graph_info`** is read-only — a transition whose rule graph contains nodes looks identical to a transition with a const-true shortcut. Use `list_anim_graph_nodes(abp, rule_graph_name)` if you need to see *how* a rule is implemented.
+
+**8. Wire the outer AnimGraph.** Pattern: `StateMachine -> Slot (for montages) -> LayeredBoneBlend / ApplyAdditive (for overlays) -> Output Pose`. The `Output Pose` root is auto-created — find it via `alib.find_anim_graph_node_by_class(abp, 'AnimGraph', 'AnimGraphNode_Root')`, then wire `<last_node>.Pose -> Root.Result`.
+
+Pose-input pin names come from the runtime struct's `FPoseLink` field name:
+| Node class | Input pins | Output pin |
+|------------|------------|------------|
+| `UAnimGraphNode_Slot` | `Source` | `Pose` |
+| `UAnimGraphNode_LayeredBoneBlend` | `BasePose`, `BlendPoses_0`, `BlendPoses_1`, ... (**plural!**) + `BlendWeights_0`, ... | `Pose` |
+| `UAnimGraphNode_ApplyAdditive` | `Base`, `Additive`, `Alpha` | `Pose` |
+| `UAnimGraphNode_TwoWayBlend` | `A`, `B`, `Alpha` | `Pose` |
+| `UAnimGraphNode_BlendListByBool` | `ActiveValue`, `True Pose`, `False Pose` | `Pose` |
+| `UAnimGraphNode_BlendListByInt` | `ActiveChildIndex`, `Blend Pose 0`, `Blend Pose 1`, ... | `Pose` |
+| `UAnimGraphNode_StateMachine` | — | `Pose` |
+| `UAnimGraphNode_SequencePlayer` / `_BlendSpacePlayer` / `_LinkedAnimLayer` | (asset + param pins) | `Pose` |
+| `UAnimGraphNode_Root` (Output Pose) | `Result` | — |
+
+If a `connect_anim_graph_pins(...)` returns `False`, the pin name is almost always wrong (plural vs singular, or the node's renamed it). **First debug step** is always `blib.get_node_pins(abp, graph_name, node_guid)` — it prints every pin's authoritative name + direction + type.
+
+**9. Auto-layout.** Mandatory after **any** anim write — AnimGraph nodes spawn at whatever `(x,y)` you passed, which is a human's estimate, not a tidy layout:
+```python
+alib.auto_layout_anim_graph(ABP, 'AnimGraph', 0, 0)
+alib.auto_layout_state_machine(ABP, 'Locomotion', 0, 0)
+# state-machine layout recurses into state inner graphs + rule graphs; you
+# don't need a separate pass per state unless you want different spacing.
+```
+`auto_layout_state_machine` recurses into every state's inner anim graph AND every transition rule graph — one call tidies the entire machine.
+
+**10. Compile + verify + save** (see next section). Save only after the verification pass is clean.
+
+### Graph addressing cheat sheet
+
+Every write op takes a `graph_name` string. Decoding:
+
+| You want to write in… | `graph_name` to pass |
+|-----------------------|----------------------|
+| The top-level AnimGraph | `"AnimGraph"` |
+| The interior of a state machine | The string you passed to `add_anim_graph_node_state_machine` (e.g. `"Locomotion"`) |
+| A state's inner pose graph | The state name (e.g. `"Idle"`) |
+| A conduit's rule | The conduit name |
+| A transition's rule | `get_anim_transition_rule_graph_name(abp, sm, from, to)` — returns `"Rule_<From>_to_<To>"` |
+| Any of the above, listed programmatically | `list_anim_graphs(abp)` — `.name` column |
+
+If unsure, dump every graph first: `for g in lib.list_anim_graphs(abp): print(g.kind, g.name, g.parent_graph_name)`.
+
+### Rule-authoring gotchas (read these; they cost real round-trips)
+
+1. **UE 5 renamed float comparators.** `Greater_FloatFloat` / `Less_FloatFloat` / `EqualEqual_FloatFloat` / `NotEqual_FloatFloat` do **not exist** in UE 5.x. Use `Greater_DoubleDouble` / `Less_DoubleDouble` / `EqualEqual_DoubleDouble` / `NotEqual_DoubleDouble`. All `KismetMathLibrary` float math went to double. Using the old name makes `add_call_function_node` silently return an empty GUID — and the compile will then warn `"transition will never be taken"` with no other hint.
+2. **Rule-result pin name.** Always `bCanEnterTransition` (with the `b` in C++). From Python via `set_pin_default_value(..., 'bCanEnterTransition', ...)` — note: this is a **pin name** being passed as a string, so the `b` prefix stays (unlike USTRUCT fields which Python strips).
+3. **Always break any pre-existing link before setting a pin default.** `set_anim_transition_const_rule` does this for you. Custom rule authoring should call `connect_graph_pins(cmp, 'ReturnValue', res, 'bCanEnterTransition')` which replaces the default.
+4. **Bi-directional transitions.** The `bidirectional` flag on a single transition is NOT a shortcut for authoring two one-way edges — it's a specific feature that lets a single transition run in reverse during blend-out. For normal "Idle ⇄ Walk" behaviour, author **two separate transitions** (Idle→Walk and Walk→Idle), each with its own rule.
+5. **Conduit rule graphs.** A conduit is a branching state whose `BoundGraph` is a bool rule graph (not an anim graph). Author rule nodes the same way as a transition rule — the sink is `AnimGraphNode_TransitionResult` with a `bCanEnterTransition` pin. To let execution flow *through* the conduit, wire *outgoing* transitions from the conduit to the real target states.
+6. **Don't author inside the `EventGraph`** by accident. `EventGraph` on an ABP is a K2 graph for `BlueprintUpdateAnimation` and `BlueprintThreadSafeUpdateAnimation` — it's where you would *compute* `Speed` (e.g. read from the owning pawn's velocity). Logic that computes transition inputs goes here; rule comparisons go in the transition rule graphs.
+
+### Post-authoring verification (mandatory)
+
+After every authoring pass, run this checklist before returning "done":
+
+```python
+import unreal
+ABP = '...'  # your ABP path
+alib = unreal.UnrealBridgeAnimLibrary
+blib = unreal.UnrealBridgeBlueprintLibrary
+elib = unreal.UnrealBridgeEditorLibrary
+
+# 1. Recompile — if this fails or warns, no other check matters.
+ok = elib.recompile_blueprint(ABP)
+errors = blib.get_compile_errors(ABP)
+print('recompile=', ok, '  issues=', len(errors))
+for e in errors:
+    print(f'  [{e.severity}] {e.message}')
+
+# 2. Structural: is there exactly one default state per state machine? Is
+#    every state reachable? Do all transitions have both endpoints?
+for sm in alib.get_anim_graph_info(ABP):
+    defaults = [s for s in sm.states if s.is_default]
+    print(f'SM "{sm.name.splitlines()[0]}": states={len(sm.states)} '
+          f'default={defaults[0].name if defaults else "NONE"} trans={len(sm.transitions)}')
+    orphans = {s.name for s in sm.states} - {t.from_state for t in sm.transitions} \
+                                           - {t.to_state   for t in sm.transitions}
+    if orphans:
+        print(f'  WARNING: unreachable states: {orphans}')
+
+# 3. Rule graphs: every transition's rule graph should have at least 2 nodes
+#    (TransitionResult + at least one bool producer). A 1-node rule graph
+#    means no rule was authored — that transition will never fire.
+for g in alib.list_anim_graphs(ABP):
+    if g.kind == 'TransitionRule' and g.num_nodes < 2:
+        print(f'  WARNING: rule graph {g.name} has only {g.num_nodes} node(s)')
+
+# 4. Outer AnimGraph: the Root (Output Pose) must have its Result pin
+#    connected. A disconnected root compiles with a warning but renders
+#    nothing.
+root = alib.find_anim_graph_node_by_class(ABP, 'AnimGraph', 'AnimGraphNode_Root')
+pins = blib.get_node_pins(ABP, 'AnimGraph', root)
+for p in pins:
+    if p.name == 'Result':
+        if not p.connections:
+            print('  WARNING: AnimGraph root has no Result connection')
+
+# 5. Each state's inner graph: StateResult.Result should be connected.
+for g in alib.list_anim_graphs(ABP):
+    if g.kind != 'State':
+        continue
+    sr = alib.find_anim_graph_node_by_class(ABP, g.name, 'AnimGraphNode_StateResult')
+    if not sr:
+        print(f'  WARNING: state {g.name} has no StateResult (unexpected)')
+        continue
+    pins = blib.get_node_pins(ABP, g.name, sr)
+    for p in pins:
+        if p.name == 'Result' and not p.connections:
+            print(f'  WARNING: state {g.name} StateResult has no pose source')
+```
+
+Interpret the output:
+
+- **Any `[Error]` from `get_compile_errors`** → fix before anything else.
+- **`"transition will never be taken"`** → that edge has no rule. Go back to step 7 and author one (or explicitly use `set_anim_transition_const_rule` if always-true is truly what you want).
+- **`"Blend Poses N was visible but ignored"`** → you spawned `add_anim_graph_node_layered_bone_blend(..., n, ...)` with too many blend slots. Either wire the extras or re-create with a smaller count.
+- **`default=NONE`** on a state machine → `set_anim_state_default` wasn't called. Runtime will pick the first state deterministically but this is almost always a mistake.
+- **Unreachable states** → a state exists but no transition ends at it. Either author a transition into it or remove it.
+- **Rule graph with only 1 node** → the `TransitionResult` sink exists but nothing feeds `bCanEnterTransition`. That transition never fires.
+- **Root.Result unconnected** → the ABP evaluates to the ref pose (T-pose). Wire your final pose sink to it.
+- **StateResult.Result unconnected in a state** → the state itself evaluates to ref pose when active.
+
+Only after every warning is resolved or explicitly justified, call:
+```python
+unreal.EditorAssetLibrary.save_loaded_asset(unreal.load_asset(ABP))
+```
+
+### When things go wrong
+
+| Symptom | Most likely cause | First check |
+|---------|------------------|-------------|
+| `add_call_function_node` returns `""` | Function name wrong (UE 5 rename or typo) | Try the `_DoubleDouble` variant; grep engine headers for the FName |
+| `connect_anim_graph_pins` returns `False` | Pin name wrong (plural vs singular, renamed) | `blib.get_node_pins(abp, graph_name, node_guid)` — trust its output |
+| `add_anim_state` succeeds but state is invisible in editor | The editor has the SM graph open and needs to refresh | Re-open the asset: `elib.open_asset(abp)` |
+| `set_anim_transition_properties` seems to not change anything | You passed `-1` / `MIN_int32` sentinels | `crossfade=0.2, priority=0` — negative means "leave unchanged" |
+| Compile: `"transition will never be taken"` | Rule graph empty or wrong wiring | `alib.list_anim_graph_nodes(abp, 'Rule_X_to_Y')` to inspect |
+| Everything looks right, ABP shows T-pose at runtime | `Output Pose.Result` unconnected OR every StateResult empty | Run verification step 4 + step 5 |
+| Python `AttributeError: 'FBridgeX' object has no attribute 'b_...'` | UE Python strips `b` prefix from USTRUCT bool fields | `.succeeded` not `.b_succeeded`; `.is_default` not `.b_is_default` |
+
+---
 
 ## State Machine Info
 
