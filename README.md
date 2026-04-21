@@ -21,7 +21,7 @@ The Editor plugin runs a small TCP server on `127.0.0.1:9876` — query scenes, 
 ## Highlights
 
 - **Stateful editor, stateless agent.** No reattaching, no respawning a process per call.
-- **13 typed `UnrealBridge*Library` surfaces, ~990 `UFUNCTION`s total** — covering Blueprint graphs (read + author), assets, AnimBP (read + full state-machine / AnimGraph authoring), UMG, level editing (transacted — Ctrl+Z works), materials, DataTables, GAS (read + GA/GE/GC authoring), navigation, an agent control layer, a reactive event subsystem (10 adapters), editor session control (PIE / CVars / console / compile), and perf snapshots (structured frame timing / draw counts / memory / UObject histogram).
+- **14 typed `UnrealBridge*Library` surfaces, ~1010 `UFUNCTION`s total** — covering Blueprint graphs (read + author), assets, AnimBP (read + full state-machine / AnimGraph authoring), UMG, level editing (transacted — Ctrl+Z works), materials, DataTables, curves / curve tables (read + write + batch eval), GAS (read + GA/GE/GC authoring), navigation, an agent control layer, a reactive event subsystem (10 adapters), editor session control (PIE / CVars / console / compile), and perf snapshots (structured frame timing / draw counts / memory / UObject histogram).
 - **Blueprint graph quality toolchain.** More than just layout: `auto_layout_graph`'s `pin_aligned` strategy reads live Slate geometry to align exec rails, `straighten_exec_chain` snaps the main rail, `collapse_nodes_to_function` extracts subgraphs, `lint_blueprint` flags orphans / unnamed nodes / oversized functions / uncommented large graphs, `add_comment_box` + preset palette (Section / Validation / Danger / Network / UI / Debug / Setup) partitions graphs for readability. AnimGraph and state machines get dedicated `auto_layout_anim_graph` / `auto_layout_state_machine` (the latter recurses into each state's inner graph + every transition rule graph).
 - **Two build loops.** `hot_reload.py` patches the running editor via Live Coding in ~10–60s for body-only edits. `rebuild_relaunch.py` cleanly relaunches when you touch reflection (`UFUNCTION` / `UCLASS` / `UPROPERTY`).
 - **Claude Code skill included.** `.claude/skills/unreal-bridge/` bundles the CLI, per-library API reference docs, and a signature-discipline rule so Agent sessions don't waste round-trips on guessed function names.
@@ -33,7 +33,7 @@ flowchart LR
     Agent["AI Agent"]
     CLI["bridge.py"]
     Server["FUnrealBridgeServer"]
-    Libs["UnrealBridge*Library<br/>(13 surfaces, ~990 UFUNCTIONs)"]
+    Libs["UnrealBridge*Library<br/>(14 surfaces, ~1010 UFUNCTIONs)"]
     UE["Unreal Editor 5.7"]
 
     Agent -- "shell" --> CLI
@@ -144,6 +144,7 @@ python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # reflection ch
 | `UnrealBridgeAssetLibrary` | Asset keyword search, derived classes, references, dependencies, DataAsset queries |
 | `UnrealBridgeAnimLibrary` | AnimBP deep introspection: state machines, AnimGraph nodes, linked layers, slots, curves, sequence / montage / blend space info, skeleton / sockets / virtual bones / blend profiles. **Write ops**: ABP creation + variables, state / conduit / transition add / remove / rename, transition properties (crossfade, priority, bidirectional), const-rule shortcut and real variable-driven rules (paired with the BP library to author `KismetMathLibrary` comparators), 9 typed AnimGraph node factories + `add_anim_graph_node_by_class_name` fallback, pin connect / disconnect / move, auto-layout for both AnimGraph and state-machine interiors; AnimNotify / sync marker / montage section / socket CRUD |
 | `UnrealBridgeDataTableLibrary` | DataTable row inspection |
+| `UnrealBridgeCurveLibrary` | Curve assets (`UCurveFloat` / `UCurveVector` / `UCurveLinearColor`) and `UCurveTable` rows: info, keys CRUD (batch-safe + atomic tangent writes), pre/post-infinity extrap, auto-tangents, batch evaluate (one round-trip for N samples), uniform sampling; curve-table row add / remove / rename / replace. Broadcasts `OnCurveChanged` so open Curve Editor tabs redraw |
 | `UnrealBridgeMaterialLibrary` | Material instance parameter queries |
 | `UnrealBridgeUMGLibrary` | Widget tree, properties, animations, bindings, events, search, write ops |
 | `UnrealBridgeLevelLibrary` | Level / actor query + edit (spawn, destroy, move, attach, label, nested property get/set) — all transacted |
