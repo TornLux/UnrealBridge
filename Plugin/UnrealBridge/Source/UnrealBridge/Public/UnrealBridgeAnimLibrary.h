@@ -729,6 +729,29 @@ public:
 	static TArray<FBridgeAnimGraphSummary> ListAnimGraphs(const FString& AnimBlueprintPath);
 
 	/**
+	 * List (node_guid, node_class_short_name, node_title) for every node in
+	 * the named graph. Unlike UnrealBridgeBlueprintLibrary.get_function_nodes
+	 * (which only walks top-level FunctionGraphs), this uses the same
+	 * recursive graph resolver as every other anim write op — so it works on
+	 * state machine interiors, state BoundGraphs, and transition rule graphs.
+	 *
+	 * Returned rows: `"<guid>\t<class>\t<title>"` — lightweight tab-separated
+	 * to avoid introducing yet another USTRUCT for a basic listing.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FString> ListAnimGraphNodes(const FString& AnimBlueprintPath, const FString& GraphName);
+
+	/**
+	 * Convenience: return the GUID of the first node of class `ShortClassName`
+	 * (e.g. "AnimGraphNode_Root", "AnimGraphNode_StateResult",
+	 * "AnimGraphNode_TransitionResult", "AnimStateEntryNode") inside GraphName.
+	 * Empty string if no match or graph not found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString FindAnimGraphNodeByClass(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& ShortClassName);
+
+	/**
 	 * Spawn a UAnimGraphNode_SequencePlayer in `GraphName`, bound to SequencePath.
 	 * GraphName may be the top-level "AnimGraph" or any state's BoundGraph name
 	 * (from ListAnimGraphs). Returns the new node's GUID (empty on failure).

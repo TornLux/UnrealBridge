@@ -1538,6 +1538,47 @@ TArray<FBridgeAnimGraphSummary> UUnrealBridgeAnimLibrary::ListAnimGraphs(const F
 	return Result;
 }
 
+TArray<FString> UUnrealBridgeAnimLibrary::ListAnimGraphNodes(const FString& AnimBlueprintPath,
+	const FString& GraphName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	TArray<FString> Rows;
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return Rows;
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return Rows;
+
+	for (UEdGraphNode* N : Graph->Nodes)
+	{
+		if (!N) continue;
+		const FString Guid = N->NodeGuid.ToString(EGuidFormats::Digits);
+		const FString ClassName = N->GetClass()->GetName();
+		const FString Title = BridgeAnimImpl::GetNodeTitleSource(N, ENodeTitleType::ListView);
+		Rows.Add(FString::Printf(TEXT("%s\t%s\t%s"), *Guid, *ClassName, *Title));
+	}
+	return Rows;
+}
+
+FString UUnrealBridgeAnimLibrary::FindAnimGraphNodeByClass(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& ShortClassName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	for (UEdGraphNode* N : Graph->Nodes)
+	{
+		if (!N) continue;
+		if (N->GetClass()->GetName() == ShortClassName)
+			return N->NodeGuid.ToString(EGuidFormats::Digits);
+	}
+	return FString();
+}
+
 // ─── AnimGraph node factories ───────────────────────────────
 
 FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeSequencePlayer(const FString& AnimBlueprintPath,

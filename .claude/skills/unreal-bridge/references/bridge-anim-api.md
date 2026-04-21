@@ -668,6 +668,31 @@ for g in unreal.UnrealBridgeAnimLibrary.list_anim_graphs(ABP):
 | `parent_graph_name` | str | Enclosing graph name (empty for top-level entries) |
 | `num_nodes` | int | Node count in this graph |
 
+### list_anim_graph_nodes(abp, graph_name) → list[str]
+
+Returns one row per node in any graph reachable through `list_anim_graphs` — state machine interiors, state BoundGraphs, and transition rule graphs included. Rows are tab-separated `<guid>\t<short_class_name>\t<list_view_title>`.
+
+```python
+for row in unreal.UnrealBridgeAnimLibrary.list_anim_graph_nodes(ABP, 'Idle'):
+    guid, cls, title = row.split('\t', 2)
+    print(cls, title)
+```
+
+Prefer this over `UnrealBridgeBlueprintLibrary.get_function_nodes` when addressing state-machine interiors: the BP-side helper only walks top-level `FunctionGraphs`.
+
+### find_anim_graph_node_by_class(abp, graph_name, short_class_name) → str
+
+Returns the GUID of the first node of the given UClass short name in the graph, or empty string. Handy for locating auto-created sinks / entries when you need to wire to them:
+
+```python
+# Find the Output Pose of the top-level AnimGraph
+root = lib.find_anim_graph_node_by_class(ABP, 'AnimGraph', 'AnimGraphNode_Root')
+# Find the StateResult inside a named state
+result = lib.find_anim_graph_node_by_class(ABP, 'Idle', 'AnimGraphNode_StateResult')
+# Find the Entry node of a state machine
+entry = lib.find_anim_graph_node_by_class(ABP, 'Locomotion', 'AnimStateEntryNode')
+```
+
 ### AnimGraph node factories
 
 All return the new node's GUID as a hex string (`EGuidFormats::Digits`), or empty string on failure.
@@ -775,4 +800,63 @@ unreal.EditorAssetLibrary.save_loaded_asset(unreal.load_asset(ABP))
 - **State name vs. state node.** Passing `state_name` to `remove_anim_state`, `rename_anim_state`, `set_anim_state_default`, `add_anim_transition` etc. looks up the `UAnimStateNodeBase` by calling `GetStateName()` — which is just `BoundGraph->GetName()`. So "renaming a state" really means renaming the state's inner graph.
 - **Transition rule authoring.** `set_anim_transition_const_rule` is the fast path for true/false rules. For conditional logic ("crouch && moving"), query the rule graph's name via `list_anim_graphs` — it'll be something like `"Transition"` or `"AnimationTransitionGraph_N"` — and author the condition nodes with the Blueprint library (`add_variable_node` / `add_function_call_node` / `connect_graph_pins` etc.) against that graph name, ending at the rule graph's `TransitionResult` node's `bCanEnterTransition` input.
 - **No force-compile per op.** Each write op notifies the graph and marks the BP structurally modified but does not recompile. Batch your edits, then call `recompile_blueprint` once.
+
+### End-to-end example: locomotion ABP from scratch
+
+Compact script that creates an ABP, authors a 3-state locomotion state machine, then layers the SM output with a second anim in the outer AnimGraph. Verified on the UEFN Mannequin in GameAnimationSample 5.7:
+
+```python
+import unreal
+
+SK   = '/Game/Characters/UEFN_Mannequin/Meshes/SK_UEFN_Mannequin.SK_UEFN_Mannequin'
+IDLE = '/Game/Characters/UEFN_Mannequin/Animations/Idle/M_Neutral_Stand_Idle_Loop.M_Neutral_Stand_Idle_Loop'
+WALK = '/Game/Characters/UEFN_Mannequin/Animations/Walk/M_Neutral_Walk_Loop_LR.M_Neutral_Walk_Loop_LR'
+RUN  = '/Game/Characters/UEFN_Mannequin/Animations/Run/M_Neutral_Run_Loop_F.M_Neutral_Run_Loop_F'
+UPPR = '/Game/Characters/UEFN_Mannequin/Animations/Idle/M_Neutral_Stand_Idle_Break_v01.M_Neutral_Stand_Idle_Break_v01'
+ABP  = '/Game/Demo/ABP_LocomotionDemo.ABP_LocomotionDemo'
+lib  = unreal.UnrealBridgeAnimLibrary
+
+# 1. Create ABP on the target skeleton
+f = unreal.AnimBlueprintFactory()
+f.set_editor_property('target_skeleton', unreal.load_asset(SK))
+unreal.AssetToolsHelpers.get_asset_tools().create_asset(
+    'ABP_LocomotionDemo', '/Game/Demo', unreal.AnimBlueprint, f)
+
+# 2. State machine + states + default + transitions
+sm = lib.add_anim_graph_node_state_machine(ABP, 'AnimGraph', 'Locomotion', 100, 0)
+for name, x in [('Idle', 0), ('Walk', 400), ('Run', 800)]:
+    lib.add_anim_state(ABP, 'Locomotion', name, x, 0)
+lib.set_anim_state_default(ABP, 'Locomotion', 'Idle')
+for a, b, cx in [('Idle','Walk',0.2),('Walk','Run',0.25),('Run','Walk',0.25),('Walk','Idle',0.2)]:
+    lib.add_anim_transition(ABP, 'Locomotion', a, b)
+    lib.set_anim_transition_properties(ABP, 'Locomotion', a, b, cx, 0, False)
+    lib.set_anim_transition_const_rule(ABP, 'Locomotion', a, b, True)
+
+# 3. Per-state anim: SequencePlayer -> StateResult
+for state, seq in [('Idle', IDLE), ('Walk', WALK), ('Run', RUN)]:
+    sp = lib.add_anim_graph_node_sequence_player(ABP, state, seq, -400, 0)
+    result = lib.find_anim_graph_node_by_class(ABP, state, 'AnimGraphNode_StateResult')
+    lib.connect_anim_graph_pins(ABP, state, sp, 'Pose', result, 'Result')
+
+# 4. Outer AnimGraph: SM -> Slot -> LayeredBoneBlend (+ overlay) -> Root
+slot = lib.add_anim_graph_node_slot(ABP, 'AnimGraph', 'UpperBody', 500, 0)
+lbb  = lib.add_anim_graph_node_layered_bone_blend(ABP, 'AnimGraph', 2, 900, 0)
+ov   = lib.add_anim_graph_node_sequence_player(ABP, 'AnimGraph', UPPR, 500, 300)
+root = lib.find_anim_graph_node_by_class(ABP, 'AnimGraph', 'AnimGraphNode_Root')
+for s, sp_name, t, tp_name in [
+    (sm,   'Pose', slot, 'Source'),       # SM -> Slot.Source
+    (slot, 'Pose', lbb,  'BasePose'),     # Slot -> LBB.BasePose
+    (ov,   'Pose', lbb,  'BlendPoses_0'), # overlay -> LBB.BlendPoses_0   (plural!)
+    (lbb,  'Pose', root, 'Result'),       # LBB -> Output Pose
+]:
+    lib.connect_anim_graph_pins(ABP, 'AnimGraph', s, sp_name, t, tp_name)
+
+# 5. Tidy + compile + save
+lib.auto_layout_anim_graph(ABP, 'AnimGraph', 0, 0)
+lib.auto_layout_state_machine(ABP, 'Locomotion', 0, 0)
+unreal.UnrealBridgeEditorLibrary.recompile_blueprint(ABP)
+unreal.EditorAssetLibrary.save_loaded_asset(unreal.load_asset(ABP))
+```
+
+**Pin-name gotcha.** `UAnimGraphNode_LayeredBoneBlend` numbers its pins `BlendPoses_0 / BlendPoses_1 / ...` (plural) and `BlendWeights_0 / ...`. If a pin-wire op returns `False`, query the actual names via `unreal.UnrealBridgeBlueprintLibrary.get_node_pins(abp, graph_name, node_guid)` first — pin naming varies by node class.
 | `implemented_interfaces` | list[str] | AnimLayer interface class names |
