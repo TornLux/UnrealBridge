@@ -13,10 +13,23 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Animation/AnimCurveTypes.h"
 #include "AnimationStateMachineGraph.h"
+#include "AnimationStateMachineSchema.h"
+#include "AnimationStateGraph.h"
+#include "AnimationTransitionGraph.h"
+#include "AnimationGraphSchema.h"
 #include "AnimGraphNode_StateMachineBase.h"
+#include "AnimGraphNode_StateMachine.h"
 #include "AnimGraphNode_Base.h"
 #include "AnimGraphNode_LinkedAnimLayer.h"
 #include "AnimGraphNode_Slot.h"
+#include "AnimGraphNode_SequencePlayer.h"
+#include "AnimGraphNode_BlendSpacePlayer.h"
+#include "AnimGraphNode_LayeredBoneBlend.h"
+#include "AnimGraphNode_BlendListByBool.h"
+#include "AnimGraphNode_BlendListByInt.h"
+#include "AnimGraphNode_TwoWayBlend.h"
+#include "AnimGraphNode_StateResult.h"
+#include "AnimGraphNode_TransitionResult.h"
 #include "AnimStateNode.h"
 #include "AnimStateTransitionNode.h"
 #include "AnimStateEntryNode.h"
@@ -26,9 +39,17 @@
 #include "Animation/AnimNotifies/AnimNotifyState.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraph/EdGraphSchema.h"
+#include "EdGraphSchema_K2.h"
+#include "EdGraphUtilities.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "ScopedTransaction.h"
 #include "Internationalization/Text.h"
 #include "Animation/BlendProfile.h"
 #include "Animation/AnimTypes.h"
+#include "UObject/UObjectIterator.h"
+
+#define LOCTEXT_NAMESPACE "UnrealBridgeAnim"
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -1265,3 +1286,1357 @@ FBridgeAnimBlueprintInfo UUnrealBridgeAnimLibrary::GetAnimBlueprintInfo(const FS
 
 	return Info;
 }
+
+// ═══════════════════════════════════════════════════════════════
+// AnimGraph / State Machine WRITE ops
+// ═══════════════════════════════════════════════════════════════
+
+namespace BridgeAnimWriteImpl
+{
+	/**
+	 * Find any UEdGraph inside an ABP by its GetName(): walks the top-level
+	 * AnimGraph, every StateMachine's EditorStateMachineGraph, and every
+	 * state / conduit / transition BoundGraph inside those recursively.
+	 * Also checks regular FunctionGraphs / UbergraphPages / DelegateGraphs so
+	 * the caller can reuse BP-style graph references if desired.
+	 */
+	UEdGraph* FindAnyGraphByName(UAnimBlueprint* ABP, const FString& GraphName)
+	{
+		if (!ABP || GraphName.IsEmpty()) return nullptr;
+
+		TArray<UEdGraph*> Stack;
+		Stack.Append(ABP->FunctionGraphs);
+		Stack.Append(ABP->UbergraphPages);
+		Stack.Append(ABP->DelegateSignatureGraphs);
+		Stack.Append(ABP->MacroGraphs);
+
+		TSet<UEdGraph*> Visited;
+		while (Stack.Num() > 0)
+		{
+			UEdGraph* G = Stack.Pop(EAllowShrinking::No);
+			if (!G || Visited.Contains(G)) continue;
+			Visited.Add(G);
+
+			if (G->GetName() == GraphName) return G;
+
+			// Walk nodes that own sub-graphs.
+			for (UEdGraphNode* Node : G->Nodes)
+			{
+				if (!Node) continue;
+				if (UAnimGraphNode_StateMachineBase* SM = Cast<UAnimGraphNode_StateMachineBase>(Node))
+				{
+					if (UEdGraph* Inner = SM->EditorStateMachineGraph)
+						Stack.Add(Inner);
+				}
+				else if (UAnimStateNode* State = Cast<UAnimStateNode>(Node))
+				{
+					if (State->BoundGraph) Stack.Add(State->BoundGraph);
+				}
+				else if (UAnimStateConduitNode* Conduit = Cast<UAnimStateConduitNode>(Node))
+				{
+					if (Conduit->BoundGraph) Stack.Add(Conduit->BoundGraph);
+				}
+				else if (UAnimStateTransitionNode* Trans = Cast<UAnimStateTransitionNode>(Node))
+				{
+					if (Trans->BoundGraph) Stack.Add(Trans->BoundGraph);
+				}
+			}
+
+			// And any direct SubGraphs attached to nodes (timelines etc.).
+			Stack.Append(G->SubGraphs);
+		}
+		return nullptr;
+	}
+
+	/** Find a node inside a graph by its stringified NodeGuid (Digits form). */
+	UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FString& NodeGuid)
+	{
+		if (!Graph || NodeGuid.IsEmpty()) return nullptr;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (N && N->NodeGuid.ToString(EGuidFormats::Digits) == NodeGuid)
+				return N;
+		}
+		return nullptr;
+	}
+
+	/** Find the state machine graph by name, inside an ABP. */
+	UAnimationStateMachineGraph* FindStateMachineGraph(UAnimBlueprint* ABP, const FString& Name)
+	{
+		UEdGraph* G = FindAnyGraphByName(ABP, Name);
+		return Cast<UAnimationStateMachineGraph>(G);
+	}
+
+	/** Within a state machine graph, find a state / conduit by its name (the BoundGraph's name). */
+	UAnimStateNodeBase* FindStateByName(UAnimationStateMachineGraph* SMGraph, const FString& StateName)
+	{
+		if (!SMGraph || StateName.IsEmpty()) return nullptr;
+		for (UEdGraphNode* N : SMGraph->Nodes)
+		{
+			if (UAnimStateNode* S = Cast<UAnimStateNode>(N))
+			{
+				if (S->GetStateName() == StateName) return S;
+			}
+			else if (UAnimStateConduitNode* C = Cast<UAnimStateConduitNode>(N))
+			{
+				if (C->GetStateName() == StateName) return C;
+			}
+		}
+		return nullptr;
+	}
+
+	/** Within a state machine graph, find the first transition From -> To (by state name). */
+	UAnimStateTransitionNode* FindTransition(UAnimationStateMachineGraph* SMGraph,
+		const FString& FromName, const FString& ToName)
+	{
+		if (!SMGraph) return nullptr;
+		for (UEdGraphNode* N : SMGraph->Nodes)
+		{
+			UAnimStateTransitionNode* T = Cast<UAnimStateTransitionNode>(N);
+			if (!T) continue;
+			UAnimStateNodeBase* Prev = T->GetPreviousState();
+			UAnimStateNodeBase* Next = T->GetNextState();
+			if (!Prev || !Next) continue;
+			if (Prev->GetStateName() == FromName && Next->GetStateName() == ToName)
+				return T;
+		}
+		return nullptr;
+	}
+
+	/** Load any UAnimationAsset by path (nullptr on failure). */
+	UAnimSequenceBase* LoadSequenceSafe(const FString& Path)
+	{
+		if (Path.IsEmpty()) return nullptr;
+		return LoadObject<UAnimSequenceBase>(nullptr, *Path);
+	}
+	UBlendSpace* LoadBlendSpaceSafe(const FString& Path)
+	{
+		if (Path.IsEmpty()) return nullptr;
+		return LoadObject<UBlendSpace>(nullptr, *Path);
+	}
+
+	/**
+	 * Post-write bookkeeping: mark blueprint structurally modified and notify
+	 * the graph to refresh. Caller should then call compile_blueprint via the
+	 * BP library when ready — we don't force-compile per op.
+	 */
+	void FinalizeEdit(UAnimBlueprint* ABP, UEdGraph* Graph)
+	{
+		if (Graph) Graph->NotifyGraphChanged();
+		if (ABP) FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(ABP);
+	}
+
+	/** Rename a graph cleanly (reuses the same RenameGraphCloseToName helper the editor uses). */
+	void RenameGraphTo(UEdGraph* Graph, const FString& NewName)
+	{
+		if (!Graph || NewName.IsEmpty()) return;
+		FEdGraphUtilities::RenameGraphToNameOrCloseToName(Graph, NewName);
+	}
+
+	/**
+	 * Canonical spawn for an anim graph node: manual NewObject + AddNode +
+	 * PostPlacedNewNode + AllocateDefaultPins. Matches the bridge BP pattern
+	 * and avoids relying on private editor schema action classes.
+	 *
+	 * `Configure` runs BEFORE PostPlacedNewNode so it can populate
+	 * `Node->Node.Foo = ...` fields that `PostPlacedNewNode` / default-pin
+	 * allocation use (e.g. SequencePlayer's asset -> pin defaults).
+	 */
+	template<typename TNode>
+	TNode* SpawnAnimGraphNode(UEdGraph* Graph, int32 X, int32 Y,
+		TFunctionRef<void(TNode*)> Configure)
+	{
+		if (!Graph) return nullptr;
+
+		TNode* Node = NewObject<TNode>(Graph);
+		Node->CreateNewGuid();
+		Node->NodePosX = X;
+		Node->NodePosY = Y;
+		Configure(Node);
+		Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+		Node->PostPlacedNewNode();
+		Node->AllocateDefaultPins();
+		return Node;
+	}
+
+	/** Same shape as SpawnAnimGraphNode but for any UEdGraphNode subclass. */
+	template<typename TNode>
+	TNode* SpawnGraphNode(UEdGraph* Graph, int32 X, int32 Y,
+		TFunctionRef<void(TNode*)> Configure)
+	{
+		if (!Graph) return nullptr;
+
+		TNode* Node = NewObject<TNode>(Graph);
+		Node->CreateNewGuid();
+		Node->NodePosX = X;
+		Node->NodePosY = Y;
+		Configure(Node);
+		Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+		Node->PostPlacedNewNode();
+		Node->AllocateDefaultPins();
+		return Node;
+	}
+}
+
+// ─── ListAnimGraphs ─────────────────────────────────────────
+
+TArray<FBridgeAnimGraphSummary> UUnrealBridgeAnimLibrary::ListAnimGraphs(const FString& AnimBlueprintPath)
+{
+	TArray<FBridgeAnimGraphSummary> Result;
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return Result;
+
+	struct FEntry { UEdGraph* Graph; FString Kind; FString ParentName; };
+	TArray<FEntry> Queue;
+	TSet<UEdGraph*> Seen;
+
+	for (UEdGraph* G : ABP->FunctionGraphs)
+	{
+		if (!G) continue;
+		const bool bIsAnimGraph = (G->GetName() == TEXT("AnimGraph"));
+		Queue.Add({ G, bIsAnimGraph ? TEXT("AnimGraph") : TEXT("Function"), FString() });
+	}
+	for (UEdGraph* G : ABP->UbergraphPages) if (G) Queue.Add({ G, TEXT("Ubergraph"), FString() });
+	for (UEdGraph* G : ABP->MacroGraphs) if (G) Queue.Add({ G, TEXT("Macro"), FString() });
+
+	while (Queue.Num() > 0)
+	{
+		const FEntry Entry = Queue.Pop(EAllowShrinking::No);
+		if (!Entry.Graph || Seen.Contains(Entry.Graph)) continue;
+		Seen.Add(Entry.Graph);
+
+		FBridgeAnimGraphSummary Info;
+		Info.Name = Entry.Graph->GetName();
+		Info.Kind = Entry.Kind;
+		Info.ParentGraphName = Entry.ParentName;
+		Info.NumNodes = Entry.Graph->Nodes.Num();
+		Result.Add(Info);
+
+		for (UEdGraphNode* Node : Entry.Graph->Nodes)
+		{
+			if (!Node) continue;
+			if (UAnimGraphNode_StateMachineBase* SM = Cast<UAnimGraphNode_StateMachineBase>(Node))
+			{
+				if (UEdGraph* Inner = SM->EditorStateMachineGraph)
+					Queue.Add({ Inner, TEXT("StateMachine"), Info.Name });
+			}
+			else if (UAnimStateNode* State = Cast<UAnimStateNode>(Node))
+			{
+				if (State->BoundGraph) Queue.Add({ State->BoundGraph, TEXT("State"), Info.Name });
+			}
+			else if (UAnimStateConduitNode* Conduit = Cast<UAnimStateConduitNode>(Node))
+			{
+				if (Conduit->BoundGraph) Queue.Add({ Conduit->BoundGraph, TEXT("Conduit"), Info.Name });
+			}
+			else if (UAnimStateTransitionNode* Trans = Cast<UAnimStateTransitionNode>(Node))
+			{
+				if (Trans->BoundGraph) Queue.Add({ Trans->BoundGraph, TEXT("TransitionRule"), Info.Name });
+			}
+		}
+	}
+
+	return Result;
+}
+
+// ─── AnimGraph node factories ───────────────────────────────
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeSequencePlayer(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& SequencePath, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) { UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: graph '%s' not found in '%s'"), *GraphName, *AnimBlueprintPath); return FString(); }
+
+	UAnimSequenceBase* Seq = LoadSequenceSafe(SequencePath);
+
+	const FScopedTransaction Tx(LOCTEXT("AddSequencePlayer", "Add Sequence Player"));
+	Graph->Modify();
+
+	UAnimGraphNode_SequencePlayer* Node = SpawnAnimGraphNode<UAnimGraphNode_SequencePlayer>(
+		Graph, PosX, PosY, [Seq](UAnimGraphNode_SequencePlayer* Tmpl)
+		{
+			if (Seq)
+			{
+				Tmpl->SetAnimationAsset(Seq);
+				Tmpl->CopySettingsFromAnimationAsset(Seq);
+			}
+		});
+	if (!Node) return FString();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeBlendSpacePlayer(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& BlendSpacePath, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	UBlendSpace* BS = LoadBlendSpaceSafe(BlendSpacePath);
+
+	const FScopedTransaction Tx(LOCTEXT("AddBlendSpacePlayer", "Add Blend Space Player"));
+	Graph->Modify();
+
+	UAnimGraphNode_BlendSpacePlayer* Node = SpawnAnimGraphNode<UAnimGraphNode_BlendSpacePlayer>(
+		Graph, PosX, PosY, [BS](UAnimGraphNode_BlendSpacePlayer* Tmpl)
+		{
+			if (BS)
+			{
+				Tmpl->SetAnimationAsset(BS);
+				Tmpl->CopySettingsFromAnimationAsset(BS);
+			}
+		});
+	if (!Node) return FString();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeSlot(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& SlotName, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	const FScopedTransaction Tx(LOCTEXT("AddSlot", "Add Slot"));
+	Graph->Modify();
+
+	const FName SlotFName = SlotName.IsEmpty() ? FName(TEXT("DefaultSlot")) : FName(*SlotName);
+
+	// Register slot on skeleton if missing.
+	if (USkeleton* Skel = ABP->TargetSkeleton)
+	{
+		if (!Skel->ContainsSlotName(SlotFName))
+		{
+			Skel->RegisterSlotNode(SlotFName);
+		}
+	}
+
+	UAnimGraphNode_Slot* Node = SpawnAnimGraphNode<UAnimGraphNode_Slot>(
+		Graph, PosX, PosY, [SlotFName](UAnimGraphNode_Slot* Tmpl)
+		{
+			Tmpl->Node.SlotName = SlotFName;
+		});
+	if (!Node) return FString();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeStateMachine(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& StateMachineName, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	const FScopedTransaction Tx(LOCTEXT("AddStateMachine", "Add State Machine"));
+	Graph->Modify();
+
+	UAnimGraphNode_StateMachine* Node = SpawnAnimGraphNode<UAnimGraphNode_StateMachine>(
+		Graph, PosX, PosY, [](UAnimGraphNode_StateMachine*){});
+	if (!Node) return FString();
+
+	if (!StateMachineName.IsEmpty() && Node->EditorStateMachineGraph)
+	{
+		RenameGraphTo(Node->EditorStateMachineGraph, StateMachineName);
+	}
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeLayeredBoneBlend(const FString& AnimBlueprintPath,
+	const FString& GraphName, int32 NumBlendPoses, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	const int32 Extras = FMath::Max(0, NumBlendPoses - 1);
+
+	const FScopedTransaction Tx(LOCTEXT("AddLayeredBoneBlend", "Add Layered Bone Blend"));
+	Graph->Modify();
+
+	UAnimGraphNode_LayeredBoneBlend* Node = SpawnAnimGraphNode<UAnimGraphNode_LayeredBoneBlend>(
+		Graph, PosX, PosY, [](UAnimGraphNode_LayeredBoneBlend*){});
+	if (!Node) return FString();
+
+	for (int32 i = 0; i < Extras; ++i)
+	{
+		Node->AddPinToBlendByFilter();
+	}
+	Node->ReconstructNode();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeBlendListByBool(const FString& AnimBlueprintPath,
+	const FString& GraphName, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	const FScopedTransaction Tx(LOCTEXT("AddBlendListByBool", "Add Blend List By Bool"));
+	Graph->Modify();
+
+	UAnimGraphNode_BlendListByBool* Node = SpawnAnimGraphNode<UAnimGraphNode_BlendListByBool>(
+		Graph, PosX, PosY, [](UAnimGraphNode_BlendListByBool*){});
+	if (!Node) return FString();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeBlendListByInt(const FString& AnimBlueprintPath,
+	const FString& GraphName, int32 NumPoses, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	const int32 Clamped = FMath::Max(2, NumPoses);
+
+	const FScopedTransaction Tx(LOCTEXT("AddBlendListByInt", "Add Blend List By Int"));
+	Graph->Modify();
+
+	UAnimGraphNode_BlendListByInt* Node = SpawnAnimGraphNode<UAnimGraphNode_BlendListByInt>(
+		Graph, PosX, PosY, [](UAnimGraphNode_BlendListByInt*){});
+	if (!Node) return FString();
+
+	// Default BlendListByInt spawns with 2 poses; add the rest.
+	for (int32 i = 2; i < Clamped; ++i)
+	{
+		Node->AddPinToBlendList();
+	}
+	Node->ReconstructNode();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeTwoWayBlend(const FString& AnimBlueprintPath,
+	const FString& GraphName, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	const FScopedTransaction Tx(LOCTEXT("AddTwoWayBlend", "Add Two Way Blend"));
+	Graph->Modify();
+
+	UAnimGraphNode_TwoWayBlend* Node = SpawnAnimGraphNode<UAnimGraphNode_TwoWayBlend>(
+		Graph, PosX, PosY, [](UAnimGraphNode_TwoWayBlend*){});
+	if (!Node) return FString();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeLinkedAnimLayer(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& InterfaceClassPath, const FString& LayerName,
+	int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	UClass* InterfaceClass = nullptr;
+	if (!InterfaceClassPath.IsEmpty())
+	{
+		InterfaceClass = LoadObject<UClass>(nullptr, *InterfaceClassPath);
+	}
+	const FName LayerFName = LayerName.IsEmpty() ? NAME_None : FName(*LayerName);
+
+	const FScopedTransaction Tx(LOCTEXT("AddLinkedAnimLayer", "Add Linked Anim Layer"));
+	Graph->Modify();
+
+	UAnimGraphNode_LinkedAnimLayer* Node = SpawnAnimGraphNode<UAnimGraphNode_LinkedAnimLayer>(
+		Graph, PosX, PosY, [InterfaceClass, LayerFName](UAnimGraphNode_LinkedAnimLayer* Tmpl)
+		{
+			if (InterfaceClass)
+			{
+				Tmpl->Node.Interface = InterfaceClass;
+			}
+			if (LayerFName != NAME_None)
+			{
+				// SetLayerName is not exported from the AnimGraph module, so
+				// write the underlying FAnimNode field directly. Matches what
+				// the public setter does (it just assigns).
+				Tmpl->Node.Layer = LayerFName;
+			}
+		});
+	if (!Node) return FString();
+
+	Node->ReconstructNode();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimGraphNodeByClassName(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& ShortClassName, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return FString();
+
+	// Locate the UClass* by short name among all subclasses of UAnimGraphNode_Base.
+	UClass* NodeClass = nullptr;
+	for (TObjectIterator<UClass> It; It; ++It)
+	{
+		UClass* C = *It;
+		if (!C->IsChildOf(UAnimGraphNode_Base::StaticClass())) continue;
+		if (C->HasAnyClassFlags(CLASS_Abstract | CLASS_Deprecated)) continue;
+		if (C->GetName() == ShortClassName)
+		{
+			NodeClass = C;
+			break;
+		}
+	}
+	if (!NodeClass)
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: no concrete UAnimGraphNode_Base subclass named '%s'"),
+			*ShortClassName);
+		return FString();
+	}
+
+	const FScopedTransaction Tx(LOCTEXT("AddAnimNodeByClass", "Add Anim Node"));
+	Graph->Modify();
+
+	UAnimGraphNode_Base* Node = NewObject<UAnimGraphNode_Base>(Graph, NodeClass);
+	Node->CreateNewGuid();
+	Node->NodePosX = PosX;
+	Node->NodePosY = PosY;
+	Graph->AddNode(Node, /*bFromUI*/ false, /*bSelectNewNode*/ false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+
+	FinalizeEdit(ABP, Graph);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+// ─── Pin connection / disconnect / node removal ─────────────
+
+bool UUnrealBridgeAnimLibrary::ConnectAnimGraphPins(const FString& AnimBlueprintPath,
+	const FString& GraphName,
+	const FString& SourceNodeGuid, const FString& SourcePinName,
+	const FString& TargetNodeGuid, const FString& TargetPinName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return false;
+
+	UEdGraphNode* Src = FindNodeByGuid(Graph, SourceNodeGuid);
+	UEdGraphNode* Tgt = FindNodeByGuid(Graph, TargetNodeGuid);
+	if (!Src || !Tgt) return false;
+
+	UEdGraphPin* SrcPin = Src->FindPin(*SourcePinName);
+	UEdGraphPin* TgtPin = Tgt->FindPin(*TargetPinName);
+	if (!SrcPin || !TgtPin) return false;
+
+	const UEdGraphSchema* Schema = Graph->GetSchema();
+	if (!Schema) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("ConnectPins", "Connect Pins"));
+	Graph->Modify();
+	Src->Modify();
+	Tgt->Modify();
+
+	const bool bOk = Schema->TryCreateConnection(SrcPin, TgtPin);
+	if (bOk) FinalizeEdit(ABP, Graph);
+	return bOk;
+}
+
+bool UUnrealBridgeAnimLibrary::DisconnectAnimGraphPin(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& NodeGuid, const FString& PinName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+	UEdGraphPin* Pin = Node->FindPin(*PinName);
+	if (!Pin) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("DisconnectPin", "Disconnect Pin"));
+	Graph->Modify();
+	Node->Modify();
+	Pin->BreakAllPinLinks();
+
+	FinalizeEdit(ABP, Graph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::RemoveAnimGraphNode(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& NodeGuid)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("RemoveAnimNode", "Remove Anim Node"));
+	Graph->Modify();
+	Node->Modify();
+
+	Graph->RemoveNode(Node, /*bBreakAllLinks*/ true);
+
+	FinalizeEdit(ABP, Graph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::SetAnimGraphNodePosition(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& NodeGuid, int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = FindNodeByGuid(Graph, NodeGuid);
+	if (!Node) return false;
+
+	Node->Modify();
+	Node->NodePosX = PosX;
+	Node->NodePosY = PosY;
+
+	FinalizeEdit(ABP, Graph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::SetAnimSequencePlayerSequence(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& NodeGuid, const FString& SequencePath)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = FindNodeByGuid(Graph, NodeGuid);
+	UAnimGraphNode_SequencePlayer* SP = Cast<UAnimGraphNode_SequencePlayer>(Node);
+	if (!SP) return false;
+
+	UAnimSequenceBase* Seq = LoadSequenceSafe(SequencePath);
+	// Empty path clears — accept null.
+
+	const FScopedTransaction Tx(LOCTEXT("SetSequencePlayerSequence", "Set Sequence"));
+	SP->Modify();
+	SP->SetAnimationAsset(Seq);
+	if (Seq) SP->CopySettingsFromAnimationAsset(Seq);
+	SP->ReconstructNode();
+
+	FinalizeEdit(ABP, Graph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::SetAnimSlotName(const FString& AnimBlueprintPath,
+	const FString& GraphName, const FString& NodeGuid, const FString& SlotName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) return false;
+	UEdGraphNode* Node = FindNodeByGuid(Graph, NodeGuid);
+	UAnimGraphNode_Slot* Slot = Cast<UAnimGraphNode_Slot>(Node);
+	if (!Slot) return false;
+
+	const FName SlotFName = SlotName.IsEmpty() ? FName(TEXT("DefaultSlot")) : FName(*SlotName);
+
+	const FScopedTransaction Tx(LOCTEXT("SetSlotName", "Set Slot Name"));
+	Slot->Modify();
+	Slot->Node.SlotName = SlotFName;
+
+	if (USkeleton* Skel = ABP->TargetSkeleton)
+	{
+		if (!Skel->ContainsSlotName(SlotFName))
+		{
+			Skel->RegisterSlotNode(SlotFName);
+		}
+	}
+
+	Slot->ReconstructNode();
+
+	FinalizeEdit(ABP, Graph);
+	return true;
+}
+
+// ─── State machine interior ─────────────────────────────────
+
+FString UUnrealBridgeAnimLibrary::AddAnimState(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName, const FString& StateName,
+	int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) { UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: state machine '%s' not found"), *StateMachineGraphName); return FString(); }
+
+	const FScopedTransaction Tx(LOCTEXT("AddAnimState", "Add State"));
+	SMGraph->Modify();
+
+	UAnimStateNode* State = SpawnGraphNode<UAnimStateNode>(
+		SMGraph, PosX, PosY, [](UAnimStateNode*){});
+	if (!State) return FString();
+
+	if (!StateName.IsEmpty() && State->BoundGraph)
+	{
+		RenameGraphTo(State->BoundGraph, StateName);
+	}
+
+	FinalizeEdit(ABP, SMGraph);
+	return State->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimConduit(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName, const FString& ConduitName,
+	int32 PosX, int32 PosY)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return FString();
+
+	const FScopedTransaction Tx(LOCTEXT("AddAnimConduit", "Add Conduit"));
+	SMGraph->Modify();
+
+	UAnimStateConduitNode* Conduit = SpawnGraphNode<UAnimStateConduitNode>(
+		SMGraph, PosX, PosY, [](UAnimStateConduitNode*){});
+	if (!Conduit) return FString();
+
+	if (!ConduitName.IsEmpty() && Conduit->BoundGraph)
+	{
+		RenameGraphTo(Conduit->BoundGraph, ConduitName);
+	}
+
+	FinalizeEdit(ABP, SMGraph);
+	return Conduit->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeAnimLibrary::AddAnimTransition(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName,
+	const FString& FromStateName, const FString& ToStateName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return FString();
+
+	UAnimStateNodeBase* Prev = FindStateByName(SMGraph, FromStateName);
+	UAnimStateNodeBase* Next = FindStateByName(SMGraph, ToStateName);
+	if (!Prev || !Next) return FString();
+
+	const FScopedTransaction Tx(LOCTEXT("AddAnimTransition", "Add Transition"));
+	SMGraph->Modify();
+
+	const int32 MidX = (Prev->NodePosX + Next->NodePosX) / 2;
+	const int32 MidY = (Prev->NodePosY + Next->NodePosY) / 2;
+
+	UAnimStateTransitionNode* Trans = SpawnGraphNode<UAnimStateTransitionNode>(
+		SMGraph, MidX, MidY, [](UAnimStateTransitionNode*){});
+	if (!Trans) return FString();
+
+	// Hook endpoints BEFORE the pin-change callback can fire:
+	// UAnimStateTransitionNode::PinConnectionListChanged self-destructs the
+	// node when either In/Out pin becomes empty.
+	Trans->CreateConnections(Prev, Next);
+
+	FinalizeEdit(ABP, SMGraph);
+	return Trans->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+bool UUnrealBridgeAnimLibrary::RemoveAnimState(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName, const FString& StateName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return false;
+	UAnimStateNodeBase* State = FindStateByName(SMGraph, StateName);
+	if (!State) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("RemoveAnimState", "Remove State"));
+	SMGraph->Modify();
+
+	// Remove attached transitions first so they don't suicide in
+	// PinConnectionListChanged as we break links.
+	TArray<UAnimStateTransitionNode*> ToKill;
+	for (UEdGraphNode* N : SMGraph->Nodes)
+	{
+		UAnimStateTransitionNode* T = Cast<UAnimStateTransitionNode>(N);
+		if (!T) continue;
+		if (T->GetPreviousState() == State || T->GetNextState() == State)
+		{
+			ToKill.Add(T);
+		}
+	}
+	for (UAnimStateTransitionNode* T : ToKill)
+	{
+		SMGraph->RemoveNode(T, /*bBreakAllLinks*/ true);
+	}
+
+	SMGraph->RemoveNode(State, /*bBreakAllLinks*/ true);
+
+	FinalizeEdit(ABP, SMGraph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::RemoveAnimTransition(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName,
+	const FString& FromStateName, const FString& ToStateName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return false;
+	UAnimStateTransitionNode* Trans = FindTransition(SMGraph, FromStateName, ToStateName);
+	if (!Trans) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("RemoveAnimTransition", "Remove Transition"));
+	SMGraph->Modify();
+
+	SMGraph->RemoveNode(Trans, /*bBreakAllLinks*/ true);
+
+	FinalizeEdit(ABP, SMGraph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::SetAnimStateDefault(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName, const FString& StateName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return false;
+	UAnimStateNodeBase* Target = FindStateByName(SMGraph, StateName);
+	if (!Target) return false;
+
+	UAnimStateEntryNode* Entry = SMGraph->EntryNode;
+	if (!Entry) return false;
+
+	UEdGraphPin* EntryOut = Entry->GetOutputPin();
+	UEdGraphPin* TargetIn = Target->GetInputPin();
+	if (!EntryOut || !TargetIn) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("SetAnimStateDefault", "Set Default State"));
+	SMGraph->Modify();
+	Entry->Modify();
+	Target->Modify();
+	EntryOut->BreakAllPinLinks();
+	EntryOut->MakeLinkTo(TargetIn);
+
+	FinalizeEdit(ABP, SMGraph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::RenameAnimState(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName,
+	const FString& OldName, const FString& NewName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	if (NewName.IsEmpty()) return false;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return false;
+	UAnimStateNodeBase* State = FindStateByName(SMGraph, OldName);
+	if (!State) return false;
+
+	UEdGraph* Bound = nullptr;
+	if (UAnimStateNode* S = Cast<UAnimStateNode>(State)) Bound = S->BoundGraph;
+	else if (UAnimStateConduitNode* C = Cast<UAnimStateConduitNode>(State)) Bound = C->BoundGraph;
+	if (!Bound) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("RenameAnimState", "Rename State"));
+	SMGraph->Modify();
+	Bound->Modify();
+
+	RenameGraphTo(Bound, NewName);
+
+	FinalizeEdit(ABP, SMGraph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::SetAnimTransitionProperties(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName,
+	const FString& FromStateName, const FString& ToStateName,
+	float CrossfadeDuration, int32 PriorityOrder, bool bBidirectional)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return false;
+	UAnimStateTransitionNode* Trans = FindTransition(SMGraph, FromStateName, ToStateName);
+	if (!Trans) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("SetAnimTransitionProps", "Set Transition Properties"));
+	Trans->Modify();
+
+	if (CrossfadeDuration >= 0.f) Trans->CrossfadeDuration = CrossfadeDuration;
+	if (PriorityOrder != MIN_int32) Trans->PriorityOrder = PriorityOrder;
+	Trans->Bidirectional = bBidirectional;
+
+	FinalizeEdit(ABP, SMGraph);
+	return true;
+}
+
+bool UUnrealBridgeAnimLibrary::SetAnimTransitionConstRule(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName,
+	const FString& FromStateName, const FString& ToStateName, bool bValue)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return false;
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return false;
+	UAnimStateTransitionNode* Trans = FindTransition(SMGraph, FromStateName, ToStateName);
+	if (!Trans) return false;
+
+	UEdGraph* RuleGraph = Trans->BoundGraph;
+	if (!RuleGraph) return false;
+
+	// Find the transition result node and its bool input pin.
+	UAnimGraphNode_TransitionResult* Result = nullptr;
+	for (UEdGraphNode* N : RuleGraph->Nodes)
+	{
+		Result = Cast<UAnimGraphNode_TransitionResult>(N);
+		if (Result) break;
+	}
+	if (!Result) return false;
+
+	UEdGraphPin* BoolPin = nullptr;
+	for (UEdGraphPin* Pin : Result->Pins)
+	{
+		if (Pin && Pin->Direction == EGPD_Input && Pin->PinName == TEXT("bCanEnterTransition"))
+		{
+			BoolPin = Pin;
+			break;
+		}
+	}
+	if (!BoolPin)
+	{
+		// Fallback: take the first input bool pin.
+		for (UEdGraphPin* Pin : Result->Pins)
+		{
+			if (Pin && Pin->Direction == EGPD_Input
+				&& Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Boolean)
+			{
+				BoolPin = Pin; break;
+			}
+		}
+	}
+	if (!BoolPin) return false;
+
+	const FScopedTransaction Tx(LOCTEXT("SetTransitionConstRule", "Set Transition Rule"));
+	RuleGraph->Modify();
+	Result->Modify();
+
+	// Clear links so our default literal is actually used on compile.
+	BoolPin->BreakAllPinLinks();
+	BoolPin->DefaultValue = bValue ? TEXT("true") : TEXT("false");
+	BoolPin->AutogeneratedDefaultValue = BoolPin->DefaultValue;
+
+	FinalizeEdit(ABP, RuleGraph);
+	return true;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Auto-layout
+// ═══════════════════════════════════════════════════════════════
+
+namespace BridgeAnimLayoutImpl
+{
+	/**
+	 * Rough size for an AnimGraph node. AnimGraph nodes commonly render wider
+	 * than K2 data nodes because of the anim-asset thumbnail + property block.
+	 * These fallback defaults are only used when NodeWidth/Height haven't been
+	 * populated yet (Slate hasn't ticked since the node was created).
+	 */
+	static const int32 AnimNodeDefaultW = 240;
+	static const int32 AnimNodeDefaultH = 120;
+	static const int32 StateNodeDefaultW = 180;
+	static const int32 StateNodeDefaultH = 80;
+
+	struct FLayer
+	{
+		TArray<UEdGraphNode*> Nodes;
+	};
+
+	/**
+	 * Is this node a "sink" (pose consumer on the right of the graph)?
+	 * Includes the AnimGraph root, state result, transition result, and the
+	 * state-machine output node. Used to seed rightmost layer.
+	 */
+	bool IsAnimSink(UEdGraphNode* N)
+	{
+		if (!N) return false;
+		FString ClassName = N->GetClass()->GetName();
+		return ClassName == TEXT("AnimGraphNode_Root")
+			|| ClassName == TEXT("AnimGraphNode_StateResult")
+			|| ClassName == TEXT("AnimGraphNode_TransitionResult");
+	}
+
+	void EstimateNodeSize(UEdGraphNode* N, int32& W, int32& H)
+	{
+		if (!N) { W = AnimNodeDefaultW; H = AnimNodeDefaultH; return; }
+		W = (N->NodeWidth  > 0) ? N->NodeWidth  : AnimNodeDefaultW;
+		H = (N->NodeHeight > 0) ? N->NodeHeight : AnimNodeDefaultH;
+	}
+
+	/**
+	 * Layer nodes by longest-path from the sink. Sinks are at layer 0 (rightmost
+	 * visually); a node's layer = max(consumer.layer) + 1. Any node not
+	 * reachable from a sink is floated to the current max layer + 1.
+	 */
+	int32 AssignLayersByPoseFlow(UEdGraph* Graph, TMap<UEdGraphNode*, int32>& OutLayer,
+		TArray<FString>& Warnings)
+	{
+		TArray<UEdGraphNode*> Queue;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (!N) continue;
+			if (IsAnimSink(N))
+			{
+				OutLayer.Add(N, 0);
+				Queue.Add(N);
+			}
+		}
+
+		// If there are no sinks (state's inner graph before connecting), seed
+		// from the first node so we still layer something sensible.
+		if (Queue.Num() == 0)
+		{
+			for (UEdGraphNode* N : Graph->Nodes)
+			{
+				if (N) { OutLayer.Add(N, 0); Queue.Add(N); break; }
+			}
+		}
+
+		int32 MaxLayer = 0;
+		int32 Safety = Graph->Nodes.Num() * 8 + 16;
+		while (Queue.Num() > 0 && Safety-- > 0)
+		{
+			UEdGraphNode* Node = Queue.Pop(EAllowShrinking::No);
+			const int32 CurLayer = OutLayer[Node];
+
+			// Walk upstream producers via input pins' LinkedTo.
+			for (UEdGraphPin* Pin : Node->Pins)
+			{
+				if (!Pin || Pin->Direction != EGPD_Input) continue;
+				for (UEdGraphPin* Linked : Pin->LinkedTo)
+				{
+					if (!Linked) continue;
+					UEdGraphNode* Producer = Linked->GetOwningNode();
+					if (!Producer) continue;
+					const int32 Want = CurLayer + 1;
+					int32* Got = OutLayer.Find(Producer);
+					if (!Got || Want > *Got)
+					{
+						OutLayer.Add(Producer, Want);
+						MaxLayer = FMath::Max(MaxLayer, Want);
+						Queue.Add(Producer);
+					}
+				}
+			}
+		}
+		if (Safety < 0)
+		{
+			Warnings.Add(TEXT("layer assignment hit iteration cap — possible cycle"));
+		}
+
+		// Unreachable nodes: park at MaxLayer + 1 so they don't overlap.
+		int32 UnreachLayer = MaxLayer + 1;
+		for (UEdGraphNode* N : Graph->Nodes)
+		{
+			if (!N) continue;
+			if (!OutLayer.Contains(N))
+			{
+				OutLayer.Add(N, UnreachLayer);
+			}
+		}
+		if (UnreachLayer > MaxLayer) MaxLayer = UnreachLayer;
+		return MaxLayer + 1;
+	}
+}
+
+FBridgeAnimLayoutResult UUnrealBridgeAnimLibrary::AutoLayoutAnimGraph(
+	const FString& AnimBlueprintPath, const FString& GraphName,
+	int32 HorizontalSpacing, int32 VerticalSpacing)
+{
+	using namespace BridgeAnimWriteImpl;
+	using namespace BridgeAnimLayoutImpl;
+
+	FBridgeAnimLayoutResult Result;
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) { Result.Warnings.Add(TEXT("anim blueprint not found")); return Result; }
+	UEdGraph* Graph = FindAnyGraphByName(ABP, GraphName);
+	if (!Graph) { Result.Warnings.Add(TEXT("graph not found")); return Result; }
+
+	const int32 HSpace = HorizontalSpacing > 0 ? HorizontalSpacing : 100;
+	const int32 VSpace = VerticalSpacing   > 0 ? VerticalSpacing   : 60;
+
+	TMap<UEdGraphNode*, int32> LayerOf;
+	const int32 LayerCount = AssignLayersByPoseFlow(Graph, LayerOf, Result.Warnings);
+
+	// Group nodes by layer, sort by current NodePosY for stable ordering.
+	TArray<TArray<UEdGraphNode*>> Layers;
+	Layers.SetNum(LayerCount);
+	for (auto& Pair : LayerOf)
+	{
+		Layers[Pair.Value].Add(Pair.Key);
+	}
+	for (TArray<UEdGraphNode*>& L : Layers)
+	{
+		L.Sort([](const UEdGraphNode& A, const UEdGraphNode& B)
+		{
+			return A.NodePosY < B.NodePosY;
+		});
+	}
+
+	// Determine per-layer max width (so narrower layers don't waste space).
+	TArray<int32> LayerMaxW;
+	LayerMaxW.SetNumZeroed(LayerCount);
+	for (int32 L = 0; L < LayerCount; ++L)
+	{
+		for (UEdGraphNode* N : Layers[L])
+		{
+			int32 W = 0, H = 0;
+			EstimateNodeSize(N, W, H);
+			if (W > LayerMaxW[L]) LayerMaxW[L] = W;
+		}
+	}
+
+	// Compute per-layer X: layer 0 is rightmost (sink). X decreases as layer
+	// grows.  Working right-to-left is natural here because sinks are the
+	// anchor point of the AnimGraph.
+	TArray<int32> LayerX;
+	LayerX.SetNumZeroed(LayerCount);
+	int32 RightX = 0;
+	for (int32 L = 0; L < LayerCount; ++L)
+	{
+		LayerX[L] = RightX - LayerMaxW[L];
+		RightX = LayerX[L] - HSpace;
+	}
+
+	// Anchor origin: preserve top-left of graph so laid-out nodes stay
+	// visually near where they were.
+	int32 MinOrigX = INT32_MAX, MinOrigY = INT32_MAX;
+	for (UEdGraphNode* N : Graph->Nodes)
+	{
+		if (!N) continue;
+		MinOrigX = FMath::Min(MinOrigX, N->NodePosX);
+		MinOrigY = FMath::Min(MinOrigY, N->NodePosY);
+	}
+	if (MinOrigX == INT32_MAX) { MinOrigX = 0; MinOrigY = 0; }
+
+	// Assign positions. The leftmost layer gets X = MinOrigX; shift everything
+	// so LayerX[LayerCount-1] lines up there.
+	int32 LeftmostX = (LayerCount > 0) ? LayerX[LayerCount - 1] : 0;
+	int32 DeltaX = MinOrigX - LeftmostX;
+
+	Graph->Modify();
+	int32 MinFinalX = INT32_MAX, MinFinalY = INT32_MAX;
+	int32 MaxFinalX = INT32_MIN, MaxFinalY = INT32_MIN;
+	int32 Count = 0;
+	for (int32 L = 0; L < LayerCount; ++L)
+	{
+		int32 Y = MinOrigY;
+		for (UEdGraphNode* N : Layers[L])
+		{
+			int32 W = 0, H = 0;
+			EstimateNodeSize(N, W, H);
+			N->Modify();
+			N->NodePosX = LayerX[L] + DeltaX;
+			N->NodePosY = Y;
+			Y += H + VSpace;
+			++Count;
+			MinFinalX = FMath::Min(MinFinalX, N->NodePosX);
+			MinFinalY = FMath::Min(MinFinalY, N->NodePosY);
+			MaxFinalX = FMath::Max(MaxFinalX, N->NodePosX + W);
+			MaxFinalY = FMath::Max(MaxFinalY, N->NodePosY + H);
+		}
+	}
+
+	BridgeAnimWriteImpl::FinalizeEdit(ABP, Graph);
+
+	Result.bSucceeded = true;
+	Result.NodesPositioned = Count;
+	Result.LayerCount = LayerCount;
+	Result.BoundsWidth  = (MinFinalX == INT32_MAX) ? 0 : (MaxFinalX - MinFinalX);
+	Result.BoundsHeight = (MinFinalY == INT32_MAX) ? 0 : (MaxFinalY - MinFinalY);
+	return Result;
+}
+
+FBridgeAnimLayoutResult UUnrealBridgeAnimLibrary::AutoLayoutStateMachine(
+	const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+	int32 HorizontalSpacing, int32 VerticalSpacing)
+{
+	using namespace BridgeAnimWriteImpl;
+	using namespace BridgeAnimLayoutImpl;
+
+	FBridgeAnimLayoutResult Result;
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) { Result.Warnings.Add(TEXT("anim blueprint not found")); return Result; }
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) { Result.Warnings.Add(TEXT("state machine graph not found")); return Result; }
+
+	const int32 HSpace = HorizontalSpacing > 0 ? HorizontalSpacing : 300;
+	const int32 VSpace = VerticalSpacing   > 0 ? VerticalSpacing   : 200;
+
+	// Collect states / conduits (transitions / entry follow along via pins).
+	TArray<UAnimStateNodeBase*> States;
+	UAnimStateEntryNode* Entry = nullptr;
+	TArray<UAnimStateTransitionNode*> Transitions;
+	for (UEdGraphNode* N : SMGraph->Nodes)
+	{
+		if (!N) continue;
+		if (UAnimStateEntryNode* E = Cast<UAnimStateEntryNode>(N)) { Entry = E; }
+		else if (UAnimStateNodeBase* S = Cast<UAnimStateNodeBase>(N))
+		{
+			if (!N->IsA<UAnimStateTransitionNode>()) States.Add(S);
+			else Transitions.Add(Cast<UAnimStateTransitionNode>(N));
+		}
+	}
+
+	// Stable order by current (Y,X) so small local fixes don't blow up the layout.
+	States.Sort([](const UAnimStateNodeBase& A, const UAnimStateNodeBase& B)
+	{
+		if (A.NodePosY != B.NodePosY) return A.NodePosY < B.NodePosY;
+		return A.NodePosX < B.NodePosX;
+	});
+
+	// Grid arrangement: roughly square. Cols = ceil(sqrt(N)).
+	const int32 N = States.Num();
+	const int32 Cols = (N > 0) ? FMath::CeilToInt(FMath::Sqrt((float)N)) : 1;
+
+	const int32 OriginX = Entry ? (Entry->NodePosX + 200) : 0;
+	const int32 OriginY = Entry ? Entry->NodePosY : 0;
+
+	SMGraph->Modify();
+	int32 Count = 0;
+	int32 MinFinalX = INT32_MAX, MinFinalY = INT32_MAX;
+	int32 MaxFinalX = INT32_MIN, MaxFinalY = INT32_MIN;
+	for (int32 i = 0; i < N; ++i)
+	{
+		const int32 Row = i / Cols;
+		const int32 Col = i % Cols;
+		UAnimStateNodeBase* S = States[i];
+		S->Modify();
+		S->NodePosX = OriginX + Col * HSpace;
+		S->NodePosY = OriginY + Row * VSpace;
+		++Count;
+		MinFinalX = FMath::Min(MinFinalX, S->NodePosX);
+		MinFinalY = FMath::Min(MinFinalY, S->NodePosY);
+		MaxFinalX = FMath::Max(MaxFinalX, S->NodePosX + StateNodeDefaultW);
+		MaxFinalY = FMath::Max(MaxFinalY, S->NodePosY + StateNodeDefaultH);
+	}
+
+	// Transitions: park at midpoint of their endpoints.
+	for (UAnimStateTransitionNode* T : Transitions)
+	{
+		UAnimStateNodeBase* P = T->GetPreviousState();
+		UAnimStateNodeBase* Q = T->GetNextState();
+		if (!P || !Q) continue;
+		T->Modify();
+		T->NodePosX = (P->NodePosX + Q->NodePosX) / 2 + StateNodeDefaultW / 2;
+		T->NodePosY = (P->NodePosY + Q->NodePosY) / 2 + StateNodeDefaultH / 2;
+	}
+
+	// Lay out every inner graph too (state inner anim graph, transition rules,
+	// conduit rules). One call tidies the whole machine.
+	for (UAnimStateNodeBase* S : States)
+	{
+		UEdGraph* Inner = nullptr;
+		if (UAnimStateNode* AS = Cast<UAnimStateNode>(S)) Inner = AS->BoundGraph;
+		else if (UAnimStateConduitNode* AC = Cast<UAnimStateConduitNode>(S)) Inner = AC->BoundGraph;
+		if (Inner)
+		{
+			AutoLayoutAnimGraph(AnimBlueprintPath, Inner->GetName(), HorizontalSpacing, VerticalSpacing);
+		}
+	}
+	for (UAnimStateTransitionNode* T : Transitions)
+	{
+		if (T->BoundGraph)
+		{
+			AutoLayoutAnimGraph(AnimBlueprintPath, T->BoundGraph->GetName(), HorizontalSpacing, VerticalSpacing);
+		}
+	}
+
+	BridgeAnimWriteImpl::FinalizeEdit(ABP, SMGraph);
+
+	Result.bSucceeded = true;
+	Result.NodesPositioned = Count;
+	Result.LayerCount = Cols;
+	Result.BoundsWidth  = (MinFinalX == INT32_MAX) ? 0 : (MaxFinalX - MinFinalX);
+	Result.BoundsHeight = (MinFinalY == INT32_MAX) ? 0 : (MaxFinalY - MinFinalY);
+	return Result;
+}
+
+#undef LOCTEXT_NAMESPACE

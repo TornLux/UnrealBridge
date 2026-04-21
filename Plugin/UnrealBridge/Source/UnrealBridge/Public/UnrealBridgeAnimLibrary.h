@@ -466,6 +466,51 @@ struct FBridgeAnimBlueprintInfo
 	TArray<FString> ImplementedInterfaces;
 };
 
+// ─── AnimGraph layout / write-op structs ────────────────────
+
+/** Summary returned by list_anim_graphs — one row per UEdGraph in the ABP
+ *  (top-level AnimGraph + each state-machine graph + each state's BoundGraph
+ *  + each transition's rule graph). */
+USTRUCT(BlueprintType)
+struct FBridgeAnimGraphSummary
+{
+	GENERATED_BODY()
+
+	/** Graph name as stored on the UEdGraph (use this as GraphName in write ops). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	/** One of: "AnimGraph", "StateMachine", "State", "Conduit", "TransitionRule", "Function", "Other". */
+	UPROPERTY(BlueprintReadOnly)
+	FString Kind;
+
+	/** Parent container graph name — "" for top-level graphs. */
+	UPROPERTY(BlueprintReadOnly)
+	FString ParentGraphName;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumNodes = 0;
+};
+
+/** Result of the AnimGraph auto-layout. */
+USTRUCT(BlueprintType)
+struct FBridgeAnimLayoutResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly) bool bSucceeded = false;
+
+	UPROPERTY(BlueprintReadOnly) int32 NodesPositioned = 0;
+
+	/** Layer / column count of the final layout. */
+	UPROPERTY(BlueprintReadOnly) int32 LayerCount = 0;
+
+	UPROPERTY(BlueprintReadOnly) int32 BoundsWidth = 0;
+	UPROPERTY(BlueprintReadOnly) int32 BoundsHeight = 0;
+
+	UPROPERTY(BlueprintReadOnly) TArray<FString> Warnings;
+};
+
 // ─── Blend Profile structs ──────────────────────────────────
 
 USTRUCT(BlueprintType)
@@ -667,4 +712,240 @@ public:
 	/** Get high-level AnimBlueprint metadata: parent class, target skeleton, preview mesh, graph counts, interfaces. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static FBridgeAnimBlueprintInfo GetAnimBlueprintInfo(const FString& AnimBlueprintPath);
+
+	// ─── AnimGraph / state machine WRITE ops ─────────────────
+
+	/**
+	 * Enumerate every UEdGraph inside the AnimBlueprint and classify it:
+	 * top-level "AnimGraph", a state-machine graph, a state's BoundGraph,
+	 * a conduit, a transition rule graph, a regular K2 function, etc.
+	 *
+	 * Use the `Name` field of the returned entries as the `GraphName` parameter
+	 * to every other write op. ParentGraphName locates where each sub-graph
+	 * lives (e.g. a state's BoundGraph lists its owning state-machine graph
+	 * as parent, so you can reconstruct the hierarchy client-side).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FBridgeAnimGraphSummary> ListAnimGraphs(const FString& AnimBlueprintPath);
+
+	/**
+	 * Spawn a UAnimGraphNode_SequencePlayer in `GraphName`, bound to SequencePath.
+	 * GraphName may be the top-level "AnimGraph" or any state's BoundGraph name
+	 * (from ListAnimGraphs). Returns the new node's GUID (empty on failure).
+	 *
+	 * SequencePath may be empty — the node is created with no anim asset.
+	 * Does NOT auto-compile; call compile_blueprint after a batch.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeSequencePlayer(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& SequencePath, int32 PosX, int32 PosY);
+
+	/**
+	 * Spawn a UAnimGraphNode_BlendSpacePlayer in `GraphName`, bound to BlendSpacePath.
+	 * Accepts both 1D and 2D blend spaces.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeBlendSpacePlayer(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& BlendSpacePath, int32 PosX, int32 PosY);
+
+	/**
+	 * Spawn a UAnimGraphNode_Slot with the given slot name.
+	 * The slot will be registered on the target skeleton if it isn't already.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeSlot(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& SlotName, int32 PosX, int32 PosY);
+
+	/**
+	 * Spawn a UAnimGraphNode_StateMachine and auto-create its interior
+	 * UAnimationStateMachineGraph (renamed to StateMachineName; uniquified if
+	 * taken). The interior graph's name is what later write ops use to
+	 * target states/transitions inside it. Returns the outer node's GUID.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeStateMachine(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& StateMachineName, int32 PosX, int32 PosY);
+
+	/** Spawn a UAnimGraphNode_LayeredBoneBlend with the requested number of extra blend poses (min 1). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeLayeredBoneBlend(const FString& AnimBlueprintPath, const FString& GraphName,
+		int32 NumBlendPoses, int32 PosX, int32 PosY);
+
+	/** Spawn a UAnimGraphNode_BlendListByBool. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeBlendListByBool(const FString& AnimBlueprintPath, const FString& GraphName,
+		int32 PosX, int32 PosY);
+
+	/** Spawn a UAnimGraphNode_BlendListByInt with the requested number of poses (min 2). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeBlendListByInt(const FString& AnimBlueprintPath, const FString& GraphName,
+		int32 NumPoses, int32 PosX, int32 PosY);
+
+	/** Spawn a UAnimGraphNode_TwoWayBlend (FAnimNode_TwoWayBlend — field is `BlendNode`, not `Node`). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeTwoWayBlend(const FString& AnimBlueprintPath, const FString& GraphName,
+		int32 PosX, int32 PosY);
+
+	/**
+	 * Spawn a UAnimGraphNode_LinkedAnimLayer bound to (InterfaceClassPath, LayerName).
+	 * Call ReconstructNode() so the linked layer's custom pins appear.
+	 * InterfaceClassPath may be empty for a layer on the same ABP.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeLinkedAnimLayer(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& InterfaceClassPath, const FString& LayerName, int32 PosX, int32 PosY);
+
+	/**
+	 * Generic AnimGraph node factory by short class name (e.g. "AnimGraphNode_ApplyAdditive",
+	 * "AnimGraphNode_ModifyBone", "AnimGraphNode_ObserveBone", "AnimGraphNode_SaveCachedPose",
+	 * "AnimGraphNode_UseCachedPose", "AnimGraphNode_Root", "AnimGraphNode_ConvertComponentToLocalSpace"
+	 * etc). Fallback when the typed helpers don't cover the desired node.
+	 * Returns the new node's GUID, or "" on failure (class not found / not a UAnimGraphNode_Base subclass).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimGraphNodeByClassName(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& ShortClassName, int32 PosX, int32 PosY);
+
+	/**
+	 * Connect two pins inside an AnimGraph-family graph (includes pose-link pins,
+	 * state-transition "In"/"Out" pins, and any K2 pin inside a transition rule
+	 * or state's anim graph). Uses the owning graph's schema — the anim schema
+	 * handles local↔component pose conversion automatically.
+	 * Returns true when the link was created.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool ConnectAnimGraphPins(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& SourceNodeGuid, const FString& SourcePinName,
+		const FString& TargetNodeGuid, const FString& TargetPinName);
+
+	/** Break every link on a single named pin of a node. Returns true on success. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool DisconnectAnimGraphPin(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, const FString& PinName);
+
+	/** Remove a node from an AnimGraph-family graph by GUID. Returns true if a node was removed. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool RemoveAnimGraphNode(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& NodeGuid);
+
+	/** Set the (NodePosX, NodePosY) of a node in an AnimGraph-family graph. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetAnimGraphNodePosition(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, int32 PosX, int32 PosY);
+
+	/** Change a SequencePlayer's bound sequence. Empty path clears the binding. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetAnimSequencePlayerSequence(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, const FString& SequencePath);
+
+	/** Change a Slot node's slot name. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetAnimSlotName(const FString& AnimBlueprintPath, const FString& GraphName,
+		const FString& NodeGuid, const FString& SlotName);
+
+	// ─── State machine interior write ops ────────────────────
+
+	/**
+	 * Add a new state inside the given state-machine graph. The state's
+	 * BoundGraph (a UAnimationStateGraph containing a StateResult node) is
+	 * auto-created and renamed to StateName (uniquified if taken).
+	 * Returns the new AnimStateNode's GUID.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimState(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& StateName, int32 PosX, int32 PosY);
+
+	/**
+	 * Add a conduit (branching helper state) inside a state-machine graph.
+	 * Its BoundGraph is a bool rule graph rather than an anim graph.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimConduit(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& ConduitName, int32 PosX, int32 PosY);
+
+	/**
+	 * Create a transition edge From -> To (states or conduits by name) inside
+	 * a state-machine graph. The transition's rule graph is auto-created.
+	 * Returns the transition node's GUID.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString AddAnimTransition(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& FromStateName, const FString& ToStateName);
+
+	/** Remove a named state (or conduit) from a state-machine graph. Cleans up attached transitions. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool RemoveAnimState(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& StateName);
+
+	/** Remove the transition From -> To (or first match, when multiple exist). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool RemoveAnimTransition(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& FromStateName, const FString& ToStateName);
+
+	/**
+	 * Set the default entry state: links StateMachineGraph->EntryNode's output
+	 * pin to StateName's input pin, clearing any prior default link.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetAnimStateDefault(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& StateName);
+
+	/** Rename a state by renaming its BoundGraph (which is the authoritative state name). */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool RenameAnimState(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& OldName, const FString& NewName);
+
+	/**
+	 * Tune a transition's blend properties.
+	 * `CrossfadeDuration` negative = leave unchanged.
+	 * `PriorityOrder` INT_MIN (i.e. -2147483648) = leave unchanged.
+	 * `bBidirectional` is always written.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetAnimTransitionProperties(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& FromStateName, const FString& ToStateName,
+		float CrossfadeDuration, int32 PriorityOrder, bool bBidirectional);
+
+	/**
+	 * Set a transition rule to a constant boolean. Replaces the rule-graph
+	 * result node's bool input with a literal value — convenient when you
+	 * just need "always transition" or "never" without authoring nodes.
+	 * For anything more complex, query the transition's rule-graph name via
+	 * ListAnimGraphs and use the BP library to author nodes inside it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static bool SetAnimTransitionConstRule(const FString& AnimBlueprintPath, const FString& StateMachineGraphName,
+		const FString& FromStateName, const FString& ToStateName, bool bValue);
+
+	// ─── Layout ──────────────────────────────────────────────
+
+	/**
+	 * Auto-layout an AnimGraph (pose-link flow). Nodes are layered L→R by the
+	 * pose-link DAG: sinks (AnimGraphNode_Root / StateResult / TransitionResult)
+	 * on the right, leaf sources on the left. Within each layer, nodes are
+	 * sorted by barycentric order of their successors. Mirrors the BP
+	 * Sugiyama-lite layout but tuned for anim graphs.
+	 *
+	 * @param HorizontalSpacing  Gap between layers. 0 or negative = default (100).
+	 * @param VerticalSpacing    Gap between nodes within a layer. 0 or negative = default (60).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FBridgeAnimLayoutResult AutoLayoutAnimGraph(const FString& AnimBlueprintPath, const FString& GraphName,
+		int32 HorizontalSpacing, int32 VerticalSpacing);
+
+	/**
+	 * Auto-layout the *interior* of a state-machine graph. States are arranged
+	 * in a 2-D grid (roughly square). Conduits interleave with states. The
+	 * entry node is pinned at the top-left. Transitions follow along.
+	 *
+	 * Additionally runs AutoLayoutAnimGraph on every state's BoundGraph + every
+	 * transition's rule graph, so one call tidies the whole state machine.
+	 *
+	 * @param HorizontalSpacing  Gap between state columns. 0 or negative = default (300).
+	 * @param VerticalSpacing    Gap between state rows. 0 or negative = default (200).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FBridgeAnimLayoutResult AutoLayoutStateMachine(const FString& AnimBlueprintPath,
+		const FString& StateMachineGraphName,
+		int32 HorizontalSpacing, int32 VerticalSpacing);
 };

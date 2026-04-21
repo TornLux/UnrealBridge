@@ -632,4 +632,147 @@ for iface in info.implemented_interfaces:
 | `num_state_machines` | int | Count of `AnimGraphNode_StateMachineBase` across all graphs |
 | `num_linked_layers` | int | Count of `AnimGraphNode_LinkedAnimLayer` bindings |
 | `num_slots` | int | Count of `AnimGraphNode_Slot` nodes |
+
+---
+
+## AnimGraph / State Machine write ops
+
+Mirror image of the read ops above. Every graph-modifying call:
+
+- runs inside an `FScopedTransaction` so Ctrl+Z reverts it,
+- ends with `UEdGraph::NotifyGraphChanged()` + `FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(ABP)`,
+- does **not** force-compile — call `unreal.UnrealBridgeEditorLibrary.recompile_blueprint(path)` once after a batch of edits and `unreal.EditorAssetLibrary.save_loaded_asset(...)` to persist.
+
+**Graph addressing.** Every write op takes a `graph_name` string. This is the `UEdGraph::GetName()` of the target graph:
+
+- `"AnimGraph"` → the top-level anim graph.
+- A state-machine graph name (e.g. `"Locomotion"`) → its interior, used for states/conduits/transitions.
+- A state's name (e.g. `"Idle"`) → the anim graph inside that state. Add pose nodes with `add_anim_graph_node_*` just like the top-level AnimGraph.
+- A transition's rule graph name (the ugly `"Transition"` / `"AnimationTransitionGraph_N"` default) → the bool-rule sub-graph; usually you set constant rules via `set_anim_transition_const_rule` rather than authoring nodes.
+
+Enumerate all of them with `list_anim_graphs`:
+
+### list_anim_graphs(anim_blueprint_path) → list[FBridgeAnimGraphSummary]
+
+Returns every graph inside the ABP (top-level anim graph, each state-machine graph, each state's inner anim graph, each conduit, each transition rule graph, plus regular function / ubergraph / macro graphs). Use the `name` field as the `graph_name` parameter to every write op below.
+
+```python
+for g in unreal.UnrealBridgeAnimLibrary.list_anim_graphs(ABP):
+    print(f'{g.kind:15s} {g.name:30s} parent={g.parent_graph_name} nodes={g.num_nodes}')
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | `UEdGraph::GetName()` — pass this as `graph_name` |
+| `kind` | str | `"AnimGraph"`, `"StateMachine"`, `"State"`, `"Conduit"`, `"TransitionRule"`, `"Function"`, `"Ubergraph"`, `"Macro"` |
+| `parent_graph_name` | str | Enclosing graph name (empty for top-level entries) |
+| `num_nodes` | int | Node count in this graph |
+
+### AnimGraph node factories
+
+All return the new node's GUID as a hex string (`EGuidFormats::Digits`), or empty string on failure.
+
+| Function | Maps to UE class |
+|----------|------------------|
+| `add_anim_graph_node_sequence_player(abp, graph_name, sequence_path, x, y)` | `UAnimGraphNode_SequencePlayer` (empty path = unbound) |
+| `add_anim_graph_node_blend_space_player(abp, graph_name, blend_space_path, x, y)` | `UAnimGraphNode_BlendSpacePlayer` (1D or 2D) |
+| `add_anim_graph_node_slot(abp, graph_name, slot_name, x, y)` | `UAnimGraphNode_Slot` — slot auto-registered on target skeleton |
+| `add_anim_graph_node_state_machine(abp, graph_name, sm_name, x, y)` | `UAnimGraphNode_StateMachine` — interior `UAnimationStateMachineGraph` auto-created and renamed to `sm_name` |
+| `add_anim_graph_node_layered_bone_blend(abp, graph_name, num_blend_poses, x, y)` | `UAnimGraphNode_LayeredBoneBlend` (extra poses added via `AddPinToBlendByFilter`) |
+| `add_anim_graph_node_blend_list_by_bool(abp, graph_name, x, y)` | `UAnimGraphNode_BlendListByBool` |
+| `add_anim_graph_node_blend_list_by_int(abp, graph_name, num_poses, x, y)` | `UAnimGraphNode_BlendListByInt` (min 2; extras via `AddPinToBlendList`) |
+| `add_anim_graph_node_two_way_blend(abp, graph_name, x, y)` | `UAnimGraphNode_TwoWayBlend` — note: runtime field is `BlendNode`, not `Node` |
+| `add_anim_graph_node_linked_anim_layer(abp, graph_name, interface_class_path, layer_name, x, y)` | `UAnimGraphNode_LinkedAnimLayer` — reconstructs to surface interface-defined pins |
+| `add_anim_graph_node_by_class_name(abp, graph_name, short_class_name, x, y)` | Fallback: any concrete `UAnimGraphNode_Base` subclass by short name (e.g. `"AnimGraphNode_ApplyAdditive"`, `"AnimGraphNode_ModifyBone"`, `"AnimGraphNode_UseCachedPose"`, `"AnimGraphNode_SaveCachedPose"`, `"AnimGraphNode_ObserveBone"`, `"AnimGraphNode_RefPose"`) |
+
+```python
+lib = unreal.UnrealBridgeAnimLibrary
+seq  = lib.add_anim_graph_node_sequence_player(ABP, 'AnimGraph', '/Game/Anim/AS_Walk', -800, 0)
+slot = lib.add_anim_graph_node_slot(ABP, 'AnimGraph', 'UpperBody', -500, 0)
+sm   = lib.add_anim_graph_node_state_machine(ABP, 'AnimGraph', 'Locomotion', 0, 0)
+apply_additive = lib.add_anim_graph_node_by_class_name(ABP, 'AnimGraph', 'AnimGraphNode_ApplyAdditive', 300, 0)
+```
+
+### Pin / node write ops
+
+| Function | Behaviour |
+|----------|-----------|
+| `connect_anim_graph_pins(abp, graph_name, src_guid, src_pin, tgt_guid, tgt_pin)` → bool | Uses the owning graph's schema — `UAnimationGraphSchema` auto-inserts local↔component conversion nodes when needed. Pose-input pins on anim nodes are named after the `FPoseLink` property (e.g. Slot → `"Source"`, LayeredBoneBlend → `"BasePose"`); pose-output pin is `"Pose"`. |
+| `disconnect_anim_graph_pin(abp, graph_name, node_guid, pin_name)` → bool | Breaks every link on one pin. |
+| `remove_anim_graph_node(abp, graph_name, node_guid)` → bool | Removes the node and breaks all its links. |
+| `set_anim_graph_node_position(abp, graph_name, node_guid, x, y)` → bool | Updates `NodePosX` / `NodePosY`. |
+| `set_anim_sequence_player_sequence(abp, graph_name, node_guid, sequence_path)` → bool | Swap the bound sequence on an existing SequencePlayer. Empty path clears it. |
+| `set_anim_slot_name(abp, graph_name, node_guid, slot_name)` → bool | Change a Slot node's `SlotName`; slot auto-registered on the skeleton if missing. |
+
+### State machine interior write ops
+
+Target the state-machine graph by name (the `name` returned by `list_anim_graphs` for entries of kind `"StateMachine"`).
+
+| Function | Behaviour |
+|----------|-----------|
+| `add_anim_state(abp, sm_graph_name, state_name, x, y)` → guid | Creates a `UAnimStateNode`; its inner `UAnimationStateGraph` + `UAnimGraphNode_StateResult` are auto-created and the graph is renamed to `state_name`. |
+| `add_anim_conduit(abp, sm_graph_name, conduit_name, x, y)` → guid | `UAnimStateConduitNode` — inner graph is a **bool rule graph** (not an anim graph). |
+| `add_anim_transition(abp, sm_graph_name, from_state_name, to_state_name)` → guid | Creates a `UAnimStateTransitionNode` and wires its In/Out pins in one atomic step. Midpoint position is derived from the two endpoints. |
+| `remove_anim_state(abp, sm_graph_name, state_name)` → bool | Removes the state + every transition attached to it. |
+| `remove_anim_transition(abp, sm_graph_name, from_state_name, to_state_name)` → bool | Removes the first matching transition. |
+| `set_anim_state_default(abp, sm_graph_name, state_name)` → bool | Relinks the `UAnimStateEntryNode` output pin to the given state's input pin. |
+| `rename_anim_state(abp, sm_graph_name, old_name, new_name)` → bool | Rename is done via `FEdGraphUtilities::RenameGraphToNameOrCloseToName` on the state's `BoundGraph` — the graph's name IS the state name (see `UAnimStateNode::GetStateName`). |
+| `set_anim_transition_properties(abp, sm_graph_name, from_name, to_name, crossfade, priority, bidirectional)` → bool | `crossfade < 0` and `priority == -2147483648` (`MIN_int32`) are sentinels for "leave unchanged". `bidirectional` is always written. |
+| `set_anim_transition_const_rule(abp, sm_graph_name, from_name, to_name, bool_value)` → bool | Shortcut: set the rule graph's `bCanEnterTransition` pin default to `true` / `false` (breaking any pre-existing links). Use this for always-transition / never-transition cases; for conditional rules, grab the rule graph name from `list_anim_graphs` and author K2 nodes in it with the Blueprint library. |
+
+```python
+sm  = lib.add_anim_graph_node_state_machine(ABP, 'AnimGraph', 'Locomotion', 0, 0)
+idle = lib.add_anim_state(ABP, 'Locomotion', 'Idle',  0,    0)
+walk = lib.add_anim_state(ABP, 'Locomotion', 'Walk',  300,  0)
+lib.set_anim_state_default(ABP, 'Locomotion', 'Idle')
+lib.add_anim_transition(ABP, 'Locomotion', 'Idle', 'Walk')
+lib.add_anim_transition(ABP, 'Locomotion', 'Walk', 'Idle')
+lib.set_anim_transition_properties(ABP, 'Locomotion', 'Idle', 'Walk', 0.25, 0, False)
+lib.set_anim_transition_const_rule(ABP, 'Locomotion', 'Walk', 'Idle', True)
+```
+
+**Recipe — author poses inside a state.** A state's inner anim graph is addressed by the state name, because `UAnimStateNode::GetStateName` == `BoundGraph->GetName()`:
+
+```python
+seq = lib.add_anim_graph_node_sequence_player(ABP, 'Idle', '/Game/Anim/AS_Idle', -300, 0)
+# The state's StateResult node already exists — connect into its "Result" input:
+for n in lib.get_anim_graph_nodes(ABP):  # note: this queries the top-level AnimGraph, not state internals
+    pass
+# For state internals, grab the StateResult via list_anim_graphs + a custom walk,
+# or simply wire by querying the state's graph nodes through raw unreal.EditorAssetLibrary.
+```
+
+### Auto-layout
+
+Mirrors the BP `auto_layout_graph` shape but tuned for anim graphs (pose-flow layering) and state machines (grid). Returns `FBridgeAnimLayoutResult { succeeded, nodes_positioned, layer_count, bounds_width, bounds_height, warnings }`.
+
+| Function | Notes |
+|----------|-------|
+| `auto_layout_anim_graph(abp, graph_name, h_spacing, v_spacing)` | Sinks (Root / StateResult / TransitionResult) anchor the rightmost layer; layers grow leftward. Pass 0 for default spacing (100 H / 60 V). |
+| `auto_layout_state_machine(abp, sm_graph_name, h_spacing, v_spacing)` | States laid out in a ceil(sqrt(N))-wide grid; transitions parked at endpoint midpoints. **Recurses into every state's inner anim graph and every transition's rule graph** — one call tidies the whole machine. Default spacing 300 H / 200 V. |
+
+```python
+r = lib.auto_layout_anim_graph(ABP, 'AnimGraph', 0, 0)
+print(f'graph laid out: {r.nodes_positioned} nodes, {r.layer_count} layers')
+
+r = lib.auto_layout_state_machine(ABP, 'Locomotion', 0, 0)
+```
+
+### Persistence
+
+Write ops mark the ABP structurally modified; changes are visible immediately in the editor, but you still need to compile + save to persist:
+
+```python
+unreal.UnrealBridgeEditorLibrary.recompile_blueprint(ABP)
+unreal.EditorAssetLibrary.save_loaded_asset(unreal.load_asset(ABP))
+```
+
+### Gotchas
+
+- **Python bool field names.** `FBridgeAnimLayoutResult::bSucceeded` → `.succeeded` in Python (UE Python strips the `b` prefix from USTRUCT bool fields). Same for `FBridgeAnimState::bIsDefault` → `.is_default`, `bIsConduit` → `.is_conduit`, and `FBridgeAnimTransition::bBidirectional` → `.bidirectional`.
+- **Transition property sentinels.** `set_anim_transition_properties` uses `crossfade < 0` to mean "leave unchanged" and `MIN_int32` for the same semantics on `priority` (since 0 is a valid priority).
+- **State-machine "name" ambiguity.** `AddAnimGraphNodeStateMachine` returns the *outer* node's GUID (the one in `AnimGraph`). The *interior* graph — which every state / transition op targets — is a separate object named by the `sm_name` parameter. The outer GUID and the interior name address different objects.
+- **State name vs. state node.** Passing `state_name` to `remove_anim_state`, `rename_anim_state`, `set_anim_state_default`, `add_anim_transition` etc. looks up the `UAnimStateNodeBase` by calling `GetStateName()` — which is just `BoundGraph->GetName()`. So "renaming a state" really means renaming the state's inner graph.
+- **Transition rule authoring.** `set_anim_transition_const_rule` is the fast path for true/false rules. For conditional logic ("crouch && moving"), query the rule graph's name via `list_anim_graphs` — it'll be something like `"Transition"` or `"AnimationTransitionGraph_N"` — and author the condition nodes with the Blueprint library (`add_variable_node` / `add_function_call_node` / `connect_graph_pins` etc.) against that graph name, ending at the rule graph's `TransitionResult` node's `bCanEnterTransition` input.
+- **No force-compile per op.** Each write op notifies the graph and marks the BP structurally modified but does not recompile. Batch your edits, then call `recompile_blueprint` once.
 | `implemented_interfaces` | list[str] | AnimLayer interface class names |
