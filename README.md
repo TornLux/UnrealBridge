@@ -21,7 +21,8 @@ The Editor plugin runs a small TCP server on `127.0.0.1:9876` — query scenes, 
 ## Highlights
 
 - **Stateful editor, stateless agent.** No reattaching, no respawning a process per call.
-- **12 typed `UnrealBridge*Library` surfaces** covering Blueprint graphs, assets, AnimBP, UMG, level editing (transacted — Ctrl+Z works), materials, DataTables, GAS, navigation, an agent control layer, a reactive event subsystem, and editor session control (PIE / CVars / console / compile).
+- **13 typed `UnrealBridge*Library` surfaces, ~990 `UFUNCTION`s total** — covering Blueprint graphs (read + author), assets, AnimBP (read + full state-machine / AnimGraph authoring), UMG, level editing (transacted — Ctrl+Z works), materials, DataTables, GAS (read + GA/GE/GC authoring), navigation, an agent control layer, a reactive event subsystem (10 adapters), editor session control (PIE / CVars / console / compile), and perf snapshots (structured frame timing / draw counts / memory / UObject histogram).
+- **Blueprint graph quality toolchain.** More than just layout: `auto_layout_graph`'s `pin_aligned` strategy reads live Slate geometry to align exec rails, `straighten_exec_chain` snaps the main rail, `collapse_nodes_to_function` extracts subgraphs, `lint_blueprint` flags orphans / unnamed nodes / oversized functions / uncommented large graphs, `add_comment_box` + preset palette (Section / Validation / Danger / Network / UI / Debug / Setup) partitions graphs for readability. AnimGraph and state machines get dedicated `auto_layout_anim_graph` / `auto_layout_state_machine` (the latter recurses into each state's inner graph + every transition rule graph).
 - **Two build loops.** `hot_reload.py` patches the running editor via Live Coding in ~10–60s for body-only edits. `rebuild_relaunch.py` cleanly relaunches when you touch reflection (`UFUNCTION` / `UCLASS` / `UPROPERTY`).
 - **Claude Code skill included.** `.claude/skills/unreal-bridge/` bundles the CLI, per-library API reference docs, and a signature-discipline rule so Agent sessions don't waste round-trips on guessed function names.
 
@@ -32,7 +33,7 @@ flowchart LR
     Agent["AI Agent"]
     CLI["bridge.py"]
     Server["FUnrealBridgeServer"]
-    Libs["UnrealBridge*Library<br/>(12 surfaces)"]
+    Libs["UnrealBridge*Library<br/>(13 surfaces, ~990 UFUNCTIONs)"]
     UE["Unreal Editor 5.7"]
 
     Agent -- "shell" --> CLI
@@ -97,6 +98,7 @@ Once the skill is installed, paste any of these into a Claude Code session:
 - *"Move the PlayerStart up by 200 units."*
 - *"Compile `/Game/Blueprints/BP_Character` and tell me if it has errors."*
 - *"Show me the state machine names inside `/Game/Animations/ABP_Hero`."*
+- *"Create an ABP on `SK_Mannequin` with an Idle / Walk / Run state machine driven by a `Speed` variable (>10 enters Walk, >200 enters Run), then layer a Slot + LayeredBoneBlend in the outer graph for upper-body overlays."*
 
 The agent reads `SKILL.md`, picks the right `UnrealBridge*Library` function, calls it through `bridge.py`, and reports back.
 
@@ -140,16 +142,17 @@ python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # reflection ch
 | `UnrealBridgeServer` | TCP listener, length-prefixed JSON framing, GameThread dispatch |
 | `UnrealBridgeBlueprintLibrary` | Class hierarchy, variables, functions, components, graph/node inspection, timelines, event dispatchers, write ops |
 | `UnrealBridgeAssetLibrary` | Asset keyword search, derived classes, references, dependencies, DataAsset queries |
-| `UnrealBridgeAnimLibrary` | AnimBP state machines, AnimGraph nodes, linked layers, slots, curves, sequence / montage / blend space info, skeleton bone tree |
+| `UnrealBridgeAnimLibrary` | AnimBP deep introspection: state machines, AnimGraph nodes, linked layers, slots, curves, sequence / montage / blend space info, skeleton / sockets / virtual bones / blend profiles. **Write ops**: ABP creation + variables, state / conduit / transition add / remove / rename, transition properties (crossfade, priority, bidirectional), const-rule shortcut and real variable-driven rules (paired with the BP library to author `KismetMathLibrary` comparators), 9 typed AnimGraph node factories + `add_anim_graph_node_by_class_name` fallback, pin connect / disconnect / move, auto-layout for both AnimGraph and state-machine interiors; AnimNotify / sync marker / montage section / socket CRUD |
 | `UnrealBridgeDataTableLibrary` | DataTable row inspection |
 | `UnrealBridgeMaterialLibrary` | Material instance parameter queries |
 | `UnrealBridgeUMGLibrary` | Widget tree, properties, animations, bindings, events, search, write ops |
 | `UnrealBridgeLevelLibrary` | Level / actor query + edit (spawn, destroy, move, attach, label, nested property get/set) — all transacted |
-| `UnrealBridgeEditorLibrary` | Asset open / save, Content Browser sync, viewport camera, PIE start/stop/pause, undo/redo, console, CVars, redirector fixup, Blueprint compile |
-| `UnrealBridgeGameplayAbilityLibrary` | GAS CDO introspection — tags, cost / cooldown GE classes |
-| `UnrealBridgeGameplayLibrary` | PIE agent control surface — packed world observation, pathfinding, movement / look / jump input |
-| `UnrealBridgeNavigationLibrary` | NavMesh queries and pathfinding helpers |
-| `UnrealBridgeReactive*` | Subscribe to runtime events (GAS, attributes, actor lifecycle, anim notifies, input, timers) and editor asset events |
+| `UnrealBridgeEditorLibrary` | Editor session control: asset open / save / reload, Content Browser sync, viewport camera, PIE start / stop / pause, undo / redo, console commands, CVars, redirector fixup, Blueprint compile, Live Coding trigger; screenshot + GBuffer channels (Depth / DeviceDepth / Normal / BaseColor) + HitProxy ID pass; tabs / notifications / diagnostics. Bridge self-observation: ring-buffered call log (request id, latency, endpoint, output bytes), latency stats, and signature-registry JSON dump (one call returns metadata for all ~990 `UFUNCTION`s) |
+| `UnrealBridgeGameplayAbilityLibrary` | GameplayAbility / GameplayEffect / AttributeSet Blueprint metadata; GameplayTag hierarchy and matching; list abilities / effects by tag; Actor ASC state (attribute values, active abilities / effects, cooldown checks); runtime `SendGameplayEvent` and attribute mutation; GA / GE / GC Blueprint authoring (CDO edit, GA graph nodes, GE magnitude / component / inherited tags, GC tag set) |
+| `UnrealBridgeGameplayLibrary` | PIE agent control: packed world observation, pathfinding; movement / look / jump / teleport / sticky input, Enhanced Input + MappingContext; pawn velocity / ability / jump-arc simulation; camera ray, screen ↔ world, NavMesh projection; damage, impulse, time dilation, sound, camera shake; debug draw; AI-controller probing |
+| `UnrealBridgeNavigationLibrary` | Export the current level's NavMesh as Wavefront OBJ for external visualization and geometry analysis |
+| `UnrealBridgePerfLibrary` | Structured perf snapshots: frame timing (FPS / GT / RT / GPU / RHI ms, stat-unit and raw modes), render counters (draw calls / primitives, summed across GPUs), process memory, `TObjectIterator` class histogram, ISO-8601 timestamped aggregate snapshot. USTRUCT output — no `stat unit` text parsing |
+| `UnrealBridgeReactive*` | Event subscription framework with 10 adapters: runtime (GameplayEvent, AttributeChanged, ActorLifecycle, MovementMode, AnimNotify, InputAction, Timer) and editor (AssetEvent, PieState, BpCompiled); handler register / list / pause / resume / stats; cross-session JSON persistence. Replaces polling |
 
 ## Protocol
 
