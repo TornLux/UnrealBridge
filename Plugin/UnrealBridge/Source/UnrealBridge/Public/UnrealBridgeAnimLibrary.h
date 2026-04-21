@@ -906,6 +906,20 @@ public:
 		const FString& FromStateName, const FString& ToStateName);
 
 	/**
+	 * Get the name of the transition rule graph for the From -> To edge.
+	 * Empty string if the transition doesn't exist.
+	 *
+	 * Use this as the `graph_name` argument to the Blueprint library when
+	 * authoring K2 logic inside the rule (variable reads, comparisons,
+	 * boolean ops, etc.). `AddAnimTransition` names rule graphs uniquely
+	 * as `Rule_<From>_to_<To>` so this accessor returns a stable handle.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static FString GetAnimTransitionRuleGraphName(const FString& AnimBlueprintPath,
+		const FString& StateMachineGraphName,
+		const FString& FromStateName, const FString& ToStateName);
+
+	/**
 	 * Set the default entry state: links StateMachineGraph->EntryNode's output
 	 * pin to StateName's input pin, clearing any prior default link.
 	 */

@@ -743,7 +743,8 @@ Target the state-machine graph by name (the `name` returned by `list_anim_graphs
 | `set_anim_state_default(abp, sm_graph_name, state_name)` → bool | Relinks the `UAnimStateEntryNode` output pin to the given state's input pin. |
 | `rename_anim_state(abp, sm_graph_name, old_name, new_name)` → bool | Rename is done via `FEdGraphUtilities::RenameGraphToNameOrCloseToName` on the state's `BoundGraph` — the graph's name IS the state name (see `UAnimStateNode::GetStateName`). |
 | `set_anim_transition_properties(abp, sm_graph_name, from_name, to_name, crossfade, priority, bidirectional)` → bool | `crossfade < 0` and `priority == -2147483648` (`MIN_int32`) are sentinels for "leave unchanged". `bidirectional` is always written. |
-| `set_anim_transition_const_rule(abp, sm_graph_name, from_name, to_name, bool_value)` → bool | Shortcut: set the rule graph's `bCanEnterTransition` pin default to `true` / `false` (breaking any pre-existing links). Use this for always-transition / never-transition cases; for conditional rules, grab the rule graph name from `list_anim_graphs` and author K2 nodes in it with the Blueprint library. |
+| `set_anim_transition_const_rule(abp, sm_graph_name, from_name, to_name, bool_value)` → bool | Shortcut: set the rule graph's `bCanEnterTransition` pin default to `true` / `false` (breaking any pre-existing links). Use this for always-transition / never-transition cases; for conditional rules, use `get_anim_transition_rule_graph_name` + the Blueprint library. |
+| `get_anim_transition_rule_graph_name(abp, sm_graph_name, from_name, to_name)` → str | Get the rule graph's name (`Rule_<From>_to_<To>`) for a transition. Pass this as `graph_name` to the BP library's `add_variable_node` / `add_call_function_node` / `connect_graph_pins` to author real conditional logic. Empty string if the transition doesn't exist. |
 
 ```python
 sm  = lib.add_anim_graph_node_state_machine(ABP, 'AnimGraph', 'Locomotion', 0, 0)
@@ -801,9 +802,9 @@ unreal.EditorAssetLibrary.save_loaded_asset(unreal.load_asset(ABP))
 - **Transition rule authoring.** `set_anim_transition_const_rule` is the fast path for true/false rules. For conditional logic ("crouch && moving"), query the rule graph's name via `list_anim_graphs` — it'll be something like `"Transition"` or `"AnimationTransitionGraph_N"` — and author the condition nodes with the Blueprint library (`add_variable_node` / `add_function_call_node` / `connect_graph_pins` etc.) against that graph name, ending at the rule graph's `TransitionResult` node's `bCanEnterTransition` input.
 - **No force-compile per op.** Each write op notifies the graph and marks the BP structurally modified but does not recompile. Batch your edits, then call `recompile_blueprint` once.
 
-### End-to-end example: locomotion ABP from scratch
+### End-to-end example: locomotion ABP with real variable-driven rules
 
-Compact script that creates an ABP, authors a 3-state locomotion state machine, then layers the SM output with a second anim in the outer AnimGraph. Verified on the UEFN Mannequin in GameAnimationSample 5.7:
+Compact script that creates an ABP, authors a 3-state locomotion state machine with **real** `Speed > X` / `Speed < X` rules (not always-true shortcuts), and layers the SM output with an overlay anim in the outer graph. Verified on the UEFN Mannequin in GameAnimationSample 5.7:
 
 ```python
 import unreal
@@ -814,49 +815,71 @@ WALK = '/Game/Characters/UEFN_Mannequin/Animations/Walk/M_Neutral_Walk_Loop_LR.M
 RUN  = '/Game/Characters/UEFN_Mannequin/Animations/Run/M_Neutral_Run_Loop_F.M_Neutral_Run_Loop_F'
 UPPR = '/Game/Characters/UEFN_Mannequin/Animations/Idle/M_Neutral_Stand_Idle_Break_v01.M_Neutral_Stand_Idle_Break_v01'
 ABP  = '/Game/Demo/ABP_LocomotionDemo.ABP_LocomotionDemo'
-lib  = unreal.UnrealBridgeAnimLibrary
+MATH = '/Script/Engine.KismetMathLibrary'
+alib = unreal.UnrealBridgeAnimLibrary
+blib = unreal.UnrealBridgeBlueprintLibrary
 
-# 1. Create ABP on the target skeleton
+# 1. Create ABP + drive variable
 f = unreal.AnimBlueprintFactory()
 f.set_editor_property('target_skeleton', unreal.load_asset(SK))
 unreal.AssetToolsHelpers.get_asset_tools().create_asset(
     'ABP_LocomotionDemo', '/Game/Demo', unreal.AnimBlueprint, f)
+blib.add_blueprint_variable(ABP, 'Speed', 'Float', '0.0')
 
 # 2. State machine + states + default + transitions
-sm = lib.add_anim_graph_node_state_machine(ABP, 'AnimGraph', 'Locomotion', 100, 0)
+sm = alib.add_anim_graph_node_state_machine(ABP, 'AnimGraph', 'Locomotion', 100, 0)
 for name, x in [('Idle', 0), ('Walk', 400), ('Run', 800)]:
-    lib.add_anim_state(ABP, 'Locomotion', name, x, 0)
-lib.set_anim_state_default(ABP, 'Locomotion', 'Idle')
-for a, b, cx in [('Idle','Walk',0.2),('Walk','Run',0.25),('Run','Walk',0.25),('Walk','Idle',0.2)]:
-    lib.add_anim_transition(ABP, 'Locomotion', a, b)
-    lib.set_anim_transition_properties(ABP, 'Locomotion', a, b, cx, 0, False)
-    lib.set_anim_transition_const_rule(ABP, 'Locomotion', a, b, True)
+    alib.add_anim_state(ABP, 'Locomotion', name, x, 0)
+alib.set_anim_state_default(ABP, 'Locomotion', 'Idle')
+for a, b, cx in [('Idle','Walk',0.20),('Walk','Run',0.25),('Run','Walk',0.25),('Walk','Idle',0.20)]:
+    alib.add_anim_transition(ABP, 'Locomotion', a, b)
+    alib.set_anim_transition_properties(ABP, 'Locomotion', a, b, cx, 0, False)
 
-# 3. Per-state anim: SequencePlayer -> StateResult
+# 3. Per-state anim
 for state, seq in [('Idle', IDLE), ('Walk', WALK), ('Run', RUN)]:
-    sp = lib.add_anim_graph_node_sequence_player(ABP, state, seq, -400, 0)
-    result = lib.find_anim_graph_node_by_class(ABP, state, 'AnimGraphNode_StateResult')
-    lib.connect_anim_graph_pins(ABP, state, sp, 'Pose', result, 'Result')
+    sp = alib.add_anim_graph_node_sequence_player(ABP, state, seq, -400, 0)
+    result = alib.find_anim_graph_node_by_class(ABP, state, 'AnimGraphNode_StateResult')
+    alib.connect_anim_graph_pins(ABP, state, sp, 'Pose', result, 'Result')
 
-# 4. Outer AnimGraph: SM -> Slot -> LayeredBoneBlend (+ overlay) -> Root
-slot = lib.add_anim_graph_node_slot(ABP, 'AnimGraph', 'UpperBody', 500, 0)
-lbb  = lib.add_anim_graph_node_layered_bone_blend(ABP, 'AnimGraph', 2, 900, 0)
-ov   = lib.add_anim_graph_node_sequence_player(ABP, 'AnimGraph', UPPR, 500, 300)
-root = lib.find_anim_graph_node_by_class(ABP, 'AnimGraph', 'AnimGraphNode_Root')
-for s, sp_name, t, tp_name in [
+# 4. Real transition rules: Speed > X / Speed < X
+def author_rule(fr, to, op, rhs):
+    rg = alib.get_anim_transition_rule_graph_name(ABP, 'Locomotion', fr, to)
+    var = blib.add_variable_node(ABP, rg, 'Speed', False, -400, 0)
+    cmp = blib.add_call_function_node(ABP, rg, MATH, op, -150, 0)
+    res = alib.find_anim_graph_node_by_class(ABP, rg, 'AnimGraphNode_TransitionResult')
+    blib.connect_graph_pins(ABP, rg, var, 'Speed',       cmp, 'A')
+    blib.set_pin_default_value(ABP, rg, cmp, 'B', str(rhs))
+    blib.connect_graph_pins(ABP, rg, cmp, 'ReturnValue', res, 'bCanEnterTransition')
+
+author_rule('Idle', 'Walk', 'Greater_DoubleDouble',  10.0)
+author_rule('Walk', 'Run',  'Greater_DoubleDouble', 200.0)
+author_rule('Run',  'Walk', 'Less_DoubleDouble',    200.0)
+author_rule('Walk', 'Idle', 'Less_DoubleDouble',     10.0)
+
+# 5. Outer graph: SM -> Slot -> LayeredBoneBlend (+ overlay) -> Root
+slot = alib.add_anim_graph_node_slot(ABP, 'AnimGraph', 'UpperBody', 500, 0)
+lbb  = alib.add_anim_graph_node_layered_bone_blend(ABP, 'AnimGraph', 2, 900, 0)
+ov   = alib.add_anim_graph_node_sequence_player(ABP, 'AnimGraph', UPPR, 500, 300)
+root = alib.find_anim_graph_node_by_class(ABP, 'AnimGraph', 'AnimGraphNode_Root')
+for s, sp_n, t, tp_n in [
     (sm,   'Pose', slot, 'Source'),       # SM -> Slot.Source
     (slot, 'Pose', lbb,  'BasePose'),     # Slot -> LBB.BasePose
     (ov,   'Pose', lbb,  'BlendPoses_0'), # overlay -> LBB.BlendPoses_0   (plural!)
     (lbb,  'Pose', root, 'Result'),       # LBB -> Output Pose
 ]:
-    lib.connect_anim_graph_pins(ABP, 'AnimGraph', s, sp_name, t, tp_name)
+    alib.connect_anim_graph_pins(ABP, 'AnimGraph', s, sp_n, t, tp_n)
 
-# 5. Tidy + compile + save
-lib.auto_layout_anim_graph(ABP, 'AnimGraph', 0, 0)
-lib.auto_layout_state_machine(ABP, 'Locomotion', 0, 0)
+# 6. Tidy + compile + save
+alib.auto_layout_anim_graph(ABP, 'AnimGraph', 0, 0)
+alib.auto_layout_state_machine(ABP, 'Locomotion', 0, 0)
 unreal.UnrealBridgeEditorLibrary.recompile_blueprint(ABP)
 unreal.EditorAssetLibrary.save_loaded_asset(unreal.load_asset(ABP))
 ```
 
-**Pin-name gotcha.** `UAnimGraphNode_LayeredBoneBlend` numbers its pins `BlendPoses_0 / BlendPoses_1 / ...` (plural) and `BlendWeights_0 / ...`. If a pin-wire op returns `False`, query the actual names via `unreal.UnrealBridgeBlueprintLibrary.get_node_pins(abp, graph_name, node_guid)` first — pin naming varies by node class.
+**Gotchas.**
+
+- **Pin plurality.** `UAnimGraphNode_LayeredBoneBlend` uses `BlendPoses_0 / BlendPoses_1` (plural) and `BlendWeights_0`. If a pin-wire op returns `False`, query actual names via `blib.get_node_pins(abp, graph_name, node_guid)` — pin names vary across node classes.
+- **UE 5 renamed `Greater_FloatFloat` / `Less_FloatFloat`** to `Greater_DoubleDouble` / `Less_DoubleDouble` (all float math went to double). Use the `_Double` variants in UE 5.x. For bool AND / OR / NOT use `BooleanAND` / `BooleanOR` / `Not_PreBool`.
+- **Rule graph naming.** `add_anim_transition` auto-renames the rule graph to `Rule_<From>_to_<To>` so clients can address it unambiguously. Use `get_anim_transition_rule_graph_name(abp, sm, from, to)` instead of hard-coding that string — it's robust to future rename changes.
+- **Rule authoring uses the Blueprint library.** `UnrealBridgeBlueprintLibrary.find_graph_by_name` was extended to walk into state-machine interiors + state / conduit / transition `BoundGraph`s + nested `SubGraphs`, so `add_variable_node` / `add_call_function_node` / `connect_graph_pins` / `set_pin_default_value` all work against `graph_name="Rule_Idle_to_Walk"` directly.
 | `implemented_interfaces` | list[str] | AnimLayer interface class names |

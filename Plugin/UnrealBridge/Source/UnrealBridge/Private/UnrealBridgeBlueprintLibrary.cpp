@@ -2042,11 +2042,52 @@ namespace BridgeBlueprintGraphWriteImpl
 {
 	UEdGraph* FindGraphByName(UBlueprint* BP, const FString& GraphName)
 	{
-		if (!BP) return nullptr;
+		if (!BP || GraphName.IsEmpty()) return nullptr;
+
+		// Standard first-tier search (top-level graphs on the Blueprint).
 		for (UEdGraph* G : BP->FunctionGraphs) { if (G && G->GetName() == GraphName) return G; }
 		for (UEdGraph* G : BP->UbergraphPages) { if (G && G->GetName() == GraphName) return G; }
 		for (UEdGraph* G : BP->MacroGraphs)    { if (G && G->GetName() == GraphName) return G; }
 		for (UEdGraph* G : BP->DelegateSignatureGraphs) { if (G && G->GetName() == GraphName) return G; }
+
+		// Deep walk: covers AnimBlueprint interiors (state-machine graphs,
+		// state BoundGraphs, transition rule graphs) and nested K2 SubGraphs
+		// (collapsed-function graphs, macro expansions). Clients writing into
+		// transition rule graphs or an anim state's inner graph used to get
+		// "graph not found" silently — this catches them.
+		TArray<UEdGraph*> Stack;
+		Stack.Append(BP->FunctionGraphs);
+		Stack.Append(BP->UbergraphPages);
+		Stack.Append(BP->MacroGraphs);
+		Stack.Append(BP->DelegateSignatureGraphs);
+
+		TSet<UEdGraph*> Visited;
+		while (Stack.Num() > 0)
+		{
+			UEdGraph* G = Stack.Pop(EAllowShrinking::No);
+			if (!G || Visited.Contains(G)) continue;
+			Visited.Add(G);
+
+			// Nested SubGraphs on a graph (collapsed nodes, composite graphs).
+			Stack.Append(G->SubGraphs);
+
+			// Nodes may own sub-graphs. Three families we care about:
+			//  - UAnimGraphNode_StateMachineBase::EditorStateMachineGraph
+			//  - UAnimStateNodeBase::BoundGraph (covers state + conduit + transition)
+			//  - UK2Node_Composite / UK2Node_MacroInstance::BoundGraph
+			for (UEdGraphNode* N : G->Nodes)
+			{
+				if (!N) continue;
+				// Use reflection-free property access via duck-typed virtual
+				// UEdGraphNode::GetSubGraphs().
+				TArray<UEdGraph*> Subs = N->GetSubGraphs();
+				for (UEdGraph* Sub : Subs)
+				{
+					if (Sub && Sub->GetName() == GraphName) return Sub;
+					if (Sub) Stack.Add(Sub);
+				}
+			}
+		}
 		return nullptr;
 	}
 

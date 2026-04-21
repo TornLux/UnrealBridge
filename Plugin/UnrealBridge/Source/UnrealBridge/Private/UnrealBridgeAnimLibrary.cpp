@@ -2138,6 +2138,17 @@ FString UUnrealBridgeAnimLibrary::AddAnimTransition(const FString& AnimBlueprint
 	// node when either In/Out pin becomes empty.
 	Trans->CreateConnections(Prev, Next);
 
+	// Rename the rule graph uniquely so clients can address it by name.
+	// Default auto-naming leaves every rule graph called "Transition" —
+	// useless for any subsequent write op. "Rule_<From>_to_<To>" is how a
+	// human would label it in the transition-rule tab.
+	if (Trans->BoundGraph)
+	{
+		const FString Desired = FString::Printf(TEXT("Rule_%s_to_%s"),
+			*FromStateName, *ToStateName);
+		RenameGraphTo(Trans->BoundGraph, Desired);
+	}
+
 	FinalizeEdit(ABP, SMGraph);
 	return Trans->NodeGuid.ToString(EGuidFormats::Digits);
 }
@@ -2178,6 +2189,21 @@ bool UUnrealBridgeAnimLibrary::RemoveAnimState(const FString& AnimBlueprintPath,
 
 	FinalizeEdit(ABP, SMGraph);
 	return true;
+}
+
+FString UUnrealBridgeAnimLibrary::GetAnimTransitionRuleGraphName(const FString& AnimBlueprintPath,
+	const FString& StateMachineGraphName,
+	const FString& FromStateName, const FString& ToStateName)
+{
+	using namespace BridgeAnimWriteImpl;
+
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return FString();
+	UAnimationStateMachineGraph* SMGraph = FindStateMachineGraph(ABP, StateMachineGraphName);
+	if (!SMGraph) return FString();
+	UAnimStateTransitionNode* Trans = FindTransition(SMGraph, FromStateName, ToStateName);
+	if (!Trans || !Trans->BoundGraph) return FString();
+	return Trans->BoundGraph->GetName();
 }
 
 bool UUnrealBridgeAnimLibrary::RemoveAnimTransition(const FString& AnimBlueprintPath,
