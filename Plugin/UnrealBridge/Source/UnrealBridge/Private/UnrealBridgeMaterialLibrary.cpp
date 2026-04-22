@@ -5,11 +5,18 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionFunctionInput.h"
+#include "Materials/MaterialExpressionFunctionOutput.h"
+#include "Materials/MaterialFunction.h"
+#include "Materials/MaterialFunctionInterface.h"
 #include "Engine/Texture.h"
 #include "Engine/SubsurfaceProfile.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "SceneTypes.h"
 #include "MaterialShared.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "AssetRegistry/IAssetRegistry.h"
+#include "AssetRegistry/ARFilter.h"
 
 namespace BridgeMaterialImpl
 {
@@ -62,6 +69,51 @@ namespace BridgeMaterialImpl
 			case MSM_Strata:               return TEXT("Strata");
 			case MSM_FromMaterialExpression: return TEXT("FromMaterialExpression");
 			default:                       return FString::Printf(TEXT("Unknown(%d)"), (int32)Model);
+		}
+	}
+
+	static FString FunctionInputTypeToString(EFunctionInputType Type)
+	{
+		switch (Type)
+		{
+			case FunctionInput_Scalar:             return TEXT("Scalar");
+			case FunctionInput_Vector2:            return TEXT("Vector2");
+			case FunctionInput_Vector3:            return TEXT("Vector3");
+			case FunctionInput_Vector4:            return TEXT("Vector4");
+			case FunctionInput_Texture2D:          return TEXT("Texture2D");
+			case FunctionInput_TextureCube:        return TEXT("TextureCube");
+			case FunctionInput_Texture2DArray:     return TEXT("Texture2DArray");
+			case FunctionInput_VolumeTexture:      return TEXT("VolumeTexture");
+			case FunctionInput_StaticBool:         return TEXT("StaticBool");
+			case FunctionInput_MaterialAttributes: return TEXT("MaterialAttributes");
+			case FunctionInput_TextureExternal:    return TEXT("TextureExternal");
+			default:                               return FString::Printf(TEXT("Type%d"), (int32)Type);
+		}
+	}
+
+	static FString PreviewValueToString(const UMaterialExpressionFunctionInput* Input)
+	{
+		if (!Input)
+		{
+			return FString();
+		}
+		switch (Input->InputType)
+		{
+			case FunctionInput_Scalar:
+				return FString::SanitizeFloat(Input->PreviewValue.X);
+			case FunctionInput_Vector2:
+				return FString::Printf(TEXT("(X=%.4f,Y=%.4f)"),
+					Input->PreviewValue.X, Input->PreviewValue.Y);
+			case FunctionInput_Vector3:
+				return FString::Printf(TEXT("(X=%.4f,Y=%.4f,Z=%.4f)"),
+					Input->PreviewValue.X, Input->PreviewValue.Y, Input->PreviewValue.Z);
+			case FunctionInput_Vector4:
+				return FString::Printf(TEXT("(X=%.4f,Y=%.4f,Z=%.4f,W=%.4f)"),
+					Input->PreviewValue.X, Input->PreviewValue.Y, Input->PreviewValue.Z, Input->PreviewValue.W);
+			case FunctionInput_StaticBool:
+				return Input->PreviewValue.X != 0.f ? TEXT("True") : TEXT("False");
+			default:
+				return FString();
 		}
 	}
 
@@ -299,7 +351,7 @@ FBridgeMaterialInfo UUnrealBridgeMaterialLibrary::GetMaterialInfo(const FString&
 		}
 	}
 
-	const TArrayView<const TObjectPtr<UMaterialExpression>> Expressions = BaseMat->GetExpressions();
+	const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = BaseMat->GetExpressions();
 	Info.NumExpressions = Expressions.Num();
 	for (const TObjectPtr<UMaterialExpression>& Expr : Expressions)
 	{
@@ -308,6 +360,137 @@ FBridgeMaterialInfo UUnrealBridgeMaterialLibrary::GetMaterialInfo(const FString&
 			++Info.NumFunctionCalls;
 		}
 	}
+
+	return Info;
+}
+
+TArray<FBridgeMaterialFunctionSummary> UUnrealBridgeMaterialLibrary::ListMaterialFunctions(
+	const FString& PathPrefix,
+	int32 MaxResults)
+{
+	TArray<FBridgeMaterialFunctionSummary> Result;
+
+	FAssetRegistryModule& AssetRegistryModule =
+		FModuleManager::LoadModuleChecked<FAssetRegistryModule>("AssetRegistry");
+	IAssetRegistry& AssetRegistry = AssetRegistryModule.Get();
+
+	FARFilter Filter;
+	Filter.ClassPaths.Add(UMaterialFunction::StaticClass()->GetClassPathName());
+	Filter.bRecursiveClasses = false;
+	if (!PathPrefix.IsEmpty())
+	{
+		Filter.PackagePaths.Add(FName(*PathPrefix));
+		Filter.bRecursivePaths = true;
+	}
+
+	TArray<FAssetData> Assets;
+	AssetRegistry.GetAssets(Filter, Assets);
+
+	Result.Reserve(Assets.Num());
+	for (const FAssetData& AssetData : Assets)
+	{
+		if (MaxResults > 0 && Result.Num() >= MaxResults)
+		{
+			break;
+		}
+
+		FBridgeMaterialFunctionSummary Summary;
+		Summary.Name = AssetData.AssetName.ToString();
+		Summary.Path = AssetData.GetObjectPathString();
+
+		// Description / bExposeToLibrary / LibraryCategory — pull from asset tags if possible,
+		// otherwise load to fetch. Asset tags save us from loading; fall back to load.
+		FString TagValue;
+		if (AssetData.GetTagValue(GET_MEMBER_NAME_CHECKED(UMaterialFunction, Description), TagValue))
+		{
+			Summary.Description = TagValue;
+		}
+		if (AssetData.GetTagValue(GET_MEMBER_NAME_CHECKED(UMaterialFunction, bExposeToLibrary), TagValue))
+		{
+			Summary.bExposeToLibrary = TagValue.Equals(TEXT("True"), ESearchCase::IgnoreCase) ||
+				TagValue == TEXT("1");
+		}
+
+		// Only touch the asset if we still need the library category (and list is short, user opted in).
+		if (Summary.bExposeToLibrary && Summary.LibraryCategory.IsEmpty())
+		{
+			if (UMaterialFunction* MF = Cast<UMaterialFunction>(AssetData.GetAsset()))
+			{
+				if (MF->LibraryCategoriesText.Num() > 0)
+				{
+					Summary.LibraryCategory = MF->LibraryCategoriesText[0].ToString();
+				}
+				if (Summary.Description.IsEmpty())
+				{
+					Summary.Description = MF->Description;
+				}
+			}
+		}
+
+		Result.Add(MoveTemp(Summary));
+	}
+
+	return Result;
+}
+
+FBridgeMaterialFunctionInfo UUnrealBridgeMaterialLibrary::GetMaterialFunction(const FString& FunctionPath)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialFunctionInfo Info;
+
+	UMaterialFunction* MF = LoadObject<UMaterialFunction>(nullptr, *FunctionPath);
+	if (!MF)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetMaterialFunction could not load '%s'"), *FunctionPath);
+		return Info;
+	}
+
+	Info.bFound = true;
+	Info.Name = MF->GetName();
+	Info.Path = MF->GetPathName();
+	Info.Description = MF->Description;
+	Info.bExposeToLibrary = MF->bExposeToLibrary;
+	if (MF->LibraryCategoriesText.Num() > 0)
+	{
+		Info.LibraryCategory = MF->LibraryCategoriesText[0].ToString();
+	}
+
+	const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = MF->GetExpressions();
+	Info.NumExpressions = Expressions.Num();
+
+	for (const TObjectPtr<UMaterialExpression>& Expr : Expressions)
+	{
+		if (UMaterialExpressionFunctionInput* Input = Cast<UMaterialExpressionFunctionInput>(Expr.Get()))
+		{
+			FBridgeMaterialFunctionPort Port;
+			Port.Name = Input->InputName.ToString();
+			Port.Description = Input->Description;
+			Port.PortType = FunctionInputTypeToString(Input->InputType);
+			Port.SortPriority = Input->SortPriority;
+			Port.bUsePreviewValueAsDefault = Input->bUsePreviewValueAsDefault != 0;
+			Port.DefaultValue = PreviewValueToString(Input);
+			Info.Inputs.Add(MoveTemp(Port));
+		}
+		else if (UMaterialExpressionFunctionOutput* Output = Cast<UMaterialExpressionFunctionOutput>(Expr.Get()))
+		{
+			FBridgeMaterialFunctionPort Port;
+			Port.Name = Output->OutputName.ToString();
+			Port.Description = Output->Description;
+			Port.PortType = TEXT(""); // Determined by upstream connection — unknown without graph walk.
+			Port.SortPriority = Output->SortPriority;
+			Info.Outputs.Add(MoveTemp(Port));
+		}
+	}
+
+	Info.Inputs.Sort([](const FBridgeMaterialFunctionPort& A, const FBridgeMaterialFunctionPort& B)
+	{
+		return A.SortPriority < B.SortPriority;
+	});
+	Info.Outputs.Sort([](const FBridgeMaterialFunctionPort& A, const FBridgeMaterialFunctionPort& B)
+	{
+		return A.SortPriority < B.SortPriority;
+	});
 
 	return Info;
 }

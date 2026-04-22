@@ -104,3 +104,78 @@ print(f'  graph: {info.num_expressions} expressions, '
 - **`shading_models` plural** — a material can expose multiple shading models when the ShadingModel pin is driven by a `ShadingModel` expression; the list contains every one reachable. Static materials list a single entry.
 - **`usage_flags`** — only flags set to `True` appear. Empty list ≠ error.
 - **Engine default materials** — `/Engine/EngineMaterials/WorldGridMaterial`, `DefaultPostProcessMaterial`, `DefaultDeferredDecalMaterial`, `Widget3DPassThrough_Opaque` are reliable smoke-test targets.
+
+---
+
+## list_material_functions(path_prefix, max_results) -> list[FBridgeMaterialFunctionSummary]
+
+**M1-8.** Enumerate `UMaterialFunction` assets via AssetRegistry. Fast — reads asset tags and only loads the asset when a library category is requested on an exposed function.
+
+```python
+# All MFs under /Game, cap 50
+mfs = unreal.UnrealBridgeMaterialLibrary.list_material_functions("/Game", 50)
+# All Engine MFs, no cap
+mfs = unreal.UnrealBridgeMaterialLibrary.list_material_functions("/Engine", 0)
+# Whole project, cap 20
+mfs = unreal.UnrealBridgeMaterialLibrary.list_material_functions("", 20)
+for s in mfs:
+    print(f"{s.path}  exposed={s.expose_to_library}  cat={s.library_category}")
+```
+
+Parameters:
+- `path_prefix` — package path prefix to scope the search (e.g. `"/Game/Materials"`). Pass `""` for all assets.
+- `max_results` — cap on the returned list (`0` or negative = no cap).
+
+### FBridgeMaterialFunctionSummary fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Short asset name |
+| `path` | str | Full object path |
+| `description` | str | Tooltip text (from `UMaterialFunction::Description`) |
+| `expose_to_library` | bool | Whether the MF shows up in the Material Function library panel |
+| `library_category` | str | First category in `LibraryCategoriesText` if exposed; empty otherwise |
+
+---
+
+## get_material_function(function_path) -> FBridgeMaterialFunctionInfo
+
+**M1-8.** Full metadata for a single `UMaterialFunction`. Walks the MF's expression list, extracts `UMaterialExpressionFunctionInput` / `UMaterialExpressionFunctionOutput` nodes, sorts by `SortPriority`.
+
+```python
+info = unreal.UnrealBridgeMaterialLibrary.get_material_function(
+    '/Engine/Functions/Engine_MaterialFunctions01/Opacity/CameraDepthFade.CameraDepthFade')
+print(f"{info.name} — {info.num_expressions} expressions")
+for p in info.inputs:
+    print(f"  in [{p.port_type}] {p.name} default={p.default_value} (usePreview={p.use_preview_value_as_default})")
+for p in info.outputs:
+    print(f"  out {p.name}")
+```
+
+### FBridgeMaterialFunctionInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `found` | bool | `False` if the path could not be loaded |
+| `name` / `path` / `description` | str | As above |
+| `expose_to_library` | bool | — |
+| `library_category` | str | First of `LibraryCategoriesText` |
+| `inputs` | list[FBridgeMaterialFunctionPort] | Sorted by `sort_priority` ascending |
+| `outputs` | list[FBridgeMaterialFunctionPort] | Sorted by `sort_priority` ascending |
+| `num_expressions` | int | Total `UMaterialExpression` count in the MF graph |
+
+### FBridgeMaterialFunctionPort fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Input / output pin name |
+| `description` | str | Tooltip text |
+| `port_type` | str | For inputs: `"Scalar"` / `"Vector2"` / `"Vector3"` / `"Vector4"` / `"Texture2D"` / `"TextureCube"` / `"Texture2DArray"` / `"VolumeTexture"` / `"StaticBool"` / `"MaterialAttributes"` / `"TextureExternal"`. For outputs: empty (the type is determined by whatever is connected upstream in the graph — requires a graph walk, not available at this milestone). |
+| `sort_priority` | int | Pin order within the MF (0 = top) |
+| `default_value` | str | Inputs only: stringified `PreviewValue` (Scalar → float; Vector2/3/4 → `(X,Y,...)`; StaticBool → `"True"`/`"False"`; texture types → empty). This is the preview value the MF uses for its own preview scene; it is used as the default only when `use_preview_value_as_default` is True. |
+| `use_preview_value_as_default` | bool | Inputs only: whether a caller that leaves the pin unconnected gets the preview value |
+
+### Notes
+
+- **FText category display** — `library_category` comes from localized `FText`. In non-English UE editor locales the string may render as mojibake in Git Bash / cmd; the value itself is correct. Inspect in Python with `repr()` or write to a file if needed.
+- **Output port types** — intentionally empty in this milestone. M1-2's `get_material_graph` will provide enough graph visibility to resolve output types via upstream tracing; adding type inference here would duplicate work.

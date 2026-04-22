@@ -138,6 +138,92 @@ struct FBridgeMaterialInfo
 	bool bFound = false;
 };
 
+/** One input or output pin on a MaterialFunction. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialFunctionPort
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Description;
+
+	/** "Scalar" / "Vector2" / "Vector3" / "Vector4" / "Texture2D" / "TextureCube" / "Texture2DArray" / "VolumeTexture" / "StaticBool" / "MaterialAttributes" / "TextureExternal" / "" (output — type determined by incoming connection) */
+	UPROPERTY(BlueprintReadOnly)
+	FString PortType;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 SortPriority = 0;
+
+	/** For inputs only — stringified preview value when bUsePreviewValueAsDefault is true. */
+	UPROPERTY(BlueprintReadOnly)
+	FString DefaultValue;
+
+	/** For inputs only — whether the preview value is used when an MF caller leaves the pin unconnected. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bUsePreviewValueAsDefault = false;
+};
+
+/** Compact entry for list_material_functions. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialFunctionSummary
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Description;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bExposeToLibrary = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString LibraryCategory;
+};
+
+/** Full metadata for a UMaterialFunction. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialFunctionInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Description;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bExposeToLibrary = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString LibraryCategory;
+
+	/** Sorted by SortPriority ascending. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialFunctionPort> Inputs;
+
+	/** Sorted by SortPriority ascending. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialFunctionPort> Outputs;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 NumExpressions = 0;
+};
+
 /**
  * Material introspection via UnrealBridge.
  */
@@ -162,4 +248,21 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMaterialInfo GetMaterialInfo(const FString& MaterialPath);
+
+	/**
+	 * M1-8: Enumerate UMaterialFunction assets via AssetRegistry.
+	 * @param PathPrefix Package path prefix to scope the search (e.g. "/Game/Materials"). Empty = all.
+	 * @param MaxResults Cap the returned count (<=0 means no cap).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static TArray<FBridgeMaterialFunctionSummary> ListMaterialFunctions(
+		const FString& PathPrefix,
+		int32 MaxResults);
+
+	/**
+	 * M1-8: Full metadata for a single UMaterialFunction — inputs, outputs, expression count.
+	 * Inputs walk UMaterialExpressionFunctionInput nodes; outputs walk UMaterialExpressionFunctionOutput.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialFunctionInfo GetMaterialFunction(const FString& FunctionPath);
 };
