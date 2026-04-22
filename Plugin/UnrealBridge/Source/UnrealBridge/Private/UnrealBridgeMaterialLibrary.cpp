@@ -37,6 +37,7 @@
 #include "Components/StaticMeshComponent.h"
 #include "Components/DirectionalLightComponent.h"
 #include "Components/SkyLightComponent.h"
+#include "Engine/TextureCube.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "Engine/SceneCapture2D.h"
 #include "Components/SceneCaptureComponent2D.h"
@@ -1216,12 +1217,33 @@ namespace BridgeMaterialImpl
 		else if (Key == TEXT("cube"))                 Path = TEXT("/Engine/BasicShapes/Cube.Cube");
 		else if (Key == TEXT("cylinder"))             Path = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
 		else if (Key == TEXT("cone"))                 Path = TEXT("/Engine/BasicShapes/Cone.Cone");
+		// UE's own Material Editor preview uses this "shader ball" — varied geometry
+		// (rounded box + cutouts + flat + curved) that reveals normal / roughness /
+		// specular variation much better than a sphere.
+		else if (Key == TEXT("shaderball") || Key == TEXT("shader_ball") || Key == TEXT("matpreview"))
+		{
+			Path = TEXT("/Engine/EngineMeshes/SM_MatPreviewMesh_01.SM_MatPreviewMesh_01");
+		}
 		else
 		{
-			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown preview mesh '%s' — falling back to sphere"), *Preset);
-			Path = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown preview mesh '%s' — falling back to shaderball"), *Preset);
+			Path = TEXT("/Engine/EngineMeshes/SM_MatPreviewMesh_01.SM_MatPreviewMesh_01");
 		}
 		return LoadObject<UStaticMesh>(nullptr, *Path);
+	}
+
+	/**
+	 * UE Material Editor's AssetViewer uses this HDRI for the preview viewport. It's an
+	 * outdoor studio environment — strong gradient sky with shaped highlights — which
+	 * is exactly what's needed to make metallic / glossy materials look metallic.
+	 * If missing (shouldn't happen), falls back to GrayLightTextureCube.
+	 */
+	static UTextureCube* LoadDefaultHDRICubemap()
+	{
+		UTextureCube* HDR = LoadObject<UTextureCube>(
+			nullptr, TEXT("/Engine/EditorMaterials/AssetViewer/EpicQuadPanorama_CC+EV1.EpicQuadPanorama_CC+EV1"));
+		if (HDR) return HDR;
+		return LoadObject<UTextureCube>(nullptr, TEXT("/Engine/EngineResources/GrayLightTextureCube.GrayLightTextureCube"));
 	}
 
 	static void SetupPreviewLighting(FPreviewScene& Scene, const FString& Preset)
@@ -1251,16 +1273,24 @@ namespace BridgeMaterialImpl
 		}
 		else if (Key == TEXT("hdri") || Key == TEXT("outdoor"))
 		{
-			// Sky + single directional — better for reflective PBR evaluation.
+			// SkyLight with a real HDR cubemap, not SLS_CapturedScene (which captures
+			// an empty PreviewScene = black reflections, metals look flat).
+			UTextureCube* HDR = LoadDefaultHDRICubemap();
+
 			USkyLightComponent* Sky = NewObject<USkyLightComponent>(
 				GetTransientPackage(), USkyLightComponent::StaticClass());
-			Sky->SetIntensity(3.0f);
-			Sky->SourceType = ESkyLightSourceType::SLS_CapturedScene;
+			Sky->SourceType = ESkyLightSourceType::SLS_SpecifiedCubemap;
+			Sky->Cubemap = HDR;
+			Sky->SetIntensity(1.0f);
+			// Skylight captures the cubemap once on AddComponent; SetCaptureIsDirty forces
+			// a refresh so the real-time capture path picks it up.
 			Scene.AddComponent(Sky, FTransform::Identity);
+			Sky->SetCaptureIsDirty();
+			Sky->MarkRenderStateDirty();
 
 			UDirectionalLightComponent* Sun = NewObject<UDirectionalLightComponent>(
 				GetTransientPackage(), UDirectionalLightComponent::StaticClass());
-			Sun->SetIntensity(6.0f);
+			Sun->SetIntensity(5.0f);
 			Sun->SetLightColor(FLinearColor(1.0f, 0.96f, 0.88f));
 			Scene.AddComponent(Sun, FTransform(FRotator(-40.0f, 60.0f, 0.0f)));
 		}

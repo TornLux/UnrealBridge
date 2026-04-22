@@ -455,8 +455,10 @@ assert ok, "render failed"
 ```
 
 Parameters:
-- `mesh` — `"sphere"` / `"plane"` / `"cube"` / `"cylinder"` / `"cone"`. Engine basic shapes from `/Engine/BasicShapes/`. Unknown name falls back to sphere.
-- `lighting` — `"studio"` (3-point directional, default) / `"hdri"` (sky + single key, better for reflective PBR) / `"night"` (dim). Unknown name falls back to studio.
+- `mesh` — `"sphere"` / `"plane"` / `"cube"` / `"cylinder"` / `"cone"` (engine basic shapes), or `"shaderball"` = UE's `/Engine/EngineMeshes/SM_MatPreviewMesh_01` — the canonical material-preview mesh with rounded box + cutouts + flat region + curved surface. **Strongly recommended for metallic / glossy / anisotropic materials** — a plain sphere can't show the geometric variation that makes PBR readable.
+- `lighting` — `"studio"` (3-point directional, default), `"hdri"` (uses `/Engine/EditorMaterials/AssetViewer/EpicQuadPanorama_CC+EV1` — the cubemap UE's own Material Editor viewport uses, gives proper HDR reflections for metals/mirrors), `"night"` (dim). Unknown name falls back to studio.
+
+**Metal preview recipe.** `mesh="shaderball", lighting="hdri"` is the closest approximation to how the material looks in UE's own Material Editor preview viewport. Flat-only meshes + studio lighting tend to make metallic materials look plasticy because there's nothing interesting in the reflection.
 - `resolution` — pixel square edge. Clamped to `[32, 4096]`. Default effective = 512.
 - `camera_yaw_deg` — orbit azimuth (Z rotation). 0 = front, 90 = right.
 - `camera_pitch_deg` — orbit elevation. 0 = horizontal, +20 typical for slight tilt-down, +90 top-down, -20 slight tilt-up.
