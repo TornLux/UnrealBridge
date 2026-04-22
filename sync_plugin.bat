@@ -2,7 +2,7 @@
 setlocal
 
 set "SRC=%~dp0Plugin\UnrealBridge"
-set "DST=G:\UEProjects\GameplayLocomotion\Plugins\UnrealBridge"
+set "DST=D:\Path\To\YourProject\Plugins\UnrealBridge"
 
 echo Syncing UnrealBridge plugin...
 echo   From: %SRC%

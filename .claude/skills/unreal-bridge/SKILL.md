@@ -38,7 +38,7 @@ Options: `--host`, `--port` (default 9876), `--timeout` (default 30), `--json`
 2. Use `exec` for short queries, write a temp `.py` + `exec-file` for multi-line scripts
 3. Use `--json` when you need to parse structured results
 4. stdout = output, stderr = errors. Exit code 0 = success, 1 = error
-5. **All temporary files (`.py` scripts, intermediate data, etc.) MUST be placed in the project root's `temp/` folder (`F:/Claude/ClaudeAgentPythonBase/temp/`), NOT inside the skill directory.**
+5. **All temporary files (`.py` scripts, intermediate data, etc.) MUST be placed in the project root's `temp/` folder, NOT inside the skill directory.**
 
 ## API References
 

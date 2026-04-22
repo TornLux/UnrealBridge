@@ -30,3 +30,9 @@
 *.exe
 *.out
 *.app
+
+# Claude Code local overrides
+.claude/settings.local.json
+
+# Local scratch dir
+temp/
