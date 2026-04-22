@@ -3063,6 +3063,540 @@ FBridgeShaderSnippet UUnrealBridgeMaterialLibrary::GetSharedSnippet(const FStrin
 	return Out;
 }
 
+// ─── M6: MI parameter loop ────────────────────────────────────────
+
+namespace BridgeMaterialImpl
+{
+	/**
+	 * Apply one FBridgeMIParamSet to a UMaterialInstanceConstant. Returns true on success.
+	 * Dispatches on Type — each handler parses Value with the format documented on the
+	 * FBridgeMIParamSet struct.
+	 */
+	static bool ApplyMIParam(
+		UMaterialInstanceConstant* MIC,
+		const FBridgeMIParamSet& P,
+		FString& OutError)
+	{
+		if (!MIC)
+		{
+			OutError = TEXT("null MI");
+			return false;
+		}
+
+		const FName ParamName(*P.Name);
+		const FString TypeLower = P.Type.ToLower();
+
+		// NOTE: UE 5.7's UMaterialEditingLibrary::SetMaterialInstance*ParameterValue
+		// functions have a stub `bool bResult = false` that is never updated — the return
+		// value is effectively meaningless (always false). The setter *does* mutate the MI
+		// via SetScalarParameterValueEditorOnly. We rely on that side effect and verify
+		// parameter existence up-front via a GetScalarParameterValue probe.
+		const FMaterialParameterInfo Info(ParamName);
+
+		if (TypeLower == TEXT("scalar") || TypeLower.IsEmpty())
+		{
+			float Probe;
+			if (!MIC->GetScalarParameterValue(Info, Probe))
+			{
+				OutError = FString::Printf(TEXT("scalar param '%s' not found on parent"), *P.Name);
+				return false;
+			}
+			const float V = FCString::Atof(*P.Value);
+			UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MIC, ParamName, V);
+			return true;
+		}
+		if (TypeLower == TEXT("vector"))
+		{
+			FLinearColor Probe;
+			if (!MIC->GetVectorParameterValue(Info, Probe))
+			{
+				OutError = FString::Printf(TEXT("vector param '%s' not found on parent"), *P.Name);
+				return false;
+			}
+			FLinearColor V(FLinearColor::Black);
+			if (!V.InitFromString(P.Value))
+			{
+				OutError = FString::Printf(TEXT("vector value '%s' not parseable — expected (R=,G=,B=,A=)"), *P.Value);
+				return false;
+			}
+			UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MIC, ParamName, V);
+			return true;
+		}
+		if (TypeLower == TEXT("texture"))
+		{
+			UTexture* ProbeTex = nullptr;
+			if (!MIC->GetTextureParameterValue(Info, ProbeTex))
+			{
+				OutError = FString::Printf(TEXT("texture param '%s' not found on parent"), *P.Name);
+				return false;
+			}
+			UTexture* Tex = nullptr;
+			if (!P.Value.IsEmpty() && P.Value.ToLower() != TEXT("none"))
+			{
+				Tex = LoadObject<UTexture>(nullptr, *P.Value);
+				if (!Tex)
+				{
+					OutError = FString::Printf(TEXT("texture '%s' failed to load"), *P.Value);
+					return false;
+				}
+			}
+			UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MIC, ParamName, Tex);
+			return true;
+		}
+		if (TypeLower == TEXT("staticswitch") || TypeLower == TEXT("switch") || TypeLower == TEXT("bool"))
+		{
+			bool ProbeBool;
+			FGuid ProbeGuid;
+			if (!MIC->GetStaticSwitchParameterValue(Info, ProbeBool, ProbeGuid))
+			{
+				OutError = FString::Printf(TEXT("static-switch param '%s' not found on parent"), *P.Name);
+				return false;
+			}
+			const FString Lower = P.Value.ToLower();
+			const bool V = (Lower == TEXT("true") || Lower == TEXT("1") || Lower == TEXT("yes"));
+			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MIC, ParamName, V);
+			return true;
+		}
+
+		OutError = FString::Printf(TEXT("unknown param type '%s' — expected Scalar/Vector/Texture/StaticSwitch"), *P.Type);
+		return false;
+	}
+}
+
+FBridgeMIParamResult UUnrealBridgeMaterialLibrary::SetMIParams(
+	const FString& MaterialInstancePath,
+	const TArray<FBridgeMIParamSet>& Params)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMIParamResult Result;
+
+	UMaterialInstanceConstant* MIC = LoadObject<UMaterialInstanceConstant>(nullptr, *MaterialInstancePath);
+	if (!MIC)
+	{
+		Result.Skipped.Add(FString::Printf(TEXT("could not load MI '%s'"), *MaterialInstancePath));
+		return Result;
+	}
+
+	for (const FBridgeMIParamSet& P : Params)
+	{
+		FString Err;
+		if (ApplyMIParam(MIC, P, Err))
+		{
+			++Result.Applied;
+		}
+		else
+		{
+			Result.Skipped.Add(FString::Printf(TEXT("%s = %s: %s"), *P.Name, *P.Value, *Err));
+		}
+	}
+
+	MIC->PostEditChange();
+	MIC->MarkPackageDirty();
+
+	Result.bSuccess = Result.Skipped.Num() == 0;
+	return Result;
+}
+
+// ─── M6-2: set + preview atomic ───────────────────────────────────
+
+bool UUnrealBridgeMaterialLibrary::SetMIAndPreview(
+	const FString& MaterialInstancePath,
+	const TArray<FBridgeMIParamSet>& Params,
+	const FString& Mesh,
+	const FString& Lighting,
+	int32 Resolution,
+	float CameraYawDeg,
+	float CameraPitchDeg,
+	float CameraDistance,
+	const FString& OutPngPath)
+{
+	FBridgeMIParamResult PR = SetMIParams(MaterialInstancePath, Params);
+	if (!PR.bSuccess)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SetMIAndPreview skipped %d params — rendering anyway"), PR.Skipped.Num());
+	}
+
+	return BridgeMaterialImpl::RenderMaterialPreview(
+		MaterialInstancePath, Mesh, Lighting, Resolution,
+		CameraYawDeg, CameraPitchDeg, CameraDistance,
+		OutPngPath, /*bShaderComplexity=*/ false);
+}
+
+// ─── M6-3: sweep one param over a list of values ──────────────────
+
+namespace BridgeMaterialImpl
+{
+	/**
+	 * Capture a material preview into an FColor buffer (no PNG save), reusing the M1-6
+	 * pipeline. Returns true on success with Pixels populated.
+	 */
+	static bool RenderMaterialPreviewToFColor(
+		const FString& MaterialPath,
+		const FString& MeshPreset,
+		const FString& LightingPreset,
+		int32 Res,
+		float CameraYawDeg,
+		float CameraPitchDeg,
+		float CameraDistance,
+		TArray<FColor>& OutPixels)
+	{
+		// Cheap path: render to a scratch PNG then decode. Simpler than duplicating the full
+		// capture pipeline here. Tradeoff: one PNG encode per cell. For sweep sizes under 20
+		// this is under 1s total encode time — negligible vs. shader compile/render.
+		const FString ScratchPath = FPaths::Combine(
+			FPaths::ProjectSavedDir(), TEXT("Bridge"),
+			FString::Printf(TEXT("SweepCell_%s.png"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
+		if (!RenderMaterialPreview(
+			MaterialPath, MeshPreset, LightingPreset, Res,
+			CameraYawDeg, CameraPitchDeg, CameraDistance,
+			ScratchPath, /*bShaderComplexity=*/ false))
+		{
+			return false;
+		}
+		TArray<uint8> FileBytes;
+		if (!FFileHelper::LoadFileToArray(FileBytes, *ScratchPath))
+		{
+			return false;
+		}
+		FImage Img;
+		if (!FImageUtils::DecompressImage(FileBytes.GetData(), FileBytes.Num(), Img))
+		{
+			return false;
+		}
+		// Copy to FColor (the file was saved BGRA8 sRGB; decode gives us that back).
+		OutPixels.SetNum(Res * Res);
+		if (Img.Format == ERawImageFormat::BGRA8)
+		{
+			FMemory::Memcpy(OutPixels.GetData(), Img.RawData.GetData(), Res * Res * sizeof(FColor));
+		}
+		else
+		{
+			// Coerce to BGRA8 if it came out in another format.
+			FImage BGRA;
+			Img.CopyTo(BGRA, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+			FMemory::Memcpy(OutPixels.GetData(), BGRA.RawData.GetData(), Res * Res * sizeof(FColor));
+		}
+		IFileManager::Get().Delete(*ScratchPath);
+		return true;
+	}
+}
+
+TArray<FString> UUnrealBridgeMaterialLibrary::SweepMIParams(
+	const FString& MaterialInstancePath,
+	const FString& ParamName,
+	const TArray<FString>& Values,
+	const FString& Mesh,
+	const FString& Lighting,
+	int32 Resolution,
+	float CameraYawDeg,
+	float CameraPitchDeg,
+	float CameraDistance,
+	int32 GridCols,
+	const FString& OutGridPath)
+{
+	using namespace BridgeMaterialImpl;
+
+	TArray<FString> Out;
+
+	UMaterialInstanceConstant* MIC = LoadObject<UMaterialInstanceConstant>(nullptr, *MaterialInstancePath);
+	if (!MIC)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SweepMIParams could not load '%s'"), *MaterialInstancePath);
+		return Out;
+	}
+
+	const int32 N = Values.Num();
+	if (N == 0) return Out;
+
+	const FName ParamNameN(*ParamName);
+	const int32 Res = FMath::Clamp(Resolution > 0 ? Resolution : 256, 32, 2048);
+
+	// Snapshot current override (so we can restore after sweep).
+	// Try scalar first, then vector — that tells us the param type too.
+	float OriginalScalar = 0.f;
+	FLinearColor OriginalVector(FLinearColor::Black);
+	bool bScalarParam = false;
+	bool bVectorParam = false;
+	const FMaterialParameterInfo Info(*ParamName);
+	if (MIC->GetScalarParameterValue(Info, OriginalScalar))
+	{
+		bScalarParam = true;
+	}
+	else if (MIC->GetVectorParameterValue(Info, OriginalVector))
+	{
+		bVectorParam = true;
+	}
+	if (!bScalarParam && !bVectorParam)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SweepMIParams: param '%s' is not scalar or vector on '%s'"),
+			*ParamName, *MaterialInstancePath);
+		return Out;
+	}
+
+	// Render each value into an FColor buffer.
+	TArray<TArray<FColor>> Cells;
+	Cells.Reserve(N);
+	TArray<FString> CellPaths;
+	CellPaths.Reserve(N);
+
+	FString GridBasePath = OutGridPath;
+	if (FPaths::IsRelative(GridBasePath))
+	{
+		GridBasePath = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), GridBasePath);
+	}
+	const FString GridBaseNoExt = FPaths::Combine(
+		FPaths::GetPath(GridBasePath),
+		FPaths::GetBaseFilename(GridBasePath));
+
+	for (int32 i = 0; i < N; ++i)
+	{
+		const FString& V = Values[i];
+
+		if (bScalarParam)
+		{
+			const float Val = FCString::Atof(*V);
+			UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MIC, ParamNameN, Val);
+		}
+		else
+		{
+			FLinearColor Val(FLinearColor::Black);
+			if (!Val.InitFromString(V))
+			{
+				UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SweepMIParams: value '%s' at index %d not parseable"), *V, i);
+				continue;
+			}
+			UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MIC, ParamNameN, Val);
+		}
+		MIC->PostEditChange();
+
+		// Save the cell PNG alongside, using the param value as suffix.
+		FString SanitizedValue = V;
+		SanitizedValue.ReplaceInline(TEXT("("), TEXT(""));
+		SanitizedValue.ReplaceInline(TEXT(")"), TEXT(""));
+		SanitizedValue.ReplaceInline(TEXT(","), TEXT("_"));
+		SanitizedValue.ReplaceInline(TEXT("="), TEXT(""));
+		SanitizedValue.ReplaceInline(TEXT(" "), TEXT(""));
+		const FString CellPath = FString::Printf(TEXT("%s_%02d_%s.png"), *GridBaseNoExt, i, *SanitizedValue);
+
+		TArray<FColor> Pixels;
+		if (!RenderMaterialPreviewToFColor(
+			MaterialInstancePath, Mesh, Lighting, Res,
+			CameraYawDeg, CameraPitchDeg, CameraDistance, Pixels))
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SweepMIParams: render failed at index %d"), i);
+			continue;
+		}
+
+		// Also save the individual cell PNG (user-visible).
+		FImage CellImg;
+		CellImg.Init(Res, Res, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+		FMemory::Memcpy(CellImg.RawData.GetData(), Pixels.GetData(), Res * Res * sizeof(FColor));
+		FImageUtils::SaveImageByExtension(*CellPath, CellImg, 0);
+
+		Cells.Add(MoveTemp(Pixels));
+		CellPaths.Add(CellPath);
+	}
+
+	// Restore original value.
+	if (bScalarParam)
+	{
+		UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MIC, ParamNameN, OriginalScalar);
+	}
+	else
+	{
+		UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MIC, ParamNameN, OriginalVector);
+	}
+	MIC->PostEditChange();
+	MIC->MarkPackageDirty();
+
+	if (Cells.Num() == 0)
+	{
+		return Out;
+	}
+
+	// Compose grid image.
+	const int32 Cols = GridCols > 0
+		? GridCols
+		: FMath::Max(1, (int32)FMath::CeilToInt(FMath::Sqrt((float)Cells.Num())));
+	const int32 Rows = FMath::DivideAndRoundUp(Cells.Num(), Cols);
+	const int32 GridW = Cols * Res;
+	const int32 GridH = Rows * Res;
+
+	FImage Grid;
+	Grid.Init(GridW, GridH, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+	FColor* GridDst = reinterpret_cast<FColor*>(Grid.RawData.GetData());
+	// Fill background with a soft gray so empty cells in a partial last row read as intentional.
+	for (int32 i = 0; i < GridW * GridH; ++i)
+	{
+		GridDst[i] = FColor(26, 26, 30, 255);
+	}
+	for (int32 i = 0; i < Cells.Num(); ++i)
+	{
+		const int32 Col = i % Cols;
+		const int32 Row = i / Cols;
+		const int32 OffX = Col * Res;
+		const int32 OffY = Row * Res;
+		for (int32 y = 0; y < Res; ++y)
+		{
+			FMemory::Memcpy(
+				GridDst + (OffY + y) * GridW + OffX,
+				Cells[i].GetData() + y * Res,
+				Res * sizeof(FColor));
+		}
+	}
+
+	if (FImageUtils::SaveImageByExtension(*GridBasePath, Grid, 0))
+	{
+		Out.Add(GridBasePath);
+	}
+	Out.Append(CellPaths);
+	return Out;
+}
+
+// ─── M6-4: write to MaterialParameterCollection ───────────────────
+
+FBridgeMIParamResult UUnrealBridgeMaterialLibrary::SetMaterialParameterCollection(
+	const FString& CollectionPath,
+	const TArray<FBridgeMIParamSet>& Params)
+{
+	FBridgeMIParamResult Result;
+
+	UMaterialParameterCollection* MPC = LoadObject<UMaterialParameterCollection>(nullptr, *CollectionPath);
+	if (!MPC)
+	{
+		Result.Skipped.Add(FString::Printf(TEXT("could not load MPC '%s'"), *CollectionPath));
+		return Result;
+	}
+
+	for (const FBridgeMIParamSet& P : Params)
+	{
+		const FName ParamName(*P.Name);
+		const FString TypeLower = P.Type.ToLower();
+		bool bDone = false;
+
+		if (TypeLower == TEXT("scalar") || TypeLower.IsEmpty())
+		{
+			for (FCollectionScalarParameter& S : MPC->ScalarParameters)
+			{
+				if (S.ParameterName == ParamName)
+				{
+					S.DefaultValue = FCString::Atof(*P.Value);
+					bDone = true;
+					break;
+				}
+			}
+		}
+		else if (TypeLower == TEXT("vector"))
+		{
+			for (FCollectionVectorParameter& V : MPC->VectorParameters)
+			{
+				if (V.ParameterName == ParamName)
+				{
+					FLinearColor Val(FLinearColor::Black);
+					if (!Val.InitFromString(P.Value))
+					{
+						Result.Skipped.Add(FString::Printf(TEXT("%s = %s: vector unparseable"), *P.Name, *P.Value));
+						bDone = true;
+						break;
+					}
+					V.DefaultValue = Val;
+					bDone = true;
+					break;
+				}
+			}
+		}
+		else
+		{
+			Result.Skipped.Add(FString::Printf(TEXT("%s: MPC only supports Scalar/Vector, got '%s'"), *P.Name, *P.Type));
+			continue;
+		}
+
+		if (bDone)
+		{
+			++Result.Applied;
+		}
+		else
+		{
+			Result.Skipped.Add(FString::Printf(TEXT("%s: not found on MPC"), *P.Name));
+		}
+	}
+
+	MPC->PostEditChange();
+	MPC->MarkPackageDirty();
+
+	Result.bSuccess = Result.Skipped.Num() == 0;
+	return Result;
+}
+
+// ─── M6-5: diff two MI parameter sets ─────────────────────────────
+
+FString UUnrealBridgeMaterialLibrary::DiffMIParams(
+	const FString& PathA,
+	const FString& PathB)
+{
+	UMaterialInstance* A = LoadObject<UMaterialInstance>(nullptr, *PathA);
+	UMaterialInstance* B = LoadObject<UMaterialInstance>(nullptr, *PathB);
+	if (!A) return FString::Printf(TEXT("diff error: could not load A '%s'"), *PathA);
+	if (!B) return FString::Printf(TEXT("diff error: could not load B '%s'"), *PathB);
+
+	struct FEntry { FString Type; FString Value; };
+
+	auto Collect = [](UMaterialInstance* MI) -> TMap<FString, FEntry>
+	{
+		TMap<FString, FEntry> Out;
+		for (const FScalarParameterValue& P : MI->ScalarParameterValues)
+		{
+			Out.Add(P.ParameterInfo.Name.ToString(), {TEXT("Scalar"), FString::SanitizeFloat(P.ParameterValue)});
+		}
+		for (const FVectorParameterValue& P : MI->VectorParameterValues)
+		{
+			Out.Add(P.ParameterInfo.Name.ToString(), {TEXT("Vector"),
+				FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"),
+					P.ParameterValue.R, P.ParameterValue.G, P.ParameterValue.B, P.ParameterValue.A)});
+		}
+		for (const FTextureParameterValue& P : MI->TextureParameterValues)
+		{
+			Out.Add(P.ParameterInfo.Name.ToString(), {TEXT("Texture"),
+				P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None")});
+		}
+		return Out;
+	};
+
+	TMap<FString, FEntry> MapA = Collect(A);
+	TMap<FString, FEntry> MapB = Collect(B);
+
+	TArray<FString> Lines;
+	// Added in B
+	for (const TPair<FString, FEntry>& KV : MapB)
+	{
+		if (!MapA.Contains(KV.Key))
+		{
+			Lines.Add(FString::Printf(TEXT("+ %s %s = %s"), *KV.Value.Type, *KV.Key, *KV.Value.Value));
+		}
+	}
+	// Removed / changed
+	for (const TPair<FString, FEntry>& KV : MapA)
+	{
+		if (!MapB.Contains(KV.Key))
+		{
+			Lines.Add(FString::Printf(TEXT("- %s %s = %s"), *KV.Value.Type, *KV.Key, *KV.Value.Value));
+		}
+		else if (MapB[KV.Key].Value != KV.Value.Value)
+		{
+			Lines.Add(FString::Printf(TEXT("~ %s %s: %s -> %s"),
+				*KV.Value.Type, *KV.Key, *KV.Value.Value, *MapB[KV.Key].Value));
+		}
+	}
+
+	Lines.Sort();
+	if (Lines.Num() == 0)
+	{
+		return TEXT("(no override differences)");
+	}
+	return FString::Join(Lines, TEXT("\n"));
+}
+
 bool UUnrealBridgeMaterialLibrary::CompileMaterial(
 	const FString& MaterialPath,
 	bool bSaveAfter)

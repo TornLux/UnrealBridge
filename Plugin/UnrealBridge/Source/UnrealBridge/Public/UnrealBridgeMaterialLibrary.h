@@ -580,6 +580,47 @@ struct FBridgeMaterialGraphOpResult
 	int32 FailedAtIndex = -1;
 };
 
+/** One MI parameter override (for set_mi_params / MPC setter). */
+USTRUCT(BlueprintType)
+struct FBridgeMIParamSet
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Name;
+
+	/** "Scalar" / "Vector" / "Texture" / "StaticSwitch" / "Collection" (MPC scalar auto-detect). */
+	UPROPERTY(BlueprintReadWrite)
+	FString Type;
+
+	/**
+	 * ImportText-format value:
+	 *   Scalar        "0.5"
+	 *   Vector        "(R=1,G=0,B=0,A=1)"
+	 *   Texture       "/Game/Textures/T_Base.T_Base"
+	 *   StaticSwitch  "true" / "false"
+	 */
+	UPROPERTY(BlueprintReadWrite)
+	FString Value;
+};
+
+/** Result of set_mi_params. */
+USTRUCT(BlueprintType)
+struct FBridgeMIParamResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bSuccess = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 Applied = 0;
+
+	/** Per-failed-param diagnostic messages. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> Skipped;
+};
+
 /** Metadata for an HLSL snippet shipped in BridgeSnippets.ush (M2.5). */
 USTRUCT(BlueprintType)
 struct FBridgeShaderSnippet
@@ -1057,4 +1098,80 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeShaderSnippet GetSharedSnippet(const FString& Name);
+
+	/**
+	 * M6-1: Write a batch of parameter overrides onto a Material Instance (or MPC).
+	 * Single dispatch covers scalar / vector / texture / static-switch by Type string.
+	 * Each entry is independent — a failed param doesn't abort the rest; failures are
+	 * reported in the Skipped array with reason text.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMIParamResult SetMIParams(
+		const FString& MaterialInstancePath,
+		const TArray<FBridgeMIParamSet>& Params);
+
+	/**
+	 * M6-2: Set MI parameters + render in one atomic call. The inverse of the usual
+	 * "tweak, then render, then tweak again" round-trip. Saves the MI after applying
+	 * so changes persist; use a disposable MI if you want non-destructive sweep.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool SetMIAndPreview(
+		const FString& MaterialInstancePath,
+		const TArray<FBridgeMIParamSet>& Params,
+		const FString& Mesh,
+		const FString& Lighting,
+		int32 Resolution,
+		float CameraYawDeg,
+		float CameraPitchDeg,
+		float CameraDistance,
+		const FString& OutPngPath);
+
+	/**
+	 * M6-3: Sweep a single scalar / vector parameter over a list of values, rendering each
+	 * into a grid-composited PNG. The MI is restored to its prior override state at the
+	 * end so the sweep is non-destructive.
+	 *
+	 * @param ParamName  Parameter to vary (must be Scalar or Vector; others rejected).
+	 * @param Values     ImportText-format values. Scalar: "0.1" "0.5" etc. Vector: "(R=1,G=0,B=0,A=1)".
+	 * @param GridCols   0 = auto sqrt(N); otherwise forces a specific column count.
+	 * @param OutGridPath   Where the combined image goes. Per-cell images land next to it with "_N" suffix.
+	 *
+	 * Returns path list: [grid_path, cell0, cell1, ...] on success, empty on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static TArray<FString> SweepMIParams(
+		const FString& MaterialInstancePath,
+		const FString& ParamName,
+		const TArray<FString>& Values,
+		const FString& Mesh,
+		const FString& Lighting,
+		int32 Resolution,
+		float CameraYawDeg,
+		float CameraPitchDeg,
+		float CameraDistance,
+		int32 GridCols,
+		const FString& OutGridPath);
+
+	/**
+	 * M6-4: Write scalar / vector defaults onto a UMaterialParameterCollection.
+	 * Uses the same FBridgeMIParamSet payload as set_mi_params. Type must be "Scalar"
+	 * or "Vector" (the two MPC value kinds). MPC is saved after mutation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMIParamResult SetMaterialParameterCollection(
+		const FString& CollectionPath,
+		const TArray<FBridgeMIParamSet>& Params);
+
+	/**
+	 * M6-5: Diff two MIs' override values. Text report formatted like:
+	 *   + Scalar Roughness = 0.35     (set in B, absent in A)
+	 *   - Vector Tint = (R=1,...)      (set in A, absent in B)
+	 *   ~ Scalar Metallic: 0.5 -> 0.8  (different value)
+	 * Parent chains are not walked — only each MI's own overrides are compared.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FString DiffMIParams(
+		const FString& PathA,
+		const FString& PathB);
 };

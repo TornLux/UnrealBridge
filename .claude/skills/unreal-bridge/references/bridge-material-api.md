@@ -996,3 +996,133 @@ inlined into generated material shaders. To add a new snippet, edit
 format — the parser picks up the new entry automatically on next
 `list_shared_snippets` call (no editor restart needed since the file is read
 on demand).
+
+---
+
+# Parameter iteration loop (M6)
+
+All M6 calls work on **Material Instances** (`UMaterialInstanceConstant`). If you need to tweak a Master material's defaults, edit the underlying expressions via M2-7 `set_material_expression_property`; M6 is strictly for MI overrides + MPC defaults.
+
+**Asset-modal deadlock gotcha.** UE shows a "completing asset references" progress modal on some `IAssetTools::CreateAsset` / `save_loaded_asset` calls, and because bridge exec serializes through the GameThread, a modal from one op will deadlock subsequent queued ops. Rule: **one asset-write op per bridge exec** — create, save, and multi-render operations each go in their own `bridge.exec-file` call.
+
+---
+
+## set_mi_params(material_instance_path, params) -> FBridgeMIParamResult
+
+**M6-1.** Batch-write scalar / vector / texture / static-switch override values onto a Material Instance Constant. Each entry validates against the parent material — params that don't exist upstream are reported in `skipped` rather than silently failing.
+
+```python
+def ps(name, type, value):
+    p = unreal.BridgeMIParamSet(); p.name = name; p.type = type; p.value = value
+    return p
+
+r = unreal.UnrealBridgeMaterialLibrary.set_mi_params(
+    "/Game/Materials/MI_Bronze_Scratched",
+    [ps("Roughness", "Scalar", "0.65"),
+     ps("BaseColor", "Vector", "(R=0.78,G=0.45,B=0.2,A=1)"),
+     ps("WearMask",  "Texture", "/Game/Textures/T_Wear.T_Wear"),
+     ps("UseDetail", "StaticSwitch", "true")])
+
+print(f"applied {r.applied}, skipped {len(r.skipped)}")
+for s in r.skipped: print(f"  {s}")
+```
+
+### FBridgeMIParamSet fields
+
+| Field | Type | Values |
+|---|---|---|
+| `name` | str | Parameter name on the parent |
+| `type` | str | `"Scalar"` / `"Vector"` / `"Texture"` / `"StaticSwitch"` (aliases: `"bool"`, `"switch"`) |
+| `value` | str | ImportText-format: floats as `"0.5"`, colors as `"(R=,G=,B=,A=)"`, texture as full asset path, bool as `"true"`/`"false"` |
+
+### FBridgeMIParamResult fields
+
+| Field | Type | Description |
+|---|---|---|
+| `success` | bool | True only if every param applied |
+| `applied` | int | Count of params that wrote successfully |
+| `skipped` | list[str] | Diagnostic messages for failures ("not found on parent" / "vector unparseable" / etc.) |
+
+### UE 5.7 gotcha — ignore the engine's bool return
+
+`UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue` has a documented engine bug where `bResult = false` is returned unconditionally — the value *does* get applied via `SetScalarParameterValueEditorOnly`. This wrapper works around that by probing the parent first and always treating the setter call as advisory; clients don't see the raw bool.
+
+---
+
+## set_mi_and_preview(mi_path, params, mesh, lighting, resolution, yaw, pitch, distance, out_png) -> bool
+
+**M6-2.** `set_mi_params` followed by `preview_material` in one atomic call. The MI is saved after applying (persist the override values), then the preview renders.
+
+```python
+ok = unreal.UnrealBridgeMaterialLibrary.set_mi_and_preview(
+    mi_path,
+    [ps("Roughness", "Scalar", "0.35")],
+    "shaderball", "hdri", 768, 30, 15, 0,
+    "G:/Claude/UnrealBridge/temp/previews/tweak.png")
+```
+
+Useful for interactive parameter tuning — each change is one call, outputs the new image path, ready to display or commit.
+
+---
+
+## sweep_mi_params(mi_path, param_name, values, mesh, lighting, resolution, yaw, pitch, distance, grid_cols, out_grid_path) -> list[str]
+
+**M6-3.** Scan a single Scalar or Vector parameter over a list of values, rendering each into a cell then compositing a grid image. The MI's original override is restored after the sweep so the MI's on-disk state is unchanged.
+
+```python
+paths = unreal.UnrealBridgeMaterialLibrary.sweep_mi_params(
+    mi_path, "Roughness",
+    ["0.05", "0.2", "0.4", "0.6", "0.8", "1.0"],
+    mesh="shaderball", lighting="hdri",
+    resolution=320,
+    camera_yaw_deg=30, camera_pitch_deg=15, camera_distance=0,
+    grid_cols=3,      # 2 rows × 3 cols; 0 = auto sqrt(N)
+    out_grid_path="G:/.../sweep_roughness.png")
+
+# paths[0] = grid image; paths[1..] = individual cells
+```
+
+Parameters:
+
+| Name | Type | Description |
+|---|---|---|
+| `param_name` | str | Must be a Scalar or Vector parameter on the MI's parent chain |
+| `values` | list[str] | ImportText-format values. Scalar: `"0.5"`; Vector: `"(R=,G=,B=,A=)"` |
+| `grid_cols` | int | Column count. `0` = auto (ceil of sqrt(N)). Rows inferred |
+| `out_grid_path` | str | The composite grid goes here. Per-cell PNGs land alongside with `_N_<value>` suffix |
+
+Returns: `[grid_path, cell_0_path, cell_1_path, ...]`. Empty list on failure.
+
+Non-destructive — the MI's override of `param_name` is snapshot before the sweep and restored after.
+
+---
+
+## set_material_parameter_collection(collection_path, params) -> FBridgeMIParamResult
+
+**M6-4.** Write Scalar / Vector default values on a `UMaterialParameterCollection`. Same `FBridgeMIParamSet` payload as `set_mi_params`, but `type` must be `"Scalar"` or `"Vector"` (the two MPC value kinds).
+
+```python
+L.set_material_parameter_collection("/Game/MPC/MPC_Weather", [
+    ps("WindStrength", "Scalar", "0.4"),
+    ps("SunColor", "Vector", "(R=1,G=0.92,B=0.78,A=1)"),
+])
+```
+
+---
+
+## diff_mi_params(path_a, path_b) -> str
+
+**M6-5.** Text diff of MI override values. Line prefixes:
+
+- `+ Type Name = value` — override in B that A lacks
+- `- Type Name = value` — override in A that B lacks
+- `~ Type Name: oldValue -> newValue` — same param, different value
+- `(no override differences)` — identical overrides
+
+Walks Scalar / Vector / Texture tables. Does not walk parent chains — only each MI's own override table is compared.
+
+```python
+print(L.diff_mi_params(mi_bronze_a, mi_bronze_b))
+# ~ Scalar Roughness: 0.5 -> 0.75
+# ~ Vector BaseColor: (R=1.0,G=0.2,B=0.2,A=1.0) -> (R=0.3,G=0.3,B=0.35,A=1.0)
+```
