@@ -19,6 +19,7 @@
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionReroute.h"
 #include "MaterialExpressionIO.h"
 #include "MaterialShared.h"
 #include "MaterialShaderType.h"
@@ -1965,6 +1966,148 @@ bool UUnrealBridgeMaterialLibrary::DeleteMaterialExpression(
 	UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expr);
 	Material->MarkPackageDirty();
 	return true;
+}
+
+// ─── M2-7: property setter (reflection / ImportText) ──────────────
+
+namespace BridgeMaterialImpl
+{
+	/**
+	 * Apply one ImportText-style value to a UPROPERTY on the expression.
+	 * Returns true on success.
+	 */
+	static bool ApplyPropertyString(UMaterialExpression* Expr, const FString& PropertyName, const FString& Value)
+	{
+		if (!Expr)
+		{
+			return false;
+		}
+		FProperty* Prop = Expr->GetClass()->FindPropertyByName(FName(*PropertyName));
+		if (!Prop)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: property '%s' not found on %s"),
+				*PropertyName, *Expr->GetClass()->GetName());
+			return false;
+		}
+
+		void* Container = Prop->ContainerPtrToValuePtr<void>(Expr);
+		const TCHAR* Remaining = Prop->ImportText_Direct(*Value, Container, Expr, PPF_None);
+		if (Remaining == nullptr)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: ImportText failed for %s::%s = '%s'"),
+				*Expr->GetClass()->GetName(), *PropertyName, *Value);
+			return false;
+		}
+		return true;
+	}
+}
+
+bool UUnrealBridgeMaterialLibrary::SetMaterialExpressionProperty(
+	const FString& MaterialPath,
+	FGuid Guid,
+	const FString& PropertyName,
+	const FString& Value)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return false;
+
+	UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
+	if (!Expr) return false;
+
+	Expr->PreEditChange(nullptr);
+	const bool bOK = ApplyPropertyString(Expr, PropertyName, Value);
+	Expr->PostEditChange();
+
+	if (bOK)
+	{
+		Material->MarkPackageDirty();
+	}
+	return bOK;
+}
+
+int32 UUnrealBridgeMaterialLibrary::SetMaterialExpressionProperties(
+	const FString& MaterialPath,
+	FGuid Guid,
+	const TArray<FBridgeExpressionPropSet>& Properties)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return 0;
+
+	UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
+	if (!Expr) return 0;
+
+	Expr->PreEditChange(nullptr);
+	int32 Applied = 0;
+	for (const FBridgeExpressionPropSet& P : Properties)
+	{
+		if (ApplyPropertyString(Expr, P.Name, P.Value))
+		{
+			++Applied;
+		}
+	}
+	Expr->PostEditChange();
+
+	if (Applied > 0)
+	{
+		Material->MarkPackageDirty();
+	}
+	return Applied;
+}
+
+// ─── M2-8: comment + reroute factories ────────────────────────────
+
+FGuid UUnrealBridgeMaterialLibrary::AddMaterialComment(
+	const FString& MaterialPath,
+	int32 X, int32 Y,
+	int32 Width, int32 Height,
+	const FString& Text,
+	FLinearColor Color)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return FGuid();
+
+	UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
+		Material, UMaterialExpressionComment::StaticClass(), X, Y);
+	UMaterialExpressionComment* Comment = Cast<UMaterialExpressionComment>(Expr);
+	if (!Comment) return FGuid();
+
+	Comment->SizeX = FMath::Max(Width, 32);
+	Comment->SizeY = FMath::Max(Height, 32);
+	Comment->Text = Text;
+	Comment->CommentColor = Color;
+
+	if (!Comment->MaterialExpressionGuid.IsValid())
+	{
+		Comment->MaterialExpressionGuid = FGuid::NewGuid();
+	}
+	Comment->PostEditChange();
+	Material->MarkPackageDirty();
+	return Comment->MaterialExpressionGuid;
+}
+
+FGuid UUnrealBridgeMaterialLibrary::AddMaterialReroute(
+	const FString& MaterialPath,
+	int32 X, int32 Y)
+{
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return FGuid();
+
+	UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
+		Material, UMaterialExpressionReroute::StaticClass(), X, Y);
+	if (!Expr) return FGuid();
+
+	if (!Expr->MaterialExpressionGuid.IsValid())
+	{
+		Expr->MaterialExpressionGuid = FGuid::NewGuid();
+	}
+	Material->MarkPackageDirty();
+	return Expr->MaterialExpressionGuid;
 }
 
 // ─── M2-11: compile ───────────────────────────────────────────────

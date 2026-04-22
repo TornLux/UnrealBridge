@@ -492,6 +492,20 @@ struct FBridgeCreateAssetResult
 	FString Error;
 };
 
+/** One property to set on an expression (for batched SetMaterialExpressionProperties). */
+USTRUCT(BlueprintType)
+struct FBridgeExpressionPropSet
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Name;
+
+	/** ImportText-format string (see SetMaterialExpressionProperty docs). */
+	UPROPERTY(BlueprintReadWrite)
+	FString Value;
+};
+
 /** Result of adding a single material expression (M2-4). */
 USTRUCT(BlueprintType)
 struct FBridgeAddExpressionResult
@@ -743,4 +757,67 @@ public:
 	static bool CompileMaterial(
 		const FString& MaterialPath,
 		bool bSaveAfter);
+
+	/**
+	 * M2-7: Set a single UPROPERTY on an expression by name, using UE's ImportText.
+	 *
+	 * Value format follows ImportText conventions (the same format UE uses for .uasset
+	 * text export):
+	 *   Float / Int:    "1.5" / "42"
+	 *   Bool:           "true" / "false"
+	 *   String / Name:  "MyParam"               (no surrounding quotes)
+	 *   FLinearColor /  "(R=1.0,G=0.5,B=0.2,A=1.0)"
+	 *     Vectors:
+	 *   Object ref:     "/Game/Textures/T_Base.T_Base"  (full path, no type prefix)
+	 *   Enum:           "SAMPLERTYPE_Color" or just "Color"
+	 *
+	 * Common targets:
+	 *   Constant                        R
+	 *   Constant3Vector / Constant4     Constant
+	 *   ScalarParameter / VectorParam   ParameterName / DefaultValue / Group / SortPriority
+	 *   StaticSwitchParameter           ParameterName / DefaultValue
+	 *   TextureSample / Parameter       Texture / SamplerType / SamplerSource / MipValueMode
+	 *   MaterialFunctionCall            MaterialFunction
+	 *   Comment                         Text / SizeX / SizeY / CommentColor
+	 *   Custom                          Code / Description / OutputType
+	 *   Any                             Desc / MaterialExpressionEditorX / Y
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool SetMaterialExpressionProperty(
+		const FString& MaterialPath,
+		FGuid Guid,
+		const FString& PropertyName,
+		const FString& Value);
+
+	/**
+	 * M2-7: Batch version of SetMaterialExpressionProperty — sets multiple properties
+	 * on a single expression in one call with one PostEditChange broadcast.
+	 * Returns the number of properties that applied successfully.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static int32 SetMaterialExpressionProperties(
+		const FString& MaterialPath,
+		FGuid Guid,
+		const TArray<FBridgeExpressionPropSet>& Properties);
+
+	/**
+	 * M2-8: Add a MaterialExpressionComment (group comment with resizable bounds).
+	 * Returns the new comment's MaterialExpressionGuid, or invalid guid on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FGuid AddMaterialComment(
+		const FString& MaterialPath,
+		int32 X, int32 Y,
+		int32 Width, int32 Height,
+		const FString& Text,
+		FLinearColor Color);
+
+	/**
+	 * M2-8: Add a MaterialExpressionReroute (transparent pass-through, single input/output).
+	 * Useful for wire routing / organization.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FGuid AddMaterialReroute(
+		const FString& MaterialPath,
+		int32 X, int32 Y);
 };

@@ -645,4 +645,97 @@ L.connect_material_output(path, metal.guid, "", "Metallic")
 L.compile_material(path, save_after=True)
 ```
 
-Note: `Constant3Vector` defaults to `(0,0,0)`; `ScalarParameter` defaults to `0`. Use `set_material_expression_property` (M2-7, Batch 2) to set meaningful defaults — otherwise you'll get a black roughness-0 / metallic-0 material (mirror-black). `ScalarParameter` / `VectorParameter` also expose their values as MI overrides after compile, so you can tune per-instance without re-editing the master.
+Note: `Constant3Vector` defaults to `(0,0,0)`; `ScalarParameter` defaults to `0`. Use `set_material_expression_property` (M2-7) to set meaningful defaults — otherwise you'll get a black roughness-0 / metallic-0 material (mirror-black). `ScalarParameter` / `VectorParameter` also expose their values as MI overrides after compile, so you can tune per-instance without re-editing the master.
+
+---
+
+## set_material_expression_property(material_path, guid, property_name, value) -> bool
+
+**M2-7.** Set a single UPROPERTY on an expression, by name, using UE's ImportText format (the same format UE uses for `.uasset` text export).
+
+```python
+L.set_material_expression_property(mat, bc.guid, "Constant",
+    "(R=0.78,G=0.45,B=0.20,A=1.0)")
+L.set_material_expression_property(mat, rough.guid, "ParameterName", "Roughness")
+L.set_material_expression_property(mat, rough.guid, "DefaultValue", "0.35")
+L.set_material_expression_property(mat, tex.guid,  "Texture",
+    "/Game/Textures/T_Brick_D.T_Brick_D")
+```
+
+### Value format cheat sheet
+
+| Property type | String form |
+|---|---|
+| `float` / `int32` | `"1.5"` / `"42"` |
+| `bool` | `"true"` / `"false"` |
+| `FString` / `FName` | `"MyParam"` (no surrounding quotes) |
+| `FLinearColor` | `"(R=1.0,G=0.5,B=0.2,A=1.0)"` |
+| `FVector` / `FVector2D` | `"(X=1.0,Y=0.5,Z=0.2)"` / `"(X=1.0,Y=0.5)"` |
+| Object reference (`UTexture*`, `UMaterialFunction*`, etc.) | Full content path: `"/Game/Textures/T_Base.T_Base"` |
+| Enum | Full name: `"SAMPLERTYPE_Color"` (or just `"Color"` when unambiguous) |
+
+### Common target properties by expression class
+
+| Class | Properties |
+|---|---|
+| `Constant` | `R` |
+| `Constant2Vector` | `R`, `G` |
+| `Constant3Vector` / `Constant4Vector` | `Constant` (FLinearColor) |
+| `ScalarParameter` | `ParameterName`, `DefaultValue`, `Group`, `SortPriority`, `SliderMin`, `SliderMax` |
+| `VectorParameter` | `ParameterName`, `DefaultValue` (FLinearColor), `Group` |
+| `StaticSwitchParameter` / `StaticBoolParameter` | `ParameterName`, `DefaultValue` |
+| `TextureSample` | `Texture`, `SamplerType`, `SamplerSource`, `MipValueMode` |
+| `TextureSampleParameter2D` | above + `ParameterName`, `Group` |
+| `MaterialFunctionCall` | `MaterialFunction` |
+| `Comment` | `Text`, `SizeX`, `SizeY`, `CommentColor` |
+| `Custom` | `Code`, `Description`, `OutputType` |
+| *any* | `Desc`, `MaterialExpressionEditorX`, `MaterialExpressionEditorY` |
+
+Returns False if the property doesn't exist on the expression class or the value string doesn't parse.
+
+---
+
+## set_material_expression_properties(material_path, guid, properties) -> int
+
+**M2-7.** Batched form — set many properties on one node in one call with a single `PostEditChange` broadcast. More efficient than many single-property calls.
+
+```python
+n = L.set_material_expression_properties(mat, scalar.guid, [
+    unreal.BridgeExpressionPropSet(name="ParameterName", value="Roughness"),
+    unreal.BridgeExpressionPropSet(name="DefaultValue", value="0.35"),
+    unreal.BridgeExpressionPropSet(name="Group", value="PBR"),
+    unreal.BridgeExpressionPropSet(name="SortPriority", value="1"),
+])
+assert n == 4
+```
+
+### FBridgeExpressionPropSet fields
+| Field | Type | Description |
+|---|---|---|
+| `name` | str | UPROPERTY name |
+| `value` | str | ImportText-format value string |
+
+Returns the count of properties that applied successfully. Each property is independent — failures in one don't stop the rest.
+
+---
+
+## add_material_comment(material_path, x, y, width, height, text, color) -> FGuid
+
+**M2-8.** Add a `MaterialExpressionComment` — a resizable framed rectangle that groups / annotates nodes.
+
+```python
+L.add_material_comment(mat,
+    x=-450, y=-140, width=260, height=430,
+    text="PBR core params",
+    color=unreal.LinearColor(0.2, 0.7, 1.0, 0.4))
+```
+
+Returns the new comment's `MaterialExpressionGuid`, invalid GUID (all-zero) on failure.
+
+---
+
+## add_material_reroute(material_path, x, y) -> FGuid
+
+**M2-8.** Add a `MaterialExpressionReroute` — a transparent single-input / single-output knot used to clean up wire routing (especially useful alongside `auto_layout_material_graph`, M2-9).
+
+Returns the new reroute's `MaterialExpressionGuid`.
