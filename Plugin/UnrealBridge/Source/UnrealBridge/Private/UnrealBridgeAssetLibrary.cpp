@@ -23,6 +23,7 @@
 #include "PhysicsEngine/PhysicsAsset.h"
 #include "PixelFormat.h"
 #include "StaticMeshResources.h"
+#include "PhysicsEngine/BodySetup.h"
 #include "Rendering/SkeletalMeshRenderData.h"
 #include "Rendering/SkeletalMeshLODRenderData.h"
 
