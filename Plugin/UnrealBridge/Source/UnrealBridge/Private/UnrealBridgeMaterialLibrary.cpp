@@ -20,6 +20,16 @@
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "MaterialExpressionIO.h"
+#include "MaterialShared.h"
+#include "MaterialShaderType.h"
+#include "MaterialShader.h"
+#include "MeshMaterialShaderType.h"
+#include "MeshMaterialShader.h"
+#include "Shader.h"
+#include "VertexFactory.h"
+#include "RHIDefinitions.h"
+#include "DataDrivenShaderPlatformInfo.h"
+#include "MaterialStatsCommon.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -850,6 +860,201 @@ FBridgeMaterialParameterCollectionInfo UUnrealBridgeMaterialLibrary::GetMaterial
 	return Info;
 }
 
+namespace BridgeMaterialImpl
+{
+	static ERHIFeatureLevel::Type ParseFeatureLevel(const FString& Str)
+	{
+		if (Str.IsEmpty() || Str.Equals(TEXT("Default"), ESearchCase::IgnoreCase))
+		{
+			return GMaxRHIFeatureLevel;
+		}
+		if (Str.Equals(TEXT("SM5"), ESearchCase::IgnoreCase)) return ERHIFeatureLevel::SM5;
+		if (Str.Equals(TEXT("SM6"), ESearchCase::IgnoreCase)) return ERHIFeatureLevel::SM6;
+		if (Str.Equals(TEXT("ES3_1"), ESearchCase::IgnoreCase) || Str.Equals(TEXT("ES31"), ESearchCase::IgnoreCase))
+		{
+			return ERHIFeatureLevel::ES3_1;
+		}
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown FeatureLevel '%s' — falling back to GMaxRHIFeatureLevel"), *Str);
+		return GMaxRHIFeatureLevel;
+	}
+
+	static EMaterialQualityLevel::Type ParseQuality(const FString& Str)
+	{
+		if (Str.IsEmpty() || Str.Equals(TEXT("Default"), ESearchCase::IgnoreCase))
+		{
+			return EMaterialQualityLevel::High;
+		}
+		if (Str.Equals(TEXT("Low"), ESearchCase::IgnoreCase))    return EMaterialQualityLevel::Low;
+		if (Str.Equals(TEXT("Medium"), ESearchCase::IgnoreCase)) return EMaterialQualityLevel::Medium;
+		if (Str.Equals(TEXT("High"), ESearchCase::IgnoreCase))   return EMaterialQualityLevel::High;
+		if (Str.Equals(TEXT("Epic"), ESearchCase::IgnoreCase))   return EMaterialQualityLevel::Epic;
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown Quality '%s' — falling back to High"), *Str);
+		return EMaterialQualityLevel::High;
+	}
+
+	static FString FeatureLevelToString(ERHIFeatureLevel::Type FL)
+	{
+		switch (FL)
+		{
+			case ERHIFeatureLevel::ES3_1: return TEXT("ES3_1");
+			case ERHIFeatureLevel::SM5:   return TEXT("SM5");
+			case ERHIFeatureLevel::SM6:   return TEXT("SM6");
+			default:                      return FString::Printf(TEXT("FL%d"), (int32)FL);
+		}
+	}
+
+	static FString QualityToString(EMaterialQualityLevel::Type Q)
+	{
+		switch (Q)
+		{
+			case EMaterialQualityLevel::Low:    return TEXT("Low");
+			case EMaterialQualityLevel::Medium: return TEXT("Medium");
+			case EMaterialQualityLevel::High:   return TEXT("High");
+			case EMaterialQualityLevel::Epic:   return TEXT("Epic");
+			default:                            return FString::Printf(TEXT("Q%d"), (int32)Q);
+		}
+	}
+
+	/**
+	 * Resolve an MI/Master to the FMaterialResource for the given feature level + quality.
+	 * Returns nullptr if the material can't be resolved or hasn't been compiled for this combo.
+	 */
+	static const FMaterialResource* ResolveMaterialResource(
+		UMaterialInterface* MatInterface,
+		ERHIFeatureLevel::Type FeatureLevel,
+		EMaterialQualityLevel::Type Quality)
+	{
+		if (!MatInterface)
+		{
+			return nullptr;
+		}
+		const EShaderPlatform Platform = GShaderPlatformForFeatureLevel[FeatureLevel];
+		if (Platform == SP_NumPlatforms)
+		{
+			return nullptr;
+		}
+		return MatInterface->GetMaterialResource(Platform, Quality);
+	}
+
+	/** Local copy of FMaterialStatsUtils::RepresentativeShaderTypeToString — not exported from MaterialEditor. */
+	static FString RepresentativeShaderTypeName(ERepresentativeShader ShaderType)
+	{
+		switch (ShaderType)
+		{
+			case ERepresentativeShader::StationarySurface:            return TEXT("Stationary surface");
+			case ERepresentativeShader::StationarySurfaceCSM:         return TEXT("Stationary surface + CSM");
+			case ERepresentativeShader::StationarySurfaceNPointLights:return TEXT("Stationary surface + Point Lights");
+			case ERepresentativeShader::DynamicallyLitObject:         return TEXT("Dynamically lit object");
+			case ERepresentativeShader::StaticMesh:                   return TEXT("Static Mesh");
+			case ERepresentativeShader::SkeletalMesh:                 return TEXT("Skeletal Mesh");
+			case ERepresentativeShader::SkinnedCloth:                 return TEXT("Skinned Cloth");
+			case ERepresentativeShader::NaniteMesh:                   return TEXT("Nanite Mesh");
+			case ERepresentativeShader::UIDefaultFragmentShader:      return TEXT("UI Pixel Shader");
+			case ERepresentativeShader::UIDefaultVertexShader:        return TEXT("UI Vertex Shader");
+			case ERepresentativeShader::UIInstancedVertexShader:      return TEXT("UI Instanced Vertex Shader");
+			case ERepresentativeShader::RuntimeVirtualTextureOutput:  return TEXT("Runtime Virtual Texture Output");
+			default:                                                  return FString::Printf(TEXT("Shader%d"), (int32)ShaderType);
+		}
+	}
+
+	/**
+	 * Reimplementation of FMaterialStatsUtils::GetRepresentativeInstructionCounts.
+	 * The original is a non-exported static in MaterialStatsCommon.cpp, but the helpers it
+	 * depends on (GetRepresentativeShaderTypesAndDescriptions / FindShaderTypeByName /
+	 * FindVertexFactoryType / GetMaxNumInstructionsForShader) are all ENGINE_API or
+	 * MATERIALEDITOR_API, so we can walk the shader map directly.
+	 */
+	static void CollectShaderInstructionStats(
+		const FMaterialResource* Resource,
+		TArray<FBridgeMaterialShaderStat>& OutStats)
+	{
+		if (!Resource)
+		{
+			return;
+		}
+		const FMaterialShaderMap* ShaderMap = Resource->GetGameThreadShaderMap();
+		if (!ShaderMap)
+		{
+			return;
+		}
+
+		TMap<FName, TArray<FMaterialStatsUtils::FRepresentativeShaderInfo>> ShaderTypeNamesAndDescriptions;
+		FMaterialStatsUtils::GetRepresentativeShaderTypesAndDescriptions(ShaderTypeNamesAndDescriptions, Resource);
+
+		// We de-dup by ERepresentativeShader to avoid listing the same variant twice across factories.
+		TSet<int32> EmittedShaderTypes;
+
+		if (Resource->IsUIMaterial())
+		{
+			for (const TPair<FName, TArray<FMaterialStatsUtils::FRepresentativeShaderInfo>>& Pair : ShaderTypeNamesAndDescriptions)
+			{
+				for (const FMaterialStatsUtils::FRepresentativeShaderInfo& ShaderInfo : Pair.Value)
+				{
+					const int32 Key = (int32)ShaderInfo.ShaderType;
+					if (EmittedShaderTypes.Contains(Key))
+					{
+						continue;
+					}
+					FShaderType* ShaderType = FindShaderTypeByName(ShaderInfo.ShaderName);
+					if (!ShaderType)
+					{
+						continue;
+					}
+					const int32 NumInstructions = ShaderMap->GetMaxNumInstructionsForShader(ShaderType);
+
+					FBridgeMaterialShaderStat Stat;
+					Stat.ShaderType = RepresentativeShaderTypeName(ShaderInfo.ShaderType);
+					Stat.ShaderDescription = ShaderInfo.ShaderDescription;
+					Stat.InstructionCount = NumInstructions;
+					OutStats.Add(MoveTemp(Stat));
+					EmittedShaderTypes.Add(Key);
+				}
+			}
+		}
+		else
+		{
+			for (const TPair<FName, TArray<FMaterialStatsUtils::FRepresentativeShaderInfo>>& Pair : ShaderTypeNamesAndDescriptions)
+			{
+				FVertexFactoryType* FactoryType = FindVertexFactoryType(Pair.Key);
+				const FMeshMaterialShaderMap* MeshShaderMap = ShaderMap->GetMeshShaderMap(FactoryType);
+				if (!MeshShaderMap)
+				{
+					continue;
+				}
+				TMap<FHashedName, TShaderRef<FShader>> MeshShaderList;
+				MeshShaderMap->GetShaderList(*ShaderMap, MeshShaderList);
+
+				for (const FMaterialStatsUtils::FRepresentativeShaderInfo& ShaderInfo : Pair.Value)
+				{
+					const int32 Key = (int32)ShaderInfo.ShaderType;
+					if (EmittedShaderTypes.Contains(Key))
+					{
+						continue;
+					}
+					TShaderRef<FShader>* Found = MeshShaderList.Find(ShaderInfo.ShaderName);
+					if (!Found)
+					{
+						continue;
+					}
+					FShaderType* ShaderType = Found->GetType();
+					if (!ShaderType)
+					{
+						continue;
+					}
+					const int32 NumInstructions = MeshShaderMap->GetMaxNumInstructionsForShader(*ShaderMap, ShaderType);
+
+					FBridgeMaterialShaderStat Stat;
+					Stat.ShaderType = RepresentativeShaderTypeName(ShaderInfo.ShaderType);
+					Stat.ShaderDescription = ShaderInfo.ShaderDescription;
+					Stat.InstructionCount = NumInstructions;
+					OutStats.Add(MoveTemp(Stat));
+					EmittedShaderTypes.Add(Key);
+				}
+			}
+		}
+	}
+}
+
 FBridgeMaterialGraph UUnrealBridgeMaterialLibrary::GetMaterialGraph(const FString& MaterialPath)
 {
 	using namespace BridgeMaterialImpl;
@@ -930,4 +1135,71 @@ FBridgeMaterialGraph UUnrealBridgeMaterialLibrary::GetMaterialGraph(const FStrin
 	CollectConnectionsFromExpressions(Expressions, Graph.Connections);
 
 	return Graph;
+}
+
+FBridgeMaterialStats UUnrealBridgeMaterialLibrary::GetMaterialStats(
+	const FString& MaterialPath,
+	const FString& FeatureLevelStr,
+	const FString& QualityStr)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialStats Stats;
+
+	UMaterialInterface* MatInterface = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!MatInterface)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetMaterialStats could not load '%s'"), *MaterialPath);
+		return Stats;
+	}
+
+	const ERHIFeatureLevel::Type FeatureLevel = ParseFeatureLevel(FeatureLevelStr);
+	const EMaterialQualityLevel::Type Quality = ParseQuality(QualityStr);
+
+	Stats.bFound = true;
+	Stats.Path = MatInterface->GetPathName();
+	Stats.FeatureLevel = FeatureLevelToString(FeatureLevel);
+	Stats.QualityLevel = QualityToString(Quality);
+
+	const FMaterialResource* Resource = ResolveMaterialResource(MatInterface, FeatureLevel, Quality);
+	if (!Resource)
+	{
+		// No compiled resource yet — report what we can.
+		return Stats;
+	}
+
+	Stats.bShaderMapReady = (Resource->GetGameThreadShaderMap() != nullptr);
+	Stats.CompileErrors = Resource->GetCompileErrors();
+
+	CollectShaderInstructionStats(Resource, Stats.Shaders);
+	Stats.VirtualTextureStackCount = (int32)Resource->GetNumVirtualTextureStacks();
+
+	return Stats;
+}
+
+TArray<FString> UUnrealBridgeMaterialLibrary::GetMaterialCompileErrors(
+	const FString& MaterialPath,
+	const FString& FeatureLevelStr,
+	const FString& QualityStr)
+{
+	using namespace BridgeMaterialImpl;
+
+	TArray<FString> Errors;
+
+	UMaterialInterface* MatInterface = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!MatInterface)
+	{
+		Errors.Add(FString::Printf(TEXT("UnrealBridge: could not load material '%s'"), *MaterialPath));
+		return Errors;
+	}
+
+	const ERHIFeatureLevel::Type FeatureLevel = ParseFeatureLevel(FeatureLevelStr);
+	const EMaterialQualityLevel::Type Quality = ParseQuality(QualityStr);
+
+	const FMaterialResource* Resource = ResolveMaterialResource(MatInterface, FeatureLevel, Quality);
+	if (Resource)
+	{
+		Errors = Resource->GetCompileErrors();
+	}
+	return Errors;
 }

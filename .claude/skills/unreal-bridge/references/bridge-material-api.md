@@ -359,3 +359,78 @@ for c in g.connections:
 - **Reroute nodes** — appear in `nodes` as class `Reroute`. Their single input/output preserves type; walking through them is the consumer's responsibility.
 - **Material functions inside** — `MaterialFunctionCall` nodes appear once in the parent graph; the function's internal expressions are *not* inlined. Call `get_material_function` / `get_material_graph` on the referenced path for the inner graph.
 - **Main-output properties** — the full enum covers masters' properties (`BaseColor` / `Metallic` / `Roughness` / `Normal` / `EmissiveColor` / `Opacity` / `OpacityMask` / `WorldPositionOffset` / `Refraction` / `AmbientOcclusion` / `PixelDepthOffset` / `SubsurfaceColor` / `Tangent` / `Anisotropy` / `FrontMaterial` / `MaterialAttributes` / `CustomizedUVs0..7` / `CustomData0..1`). Only entries that are actually wired up appear in `output_connections`.
+
+---
+
+## get_material_stats(material_path, feature_level, quality) -> FBridgeMaterialStats
+
+**M1-3 (+ M1-4).** Returns shader-level statistics (per-variant instruction counts + VT stack count) **and** the most recent compile errors for a given feature level + quality combination. Requires the material's shader map to be compiled — returns `shader_map_ready=False` if not.
+
+```python
+s = unreal.UnrealBridgeMaterialLibrary.get_material_stats(
+    '/Game/Materials/M_MyMaster', 'SM5', 'High')
+print(f"FL={s.feature_level} Q={s.quality_level} ready={s.shader_map_ready}")
+for sh in s.shaders:
+    print(f"  [{sh.shader_type}] {sh.shader_description} = {sh.instruction_count} instructions")
+for e in s.compile_errors:
+    print(f"  ERR: {e}")
+```
+
+Parameters:
+- `feature_level` — `"SM5"` / `"SM6"` / `"ES3_1"` / `"Default"` (uses `GMaxRHIFeatureLevel` — the editor's current).
+- `quality` — `"Low"` / `"Medium"` / `"High"` / `"Epic"` / `"Default"` (== `"High"`).
+
+### FBridgeMaterialStats fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `found` | bool | `False` if the path did not load |
+| `path` | str | Full asset path |
+| `feature_level` | str | Resolved feature level (useful to confirm what `"Default"` mapped to) |
+| `quality_level` | str | Resolved quality level |
+| `shader_map_ready` | bool | `False` while the material is still compiling. If you hit this, wait for `unreal.SystemLibrary.is_material_shader_compiling()` to return `False` and retry |
+| `shaders` | list[FBridgeMaterialShaderStat] | One entry per representative shader variant (de-duplicated). Empty for MI whose parent's shader map isn't materialized under this feature level, and for materials still compiling |
+| `virtual_texture_stack_count` | int | `FMaterialResource::GetNumVirtualTextureStacks()` — how many VT sample stacks the material compiled into |
+| `compile_errors` | list[str] | Errors reported by the shader map. Empty = clean compile |
+
+### FBridgeMaterialShaderStat fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `shader_type` | str | Variant bucket: `"Stationary surface"` / `"Stationary surface + CSM"` / `"Stationary surface + Point Lights"` / `"Dynamically lit object"` / `"Static Mesh"` / `"Skeletal Mesh"` / `"Skinned Cloth"` / `"Nanite Mesh"` / `"UI Pixel Shader"` / `"UI Vertex Shader"` / `"UI Instanced Vertex Shader"` / `"Runtime Virtual Texture Output"` |
+| `shader_description` | str | Longer human description — typically `"Base pass shader"`, `"Base pass vertex shader"`, etc. |
+| `instruction_count` | int | `FMaterialShaderMap::GetMaxNumInstructionsForShader` — the representative instruction count UE's Material Editor Stats window displays |
+| `extra_statistics` | str | Reserved for future platform-specific counters (currently always empty) |
+
+### Notes
+
+- **MI stats** — Material Instances that don't have their own static-switch permutation compiled will return `shaders=[]`. Resolve via `list_material_instance_chain` and call on the parent, or set a PIE cook platform that materializes the MI's permutation.
+- **Default quality** — `"Default"` maps to `High`; this matches what the Material Editor Stats window uses.
+- **Consistency with Material Editor** — the numbers match the Stats panel in the UE Material Editor (same `GetRepresentativeInstructionCounts` path reimplemented locally since the original is not ENGINE_API).
+- **Budget check pattern** — for per-template budget enforcement:
+  ```python
+  stats = unreal.UnrealBridgeMaterialLibrary.get_material_stats(path, 'SM5', 'High')
+  base_pass = [s for s in stats.shaders if 'Base pass shader' == s.shader_description.strip()]
+  if base_pass and base_pass[0].instruction_count > 250:
+      raise RuntimeError(f"over PS budget: {base_pass[0].instruction_count} > 250")
+  ```
+
+---
+
+## get_material_compile_errors(material_path, feature_level, quality) -> list[str]
+
+**M1-4.** Just the compile errors — cheaper than `get_material_stats` when you only need a yes/no on whether the material is broken.
+
+```python
+errors = unreal.UnrealBridgeMaterialLibrary.get_material_compile_errors(
+    '/Game/Materials/M_MyMaster', 'Default', 'Default')
+if errors:
+    print('material has compile errors:')
+    for e in errors:
+        print(f'  {e}')
+```
+
+Parameters match `get_material_stats`. Returns:
+- Empty list — material compiled cleanly (or no shader map yet)
+- Non-empty — each entry is a compile error as reported by the shader map
+- On load failure — a single synthetic entry starting with `"UnrealBridge: could not load material"`

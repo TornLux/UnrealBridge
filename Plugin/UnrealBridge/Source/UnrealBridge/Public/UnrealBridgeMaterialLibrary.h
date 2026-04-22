@@ -417,6 +417,65 @@ struct FBridgeMaterialGraph
 	TArray<FBridgeMaterialGraphConnection> OutputConnections;
 };
 
+/** Instruction-count entry for one representative shader variant. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialShaderStat
+{
+	GENERATED_BODY()
+
+	/** Human-readable shader variant name (e.g. "StationarySurface", "StaticMesh", "NaniteMesh"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ShaderType;
+
+	/** Longer description of the variant (e.g. "Base pass shader with only stationary lighting"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ShaderDescription;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 InstructionCount = 0;
+
+	/** Extra per-shader statistics as a free-form string (GPU-specific counters if available). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ExtraStatistics;
+};
+
+/** Aggregate statistics + compile state for a Material at a given feature level / quality. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialStats
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	/** "SM5" / "SM6" / "ES3_1" etc. */
+	UPROPERTY(BlueprintReadOnly)
+	FString FeatureLevel;
+
+	/** "Low" / "Medium" / "High" / "Epic" */
+	UPROPERTY(BlueprintReadOnly)
+	FString QualityLevel;
+
+	/** One entry per representative shader variant. Empty if the material's shader map is still compiling. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialShaderStat> Shaders;
+
+	/** UMaterialInterface::GetNumVirtualTextureStacks — count of VT sample stacks on this material. */
+	UPROPERTY(BlueprintReadOnly)
+	int32 VirtualTextureStackCount = 0;
+
+	/** Compile errors reported by the shader map. Empty = clean compile. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> CompileErrors;
+
+	/** False if the material resource is still compiling — call again once `is_compiling()` is false. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bShaderMapReady = false;
+};
+
 /**
  * Material introspection via UnrealBridge.
  */
@@ -481,4 +540,33 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMaterialGraph GetMaterialGraph(const FString& MaterialPath);
+
+	/**
+	 * M1-3: Shader-level statistics for a compiled Material — per-variant instruction counts,
+	 * VT stack count, feature level + quality — plus the current set of compile errors (M1-4
+	 * overlap).
+	 *
+	 * @param FeatureLevel  "SM5" / "SM6" / "ES3_1" / "Default" (uses GMaxRHIFeatureLevel).
+	 * @param Quality       "Low" / "Medium" / "High" / "Epic" / "Default" (current CVar).
+	 *
+	 * Returns bShaderMapReady=false if the material is still compiling — call again after
+	 * IsMaterialShaderCompiling is false, or rely on get_material_compile_errors which doesn't
+	 * block on shader-map retrieval.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialStats GetMaterialStats(
+		const FString& MaterialPath,
+		const FString& FeatureLevel,
+		const FString& Quality);
+
+	/**
+	 * M1-4: The compile-errors list from a Material's most recent shader-map compile.
+	 * Cheaper than GetMaterialStats when you only need to know whether a material is broken.
+	 * Returns empty list on clean compile or when no shader map has been compiled yet.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static TArray<FString> GetMaterialCompileErrors(
+		const FString& MaterialPath,
+		const FString& FeatureLevel,
+		const FString& Quality);
 };
