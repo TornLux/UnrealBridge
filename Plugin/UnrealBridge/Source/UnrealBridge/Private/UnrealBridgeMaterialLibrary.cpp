@@ -41,6 +41,8 @@
 #include "Components/SceneCaptureComponent2D.h"
 #include "ImageUtils.h"
 #include "Misc/Paths.h"
+#include "AssetCompilingManager.h"
+#include "ContentStreaming.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -1391,6 +1393,25 @@ namespace BridgeMaterialImpl
 			SCC->SetShowFlagSettings(Settings);
 		}
 
+		// 1. Block until all texture builds / shader compiles / mesh builds finish.
+		//    Without this, fresh-editor captures render with placeholder / low-mip textures.
+		FAssetCompilingManager::Get().FinishAllCompilation();
+
+		// 2. Prestream the mesh component's textures to mip 0.
+		Comp->PrestreamTextures(/*Seconds=*/ 30.0f, /*bEnableStreaming=*/ true);
+
+		// 3. Warm-up capture — marks textures visible in the streaming system so the
+		//    mip chain promotes. Without this the first real capture often still reads
+		//    blurry mips on a cold scene.
+		SCC->CaptureScene();
+		FlushRenderingCommands();
+
+		// 4. Force a global streaming update with generous timeout; blocks until the
+		//    streamer catches up with the mip levels required by the just-rendered view.
+		IStreamingManager::Get().StreamAllResources(/*TimeoutSec=*/ 5.0f);
+		FlushRenderingCommands();
+
+		// 5. Real capture with everything warmed up.
 		SCC->CaptureScene();
 		FlushRenderingCommands();
 
