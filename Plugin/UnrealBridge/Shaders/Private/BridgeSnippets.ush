@@ -172,6 +172,70 @@ float BridgeValueNoise3D(float3 Pos)
 	return lerp(y0, y1, F.z);
 }
 
+//@snippet BridgeThinFilmInterference
+// @desc     Physical thin-film interference colors (oil on water / soap bubble / jewel beetle).
+//           ViewDotN: dot(PixelNormalWS, CameraVectorWS) — saturate before passing.
+//           Thickness: film thickness in nanometers (typical range 250–800 for visible rainbow).
+//           IOR: film refractive index (water ~1.33, oil ~1.45, soap ~1.35).
+//           Output is the reflected-light spectrum (brightest colors at normal incidence,
+//           shifting hue toward grazing angle). Feed to EmissiveColor or as a tint.
+// @sig      float3 BridgeThinFilmInterference(float ViewDotN, float Thickness, float IOR)
+// @fl       SM5
+// @inst     ~25
+float3 BridgeThinFilmInterference(float ViewDotN, float Thickness, float IOR)
+{
+	const float PI = 3.14159265;
+	// Refracted cos(theta_t) via Snell's law — air (n1=1) into film (n2=IOR).
+	float SinT2 = (1.0 - ViewDotN * ViewDotN) / (IOR * IOR);
+	float CosT = sqrt(max(0.0, 1.0 - SinT2));
+	// Optical path difference across the film (nm). Factor 2 = round trip.
+	float PathDiff = 2.0 * IOR * Thickness * CosT;
+	// Three representative visible wavelengths (nm): R=680, G=550, B=440.
+	float3 Lambda = float3(680.0, 550.0, 440.0);
+	// Phase per channel, +pi accounts for the 180° phase flip on reflection off a
+	// denser medium (for oil/water on glass/metal substrate).
+	float3 Phase = (2.0 * PI) * PathDiff / Lambda + PI;
+	// Intensity: cos² of half-phase difference — standard thin-film formula.
+	float3 Intensity = 0.5 + 0.5 * cos(Phase);
+	// Boost + saturate for visible rainbow.
+	return saturate(Intensity * 1.1);
+}
+
+//@snippet BridgeFBM3D
+// @desc     Fractal Brownian Motion — 4 octaves of value noise for organic / turbulent shapes.
+//           Each octave doubles frequency and halves amplitude. Output ~ [0,1].
+// @sig      float BridgeFBM3D(float3 Pos)
+// @fl       SM5
+// @inst     ~240
+float BridgeFBM3D(float3 Pos)
+{
+	float Sum = 0.0;
+	float Amp = 0.5;
+	float3 P = Pos;
+	[unroll] for (int i = 0; i < 4; ++i)
+	{
+		Sum += Amp * BridgeValueNoise3D(P);
+		P *= 2.03;  // slightly irrational ratio avoids lattice resonance
+		Amp *= 0.5;
+	}
+	return Sum;
+}
+
+//@snippet BridgeSwirledNoise3D
+// @desc     Domain-warped value noise: noise sampled at a position offset by noise — classic
+//           "fluid" / "marble" look. WarpStrength ~1-3 for subtle-to-strong swirl.
+// @sig      float BridgeSwirledNoise3D(float3 Pos, float WarpStrength)
+// @fl       SM5
+// @inst     ~260
+float BridgeSwirledNoise3D(float3 Pos, float WarpStrength)
+{
+	float3 Warp = float3(
+		BridgeValueNoise3D(Pos + float3(1.3, 2.1, 5.2)),
+		BridgeValueNoise3D(Pos + float3(7.3, 0.4, 3.9)),
+		BridgeValueNoise3D(Pos + float3(4.7, 8.1, 1.2)));
+	return BridgeValueNoise3D(Pos + (Warp - 0.5) * WarpStrength);
+}
+
 //@snippet BridgeVoronoi2D
 // @desc     2D Voronoi cellular noise — returns closest-cell distance, scaled to roughly [0,1].
 //           Cells param controls grid density (larger = tighter cells).
