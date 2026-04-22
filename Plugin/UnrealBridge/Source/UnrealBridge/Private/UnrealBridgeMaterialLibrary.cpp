@@ -1276,17 +1276,10 @@ namespace BridgeMaterialImpl
 	{
 		FImage Img;
 		Img.Init(Width, Height, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
-		FColor* Dst = reinterpret_cast<FColor*>(Img.RawData.GetData());
-		// Flip vertically on copy — same reason as the anim pose capture: GPU origin is
-		// bottom-left, PNG wants top-left.
-		const FColor* Src = Pixels.GetData();
-		for (int32 Y = 0; Y < Height; ++Y)
-		{
-			FMemory::Memcpy(
-				Dst + Y * Width,
-				Src + (Height - 1 - Y) * Width,
-				Width * sizeof(FColor));
-		}
+		// FPreviewScene's RT readback is already top-down — no flip needed here, unlike
+		// the editor-world capture in UnrealBridgeLevelLibrary where ReadPixels lands
+		// bottom-up. The preview-world render path seems to correct the Y-flip internally.
+		FMemory::Memcpy(Img.RawData.GetData(), Pixels.GetData(), Width * Height * sizeof(FColor));
 
 		FString Resolved = OutPath;
 		if (FPaths::IsRelative(Resolved))
