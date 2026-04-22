@@ -221,6 +221,30 @@ float BridgeFBM3D(float3 Pos)
 	return Sum;
 }
 
+//@snippet BridgeIQFlow3D
+// @desc     Inigo Quilez's turbulent FBM: FBM domain-warped by FBM, domain-warped
+//           again by FBM. Produces the characteristic "mixed fluid" / "oil film" /
+//           "marble swirl" look where broad flow direction is visible alongside fine
+//           turbulent detail. Expensive but visually unique.
+// @sig      float BridgeIQFlow3D(float3 Pos, float WarpStrength)
+// @fl       SM5
+// @inst     ~700
+float BridgeIQFlow3D(float3 Pos, float WarpStrength)
+{
+	// Level 1: three FBM samples of Pos produce a warp vector Q.
+	float3 Q = float3(
+		BridgeFBM3D(Pos + float3(0.0, 0.0, 0.0)),
+		BridgeFBM3D(Pos + float3(5.2, 1.3, 3.1)),
+		BridgeFBM3D(Pos + float3(2.9, 7.4, 1.8)));
+	// Level 2: three FBM samples of (Pos + strength*Q) produce a stronger warp R.
+	float3 R = float3(
+		BridgeFBM3D(Pos + WarpStrength * Q + float3(1.7, 9.2, 0.0)),
+		BridgeFBM3D(Pos + WarpStrength * Q + float3(8.3, 2.8, 5.0)),
+		BridgeFBM3D(Pos + WarpStrength * Q + float3(0.0, 4.1, 6.6)));
+	// Final: FBM sampled at Pos + strength*R.
+	return BridgeFBM3D(Pos + WarpStrength * R);
+}
+
 //@snippet BridgeSwirledNoise3D
 // @desc     Domain-warped value noise: noise sampled at a position offset by noise — classic
 //           "fluid" / "marble" look. WarpStrength ~1-3 for subtle-to-strong swirl.
