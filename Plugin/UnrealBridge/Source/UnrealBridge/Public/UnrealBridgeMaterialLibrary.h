@@ -476,6 +476,43 @@ struct FBridgeMaterialStats
 	bool bShaderMapReady = false;
 };
 
+/** Result of a material or MI asset creation (M2-1 / M2-2). */
+USTRUCT(BlueprintType)
+struct FBridgeCreateAssetResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bSuccess = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+};
+
+/** Result of adding a single material expression (M2-4). */
+USTRUCT(BlueprintType)
+struct FBridgeAddExpressionResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bSuccess = false;
+
+	/** MaterialExpressionGuid of the newly created node — pass this to connect / set-property ops. */
+	UPROPERTY(BlueprintReadOnly)
+	FGuid Guid;
+
+	/** Resolved UE class name (e.g. "MaterialExpressionConstant3Vector"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ResolvedClass;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+};
+
 /**
  * Material introspection via UnrealBridge.
  */
@@ -610,4 +647,100 @@ public:
 		float CameraPitchDeg,
 		float CameraDistance,
 		const FString& OutPngPath);
+
+	/**
+	 * M2-1: Create a new UMaterial asset at Path.
+	 * @param Path   Full content path (e.g. "/Game/Materials/M_MyMaster" — no extension).
+	 * @param Domain        "Surface" / "DeferredDecal" / "LightFunction" / "Volume" / "PostProcess" / "UI" / "RuntimeVirtualTexture".
+	 * @param ShadingModel  "DefaultLit" / "Unlit" / "Subsurface" / "PreintegratedSkin" / "ClearCoat" / "SubsurfaceProfile" / "TwoSidedFoliage" / "Hair" / "Cloth" / "Eye" / "SingleLayerWater" / "ThinTranslucent" / "FromMaterialExpression".
+	 * @param BlendMode     "Opaque" / "Masked" / "Translucent" / "Additive" / "Modulate" / "AlphaComposite" / "AlphaHoldout".
+	 * @param bTwoSided                 — usually true for foliage / skin.
+	 * @param bUseMaterialAttributes    — true if you plan to drive the single MaterialAttributes pin (layered workflow).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeCreateAssetResult CreateMaterial(
+		const FString& Path,
+		const FString& Domain,
+		const FString& ShadingModel,
+		const FString& BlendMode,
+		bool bTwoSided,
+		bool bUseMaterialAttributes);
+
+	/**
+	 * M2-2: Create a new UMaterialInstanceConstant with the given parent.
+	 * @param ParentPath    Full path to an existing UMaterial or UMaterialInstance.
+	 * @param InstancePath  Full content path for the new MI.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeCreateAssetResult CreateMaterialInstance(
+		const FString& ParentPath,
+		const FString& InstancePath);
+
+	/**
+	 * M2-4: Create a single material expression node.
+	 * @param ExpressionClass  Short name like "Constant3Vector", "ScalarParameter", "TextureSampleParameter2D",
+	 *                         or a fully-qualified "/Script/Engine.MaterialExpressionConstant3Vector" path.
+	 *                         "MaterialExpression"/"UMaterialExpression" prefix is auto-added for short names.
+	 * @param X / Y            Editor-space position (MaterialExpressionEditorX / Y).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeAddExpressionResult AddMaterialExpression(
+		const FString& MaterialPath,
+		const FString& ExpressionClass,
+		int32 X,
+		int32 Y);
+
+	/**
+	 * M2-5: Connect one expression's output pin to another's input pin.
+	 * Pin names are the names reported by get_material_graph (input_names / output_names) —
+	 * "" or "None" resolves to the default pin.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool ConnectMaterialExpressions(
+		const FString& MaterialPath,
+		FGuid SrcGuid, const FString& SrcOutputName,
+		FGuid DstGuid, const FString& DstInputName);
+
+	/**
+	 * M2-5: Clear one input pin (dst expression, named input). Returns true if a connection existed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool DisconnectMaterialInput(
+		const FString& MaterialPath,
+		FGuid DstGuid, const FString& DstInputName);
+
+	/**
+	 * M2-6: Connect an expression to a main material property ("BaseColor", "Metallic", "Normal", ...).
+	 * Property name matches get_material_graph's dst_property_name values (without "MP_" prefix).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool ConnectMaterialOutput(
+		const FString& MaterialPath,
+		FGuid SrcGuid, const FString& SrcOutputName,
+		const FString& PropertyName);
+
+	/**
+	 * M2-6: Clear a main material property wire.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool DisconnectMaterialOutput(
+		const FString& MaterialPath,
+		const FString& PropertyName);
+
+	/**
+	 * M2-4 companion: Delete an expression by guid. Wires to/from it go away with it.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool DeleteMaterialExpression(
+		const FString& MaterialPath,
+		FGuid Guid);
+
+	/**
+	 * M2-11: Recompile the material and optionally save the asset.
+	 * Blocks until the shader map is ready (synchronous path).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool CompileMaterial(
+		const FString& MaterialPath,
+		bool bSaveAfter);
 };

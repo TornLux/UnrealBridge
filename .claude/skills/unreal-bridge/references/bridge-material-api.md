@@ -488,3 +488,161 @@ ok = unreal.UnrealBridgeMaterialLibrary.preview_material_complexity(
 ```
 
 Returns same contract as `preview_material`.
+
+---
+
+# Write operations (M2)
+
+All write ops mutate the asset in memory and mark its package dirty. Call `compile_material(path, save=True)` to flush the changes to disk and trigger shader compilation.
+
+Connections between expressions reference **guids and pin names** (not indices). Pin names come from `get_material_graph` → `input_names` / `output_names`. `""` and `"None"` both mean the default anonymous pin — if an expression has a single output / input, pass empty and it resolves to index 0.
+
+## create_material(path, domain, shading_model, blend_mode, two_sided, use_material_attributes) -> FBridgeCreateAssetResult
+
+**M2-1.** Create a new `UMaterial` asset.
+
+```python
+r = unreal.UnrealBridgeMaterialLibrary.create_material(
+    "/Game/Materials/M_NewMaster",
+    domain="Surface",
+    shading_model="DefaultLit",
+    blend_mode="Opaque",
+    two_sided=False,
+    use_material_attributes=False)
+if not r.success:
+    raise RuntimeError(r.error)
+print("created:", r.path)
+```
+
+| Param | Accepted values |
+|---|---|
+| `domain` | `"Surface"` / `"DeferredDecal"` / `"LightFunction"` / `"Volume"` / `"PostProcess"` / `"UI"` / `"RuntimeVirtualTexture"` |
+| `shading_model` | `"DefaultLit"` / `"Unlit"` / `"Subsurface"` / `"PreintegratedSkin"` / `"ClearCoat"` / `"SubsurfaceProfile"` / `"TwoSidedFoliage"` / `"Hair"` / `"Cloth"` / `"Eye"` / `"SingleLayerWater"` / `"ThinTranslucent"` / `"FromMaterialExpression"` |
+| `blend_mode` | `"Opaque"` / `"Masked"` / `"Translucent"` / `"Additive"` / `"Modulate"` / `"AlphaComposite"` / `"AlphaHoldout"` |
+
+### FBridgeCreateAssetResult fields
+| Field | Type | Description |
+|---|---|---|
+| `success` | bool | True on successful creation |
+| `path` | str | Full object path of the new asset (populated on success) |
+| `error` | str | Human-readable error message on failure |
+
+Fails if the path is already occupied — delete the existing asset first (`unreal.EditorAssetLibrary.delete_asset(path)`) or pick a fresh name.
+
+---
+
+## create_material_instance(parent_path, instance_path) -> FBridgeCreateAssetResult
+
+**M2-2.** Create a `UMaterialInstanceConstant` with the given parent (itself a master or another MI).
+
+```python
+unreal.UnrealBridgeMaterialLibrary.create_material_instance(
+    "/Game/Materials/M_NewMaster",
+    "/Game/Materials/MI_Variant_Red")
+```
+
+Same `FBridgeCreateAssetResult` contract as `create_material`.
+
+---
+
+## add_material_expression(material_path, expression_class, x, y) -> FBridgeAddExpressionResult
+
+**M2-4.** Add a single expression node.
+
+`expression_class` accepts three forms (all equivalent):
+- Short name: `"Constant3Vector"`, `"ScalarParameter"`, `"TextureSampleParameter2D"` (prefix auto-added)
+- Prefixed: `"MaterialExpressionConstant3Vector"` / `"UMaterialExpressionConstant3Vector"`
+- Full path: `"/Script/Engine.MaterialExpressionConstant3Vector"`
+
+```python
+r = unreal.UnrealBridgeMaterialLibrary.add_material_expression(
+    mat_path, "Constant3Vector", x=-300, y=-100)
+print(r.guid)     # stable MaterialExpressionGuid — pass this to connect ops
+```
+
+### FBridgeAddExpressionResult fields
+| Field | Type | Description |
+|---|---|---|
+| `success` | bool | |
+| `guid` | FGuid | `MaterialExpressionGuid` of the new node — stable across save/load |
+| `resolved_class` | str | The actual UE class that was instantiated (confirms the name resolved correctly) |
+| `error` | str | |
+
+---
+
+## connect_material_expressions(material_path, src_guid, src_output, dst_guid, dst_input) -> bool
+
+**M2-5.** Connect output pin `src_output` of one expression to input pin `dst_input` of another. Pin names are from `get_material_graph`. Empty string or `"None"` = default.
+
+```python
+L.connect_material_expressions(mat, tex.guid, "RGB", lerp.guid, "A")
+```
+
+Returns False if either guid is missing or the pin names don't resolve.
+
+---
+
+## disconnect_material_input(material_path, dst_guid, dst_input) -> bool
+
+**M2-5.** Clear one input wire on an expression. Returns True if a connection existed and was cleared.
+
+---
+
+## connect_material_output(material_path, src_guid, src_output, property_name) -> bool
+
+**M2-6.** Wire an expression into one of the main material outputs.
+
+`property_name`: `"BaseColor"` / `"Metallic"` / `"Roughness"` / `"Normal"` / `"EmissiveColor"` / `"Opacity"` / `"OpacityMask"` / `"WorldPositionOffset"` / `"Refraction"` / `"AmbientOcclusion"` / `"PixelDepthOffset"` / `"SubsurfaceColor"` / `"Tangent"` / `"Anisotropy"` / `"FrontMaterial"` / `"MaterialAttributes"` / `"CustomizedUVs0..7"` / `"CustomData0..1"` — same set that shows up in `get_material_graph` → `output_connections` → `dst_property_name`.
+
+```python
+L.connect_material_output(mat, basecolor.guid, "", "BaseColor")
+```
+
+---
+
+## disconnect_material_output(material_path, property_name) -> bool
+
+**M2-6.** Clear the wire to a main output. Returns True if a connection existed.
+
+---
+
+## delete_material_expression(material_path, guid) -> bool
+
+**M2-4 companion.** Remove a node by guid. Any wires to/from it go away with it (including main-output wires that sourced from the deleted node).
+
+---
+
+## compile_material(material_path, save_after) -> bool
+
+**M2-11.** Force a recompile of the material's shader map and optionally save the asset.
+
+```python
+L.compile_material(mat, save_after=True)
+errs = L.get_material_compile_errors(mat, "Default", "Default")
+assert not errs, errs
+```
+
+The call blocks until asset compilation is complete (`FAssetCompilingManager::FinishAllCompilation`). On completion, `get_material_stats` returns the new instruction counts.
+
+---
+
+### End-to-end example: new PBR master from scratch
+
+```python
+L = unreal.UnrealBridgeMaterialLibrary
+path = "/Game/Materials/M_Metal_Test"
+
+L.create_material(path, "Surface", "DefaultLit", "Opaque", False, False)
+
+base = L.add_material_expression(path, "Constant3Vector", -400, -100)
+rough = L.add_material_expression(path, "ScalarParameter", -400, 50)
+metal = L.add_material_expression(path, "ScalarParameter", -400, 200)
+
+L.connect_material_output(path, base.guid,  "", "BaseColor")
+L.connect_material_output(path, rough.guid, "", "Roughness")
+L.connect_material_output(path, metal.guid, "", "Metallic")
+
+L.compile_material(path, save_after=True)
+```
+
+Note: `Constant3Vector` defaults to `(0,0,0)`; `ScalarParameter` defaults to `0`. Use `set_material_expression_property` (M2-7, Batch 2) to set meaningful defaults — otherwise you'll get a black roughness-0 / metallic-0 material (mirror-black). `ScalarParameter` / `VectorParameter` also expose their values as MI overrides after compile, so you can tune per-instance without re-editing the master.

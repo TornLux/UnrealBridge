@@ -43,6 +43,14 @@
 #include "Misc/Paths.h"
 #include "AssetCompilingManager.h"
 #include "ContentStreaming.h"
+#include "MaterialEditingLibrary.h"
+#include "Factories/MaterialFactoryNew.h"
+#include "Factories/MaterialInstanceConstantFactoryNew.h"
+#include "AssetToolsModule.h"
+#include "IAssetTools.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "PackageTools.h"
+#include "FileHelpers.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -1436,6 +1444,189 @@ namespace BridgeMaterialImpl
 	}
 }
 
+namespace BridgeMaterialImpl
+{
+	// ─── Enum parsers for write ops ───────────────────────────────
+
+	static bool ParseDomain(const FString& Str, EMaterialDomain& Out)
+	{
+		const FString S = Str.ToLower();
+		if (S == TEXT("surface") || S.IsEmpty()) { Out = MD_Surface; return true; }
+		if (S == TEXT("deferreddecal"))          { Out = MD_DeferredDecal; return true; }
+		if (S == TEXT("lightfunction"))          { Out = MD_LightFunction; return true; }
+		if (S == TEXT("volume"))                 { Out = MD_Volume; return true; }
+		if (S == TEXT("postprocess"))            { Out = MD_PostProcess; return true; }
+		if (S == TEXT("ui"))                     { Out = MD_UI; return true; }
+		if (S == TEXT("runtimevirtualtexture"))  { Out = MD_RuntimeVirtualTexture; return true; }
+		return false;
+	}
+
+	static bool ParseBlendMode(const FString& Str, EBlendMode& Out)
+	{
+		const FString S = Str.ToLower();
+		if (S == TEXT("opaque") || S.IsEmpty()) { Out = BLEND_Opaque; return true; }
+		if (S == TEXT("masked"))                { Out = BLEND_Masked; return true; }
+		if (S == TEXT("translucent"))           { Out = BLEND_Translucent; return true; }
+		if (S == TEXT("additive"))              { Out = BLEND_Additive; return true; }
+		if (S == TEXT("modulate"))              { Out = BLEND_Modulate; return true; }
+		if (S == TEXT("alphacomposite"))        { Out = BLEND_AlphaComposite; return true; }
+		if (S == TEXT("alphaholdout"))          { Out = BLEND_AlphaHoldout; return true; }
+		return false;
+	}
+
+	static bool ParseShadingModel(const FString& Str, EMaterialShadingModel& Out)
+	{
+		const FString S = Str.ToLower();
+		if (S == TEXT("defaultlit") || S.IsEmpty()) { Out = MSM_DefaultLit; return true; }
+		if (S == TEXT("unlit"))                     { Out = MSM_Unlit; return true; }
+		if (S == TEXT("subsurface"))                { Out = MSM_Subsurface; return true; }
+		if (S == TEXT("preintegratedskin"))         { Out = MSM_PreintegratedSkin; return true; }
+		if (S == TEXT("clearcoat"))                 { Out = MSM_ClearCoat; return true; }
+		if (S == TEXT("subsurfaceprofile"))         { Out = MSM_SubsurfaceProfile; return true; }
+		if (S == TEXT("twosidedfoliage"))           { Out = MSM_TwoSidedFoliage; return true; }
+		if (S == TEXT("hair"))                      { Out = MSM_Hair; return true; }
+		if (S == TEXT("cloth"))                     { Out = MSM_Cloth; return true; }
+		if (S == TEXT("eye"))                       { Out = MSM_Eye; return true; }
+		if (S == TEXT("singlelayerwater"))          { Out = MSM_SingleLayerWater; return true; }
+		if (S == TEXT("thintranslucent"))           { Out = MSM_ThinTranslucent; return true; }
+		if (S == TEXT("strata"))                    { Out = MSM_Strata; return true; }
+		if (S == TEXT("frommaterialexpression"))    { Out = MSM_FromMaterialExpression; return true; }
+		return false;
+	}
+
+	static bool ParseMaterialProperty(const FString& Str, EMaterialProperty& Out)
+	{
+		UEnum* PropEnum = StaticEnum<EMaterialProperty>();
+		if (!PropEnum)
+		{
+			return false;
+		}
+		// Try "MP_BaseColor" first, then the stripped "BaseColor" form.
+		int64 V = PropEnum->GetValueByName(FName(*FString::Printf(TEXT("MP_%s"), *Str)));
+		if (V == INDEX_NONE)
+		{
+			V = PropEnum->GetValueByName(FName(*Str));
+		}
+		if (V == INDEX_NONE || V == (int64)MP_MAX)
+		{
+			return false;
+		}
+		Out = (EMaterialProperty)V;
+		return true;
+	}
+
+	// ─── Class / path resolution ──────────────────────────────────
+
+	static UClass* ResolveExpressionClass(const FString& PathOrShortName)
+	{
+		if (PathOrShortName.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		// Fully-qualified path → LoadClass.
+		if (PathOrShortName.StartsWith(TEXT("/")))
+		{
+			return LoadClass<UMaterialExpression>(nullptr, *PathOrShortName);
+		}
+
+		// Try the name as-is, then with the standard prefixes prepended.
+		const FString Candidates[] = {
+			PathOrShortName,
+			FString::Printf(TEXT("MaterialExpression%s"), *PathOrShortName),
+			FString::Printf(TEXT("UMaterialExpression%s"), *PathOrShortName),
+		};
+		for (const FString& Name : Candidates)
+		{
+			if (UClass* C = FindFirstObject<UClass>(*Name, EFindFirstObjectOptions::NativeFirst))
+			{
+				if (C->IsChildOf(UMaterialExpression::StaticClass()) &&
+					!C->HasAnyClassFlags(CLASS_Abstract))
+				{
+					return C;
+				}
+			}
+		}
+		return nullptr;
+	}
+
+	static bool SplitAssetPath(const FString& Path, FString& OutPackagePath, FString& OutAssetName)
+	{
+		int32 LastSlash = INDEX_NONE;
+		if (!Path.FindLastChar(TEXT('/'), LastSlash) || LastSlash == 0)
+		{
+			return false;
+		}
+		OutPackagePath = Path.Left(LastSlash);
+		OutAssetName = Path.Mid(LastSlash + 1);
+		// Strip trailing ".Name" form if present.
+		int32 Dot = INDEX_NONE;
+		if (OutAssetName.FindChar(TEXT('.'), Dot))
+		{
+			OutAssetName = OutAssetName.Left(Dot);
+		}
+		return !OutAssetName.IsEmpty() && !OutPackagePath.IsEmpty();
+	}
+
+	// ─── Expression lookup by guid ────────────────────────────────
+
+	static UMaterialExpression* FindExpressionByGuid(UMaterial* Material, const FGuid& Guid)
+	{
+		if (!Material || !Guid.IsValid())
+		{
+			return nullptr;
+		}
+		for (const TObjectPtr<UMaterialExpression>& ExprPtr : Material->GetExpressions())
+		{
+			UMaterialExpression* Expr = ExprPtr.Get();
+			if (Expr && Expr->MaterialExpressionGuid == Guid)
+			{
+				return Expr;
+			}
+		}
+		return nullptr;
+	}
+
+	// ─── Pin name normalization + lookup ──────────────────────────
+
+	static FString NormalizePinName(const FString& Name)
+	{
+		// "" and "None" both mean the default anonymous output — CE treats empty as default.
+		if (Name.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+		{
+			return FString();
+		}
+		return Name;
+	}
+
+	/** Find the index of an input pin by name on an expression, or INDEX_NONE. */
+	static int32 FindInputIndexByName(UMaterialExpression* Expr, const FString& Name)
+	{
+		if (!Expr)
+		{
+			return INDEX_NONE;
+		}
+		const FString Target = NormalizePinName(Name);
+		int32 i = 0;
+		for (FExpressionInputIterator It{Expr}; It; ++It)
+		{
+			const FName Got = Expr->GetInputName(It.Index);
+			const FString GotStr = NormalizePinName(Got.ToString());
+			if (GotStr.Equals(Target, ESearchCase::IgnoreCase))
+			{
+				return It.Index;
+			}
+			++i;
+		}
+		// If the target is empty (default), fall back to index 0 when there's exactly one input.
+		if (Target.IsEmpty() && i == 1)
+		{
+			return 0;
+		}
+		return INDEX_NONE;
+	}
+}
+
 bool UUnrealBridgeMaterialLibrary::PreviewMaterial(
 	const FString& MaterialPath,
 	const FString& Mesh,
@@ -1466,6 +1657,335 @@ bool UUnrealBridgeMaterialLibrary::PreviewMaterialComplexity(
 		MaterialPath, Mesh, Lighting, Resolution,
 		CameraYawDeg, CameraPitchDeg, CameraDistance,
 		OutPngPath, /*bShaderComplexity=*/ true);
+}
+
+// ─── M2-1 / M2-2: asset creation ──────────────────────────────────
+
+FBridgeCreateAssetResult UUnrealBridgeMaterialLibrary::CreateMaterial(
+	const FString& Path,
+	const FString& Domain,
+	const FString& ShadingModel,
+	const FString& BlendMode,
+	bool bTwoSided,
+	bool bUseMaterialAttributes)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeCreateAssetResult Result;
+
+	FString PackagePath, AssetName;
+	if (!SplitAssetPath(Path, PackagePath, AssetName))
+	{
+		Result.Error = FString::Printf(TEXT("invalid path '%s' — expected /Game/Folder/AssetName"), *Path);
+		return Result;
+	}
+
+	EMaterialDomain DomainVal;
+	if (!ParseDomain(Domain, DomainVal))
+	{
+		Result.Error = FString::Printf(TEXT("unknown domain '%s'"), *Domain);
+		return Result;
+	}
+
+	EBlendMode BlendVal;
+	if (!ParseBlendMode(BlendMode, BlendVal))
+	{
+		Result.Error = FString::Printf(TEXT("unknown blend mode '%s'"), *BlendMode);
+		return Result;
+	}
+
+	EMaterialShadingModel ShadingVal;
+	if (!ParseShadingModel(ShadingModel, ShadingVal))
+	{
+		Result.Error = FString::Printf(TEXT("unknown shading model '%s'"), *ShadingModel);
+		return Result;
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	UMaterialFactoryNew* Factory = NewObject<UMaterialFactoryNew>();
+	UObject* NewAsset = AssetTools.CreateAsset(AssetName, PackagePath, UMaterial::StaticClass(), Factory);
+	UMaterial* Material = Cast<UMaterial>(NewAsset);
+	if (!Material)
+	{
+		Result.Error = FString::Printf(TEXT("AssetTools.CreateAsset returned null for %s/%s — path may already be occupied"),
+			*PackagePath, *AssetName);
+		return Result;
+	}
+
+	Material->MaterialDomain = DomainVal;
+	Material->BlendMode = BlendVal;
+	Material->SetShadingModel(ShadingVal);
+	Material->TwoSided = bTwoSided;
+	Material->bUseMaterialAttributes = bUseMaterialAttributes;
+
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+
+	Result.bSuccess = true;
+	Result.Path = Material->GetPathName();
+	return Result;
+}
+
+FBridgeCreateAssetResult UUnrealBridgeMaterialLibrary::CreateMaterialInstance(
+	const FString& ParentPath,
+	const FString& InstancePath)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeCreateAssetResult Result;
+
+	UMaterialInterface* Parent = LoadObject<UMaterialInterface>(nullptr, *ParentPath);
+	if (!Parent)
+	{
+		Result.Error = FString::Printf(TEXT("could not load parent material '%s'"), *ParentPath);
+		return Result;
+	}
+
+	FString PackagePath, AssetName;
+	if (!SplitAssetPath(InstancePath, PackagePath, AssetName))
+	{
+		Result.Error = FString::Printf(TEXT("invalid instance path '%s'"), *InstancePath);
+		return Result;
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	UMaterialInstanceConstantFactoryNew* Factory = NewObject<UMaterialInstanceConstantFactoryNew>();
+	Factory->InitialParent = Parent;
+
+	UObject* NewAsset = AssetTools.CreateAsset(AssetName, PackagePath, UMaterialInstanceConstant::StaticClass(), Factory);
+	UMaterialInstanceConstant* MI = Cast<UMaterialInstanceConstant>(NewAsset);
+	if (!MI)
+	{
+		Result.Error = FString::Printf(TEXT("AssetTools.CreateAsset returned null for %s/%s"),
+			*PackagePath, *AssetName);
+		return Result;
+	}
+
+	// Factory should have wired Parent; ensure it.
+	if (!MI->Parent)
+	{
+		MI->SetParentEditorOnly(Parent);
+	}
+	MI->PostEditChange();
+	MI->MarkPackageDirty();
+
+	Result.bSuccess = true;
+	Result.Path = MI->GetPathName();
+	return Result;
+}
+
+// ─── M2-4: expression factory ─────────────────────────────────────
+
+FBridgeAddExpressionResult UUnrealBridgeMaterialLibrary::AddMaterialExpression(
+	const FString& MaterialPath,
+	const FString& ExpressionClass,
+	int32 X,
+	int32 Y)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeAddExpressionResult Result;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		Result.Error = FString::Printf(TEXT("could not load material '%s'"), *MaterialPath);
+		return Result;
+	}
+
+	UClass* Cls = ResolveExpressionClass(ExpressionClass);
+	if (!Cls)
+	{
+		Result.Error = FString::Printf(TEXT("could not resolve expression class '%s'"), *ExpressionClass);
+		return Result;
+	}
+
+	UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(Material, Cls, X, Y);
+	if (!Expr)
+	{
+		Result.Error = FString::Printf(TEXT("CreateMaterialExpression returned null for class %s"), *Cls->GetName());
+		return Result;
+	}
+
+	// Ensure the new node carries a stable guid (required so connections can reference it).
+	if (!Expr->MaterialExpressionGuid.IsValid())
+	{
+		Expr->MaterialExpressionGuid = FGuid::NewGuid();
+	}
+
+	Material->MarkPackageDirty();
+
+	Result.bSuccess = true;
+	Result.Guid = Expr->MaterialExpressionGuid;
+	Result.ResolvedClass = Cls->GetName();
+	return Result;
+}
+
+// ─── M2-5: expression ↔ expression wiring ─────────────────────────
+
+bool UUnrealBridgeMaterialLibrary::ConnectMaterialExpressions(
+	const FString& MaterialPath,
+	FGuid SrcGuid, const FString& SrcOutputName,
+	FGuid DstGuid, const FString& DstInputName)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return false;
+
+	UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
+	UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+	if (!Src || !Dst)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: ConnectMaterialExpressions: guid not found (src=%s dst=%s)"),
+			*SrcGuid.ToString(), *DstGuid.ToString());
+		return false;
+	}
+
+	const FString FromOut = NormalizePinName(SrcOutputName);
+	const FString ToIn = NormalizePinName(DstInputName);
+
+	const bool bOK = UMaterialEditingLibrary::ConnectMaterialExpressions(Src, FromOut, Dst, ToIn);
+	if (bOK)
+	{
+		Material->MarkPackageDirty();
+	}
+	return bOK;
+}
+
+bool UUnrealBridgeMaterialLibrary::DisconnectMaterialInput(
+	const FString& MaterialPath,
+	FGuid DstGuid, const FString& DstInputName)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return false;
+
+	UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+	if (!Dst) return false;
+
+	const int32 Idx = FindInputIndexByName(Dst, DstInputName);
+	if (Idx == INDEX_NONE) return false;
+
+	FExpressionInput* Input = Dst->GetInput(Idx);
+	if (!Input || !Input->Expression)
+	{
+		return false;
+	}
+
+	Input->Expression = nullptr;
+	Input->OutputIndex = 0;
+
+	Dst->Modify();
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+	return true;
+}
+
+// ─── M2-6: main-output wiring ─────────────────────────────────────
+
+bool UUnrealBridgeMaterialLibrary::ConnectMaterialOutput(
+	const FString& MaterialPath,
+	FGuid SrcGuid, const FString& SrcOutputName,
+	const FString& PropertyName)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return false;
+
+	UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
+	if (!Src)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: ConnectMaterialOutput: src guid not found (%s)"),
+			*SrcGuid.ToString());
+		return false;
+	}
+
+	EMaterialProperty Prop;
+	if (!ParseMaterialProperty(PropertyName, Prop))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: ConnectMaterialOutput: unknown property '%s'"), *PropertyName);
+		return false;
+	}
+
+	const bool bOK = UMaterialEditingLibrary::ConnectMaterialProperty(Src, NormalizePinName(SrcOutputName), Prop);
+	if (bOK)
+	{
+		Material->MarkPackageDirty();
+	}
+	return bOK;
+}
+
+bool UUnrealBridgeMaterialLibrary::DisconnectMaterialOutput(
+	const FString& MaterialPath,
+	const FString& PropertyName)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return false;
+
+	EMaterialProperty Prop;
+	if (!ParseMaterialProperty(PropertyName, Prop))
+	{
+		return false;
+	}
+
+	FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
+	if (!Input || !Input->Expression)
+	{
+		return false;
+	}
+
+	Input->Expression = nullptr;
+	Input->OutputIndex = 0;
+
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+	return true;
+}
+
+// ─── M2-4 companion: delete ───────────────────────────────────────
+
+bool UUnrealBridgeMaterialLibrary::DeleteMaterialExpression(
+	const FString& MaterialPath,
+	FGuid Guid)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return false;
+
+	UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
+	if (!Expr) return false;
+
+	UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expr);
+	Material->MarkPackageDirty();
+	return true;
+}
+
+// ─── M2-11: compile ───────────────────────────────────────────────
+
+bool UUnrealBridgeMaterialLibrary::CompileMaterial(
+	const FString& MaterialPath,
+	bool bSaveAfter)
+{
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return false;
+
+	UMaterialEditingLibrary::RecompileMaterial(Material);
+	FAssetCompilingManager::Get().FinishAllCompilation();
+
+	if (bSaveAfter)
+	{
+		TArray<UPackage*> Pkgs;
+		Pkgs.Add(Material->GetPackage());
+		UEditorLoadingAndSavingUtils::SavePackages(Pkgs, /*bOnlyDirty=*/ false);
+	}
+	return true;
 }
 
 TArray<FString> UUnrealBridgeMaterialLibrary::GetMaterialCompileErrors(
