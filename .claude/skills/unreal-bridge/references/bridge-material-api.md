@@ -739,3 +739,140 @@ Returns the new comment's `MaterialExpressionGuid`, invalid GUID (all-zero) on f
 **M2-8.** Add a `MaterialExpressionReroute` — a transparent single-input / single-output knot used to clean up wire routing (especially useful alongside `auto_layout_material_graph`, M2-9).
 
 Returns the new reroute's `MaterialExpressionGuid`.
+
+---
+
+## create_material_function(path, description, expose_to_library, library_category) -> FBridgeCreateAssetResult
+
+**M2-3.** Create an empty `UMaterialFunction` asset. Populate it later with function-input / function-output / other expression nodes.
+
+```python
+r = L.create_material_function(
+    "/Game/Materials/MF_BlendNormals",
+    description="Detail normal blend helper",
+    expose_to_library=True,
+    library_category="Bridge/Normals")
+```
+
+Same `FBridgeCreateAssetResult` contract as `create_material`.
+
+---
+
+## apply_material_graph_ops(material_path, ops, compile) -> FBridgeMaterialGraphOpResult
+
+**M2-10.** Apply an ordered batch of graph ops in a single call with `$N` back-references to previously-created nodes. Dramatically reduces round-trips when generating template graphs — a 30-node PBR master can ship in one call.
+
+```python
+def op(kind, **kw):
+    o = unreal.BridgeMaterialGraphOp()
+    o.op = kind
+    # UE Python renames UPROPERTY 'Property' to attr 'property_' (Python builtin clash).
+    rename = {"property": "property_"}
+    for k, v in kw.items():
+        setattr(o, rename.get(k, k), v)
+    return o
+
+ops = [
+    op("add", class_name="Constant3Vector", x=-600, y=-100),           # → $0
+    op("set_prop", dst_ref="$0", property="Constant",
+       value="(R=0.78,G=0.45,B=0.20,A=1.0)"),
+    op("add", class_name="ScalarParameter", x=-600, y=60),             # → $2
+    op("set_prop", dst_ref="$2", property="ParameterName", value="Roughness"),
+    op("set_prop", dst_ref="$2", property="DefaultValue", value="0.35"),
+    op("connect_out", src_ref="$0", src_output="", property="BaseColor"),
+    op("connect_out", src_ref="$2", src_output="", property="Roughness"),
+    op("comment", x=-650, y=-150, width=260, height=260,
+       text="PBR core", color=unreal.LinearColor(0.2,0.7,1.0,0.4)),
+]
+r = L.apply_material_graph_ops(mat, ops, compile=True)
+if not r.success:
+    raise RuntimeError(f"op {r.failed_at_index}: {r.error}")
+```
+
+Supported ops:
+
+| Op | Required fields | Result |
+|---|---|---|
+| `"add"` | `class_name`, `x`, `y` | new node guid |
+| `"comment"` | `x`, `y`, `width`, `height`, `text`, `color` | new comment guid |
+| `"reroute"` | `x`, `y` | new reroute guid |
+| `"connect"` | `src_ref`, `src_output`, `dst_ref`, `dst_input` | — |
+| `"connect_out"` | `src_ref`, `src_output`, `property` | — |
+| `"disconnect_in"` | `dst_ref`, `dst_input` | — |
+| `"disconnect_out"` | `property` | — |
+| `"set_prop"` | `dst_ref`, `property`, `value` (ImportText fmt) | — |
+| `"delete"` | `dst_ref` | — |
+
+References in `src_ref` / `dst_ref`:
+- `"$N"` — back-reference to the guid produced by op N (0-based index into the same batch)
+- A literal guid string — targets an existing node not created in this batch
+
+If `compile=True`, runs `compile_material` (sync, blocks on shader compile) after all ops succeed.
+
+### FBridgeMaterialGraphOpResult fields
+| Field | Type | Description |
+|---|---|---|
+| `success` | bool | All ops applied |
+| `ops_applied` | int | Number of ops that ran before success or failure |
+| `guids` | list[FGuid] | Same length as input. Each index holds the node guid for `add`/`comment`/`reroute` ops; invalid (all-zero) guid otherwise |
+| `failed_at_index` | int | Index of the first failed op, or -1 on success |
+| `error` | str | Human-readable failure message |
+
+Ops are executed in order, and failure at index N leaves ops 0..N-1 applied. Re-run the batch after fixing the offending op — existing nodes persist (apply_ops is not transactional).
+
+### Python attribute name gotcha
+UE's Python bindings rename UPROPERTY `Property` → attribute `property_` (trailing underscore) because `property` is a Python builtin. When setting ops programmatically, use `o.property_ = "BaseColor"`, not `o.property`.
+
+---
+
+## auto_layout_material_graph(material_path, column_spacing, row_spacing) -> int
+
+**M2-9.** Topologically arrange all expressions: column = BFS distance from the nearest main-output wire, row = ordered within the column. Comments are left alone (their bounds are user-authored). Disconnected / dangling expressions go to a far-left "limbo" column.
+
+```python
+moved = L.auto_layout_material_graph(mat, column_spacing=260, row_spacing=140)
+print(f"{moved} nodes repositioned")
+```
+
+Defaults: column 260 px, row 140 px if either arg is ≤0. Returns the count of repositioned expressions.
+
+### Notes
+- **Does not recompile** — positions are editor-only metadata; the material resource is *not* invalidated (this is intentional — `PostEditChange` would force a recompile and temporarily fall back to DefaultMaterial during rendering).
+- **Output-nearest = column 0** — the main outputs are conceptually at column `-1`; column-0 expressions are directly wired to `BaseColor` / `Metallic` / etc.; column-1 expressions feed column-0; and so on.
+- **Limbo column** — unreachable nodes (no path to a main output) end up at `MaxDepth + 2` so they don't overlap the main flow.
+
+---
+
+## snapshot_material_graph_json(material_path) -> str
+
+**M2-12.** Produce a deterministic JSON snapshot — nodes sorted by guid, connections sorted by source/destination keys, main outputs sorted by property — suitable for stable diffing across edits.
+
+```python
+snap_before = L.snapshot_material_graph_json(mat)
+# ... make edits ...
+snap_after = L.snapshot_material_graph_json(mat)
+report = L.diff_material_graph_snapshots(snap_before, snap_after)
+print(report)
+```
+
+Schema:
+```json
+{
+  "nodes": [ {"guid":..., "class":..., "x":..., "y":..., "desc":..., "key_props":..., "inputs":[...], "outputs":[...]}, ...],
+  "connections": [ {"src":..., "src_out":..., "dst":..., "dst_in":...}, ... ],
+  "outputs": [ {"property":..., "src":..., "src_out":...}, ... ]
+}
+```
+
+---
+
+## diff_material_graph_snapshots(before_json, after_json) -> str
+
+**M2-12.** Compare two snapshots and return a human-readable text diff.
+
+Line prefixes:
+- `+ node / wire / out` — added
+- `- node / wire / out` — removed
+- `* node` — same node, key_props changed (parameter default edited, texture swapped, etc.)
+- `~ node` — same node, position moved
+- `(no changes)` — snapshots identical

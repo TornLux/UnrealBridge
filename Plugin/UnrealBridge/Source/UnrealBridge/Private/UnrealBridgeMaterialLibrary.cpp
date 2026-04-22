@@ -44,6 +44,12 @@
 #include "Misc/Paths.h"
 #include "AssetCompilingManager.h"
 #include "ContentStreaming.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
+#include "Policies/CondensedJsonPrintPolicy.h"
+#include "Factories/MaterialFunctionFactoryNew.h"
 #include "MaterialEditingLibrary.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
@@ -2111,6 +2117,667 @@ FGuid UUnrealBridgeMaterialLibrary::AddMaterialReroute(
 }
 
 // ─── M2-11: compile ───────────────────────────────────────────────
+
+// ─── M2-3: MaterialFunction asset creation ────────────────────────
+
+FBridgeCreateAssetResult UUnrealBridgeMaterialLibrary::CreateMaterialFunction(
+	const FString& Path,
+	const FString& Description,
+	bool bExposeToLibrary,
+	const FString& LibraryCategory)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeCreateAssetResult Result;
+
+	FString PackagePath, AssetName;
+	if (!SplitAssetPath(Path, PackagePath, AssetName))
+	{
+		Result.Error = FString::Printf(TEXT("invalid path '%s'"), *Path);
+		return Result;
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	UMaterialFunctionFactoryNew* Factory = NewObject<UMaterialFunctionFactoryNew>();
+	UObject* NewAsset = AssetTools.CreateAsset(AssetName, PackagePath, UMaterialFunction::StaticClass(), Factory);
+	UMaterialFunction* MF = Cast<UMaterialFunction>(NewAsset);
+	if (!MF)
+	{
+		Result.Error = FString::Printf(TEXT("AssetTools.CreateAsset returned null for %s/%s"),
+			*PackagePath, *AssetName);
+		return Result;
+	}
+
+	MF->Description = Description;
+	MF->bExposeToLibrary = bExposeToLibrary;
+	if (!LibraryCategory.IsEmpty())
+	{
+		MF->LibraryCategoriesText.Add(FText::FromString(LibraryCategory));
+	}
+
+	MF->PostEditChange();
+	MF->MarkPackageDirty();
+
+	Result.bSuccess = true;
+	Result.Path = MF->GetPathName();
+	return Result;
+}
+
+// ─── M2-10: batched graph ops ─────────────────────────────────────
+
+namespace BridgeMaterialImpl
+{
+	static bool ResolveRef(const FString& Ref, const TArray<FGuid>& OpGuids, FGuid& Out)
+	{
+		if (Ref.IsEmpty())
+		{
+			return false;
+		}
+		if (Ref.StartsWith(TEXT("$")))
+		{
+			const int32 Idx = FCString::Atoi(*Ref + 1);
+			if (!OpGuids.IsValidIndex(Idx))
+			{
+				return false;
+			}
+			Out = OpGuids[Idx];
+			return Out.IsValid();
+		}
+		return FGuid::Parse(Ref, Out);
+	}
+}
+
+FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::ApplyMaterialGraphOps(
+	const FString& MaterialPath,
+	const TArray<FBridgeMaterialGraphOp>& Ops,
+	bool bCompile)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialGraphOpResult Result;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		Result.Error = FString::Printf(TEXT("could not load material '%s'"), *MaterialPath);
+		return Result;
+	}
+
+	Result.Guids.SetNum(Ops.Num());
+
+	auto Fail = [&](int32 Idx, const FString& Msg) -> FBridgeMaterialGraphOpResult&
+	{
+		Result.FailedAtIndex = Idx;
+		Result.Error = Msg;
+		return Result;
+	};
+
+	for (int32 i = 0; i < Ops.Num(); ++i)
+	{
+		const FBridgeMaterialGraphOp& O = Ops[i];
+		const FString Op = O.Op.ToLower();
+
+		if (Op == TEXT("add"))
+		{
+			UClass* Cls = ResolveExpressionClass(O.ClassName);
+			if (!Cls) return Fail(i, FString::Printf(TEXT("op %d (add): could not resolve class '%s'"), i, *O.ClassName));
+
+			UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(Material, Cls, O.X, O.Y);
+			if (!Expr) return Fail(i, FString::Printf(TEXT("op %d (add): CreateMaterialExpression returned null"), i));
+
+			if (!Expr->MaterialExpressionGuid.IsValid())
+			{
+				Expr->MaterialExpressionGuid = FGuid::NewGuid();
+			}
+			Result.Guids[i] = Expr->MaterialExpressionGuid;
+		}
+		else if (Op == TEXT("comment"))
+		{
+			UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
+				Material, UMaterialExpressionComment::StaticClass(), O.X, O.Y);
+			UMaterialExpressionComment* Comment = Cast<UMaterialExpressionComment>(Expr);
+			if (!Comment) return Fail(i, FString::Printf(TEXT("op %d (comment): create failed"), i));
+
+			Comment->SizeX = FMath::Max(O.Width, 32);
+			Comment->SizeY = FMath::Max(O.Height, 32);
+			Comment->Text = O.Text;
+			Comment->CommentColor = O.Color;
+			if (!Comment->MaterialExpressionGuid.IsValid())
+			{
+				Comment->MaterialExpressionGuid = FGuid::NewGuid();
+			}
+			Result.Guids[i] = Comment->MaterialExpressionGuid;
+		}
+		else if (Op == TEXT("reroute"))
+		{
+			UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
+				Material, UMaterialExpressionReroute::StaticClass(), O.X, O.Y);
+			if (!Expr) return Fail(i, FString::Printf(TEXT("op %d (reroute): create failed"), i));
+			if (!Expr->MaterialExpressionGuid.IsValid())
+			{
+				Expr->MaterialExpressionGuid = FGuid::NewGuid();
+			}
+			Result.Guids[i] = Expr->MaterialExpressionGuid;
+		}
+		else if (Op == TEXT("connect"))
+		{
+			FGuid SrcGuid, DstGuid;
+			if (!ResolveRef(O.SrcRef, Result.Guids, SrcGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect): bad src_ref '%s'"), i, *O.SrcRef));
+			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect): bad dst_ref '%s'"), i, *O.DstRef));
+
+			UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
+			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+			if (!Src || !Dst) return Fail(i, FString::Printf(TEXT("op %d (connect): expression not found"), i));
+
+			if (!UMaterialEditingLibrary::ConnectMaterialExpressions(
+				Src, NormalizePinName(O.SrcOutput), Dst, NormalizePinName(O.DstInput)))
+			{
+				return Fail(i, FString::Printf(TEXT("op %d (connect): pin mismatch (src_out='%s' dst_in='%s')"),
+					i, *O.SrcOutput, *O.DstInput));
+			}
+		}
+		else if (Op == TEXT("connect_out"))
+		{
+			FGuid SrcGuid;
+			if (!ResolveRef(O.SrcRef, Result.Guids, SrcGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect_out): bad src_ref '%s'"), i, *O.SrcRef));
+
+			UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
+			if (!Src) return Fail(i, FString::Printf(TEXT("op %d (connect_out): source not found"), i));
+
+			EMaterialProperty Prop;
+			if (!ParseMaterialProperty(O.Property, Prop)) return Fail(i, FString::Printf(TEXT("op %d (connect_out): unknown property '%s'"), i, *O.Property));
+
+			if (!UMaterialEditingLibrary::ConnectMaterialProperty(Src, NormalizePinName(O.SrcOutput), Prop))
+			{
+				return Fail(i, FString::Printf(TEXT("op %d (connect_out): ConnectMaterialProperty returned false"), i));
+			}
+		}
+		else if (Op == TEXT("disconnect_in"))
+		{
+			FGuid DstGuid;
+			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): bad dst_ref '%s'"), i, *O.DstRef));
+
+			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+			if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): not found"), i));
+
+			const int32 Idx = FindInputIndexByName(Dst, O.DstInput);
+			if (Idx == INDEX_NONE) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): unknown input '%s'"), i, *O.DstInput));
+
+			FExpressionInput* Input = Dst->GetInput(Idx);
+			if (Input)
+			{
+				Input->Expression = nullptr;
+				Input->OutputIndex = 0;
+			}
+		}
+		else if (Op == TEXT("disconnect_out"))
+		{
+			EMaterialProperty Prop;
+			if (!ParseMaterialProperty(O.Property, Prop)) return Fail(i, FString::Printf(TEXT("op %d (disconnect_out): unknown property '%s'"), i, *O.Property));
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
+			if (Input)
+			{
+				Input->Expression = nullptr;
+				Input->OutputIndex = 0;
+			}
+		}
+		else if (Op == TEXT("set_prop"))
+		{
+			FGuid DstGuid;
+			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (set_prop): bad dst_ref '%s'"), i, *O.DstRef));
+
+			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+			if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (set_prop): not found"), i));
+
+			if (!ApplyPropertyString(Dst, O.Property, O.Value))
+			{
+				return Fail(i, FString::Printf(TEXT("op %d (set_prop): could not set %s = %s"), i, *O.Property, *O.Value));
+			}
+		}
+		else if (Op == TEXT("delete"))
+		{
+			FGuid DstGuid;
+			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (delete): bad dst_ref '%s'"), i, *O.DstRef));
+
+			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+			if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (delete): not found"), i));
+
+			UMaterialEditingLibrary::DeleteMaterialExpression(Material, Dst);
+		}
+		else
+		{
+			return Fail(i, FString::Printf(TEXT("op %d: unknown op '%s'"), i, *O.Op));
+		}
+
+		Result.OpsApplied = i + 1;
+	}
+
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+
+	if (bCompile)
+	{
+		UMaterialEditingLibrary::RecompileMaterial(Material);
+		FAssetCompilingManager::Get().FinishAllCompilation();
+	}
+
+	Result.bSuccess = true;
+	return Result;
+}
+
+// ─── M2-9: auto-layout ────────────────────────────────────────────
+
+int32 UUnrealBridgeMaterialLibrary::AutoLayoutMaterialGraph(
+	const FString& MaterialPath,
+	int32 ColumnSpacing,
+	int32 RowSpacing)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return 0;
+
+	const int32 ColStep = ColumnSpacing > 0 ? ColumnSpacing : 260;
+	const int32 RowStep = RowSpacing > 0 ? RowSpacing : 120;
+
+	TMap<UMaterialExpression*, int32> Column;
+
+	TArray<UMaterialExpression*> Frontier;
+	UEnum* PropEnum = StaticEnum<EMaterialProperty>();
+	if (PropEnum)
+	{
+		for (int32 EnumIdx = 0; EnumIdx < PropEnum->NumEnums(); ++EnumIdx)
+		{
+			const int64 V = PropEnum->GetValueByIndex(EnumIdx);
+			if (V == INDEX_NONE || V == (int64)MP_MAX) continue;
+			const EMaterialProperty P = (EMaterialProperty)V;
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(P);
+			if (Input && Input->Expression)
+			{
+				if (!Column.Contains(Input->Expression))
+				{
+					Column.Add(Input->Expression, 0);
+					Frontier.Add(Input->Expression);
+				}
+			}
+		}
+	}
+
+	while (Frontier.Num() > 0)
+	{
+		UMaterialExpression* Cur = Frontier.Pop(EAllowShrinking::No);
+		const int32 Depth = Column[Cur];
+		for (FExpressionInputIterator It{Cur}; It; ++It)
+		{
+			if (It.Input && It.Input->Expression)
+			{
+				UMaterialExpression* Up = It.Input->Expression;
+				int32& ExistingDepth = Column.FindOrAdd(Up, INT32_MIN);
+				if (Depth + 1 > ExistingDepth)
+				{
+					ExistingDepth = Depth + 1;
+					Frontier.Add(Up);
+				}
+			}
+		}
+	}
+
+	int32 MaxDepth = 0;
+	for (const TPair<UMaterialExpression*, int32>& KV : Column)
+	{
+		MaxDepth = FMath::Max(MaxDepth, KV.Value);
+	}
+	const int32 LimboCol = MaxDepth + 2;
+
+	const TConstArrayView<TObjectPtr<UMaterialExpression>> AllExprs = Material->GetExpressions();
+	for (const TObjectPtr<UMaterialExpression>& EP : AllExprs)
+	{
+		UMaterialExpression* E = EP.Get();
+		if (!E || Column.Contains(E)) continue;
+		if (E->IsA<UMaterialExpressionComment>()) continue;
+		Column.Add(E, LimboCol);
+	}
+
+	TMap<int32, TArray<UMaterialExpression*>> ByColumn;
+	for (const TPair<UMaterialExpression*, int32>& KV : Column)
+	{
+		ByColumn.FindOrAdd(KV.Value).Add(KV.Key);
+	}
+	for (TPair<int32, TArray<UMaterialExpression*>>& Bucket : ByColumn)
+	{
+		Bucket.Value.Sort([](const UMaterialExpression& A, const UMaterialExpression& B)
+		{
+			return A.MaterialExpressionEditorY < B.MaterialExpressionEditorY;
+		});
+	}
+
+	int32 Moved = 0;
+	for (TPair<int32, TArray<UMaterialExpression*>>& Bucket : ByColumn)
+	{
+		const int32 Col = Bucket.Key;
+		const int32 X = -Col * ColStep;
+		const int32 Count = Bucket.Value.Num();
+		const int32 TotalHeight = (Count - 1) * RowStep;
+		const int32 YStart = -TotalHeight / 2;
+		for (int32 i = 0; i < Count; ++i)
+		{
+			UMaterialExpression* E = Bucket.Value[i];
+			E->MaterialExpressionEditorX = X;
+			E->MaterialExpressionEditorY = YStart + i * RowStep;
+			++Moved;
+		}
+	}
+
+	// Do NOT call Material->PostEditChange here — it invalidates the material resource and
+	// forces a shader recompile, which isn't needed for a position-only change and
+	// temporarily falls back to DefaultMaterial rendering until the recompile finishes.
+	Material->MarkPackageDirty();
+	return Moved;
+}
+
+// ─── M2-12: snapshot + diff ───────────────────────────────────────
+
+namespace BridgeMaterialImpl
+{
+	static TSharedPtr<FJsonObject> BuildGraphJson(UMaterial* Material)
+	{
+		TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
+
+		struct FNodeEntry
+		{
+			FString GuidStr;
+			FString ClassName;
+			int32 X, Y;
+			FString Desc;
+			FString KeyProps;
+			TArray<FString> InputNames;
+			TArray<FString> OutputNames;
+		};
+		TArray<FNodeEntry> Nodes;
+
+		for (const TObjectPtr<UMaterialExpression>& EP : Material->GetExpressions())
+		{
+			UMaterialExpression* E = EP.Get();
+			if (!E) continue;
+			FNodeEntry N;
+			N.GuidStr = E->MaterialExpressionGuid.ToString(EGuidFormats::DigitsWithHyphens);
+			FString Cls = E->GetClass()->GetName();
+			Cls.RemoveFromStart(TEXT("UMaterialExpression"));
+			Cls.RemoveFromStart(TEXT("MaterialExpression"));
+			N.ClassName = Cls;
+			N.X = E->MaterialExpressionEditorX;
+			N.Y = E->MaterialExpressionEditorY;
+			N.Desc = E->Desc;
+			N.KeyProps = DescribeExpressionKeyProps(E);
+			for (FExpressionInputIterator It{E}; It; ++It)
+			{
+				N.InputNames.Add(NormalizePinName(E->GetInputName(It.Index).ToString()));
+			}
+			for (const FExpressionOutput& Out : E->GetOutputs())
+			{
+				N.OutputNames.Add(NormalizePinName(Out.OutputName.ToString()));
+			}
+			Nodes.Add(MoveTemp(N));
+		}
+
+		Nodes.Sort([](const FNodeEntry& A, const FNodeEntry& B) { return A.GuidStr < B.GuidStr; });
+
+		TArray<TSharedPtr<FJsonValue>> NodesArr;
+		for (const FNodeEntry& N : Nodes)
+		{
+			TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+			Obj->SetStringField(TEXT("guid"), N.GuidStr);
+			Obj->SetStringField(TEXT("class"), N.ClassName);
+			Obj->SetNumberField(TEXT("x"), N.X);
+			Obj->SetNumberField(TEXT("y"), N.Y);
+			Obj->SetStringField(TEXT("desc"), N.Desc);
+			Obj->SetStringField(TEXT("key_props"), N.KeyProps);
+
+			TArray<TSharedPtr<FJsonValue>> InArr;
+			for (const FString& S : N.InputNames) InArr.Add(MakeShared<FJsonValueString>(S));
+			Obj->SetArrayField(TEXT("inputs"), InArr);
+
+			TArray<TSharedPtr<FJsonValue>> OutArr;
+			for (const FString& S : N.OutputNames) OutArr.Add(MakeShared<FJsonValueString>(S));
+			Obj->SetArrayField(TEXT("outputs"), OutArr);
+
+			NodesArr.Add(MakeShared<FJsonValueObject>(Obj));
+		}
+		Root->SetArrayField(TEXT("nodes"), NodesArr);
+
+		struct FConnEntry
+		{
+			FString Key;
+			FString SrcGuid, SrcOut, DstGuid, DstIn;
+		};
+		TArray<FConnEntry> Conns;
+		for (const TObjectPtr<UMaterialExpression>& EP : Material->GetExpressions())
+		{
+			UMaterialExpression* E = EP.Get();
+			if (!E) continue;
+			for (FExpressionInputIterator It{E}; It; ++It)
+			{
+				if (!It.Input || !It.Input->Expression) continue;
+				FConnEntry C;
+				C.SrcGuid = It.Input->Expression->MaterialExpressionGuid.ToString(EGuidFormats::DigitsWithHyphens);
+				TArray<FExpressionOutput>& Outs = It.Input->Expression->GetOutputs();
+				C.SrcOut = Outs.IsValidIndex(It.Input->OutputIndex)
+					? NormalizePinName(Outs[It.Input->OutputIndex].OutputName.ToString())
+					: FString();
+				C.DstGuid = E->MaterialExpressionGuid.ToString(EGuidFormats::DigitsWithHyphens);
+				C.DstIn = NormalizePinName(E->GetInputName(It.Index).ToString());
+				C.Key = FString::Printf(TEXT("%s|%s|%s|%s"), *C.SrcGuid, *C.SrcOut, *C.DstGuid, *C.DstIn);
+				Conns.Add(MoveTemp(C));
+			}
+		}
+		Conns.Sort([](const FConnEntry& A, const FConnEntry& B) { return A.Key < B.Key; });
+
+		TArray<TSharedPtr<FJsonValue>> ConnArr;
+		for (const FConnEntry& C : Conns)
+		{
+			TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+			Obj->SetStringField(TEXT("src"), C.SrcGuid);
+			Obj->SetStringField(TEXT("src_out"), C.SrcOut);
+			Obj->SetStringField(TEXT("dst"), C.DstGuid);
+			Obj->SetStringField(TEXT("dst_in"), C.DstIn);
+			ConnArr.Add(MakeShared<FJsonValueObject>(Obj));
+		}
+		Root->SetArrayField(TEXT("connections"), ConnArr);
+
+		struct FOutEntry
+		{
+			FString Key;
+			FString Property;
+			FString SrcGuid;
+			FString SrcOut;
+		};
+		TArray<FOutEntry> Outs;
+		if (UEnum* PE = StaticEnum<EMaterialProperty>())
+		{
+			for (int32 EnumIdx = 0; EnumIdx < PE->NumEnums(); ++EnumIdx)
+			{
+				const int64 V = PE->GetValueByIndex(EnumIdx);
+				if (V == INDEX_NONE || V == (int64)MP_MAX) continue;
+				const EMaterialProperty P = (EMaterialProperty)V;
+				FExpressionInput* In = Material->GetExpressionInputForProperty(P);
+				if (!In || !In->Expression) continue;
+				FOutEntry O;
+				O.Property = PropertyNameFromEnum(P);
+				O.SrcGuid = In->Expression->MaterialExpressionGuid.ToString(EGuidFormats::DigitsWithHyphens);
+				TArray<FExpressionOutput>& OutPins = In->Expression->GetOutputs();
+				O.SrcOut = OutPins.IsValidIndex(In->OutputIndex)
+					? NormalizePinName(OutPins[In->OutputIndex].OutputName.ToString())
+					: FString();
+				O.Key = FString::Printf(TEXT("%s|%s|%s"), *O.Property, *O.SrcGuid, *O.SrcOut);
+				Outs.Add(MoveTemp(O));
+			}
+		}
+		Outs.Sort([](const FOutEntry& A, const FOutEntry& B) { return A.Key < B.Key; });
+
+		TArray<TSharedPtr<FJsonValue>> OutArr;
+		for (const FOutEntry& O : Outs)
+		{
+			TSharedPtr<FJsonObject> Obj = MakeShared<FJsonObject>();
+			Obj->SetStringField(TEXT("property"), O.Property);
+			Obj->SetStringField(TEXT("src"), O.SrcGuid);
+			Obj->SetStringField(TEXT("src_out"), O.SrcOut);
+			OutArr.Add(MakeShared<FJsonValueObject>(Obj));
+		}
+		Root->SetArrayField(TEXT("outputs"), OutArr);
+
+		return Root;
+	}
+}
+
+FString UUnrealBridgeMaterialLibrary::SnapshotMaterialGraphJson(const FString& MaterialPath)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material) return FString();
+
+	TSharedPtr<FJsonObject> Root = BuildGraphJson(Material);
+	FString Out;
+	TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =
+		TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Out);
+	FJsonSerializer::Serialize(Root.ToSharedRef(), Writer);
+	return Out;
+}
+
+FString UUnrealBridgeMaterialLibrary::DiffMaterialGraphSnapshots(
+	const FString& BeforeJson,
+	const FString& AfterJson)
+{
+	auto Parse = [](const FString& Src, TSharedPtr<FJsonObject>& Out) -> bool
+	{
+		TSharedRef<TJsonReader<TCHAR>> Reader = TJsonReaderFactory<TCHAR>::Create(Src);
+		return FJsonSerializer::Deserialize(Reader, Out) && Out.IsValid();
+	};
+
+	TSharedPtr<FJsonObject> A, B;
+	if (!Parse(BeforeJson, A)) return TEXT("diff error: could not parse 'before' JSON");
+	if (!Parse(AfterJson, B))  return TEXT("diff error: could not parse 'after' JSON");
+
+	auto CollectNodes = [](const TSharedPtr<FJsonObject>& Root, TMap<FString, TSharedPtr<FJsonObject>>& Out)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Arr;
+		if (Root->TryGetArrayField(TEXT("nodes"), Arr))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *Arr)
+			{
+				const TSharedPtr<FJsonObject> Obj = V->AsObject();
+				if (!Obj.IsValid()) continue;
+				Out.Add(Obj->GetStringField(TEXT("guid")), Obj);
+			}
+		}
+	};
+	auto CollectStringSet = [](const TSharedPtr<FJsonObject>& Root, const FString& Field, TSet<FString>& Out)
+	{
+		const TArray<TSharedPtr<FJsonValue>>* Arr;
+		if (Root->TryGetArrayField(Field, Arr))
+		{
+			for (const TSharedPtr<FJsonValue>& V : *Arr)
+			{
+				const TSharedPtr<FJsonObject> Obj = V->AsObject();
+				if (!Obj.IsValid()) continue;
+				FString Key;
+				if (Field == TEXT("connections"))
+				{
+					Key = FString::Printf(TEXT("%s:%s -> %s:%s"),
+						*Obj->GetStringField(TEXT("src")),
+						*Obj->GetStringField(TEXT("src_out")),
+						*Obj->GetStringField(TEXT("dst")),
+						*Obj->GetStringField(TEXT("dst_in")));
+				}
+				else
+				{
+					Key = FString::Printf(TEXT("%s <- %s:%s"),
+						*Obj->GetStringField(TEXT("property")),
+						*Obj->GetStringField(TEXT("src")),
+						*Obj->GetStringField(TEXT("src_out")));
+				}
+				Out.Add(Key);
+			}
+		}
+	};
+
+	TMap<FString, TSharedPtr<FJsonObject>> NodesA, NodesB;
+	CollectNodes(A, NodesA);
+	CollectNodes(B, NodesB);
+
+	TSet<FString> ConnsA, ConnsB, OutsA, OutsB;
+	CollectStringSet(A, TEXT("connections"), ConnsA);
+	CollectStringSet(B, TEXT("connections"), ConnsB);
+	CollectStringSet(A, TEXT("outputs"), OutsA);
+	CollectStringSet(B, TEXT("outputs"), OutsB);
+
+	TArray<FString> Lines;
+
+	for (const TPair<FString, TSharedPtr<FJsonObject>>& KV : NodesB)
+	{
+		if (!NodesA.Contains(KV.Key))
+		{
+			Lines.Add(FString::Printf(TEXT("+ node %s  [%s]  (%d,%d)  %s"),
+				*KV.Key,
+				*KV.Value->GetStringField(TEXT("class")),
+				(int32)KV.Value->GetNumberField(TEXT("x")),
+				(int32)KV.Value->GetNumberField(TEXT("y")),
+				*KV.Value->GetStringField(TEXT("key_props"))));
+		}
+	}
+	for (const TPair<FString, TSharedPtr<FJsonObject>>& KV : NodesA)
+	{
+		if (!NodesB.Contains(KV.Key))
+		{
+			Lines.Add(FString::Printf(TEXT("- node %s  [%s]"),
+				*KV.Key, *KV.Value->GetStringField(TEXT("class"))));
+		}
+		else
+		{
+			const TSharedPtr<FJsonObject>& OldN = KV.Value;
+			const TSharedPtr<FJsonObject>& NewN = NodesB[KV.Key];
+			const FString OldProps = OldN->GetStringField(TEXT("key_props"));
+			const FString NewProps = NewN->GetStringField(TEXT("key_props"));
+			if (OldProps != NewProps)
+			{
+				Lines.Add(FString::Printf(TEXT("* node %s  props: '%s' -> '%s'"),
+					*KV.Key, *OldProps, *NewProps));
+			}
+			const int32 OldX = (int32)OldN->GetNumberField(TEXT("x"));
+			const int32 OldY = (int32)OldN->GetNumberField(TEXT("y"));
+			const int32 NewX = (int32)NewN->GetNumberField(TEXT("x"));
+			const int32 NewY = (int32)NewN->GetNumberField(TEXT("y"));
+			if (OldX != NewX || OldY != NewY)
+			{
+				Lines.Add(FString::Printf(TEXT("~ node %s  moved (%d,%d) -> (%d,%d)"),
+					*KV.Key, OldX, OldY, NewX, NewY));
+			}
+		}
+	}
+
+	for (const FString& C : ConnsB)
+	{
+		if (!ConnsA.Contains(C)) Lines.Add(FString::Printf(TEXT("+ wire %s"), *C));
+	}
+	for (const FString& C : ConnsA)
+	{
+		if (!ConnsB.Contains(C)) Lines.Add(FString::Printf(TEXT("- wire %s"), *C));
+	}
+	for (const FString& O : OutsB)
+	{
+		if (!OutsA.Contains(O)) Lines.Add(FString::Printf(TEXT("+ out  %s"), *O));
+	}
+	for (const FString& O : OutsA)
+	{
+		if (!OutsB.Contains(O)) Lines.Add(FString::Printf(TEXT("- out  %s"), *O));
+	}
+
+	if (Lines.Num() == 0)
+	{
+		return TEXT("(no changes)");
+	}
+	return FString::Join(Lines, TEXT("\n"));
+}
 
 bool UUnrealBridgeMaterialLibrary::CompileMaterial(
 	const FString& MaterialPath,

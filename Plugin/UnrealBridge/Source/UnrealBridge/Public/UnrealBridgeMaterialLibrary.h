@@ -492,6 +492,94 @@ struct FBridgeCreateAssetResult
 	FString Error;
 };
 
+/** One operation in a batched apply_material_graph_ops call. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialGraphOp
+{
+	GENERATED_BODY()
+
+	/** "add" / "connect" / "connect_out" / "disconnect_in" / "disconnect_out" / "set_prop" / "comment" / "reroute" / "delete" */
+	UPROPERTY(BlueprintReadWrite)
+	FString Op;
+
+	/** For "add": UE expression short name ("Constant3Vector") or full path. */
+	UPROPERTY(BlueprintReadWrite)
+	FString ClassName;
+
+	UPROPERTY(BlueprintReadWrite)
+	int32 X = 0;
+
+	UPROPERTY(BlueprintReadWrite)
+	int32 Y = 0;
+
+	/**
+	 * Source reference for "connect" / "connect_out".
+	 * Either a concrete guid ("12345678-..."), or a back-ref "$N" to the Nth
+	 * op in the same batch that produced a guid (add / comment / reroute).
+	 */
+	UPROPERTY(BlueprintReadWrite)
+	FString SrcRef;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString SrcOutput;
+
+	/** Destination reference for "connect" / "disconnect_in" / "set_prop" / "delete". Same format as SrcRef. */
+	UPROPERTY(BlueprintReadWrite)
+	FString DstRef;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString DstInput;
+
+	/** Property name for "connect_out" / "disconnect_out" (BaseColor / Metallic / ...) or for "set_prop". */
+	UPROPERTY(BlueprintReadWrite)
+	FString Property;
+
+	/** Value for "set_prop" (ImportText-format). */
+	UPROPERTY(BlueprintReadWrite)
+	FString Value;
+
+	/** Comment-specific fields. */
+	UPROPERTY(BlueprintReadWrite)
+	int32 Width = 0;
+
+	UPROPERTY(BlueprintReadWrite)
+	int32 Height = 0;
+
+	UPROPERTY(BlueprintReadWrite)
+	FString Text;
+
+	UPROPERTY(BlueprintReadWrite)
+	FLinearColor Color = FLinearColor(0.2f, 0.7f, 1.0f, 0.4f);
+};
+
+/** Outcome of apply_material_graph_ops. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialGraphOpResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bSuccess = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 OpsApplied = 0;
+
+	/**
+	 * Guid produced by each op (if any). Same length as the input op list:
+	 *   add / comment / reroute → the new node's guid
+	 *   other ops → invalid guid
+	 */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FGuid> Guids;
+
+	/** First failure's message (empty on full success). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 FailedAtIndex = -1;
+};
+
 /** One property to set on an expression (for batched SetMaterialExpressionProperties). */
 USTRUCT(BlueprintType)
 struct FBridgeExpressionPropSet
@@ -820,4 +908,80 @@ public:
 	static FGuid AddMaterialReroute(
 		const FString& MaterialPath,
 		int32 X, int32 Y);
+
+	/**
+	 * M2-3: Create a new UMaterialFunction asset.
+	 * Add UMaterialExpressionFunctionInput / Output nodes via add_material_expression on
+	 * the returned path — there's no separate "add function input" op; the function pins
+	 * are just special expressions inside the MF graph.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeCreateAssetResult CreateMaterialFunction(
+		const FString& Path,
+		const FString& Description,
+		bool bExposeToLibrary,
+		const FString& LibraryCategory);
+
+	/**
+	 * M2-10: Apply an ordered batch of graph ops in one round-trip.
+	 * Back-references to newly-created nodes via "$N" syntax (index into the op list).
+	 *
+	 * Supported ops:
+	 *   "add"            — class_name, x, y                       → guid
+	 *   "comment"        — x, y, width, height, text, color       → guid
+	 *   "reroute"        — x, y                                   → guid
+	 *   "connect"        — src_ref, src_output, dst_ref, dst_input
+	 *   "connect_out"    — src_ref, src_output, property
+	 *   "disconnect_in"  — dst_ref, dst_input
+	 *   "disconnect_out" — property
+	 *   "set_prop"       — dst_ref, property, value               (ImportText-format)
+	 *   "delete"         — dst_ref
+	 *
+	 * bCompile=true runs compile_material (synchronous) at the end if every op succeeded.
+	 *
+	 * Example (Python):
+	 *   ops = [
+	 *       make("add", class_name="Constant3Vector", x=-400, y=-100),        # -> $0
+	 *       make("add", class_name="ScalarParameter", x=-400, y=60),          # -> $1
+	 *       make("set_prop", dst_ref="$1", property="DefaultValue", value="0.35"),
+	 *       make("connect_out", src_ref="$0", src_output="", property="BaseColor"),
+	 *       make("connect_out", src_ref="$1", src_output="", property="Roughness"),
+	 *   ]
+	 *   apply_material_graph_ops(path, ops, compile=True)
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialGraphOpResult ApplyMaterialGraphOps(
+		const FString& MaterialPath,
+		const TArray<FBridgeMaterialGraphOp>& Ops,
+		bool bCompile);
+
+	/**
+	 * M2-9: Topologically arrange all expressions based on distance from the main outputs.
+	 * Columns go left (furthest from output) to right (at the output), with rows spread
+	 * vertically per column. Overwrites existing MaterialExpressionEditorX / Y.
+	 *
+	 * @return Number of expressions repositioned.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static int32 AutoLayoutMaterialGraph(
+		const FString& MaterialPath,
+		int32 ColumnSpacing,
+		int32 RowSpacing);
+
+	/**
+	 * M2-12: Produce a deterministic JSON snapshot of the graph (expressions + connections +
+	 * main-output wiring) sorted and keyed for stable diffing.
+	 * Pair with diff_material_graph_snapshots to detect what an edit changed.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FString SnapshotMaterialGraphJson(const FString& MaterialPath);
+
+	/**
+	 * M2-12: Diff two snapshot JSONs, returning a human-readable report of added /
+	 * removed / moved nodes, added / removed wires, and changed key properties.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FString DiffMaterialGraphSnapshots(
+		const FString& BeforeJson,
+		const FString& AfterJson);
 };
