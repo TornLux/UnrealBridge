@@ -154,7 +154,11 @@ float BridgeValueNoise3D(float3 Pos)
 {
 	float3 I = floor(Pos);
 	float3 F = frac(Pos);
-	F = F * F * (3.0 - 2.0 * F); // smoothstep
+	// Quintic interpolation (Perlin "improved noise"): C2-continuous at cell
+	// boundaries, vs cubic smoothstep which is only C1. Matters when this noise
+	// is amplified by domain warping — cubic's discontinuous second derivative
+	// causes visible cell-boundary seams at high warp strength.
+	F = F * F * F * (F * (F * 6.0 - 15.0) + 10.0);
 	float n000 = BridgeHash31(I + float3(0,0,0));
 	float n100 = BridgeHash31(I + float3(1,0,0));
 	float n010 = BridgeHash31(I + float3(0,1,0));
@@ -231,17 +235,18 @@ float BridgeFBM3D(float3 Pos)
 // @inst     ~700
 float BridgeIQFlow3D(float3 Pos, float WarpStrength)
 {
-	// Level 1: three FBM samples of Pos produce a warp vector Q.
+	// Warp vectors are centered at zero (-0.5) so they push in all directions
+	// symmetrically. Without centering, warp = FBM()*strength in [0, strength]
+	// biases everything toward +x+y+z, visible as seams where regions with high
+	// FBM meet regions with low FBM.
 	float3 Q = float3(
 		BridgeFBM3D(Pos + float3(0.0, 0.0, 0.0)),
 		BridgeFBM3D(Pos + float3(5.2, 1.3, 3.1)),
-		BridgeFBM3D(Pos + float3(2.9, 7.4, 1.8)));
-	// Level 2: three FBM samples of (Pos + strength*Q) produce a stronger warp R.
+		BridgeFBM3D(Pos + float3(2.9, 7.4, 1.8))) - 0.5;
 	float3 R = float3(
 		BridgeFBM3D(Pos + WarpStrength * Q + float3(1.7, 9.2, 0.0)),
 		BridgeFBM3D(Pos + WarpStrength * Q + float3(8.3, 2.8, 5.0)),
-		BridgeFBM3D(Pos + WarpStrength * Q + float3(0.0, 4.1, 6.6)));
-	// Final: FBM sampled at Pos + strength*R.
+		BridgeFBM3D(Pos + WarpStrength * Q + float3(0.0, 4.1, 6.6))) - 0.5;
 	return BridgeFBM3D(Pos + WarpStrength * R);
 }
 
