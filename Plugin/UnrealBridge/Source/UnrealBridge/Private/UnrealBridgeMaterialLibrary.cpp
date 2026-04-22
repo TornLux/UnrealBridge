@@ -1,7 +1,104 @@
 #include "UnrealBridgeMaterialLibrary.h"
+
+#include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Engine/Texture.h"
+#include "Engine/SubsurfaceProfile.h"
 #include "VT/RuntimeVirtualTexture.h"
+#include "SceneTypes.h"
+#include "MaterialShared.h"
+
+namespace BridgeMaterialImpl
+{
+	static FString DomainToString(EMaterialDomain Domain)
+	{
+		switch (Domain)
+		{
+			case MD_Surface:                return TEXT("Surface");
+			case MD_DeferredDecal:          return TEXT("DeferredDecal");
+			case MD_LightFunction:          return TEXT("LightFunction");
+			case MD_Volume:                 return TEXT("Volume");
+			case MD_PostProcess:            return TEXT("PostProcess");
+			case MD_UI:                     return TEXT("UI");
+			case MD_RuntimeVirtualTexture:  return TEXT("RuntimeVirtualTexture");
+			default:                        return FString::Printf(TEXT("Unknown(%d)"), (int32)Domain);
+		}
+	}
+
+	static FString BlendModeToString(EBlendMode Mode)
+	{
+		switch (Mode)
+		{
+			case BLEND_Opaque:         return TEXT("Opaque");
+			case BLEND_Masked:         return TEXT("Masked");
+			case BLEND_Translucent:    return TEXT("Translucent");
+			case BLEND_Additive:       return TEXT("Additive");
+			case BLEND_Modulate:       return TEXT("Modulate");
+			case BLEND_AlphaComposite: return TEXT("AlphaComposite");
+			case BLEND_AlphaHoldout:   return TEXT("AlphaHoldout");
+			default:                   return FString::Printf(TEXT("Unknown(%d)"), (int32)Mode);
+		}
+	}
+
+	static FString ShadingModelToString(EMaterialShadingModel Model)
+	{
+		switch (Model)
+		{
+			case MSM_Unlit:                return TEXT("Unlit");
+			case MSM_DefaultLit:           return TEXT("DefaultLit");
+			case MSM_Subsurface:           return TEXT("Subsurface");
+			case MSM_PreintegratedSkin:    return TEXT("PreintegratedSkin");
+			case MSM_ClearCoat:            return TEXT("ClearCoat");
+			case MSM_SubsurfaceProfile:    return TEXT("SubsurfaceProfile");
+			case MSM_TwoSidedFoliage:      return TEXT("TwoSidedFoliage");
+			case MSM_Hair:                 return TEXT("Hair");
+			case MSM_Cloth:                return TEXT("Cloth");
+			case MSM_Eye:                  return TEXT("Eye");
+			case MSM_SingleLayerWater:     return TEXT("SingleLayerWater");
+			case MSM_ThinTranslucent:      return TEXT("ThinTranslucent");
+			case MSM_Strata:               return TEXT("Strata");
+			case MSM_FromMaterialExpression: return TEXT("FromMaterialExpression");
+			default:                       return FString::Printf(TEXT("Unknown(%d)"), (int32)Model);
+		}
+	}
+
+	static FString UsageFlagName(EMaterialUsage Usage)
+	{
+		// Mirrors UMaterial::GetUsageName (UE 5.7, Engine/Private/Materials/Material.cpp).
+		// That function is not ENGINE_API so we can't call it from outside Engine; we keep this
+		// table in sync with the engine version when EMaterialUsage gains new values.
+		switch (Usage)
+		{
+			case MATUSAGE_SkeletalMesh:           return TEXT("SkeletalMesh");
+			case MATUSAGE_ParticleSprites:        return TEXT("ParticleSprites");
+			case MATUSAGE_BeamTrails:             return TEXT("BeamTrails");
+			case MATUSAGE_MeshParticles:          return TEXT("MeshParticles");
+			case MATUSAGE_NiagaraSprites:         return TEXT("NiagaraSprites");
+			case MATUSAGE_NiagaraRibbons:         return TEXT("NiagaraRibbons");
+			case MATUSAGE_NiagaraMeshParticles:   return TEXT("NiagaraMeshParticles");
+			case MATUSAGE_StaticLighting:         return TEXT("StaticLighting");
+			case MATUSAGE_MorphTargets:           return TEXT("MorphTargets");
+			case MATUSAGE_SplineMesh:             return TEXT("SplineMesh");
+			case MATUSAGE_InstancedStaticMeshes:  return TEXT("InstancedStaticMeshes");
+			case MATUSAGE_GeometryCollections:    return TEXT("GeometryCollections");
+			case MATUSAGE_Clothing:               return TEXT("Clothing");
+			case MATUSAGE_GeometryCache:          return TEXT("GeometryCache");
+			case MATUSAGE_Water:                  return TEXT("Water");
+			case MATUSAGE_HairStrands:            return TEXT("HairStrands");
+			case MATUSAGE_LidarPointCloud:        return TEXT("LidarPointCloud");
+			case MATUSAGE_VirtualHeightfieldMesh: return TEXT("VirtualHeightfieldMesh");
+			case MATUSAGE_Nanite:                 return TEXT("Nanite");
+			case MATUSAGE_Voxels:                 return TEXT("Voxels");
+			case MATUSAGE_VolumetricCloud:        return TEXT("VolumetricCloud");
+			case MATUSAGE_HeterogeneousVolumes:   return TEXT("HeterogeneousVolumes");
+			case MATUSAGE_StaticMesh:             return TEXT("StaticMesh");
+			default:                              return FString::Printf(TEXT("Usage%d"), (int32)Usage);
+		}
+	}
+}
 
 FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstanceParameters(
 	const FString& MaterialPath)
@@ -23,7 +120,6 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 		Result.ParentPath = Parent->GetPathName();
 	}
 
-	// Scalar parameters
 	for (const FScalarParameterValue& P : MI->ScalarParameterValues)
 	{
 		FBridgeMaterialParam Param;
@@ -33,7 +129,6 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 		Result.Parameters.Add(Param);
 	}
 
-	// Vector parameters
 	for (const FVectorParameterValue& P : MI->VectorParameterValues)
 	{
 		FBridgeMaterialParam Param;
@@ -44,7 +139,6 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 		Result.Parameters.Add(Param);
 	}
 
-	// DoubleVector parameters
 	for (const FDoubleVectorParameterValue& P : MI->DoubleVectorParameterValues)
 	{
 		FBridgeMaterialParam Param;
@@ -54,7 +148,6 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 		Result.Parameters.Add(Param);
 	}
 
-	// Texture parameters
 	for (const FTextureParameterValue& P : MI->TextureParameterValues)
 	{
 		FBridgeMaterialParam Param;
@@ -64,7 +157,6 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 		Result.Parameters.Add(Param);
 	}
 
-	// RuntimeVirtualTexture parameters
 	for (const FRuntimeVirtualTextureParameterValue& P : MI->RuntimeVirtualTextureParameterValues)
 	{
 		FBridgeMaterialParam Param;
@@ -75,4 +167,147 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	}
 
 	return Result;
+}
+
+FBridgeMaterialInfo UUnrealBridgeMaterialLibrary::GetMaterialInfo(const FString& MaterialPath)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialInfo Info;
+
+	UMaterialInterface* MatInterface = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!MatInterface)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetMaterialInfo could not load '%s'"), *MaterialPath);
+		return Info;
+	}
+
+	Info.bFound = true;
+	Info.Name = MatInterface->GetName();
+	Info.Path = MatInterface->GetPathName();
+
+	UMaterialInstance* MI = Cast<UMaterialInstance>(MatInterface);
+	Info.bIsMaterialInstance = (MI != nullptr);
+	if (MI && MI->Parent)
+	{
+		Info.ParentPath = MI->Parent->GetPathName();
+	}
+
+	UMaterial* BaseMat = MatInterface->GetMaterial();
+	if (!BaseMat)
+	{
+		return Info;
+	}
+	Info.BasePath = BaseMat->GetPathName();
+
+	Info.MaterialDomain = DomainToString(BaseMat->MaterialDomain);
+	Info.BlendMode = BlendModeToString(MatInterface->GetBlendMode());
+
+	FMaterialShadingModelField Models = MatInterface->GetShadingModels();
+	for (int32 i = 0; i < MSM_NUM; ++i)
+	{
+		const EMaterialShadingModel M = (EMaterialShadingModel)i;
+		if (Models.HasShadingModel(M))
+		{
+			Info.ShadingModels.Add(ShadingModelToString(M));
+		}
+	}
+
+	Info.bTwoSided = MatInterface->IsTwoSided();
+	Info.bUseMaterialAttributes = BaseMat->bUseMaterialAttributes;
+
+	for (int32 i = 0; i < MATUSAGE_MAX; ++i)
+	{
+		const EMaterialUsage Usage = (EMaterialUsage)i;
+		if (BaseMat->GetUsageByFlag(Usage))
+		{
+			Info.UsageFlags.Add(UsageFlagName(Usage));
+		}
+	}
+
+	if (BaseMat->SubsurfaceProfile)
+	{
+		Info.SubsurfaceProfilePath = BaseMat->SubsurfaceProfile->GetPathName();
+	}
+
+	{
+		TArray<FMaterialParameterInfo> ParamInfos;
+		TArray<FGuid> ParamGuids;
+		MatInterface->GetAllScalarParameterInfo(ParamInfos, ParamGuids);
+		for (int32 i = 0; i < ParamInfos.Num(); ++i)
+		{
+			FBridgeMaterialParamDefault P;
+			P.Name = ParamInfos[i].Name.ToString();
+			P.ParamType = TEXT("Scalar");
+			P.Guid = ParamGuids.IsValidIndex(i) ? ParamGuids[i] : FGuid();
+			float Val = 0.f;
+			MatInterface->GetScalarParameterDefaultValue(ParamInfos[i], Val);
+			P.Value = FString::SanitizeFloat(Val);
+			Info.ScalarParameters.Add(P);
+		}
+	}
+
+	{
+		TArray<FMaterialParameterInfo> ParamInfos;
+		TArray<FGuid> ParamGuids;
+		MatInterface->GetAllVectorParameterInfo(ParamInfos, ParamGuids);
+		for (int32 i = 0; i < ParamInfos.Num(); ++i)
+		{
+			FBridgeMaterialParamDefault P;
+			P.Name = ParamInfos[i].Name.ToString();
+			P.ParamType = TEXT("Vector");
+			P.Guid = ParamGuids.IsValidIndex(i) ? ParamGuids[i] : FGuid();
+			FLinearColor Val(FLinearColor::Black);
+			MatInterface->GetVectorParameterDefaultValue(ParamInfos[i], Val);
+			P.Value = FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"), Val.R, Val.G, Val.B, Val.A);
+			Info.VectorParameters.Add(P);
+		}
+	}
+
+	{
+		TArray<FMaterialParameterInfo> ParamInfos;
+		TArray<FGuid> ParamGuids;
+		MatInterface->GetAllTextureParameterInfo(ParamInfos, ParamGuids);
+		for (int32 i = 0; i < ParamInfos.Num(); ++i)
+		{
+			FBridgeMaterialParamDefault P;
+			P.Name = ParamInfos[i].Name.ToString();
+			P.ParamType = TEXT("Texture");
+			P.Guid = ParamGuids.IsValidIndex(i) ? ParamGuids[i] : FGuid();
+			UTexture* Val = nullptr;
+			MatInterface->GetTextureParameterDefaultValue(ParamInfos[i], Val);
+			P.Value = Val ? Val->GetPathName() : TEXT("None");
+			Info.TextureParameters.Add(P);
+		}
+	}
+
+	{
+		TArray<FMaterialParameterInfo> ParamInfos;
+		TArray<FGuid> ParamGuids;
+		MatInterface->GetAllStaticSwitchParameterInfo(ParamInfos, ParamGuids);
+		for (int32 i = 0; i < ParamInfos.Num(); ++i)
+		{
+			FBridgeMaterialParamDefault P;
+			P.Name = ParamInfos[i].Name.ToString();
+			P.ParamType = TEXT("StaticSwitch");
+			P.Guid = ParamGuids.IsValidIndex(i) ? ParamGuids[i] : FGuid();
+			bool Val = false;
+			FGuid ExprGuid;
+			MatInterface->GetStaticSwitchParameterDefaultValue(ParamInfos[i], Val, ExprGuid);
+			P.Value = Val ? TEXT("True") : TEXT("False");
+			Info.StaticSwitchParameters.Add(P);
+		}
+	}
+
+	const TArrayView<const TObjectPtr<UMaterialExpression>> Expressions = BaseMat->GetExpressions();
+	Info.NumExpressions = Expressions.Num();
+	for (const TObjectPtr<UMaterialExpression>& Expr : Expressions)
+	{
+		if (Expr && Expr->IsA<UMaterialExpressionMaterialFunctionCall>())
+		{
+			++Info.NumFunctionCalls;
+		}
+	}
+
+	return Info;
 }
