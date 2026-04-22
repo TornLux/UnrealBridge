@@ -1,0 +1,200 @@
+// Copyright — UnrealBridge plugin
+//
+// Bridge-provided HLSL snippets for use inside UMaterialExpressionCustom nodes.
+// Reference from a Custom node by adding this file to IncludeFilePaths:
+//     /Plugin/UnrealBridge/BridgeSnippets.ush
+// and calling any snippet function by name from the Custom node's Code body:
+//     return BridgeBlendAngleCorrectedNormals(In0, In1, In2);
+//
+// Header marker format (scanned by list_shared_snippets / get_shared_snippet):
+//     _/_/_@snippet MyName            (two slashes prefix, no space — shown here with placeholders)
+//     _/_/_ @desc     one-line description
+//     _/_/_ @sig      full HLSL function signature
+//     _/_/_ @fl       min feature level (SM5 / SM6 / ES3_1)
+//     _/_/_ @inst     rough instruction count estimate
+//
+// Convention: every snippet function starts with "Bridge" to avoid collisions
+// with engine or user code already inlined into the generated material shader.
+
+#pragma once
+
+//@snippet BridgeLuminance
+// @desc     Rec.709 luminance of a linear RGB color.
+// @sig      float BridgeLuminance(float3 Color)
+// @fl       SM5
+// @inst     ~3
+float BridgeLuminance(float3 Color)
+{
+	return dot(Color, float3(0.2126, 0.7152, 0.0722));
+}
+
+//@snippet BridgeUnpackORM
+// @desc     Unpack an ORM-packed texture sample (R=Occlusion, G=Roughness, B=Metallic).
+// @sig      float3 BridgeUnpackORM(float3 Packed)
+// @fl       SM5
+// @inst     ~0
+float3 BridgeUnpackORM(float3 Packed)
+{
+	// Already layout-correct — kept as a named function so the intent is readable
+	// and so agents can swap channel conventions in one place.
+	return Packed.rgb;
+}
+
+//@snippet BridgePackORM
+// @desc     Pack Occlusion / Roughness / Metallic into an RGB value.
+// @sig      float3 BridgePackORM(float Occlusion, float Roughness, float Metallic)
+// @fl       SM5
+// @inst     ~0
+float3 BridgePackORM(float Occlusion, float Roughness, float Metallic)
+{
+	return float3(Occlusion, Roughness, Metallic);
+}
+
+//@snippet BridgeACESTonemap
+// @desc     ACES-approximate filmic tone curve (Narkowicz 2015). Input: linear HDR. Output: [0,1] LDR.
+// @sig      float3 BridgeACESTonemap(float3 Color)
+// @fl       SM5
+// @inst     ~10
+float3 BridgeACESTonemap(float3 Color)
+{
+	const float a = 2.51;
+	const float b = 0.03;
+	const float c = 2.43;
+	const float d = 0.59;
+	const float e = 0.14;
+	return saturate((Color * (a * Color + b)) / (Color * (c * Color + d) + e));
+}
+
+//@snippet BridgeBlendAngleCorrectedNormals
+// @desc     Detail / overlay normal blend using Reoriented Normal Mapping (Barré-Brisebois 2012).
+//           Both inputs are tangent-space normals in [0,1] texture form (will be expanded).
+//           Strength fades between pure BaseN (0) and full blend (1).
+// @sig      float3 BridgeBlendAngleCorrectedNormals(float3 BaseN, float3 DetailN, float Strength)
+// @fl       SM5
+// @inst     ~14
+float3 BridgeBlendAngleCorrectedNormals(float3 BaseN, float3 DetailN, float Strength)
+{
+	// Expand both from [0,1] sample → [-1,1], plus the magic +float3(0,0,1) / -float3(1,1,-1)
+	// trick that makes the dot product give the correct blended normal without building a TBN.
+	float3 t = BaseN.xyz * float3(2.0, 2.0, 2.0) + float3(-1.0, -1.0, 0.0);
+	float3 u = DetailN.xyz * float3(-2.0, -2.0, 2.0) + float3(1.0, 1.0, -1.0);
+	float3 Blended = t * dot(t, u) / max(t.z, 1e-5) - u;
+	float3 Result = normalize(Blended);
+	// Convert back to [0,1] for the node output.
+	Result = Result * 0.5 + 0.5;
+	return lerp(BaseN, Result, saturate(Strength));
+}
+
+//@snippet BridgeDepthFade
+// @desc     Soft-particle depth fade. Returns 1 when PixelDepth is FadeDistance or more behind
+//           the scene geometry, 0 when touching it. Clamp to avoid division by zero.
+// @sig      float BridgeDepthFade(float PixelDepth, float SceneDepth, float FadeDistance)
+// @fl       SM5
+// @inst     ~4
+float BridgeDepthFade(float PixelDepth, float SceneDepth, float FadeDistance)
+{
+	float D = max(SceneDepth - PixelDepth, 0.0);
+	return saturate(D / max(FadeDistance, 1e-5));
+}
+
+//@snippet BridgeDitherLODTransition
+// @desc     Dithered alpha cutoff for LOD cross-fade. PixelPos in pixels (from ScreenPosition *
+//           ViewSize); Opacity is the target alpha. Returns a hard-edged [0,1] mask suitable for
+//           use on an OpacityMask pin. Stable in screen space; compatible with TAA when used as
+//           a static dither rather than per-frame.
+// @sig      float BridgeDitherLODTransition(float Opacity, float2 PixelPos)
+// @fl       SM5
+// @inst     ~10
+float BridgeDitherLODTransition(float Opacity, float2 PixelPos)
+{
+	// 4x4 Bayer matrix, rescaled to [0,1).
+	int X = int(floor(PixelPos.x)) & 3;
+	int Y = int(floor(PixelPos.y)) & 3;
+	int Idx = X + Y * 4;
+	const float Bayer[16] = {
+		 0.0/16, 8.0/16, 2.0/16,10.0/16,
+		12.0/16, 4.0/16,14.0/16, 6.0/16,
+		 3.0/16,11.0/16, 1.0/16, 9.0/16,
+		15.0/16, 7.0/16,13.0/16, 5.0/16
+	};
+	return Opacity > Bayer[Idx] ? 1.0 : 0.0;
+}
+
+//@snippet BridgeHash21
+// @desc     Fast per-pixel 2D → 1D hash (iq / Hugo Elias style). Result in [0,1).
+// @sig      float BridgeHash21(float2 P)
+// @fl       SM5
+// @inst     ~6
+float BridgeHash21(float2 P)
+{
+	P = frac(P * float2(234.34, 435.345));
+	P += dot(P, P + 34.23);
+	return frac(P.x * P.y);
+}
+
+//@snippet BridgeHash31
+// @desc     Fast 3D → 1D hash for procedural noise. Result in [0,1).
+// @sig      float BridgeHash31(float3 P)
+// @fl       SM5
+// @inst     ~8
+float BridgeHash31(float3 P)
+{
+	P = frac(P * float3(443.8975, 397.2973, 491.1871));
+	P += dot(P.zxy, P.yxz + 19.27);
+	return frac((P.x + P.y) * P.z);
+}
+
+//@snippet BridgeValueNoise3D
+// @desc     Cheap 3D value noise (trilinear interpolation of BridgeHash31 on integer lattice).
+//           Good enough for macro variation on environment materials. [0,1] output.
+// @sig      float BridgeValueNoise3D(float3 Pos)
+// @fl       SM5
+// @inst     ~60
+float BridgeValueNoise3D(float3 Pos)
+{
+	float3 I = floor(Pos);
+	float3 F = frac(Pos);
+	F = F * F * (3.0 - 2.0 * F); // smoothstep
+	float n000 = BridgeHash31(I + float3(0,0,0));
+	float n100 = BridgeHash31(I + float3(1,0,0));
+	float n010 = BridgeHash31(I + float3(0,1,0));
+	float n110 = BridgeHash31(I + float3(1,1,0));
+	float n001 = BridgeHash31(I + float3(0,0,1));
+	float n101 = BridgeHash31(I + float3(1,0,1));
+	float n011 = BridgeHash31(I + float3(0,1,1));
+	float n111 = BridgeHash31(I + float3(1,1,1));
+	float x00 = lerp(n000, n100, F.x);
+	float x10 = lerp(n010, n110, F.x);
+	float x01 = lerp(n001, n101, F.x);
+	float x11 = lerp(n011, n111, F.x);
+	float y0 = lerp(x00, x10, F.y);
+	float y1 = lerp(x01, x11, F.y);
+	return lerp(y0, y1, F.z);
+}
+
+//@snippet BridgeVoronoi2D
+// @desc     2D Voronoi cellular noise — returns closest-cell distance, scaled to roughly [0,1].
+//           Cells param controls grid density (larger = tighter cells).
+// @sig      float BridgeVoronoi2D(float2 UV, float Cells)
+// @fl       SM5
+// @inst     ~70
+float BridgeVoronoi2D(float2 UV, float Cells)
+{
+	float2 P = UV * Cells;
+	float2 IP = floor(P);
+	float2 FP = frac(P);
+	float MinDist = 8.0;
+	for (int y = -1; y <= 1; ++y)
+	{
+		for (int x = -1; x <= 1; ++x)
+		{
+			float2 Neighbor = float2(x, y);
+			float2 Offset = float2(
+				BridgeHash21(IP + Neighbor + float2(0.1, 0.3)),
+				BridgeHash21(IP + Neighbor + float2(0.9, 0.7)));
+			float2 Diff = Neighbor + Offset - FP;
+			MinDist = min(MinDist, dot(Diff, Diff));
+		}
+	}
+	return saturate(sqrt(MinDist));
+}

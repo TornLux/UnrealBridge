@@ -878,3 +878,121 @@ Line prefixes:
 - `* node` — same node, key_props changed (parameter default edited, texture swapped, etc.)
 - `~ node` — same node, position moved
 - `(no changes)` — snapshots identical
+
+---
+
+# HLSL hybrid programming (M2.5)
+
+The bridge ships a shared HLSL snippet library at
+`Plugin/UnrealBridge/Shaders/Private/BridgeSnippets.ush`, registered under the virtual
+path `/Plugin/UnrealBridge/` at plugin startup via `AddShaderSourceDirectoryMapping`.
+
+From a `UMaterialExpressionCustom` node, `#include` the snippets via
+`/Plugin/UnrealBridge/BridgeSnippets.ush` (the `IncludePaths` array) and call any
+snippet function by name from the Code body.
+
+### When to use a Custom node (vs. regular graph)
+
+| Scenario | Use |
+|---|---|
+| Parameter flow that needs MI override | Node graph |
+| `StaticSwitchParameter` permutation | Node graph |
+| Texture sampling (dependency tracking) | Node graph (`TextureSample`) |
+| Material property / ShadingModel wiring | Node graph |
+| Noise / SDF / ACES / TBN math | Custom (snippet library) |
+| `ddx`/`ddy` / `[branch]` / `[unroll]` | Custom |
+| Normal blending, 8+ node algorithm | Custom |
+
+Custom nodes disable UE's per-node constant folding / CSE / DCE for everything
+inside them — `set_material_expression_property` with trivial values goes in the
+graph, not the Custom body.
+
+---
+
+## add_custom_expression(material_path, x, y, input_names, output_type, code, include_paths, description) -> FBridgeAddExpressionResult
+
+**M2.5-2.** Create a `UMaterialExpressionCustom` node fully configured — named inputs,
+HLSL body, output type, include-file list.
+
+```python
+r = L.add_custom_expression(
+    mat, x=-400, y=-100,
+    input_names=["BaseN", "DetailN", "Strength"],
+    output_type="Float3",
+    code="return BridgeBlendAngleCorrectedNormals(BaseN, DetailN, Strength);",
+    include_paths=["/Plugin/UnrealBridge/BridgeSnippets.ush"],
+    description="Detail normal blend (RNM)")
+# Wire inputs by InputName via the standard connect_material_expressions:
+L.connect_material_expressions(mat, base_n.guid,   "", r.guid, "BaseN")
+L.connect_material_expressions(mat, detail_n.guid, "", r.guid, "DetailN")
+L.connect_material_expressions(mat, strength.guid, "", r.guid, "Strength")
+L.connect_material_output(mat, r.guid, "", "Normal")
+```
+
+Parameters:
+
+| Name | Type | Description |
+|---|---|---|
+| `input_names` | list[str] | Names of input pins on the Custom node. Order is preserved. Each name becomes the HLSL variable you reference in `code` |
+| `output_type` | str | `"Float1"` / `"Float2"` / `"Float3"` / `"Float4"` / `"MaterialAttributes"` |
+| `code` | str | HLSL body — typically a single `return BridgeFoo(In0, In1, ...);` call into a snippet, or an inline expression |
+| `include_paths` | list[str] | Virtual paths to `.ush` files to `#include`. Use `"/Plugin/UnrealBridge/BridgeSnippets.ush"` for the shared library |
+| `description` | str | Shown in the node title / docstring |
+
+Returns the standard `FBridgeAddExpressionResult` (same as `add_material_expression`).
+
+---
+
+## list_shared_snippets() -> list[FBridgeShaderSnippet]
+
+**M2.5-4.** Enumerate snippets declared in `BridgeSnippets.ush`. Fast — reads the file
+and parses `//@snippet` headers without loading snippet bodies.
+
+```python
+for s in unreal.UnrealBridgeMaterialLibrary.list_shared_snippets():
+    print(f"{s.name:<40}  {s.instruction_estimate:<5}  {s.description}")
+    print(f"    {s.signature}")
+```
+
+### FBridgeShaderSnippet fields
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | str | e.g. `"BridgeACESTonemap"` |
+| `description` | str | `@desc` line |
+| `signature` | str | Full HLSL function signature |
+| `min_feature_level` | str | `@fl` tag — `"SM5"` / `"SM6"` / `"ES3_1"` |
+| `instruction_estimate` | str | `@inst` tag — rough instruction count as authored |
+| `source` | str | Function body. Empty in `list_*` results; populated by `get_shared_snippet` |
+
+---
+
+## get_shared_snippet(name) -> FBridgeShaderSnippet
+
+**M2.5-4.** Same struct as above but with `source` populated with the function body
+(useful when an agent wants to read the implementation before deciding to call it).
+Returns a struct with empty `name` if the snippet does not exist.
+
+---
+
+## First-wave snippets (BridgeSnippets.ush)
+
+| Name | Signature | Instr. |
+|---|---|---|
+| `BridgeLuminance` | `float BridgeLuminance(float3 Color)` | ~3 |
+| `BridgeUnpackORM` | `float3 BridgeUnpackORM(float3 Packed)` | ~0 |
+| `BridgePackORM` | `float3 BridgePackORM(float O, float R, float M)` | ~0 |
+| `BridgeACESTonemap` | `float3 BridgeACESTonemap(float3 Color)` | ~10 |
+| `BridgeBlendAngleCorrectedNormals` | `float3 BridgeBlendAngleCorrectedNormals(float3 BaseN, float3 DetailN, float Strength)` | ~14 |
+| `BridgeDepthFade` | `float BridgeDepthFade(float PixelDepth, float SceneDepth, float FadeDistance)` | ~4 |
+| `BridgeDitherLODTransition` | `float BridgeDitherLODTransition(float Opacity, float2 PixelPos)` | ~10 |
+| `BridgeHash21` / `BridgeHash31` | `float BridgeHash21(float2 P)` / `BridgeHash31(float3 P)` | ~6 / ~8 |
+| `BridgeValueNoise3D` | `float BridgeValueNoise3D(float3 Pos)` | ~60 |
+| `BridgeVoronoi2D` | `float BridgeVoronoi2D(float2 UV, float Cells)` | ~70 |
+
+All snippets use `Bridge*` prefix to avoid name collisions with engine or user code
+inlined into generated material shaders. To add a new snippet, edit
+`Plugin/UnrealBridge/Shaders/Private/BridgeSnippets.ush` following the header-tag
+format — the parser picks up the new entry automatically on next
+`list_shared_snippets` call (no editor restart needed since the file is read
+on demand).

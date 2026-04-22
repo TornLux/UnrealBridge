@@ -51,6 +51,8 @@
 #include "Serialization/JsonSerializer.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Factories/MaterialFunctionFactoryNew.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/FileHelper.h"
 #include "MaterialEditingLibrary.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Factories/MaterialInstanceConstantFactoryNew.h"
@@ -2807,6 +2809,258 @@ FString UUnrealBridgeMaterialLibrary::DiffMaterialGraphSnapshots(
 		return TEXT("(no changes)");
 	}
 	return FString::Join(Lines, TEXT("\n"));
+}
+
+// ─── M2.5-2: Custom node factory ──────────────────────────────────
+
+namespace BridgeMaterialImpl
+{
+	static ECustomMaterialOutputType ParseCustomOutputType(const FString& Str)
+	{
+		const FString S = Str.ToLower();
+		if (S == TEXT("float1") || S.IsEmpty()) return CMOT_Float1;
+		if (S == TEXT("float2")) return CMOT_Float2;
+		if (S == TEXT("float3")) return CMOT_Float3;
+		if (S == TEXT("float4")) return CMOT_Float4;
+		if (S == TEXT("materialattributes") || S == TEXT("attrs")) return CMOT_MaterialAttributes;
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown custom output type '%s' — falling back to Float1"), *Str);
+		return CMOT_Float1;
+	}
+
+	static FString FindBridgeSnippetsPath()
+	{
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealBridge"));
+		if (!Plugin.IsValid()) return FString();
+		// Must match the mapping in UnrealBridgeModule.cpp.
+		return FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders"), TEXT("Private"), TEXT("BridgeSnippets.ush"));
+	}
+}
+
+FBridgeAddExpressionResult UUnrealBridgeMaterialLibrary::AddCustomExpression(
+	const FString& MaterialPath,
+	int32 X, int32 Y,
+	const TArray<FString>& InputNames,
+	const FString& OutputType,
+	const FString& Code,
+	const TArray<FString>& IncludePaths,
+	const FString& Description)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeAddExpressionResult Result;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		Result.Error = FString::Printf(TEXT("could not load material '%s'"), *MaterialPath);
+		return Result;
+	}
+
+	UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
+		Material, UMaterialExpressionCustom::StaticClass(), X, Y);
+	UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr);
+	if (!Custom)
+	{
+		Result.Error = TEXT("CreateMaterialExpression returned null for UMaterialExpressionCustom");
+		return Result;
+	}
+
+	Custom->OutputType = ParseCustomOutputType(OutputType);
+	Custom->Code = Code;
+	Custom->Description = Description;
+	Custom->IncludeFilePaths = IncludePaths;
+
+	Custom->Inputs.Reset(InputNames.Num());
+	for (const FString& Name : InputNames)
+	{
+		FCustomInput In;
+		In.InputName = FName(*Name);
+		Custom->Inputs.Add(In);
+	}
+
+	if (!Custom->MaterialExpressionGuid.IsValid())
+	{
+		Custom->MaterialExpressionGuid = FGuid::NewGuid();
+	}
+
+	Custom->PostEditChange();
+	Material->MarkPackageDirty();
+
+	Result.bSuccess = true;
+	Result.Guid = Custom->MaterialExpressionGuid;
+	Result.ResolvedClass = Custom->GetClass()->GetName();
+	return Result;
+}
+
+// ─── M2.5-4: snippet catalogue ────────────────────────────────────
+
+namespace BridgeMaterialImpl
+{
+	struct FParsedSnippet
+	{
+		FString Name;
+		FString Description;
+		FString Signature;
+		FString MinFeatureLevel;
+		FString InstructionEstimate;
+		int32 BodyStartLine = INDEX_NONE;
+		int32 BodyEndLine = INDEX_NONE;  // line of the final closing brace
+	};
+
+	static TArray<FParsedSnippet> ParseBridgeSnippets(const TArray<FString>& Lines)
+	{
+		TArray<FParsedSnippet> Out;
+
+		auto ExtractTag = [](const FString& L, const FString& Tag) -> FString
+		{
+			const FString Needle = FString::Printf(TEXT("// @%s"), *Tag);
+			int32 Idx = L.Find(Needle);
+			if (Idx == INDEX_NONE) return FString();
+			FString Rest = L.Mid(Idx + Needle.Len());
+			Rest.TrimStartAndEndInline();
+			return Rest;
+		};
+
+		const int32 N = Lines.Num();
+		for (int32 i = 0; i < N; ++i)
+		{
+			const FString& L = Lines[i];
+			int32 MarkerIdx = L.Find(TEXT("//@snippet "));
+			if (MarkerIdx == INDEX_NONE)
+			{
+				continue;
+			}
+
+			FParsedSnippet S;
+			S.Name = L.Mid(MarkerIdx + FString(TEXT("//@snippet ")).Len());
+			S.Name.TrimStartAndEndInline();
+
+			// Skip pseudo-placeholders from documentation examples: <name>, <...>, etc.
+			if (S.Name.IsEmpty() || S.Name.StartsWith(TEXT("<")))
+			{
+				continue;
+			}
+
+			// Scan following comment-header lines for tag metadata.
+			int32 j = i + 1;
+			for (; j < N; ++j)
+			{
+				const FString& LL = Lines[j];
+				const FString Trimmed = LL.TrimStart();
+				if (!Trimmed.StartsWith(TEXT("//")))
+				{
+					break;
+				}
+				if (Trimmed.Contains(TEXT("@desc")))  S.Description = ExtractTag(LL, TEXT("desc"));
+				else if (Trimmed.Contains(TEXT("@sig"))) S.Signature = ExtractTag(LL, TEXT("sig"));
+				else if (Trimmed.Contains(TEXT("@fl")))  S.MinFeatureLevel = ExtractTag(LL, TEXT("fl"));
+				else if (Trimmed.Contains(TEXT("@inst"))) S.InstructionEstimate = ExtractTag(LL, TEXT("inst"));
+				// Handle multi-line @desc values — if the description line ends mid-sentence,
+				// subsequent bare comment lines append to it with a space. Safe for a light-weight
+				// parser: we only treat explicit @tag lines specially.
+			}
+
+			// Body: starts at j (first non-comment line, expect the function signature line),
+			// ends at matching closing brace of the function.
+			S.BodyStartLine = j;
+			int32 BraceDepth = 0;
+			bool bSawOpen = false;
+			for (int32 k = j; k < N; ++k)
+			{
+				const FString& BodyLine = Lines[k];
+				for (int32 c = 0; c < BodyLine.Len(); ++c)
+				{
+					const TCHAR Ch = BodyLine[c];
+					if (Ch == TEXT('{')) { BraceDepth++; bSawOpen = true; }
+					else if (Ch == TEXT('}')) { BraceDepth--; if (bSawOpen && BraceDepth == 0) { S.BodyEndLine = k; break; } }
+				}
+				if (S.BodyEndLine != INDEX_NONE) break;
+			}
+
+			Out.Add(MoveTemp(S));
+			// Continue scan past the function body.
+			if (S.BodyEndLine != INDEX_NONE)
+			{
+				i = S.BodyEndLine;
+			}
+		}
+		return Out;
+	}
+}
+
+TArray<FBridgeShaderSnippet> UUnrealBridgeMaterialLibrary::ListSharedSnippets()
+{
+	using namespace BridgeMaterialImpl;
+
+	TArray<FBridgeShaderSnippet> Out;
+
+	const FString SnippetsPath = FindBridgeSnippetsPath();
+	if (SnippetsPath.IsEmpty())
+	{
+		return Out;
+	}
+	TArray<FString> Lines;
+	if (!FFileHelper::LoadFileToStringArray(Lines, *SnippetsPath))
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: could not read BridgeSnippets.ush at '%s'"), *SnippetsPath);
+		return Out;
+	}
+
+	for (const FParsedSnippet& P : ParseBridgeSnippets(Lines))
+	{
+		FBridgeShaderSnippet S;
+		S.Name = P.Name;
+		S.Description = P.Description;
+		S.Signature = P.Signature;
+		S.MinFeatureLevel = P.MinFeatureLevel;
+		S.InstructionEstimate = P.InstructionEstimate;
+		Out.Add(MoveTemp(S));
+	}
+	return Out;
+}
+
+FBridgeShaderSnippet UUnrealBridgeMaterialLibrary::GetSharedSnippet(const FString& Name)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeShaderSnippet Out;
+
+	const FString SnippetsPath = FindBridgeSnippetsPath();
+	if (SnippetsPath.IsEmpty())
+	{
+		return Out;
+	}
+	TArray<FString> Lines;
+	if (!FFileHelper::LoadFileToStringArray(Lines, *SnippetsPath))
+	{
+		return Out;
+	}
+
+	for (const FParsedSnippet& P : ParseBridgeSnippets(Lines))
+	{
+		if (!P.Name.Equals(Name, ESearchCase::IgnoreCase))
+		{
+			continue;
+		}
+		Out.Name = P.Name;
+		Out.Description = P.Description;
+		Out.Signature = P.Signature;
+		Out.MinFeatureLevel = P.MinFeatureLevel;
+		Out.InstructionEstimate = P.InstructionEstimate;
+
+		// Assemble body from BodyStartLine..BodyEndLine inclusive.
+		if (P.BodyStartLine != INDEX_NONE && P.BodyEndLine != INDEX_NONE)
+		{
+			TArray<FString> BodyLines;
+			for (int32 k = P.BodyStartLine; k <= P.BodyEndLine && k < Lines.Num(); ++k)
+			{
+				BodyLines.Add(Lines[k]);
+			}
+			Out.Source = FString::Join(BodyLines, TEXT("\n"));
+		}
+		break;
+	}
+	return Out;
 }
 
 bool UUnrealBridgeMaterialLibrary::CompileMaterial(

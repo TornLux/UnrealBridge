@@ -1,7 +1,10 @@
 #include "UnrealBridgeModule.h"
 #include "UnrealBridgeServer.h"
 #include "Interfaces/IMainFrameModule.h"
+#include "Interfaces/IPluginManager.h"
 #include "Modules/ModuleManager.h"
+#include "ShaderCore.h"
+#include "Misc/Paths.h"
 
 // Forward decls for the debug-hook registration that lives in the blueprint
 // library's .cpp (keeps the delegate handle private while still letting the
@@ -19,6 +22,23 @@ void FUnrealBridgeModule::StartupModule()
 	// Subscribe to FBlueprintCoreDelegates::OnScriptException so breakpoint hits
 	// are captured into the LastBreakpointHit snapshot table.
 	BridgeDebugState::Register();
+
+	// Map /Plugin/UnrealBridge/ -> this plugin's Shaders/ dir so UMaterialExpressionCustom
+	// nodes can #include "/Plugin/UnrealBridge/BridgeSnippets.ush" and friends.
+	{
+		TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("UnrealBridge"));
+		if (Plugin.IsValid())
+		{
+			// Map the virtual path directly at the Private/ subdir so Custom-node includes
+			// look clean: /Plugin/UnrealBridge/BridgeSnippets.ush rather than /Private/BridgeSnippets.ush.
+			const FString ShaderDir = FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders"), TEXT("Private"));
+			if (FPaths::DirectoryExists(ShaderDir))
+			{
+				AddShaderSourceDirectoryMapping(TEXT("/Plugin/UnrealBridge"), ShaderDir);
+				UE_LOG(LogTemp, Log, TEXT("UnrealBridge: registered shader dir '%s' under /Plugin/UnrealBridge"), *ShaderDir);
+			}
+		}
+	}
 
 	Server = MakeShared<FUnrealBridgeServer>();
 

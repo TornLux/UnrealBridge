@@ -580,6 +580,35 @@ struct FBridgeMaterialGraphOpResult
 	int32 FailedAtIndex = -1;
 };
 
+/** Metadata for an HLSL snippet shipped in BridgeSnippets.ush (M2.5). */
+USTRUCT(BlueprintType)
+struct FBridgeShaderSnippet
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Description;
+
+	/** Full HLSL function signature line. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Signature;
+
+	/** "SM5" / "SM6" / "ES3_1". */
+	UPROPERTY(BlueprintReadOnly)
+	FString MinFeatureLevel;
+
+	/** Rough instruction-count estimate (as authored in the header comment). */
+	UPROPERTY(BlueprintReadOnly)
+	FString InstructionEstimate;
+
+	/** Full function body — only populated by get_shared_snippet; list_shared_snippets leaves it empty. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Source;
+};
+
 /** One property to set on an expression (for batched SetMaterialExpressionProperties). */
 USTRUCT(BlueprintType)
 struct FBridgeExpressionPropSet
@@ -984,4 +1013,48 @@ public:
 	static FString DiffMaterialGraphSnapshots(
 		const FString& BeforeJson,
 		const FString& AfterJson);
+
+	/**
+	 * M2.5-2: Add a UMaterialExpressionCustom node configured with named inputs, an HLSL
+	 * body, output type, and include paths for BridgeSnippets.ush (or any other .ush).
+	 *
+	 * Typical agent flow:
+	 *   1. Discover an available snippet: list_shared_snippets / get_shared_snippet
+	 *   2. add_custom_expression(mat, x, y,
+	 *          input_names=["BaseN", "DetailN", "Strength"],
+	 *          output_type="Float3",
+	 *          code='return BridgeBlendAngleCorrectedNormals(BaseN, DetailN, Strength);',
+	 *          include_paths=["/Plugin/UnrealBridge/BridgeSnippets.ush"],
+	 *          description="Detail normal blend (RNM)")
+	 *   3. Connect ops wire each named input by its InputName via connect_material_expressions.
+	 *
+	 * OutputType values: "Float1" / "Float2" / "Float3" / "Float4" / "MaterialAttributes".
+	 *
+	 * Because the Custom node's pin names come from the InputNames array, the order in
+	 * that array is also the input pin order, and agents should use the names — not
+	 * indices — when wiring.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeAddExpressionResult AddCustomExpression(
+		const FString& MaterialPath,
+		int32 X, int32 Y,
+		const TArray<FString>& InputNames,
+		const FString& OutputType,
+		const FString& Code,
+		const TArray<FString>& IncludePaths,
+		const FString& Description);
+
+	/**
+	 * M2.5-4: Enumerate the snippets declared in BridgeSnippets.ush. Fast — reads the file
+	 * once, parses the //@snippet headers, returns metadata without function bodies.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static TArray<FBridgeShaderSnippet> ListSharedSnippets();
+
+	/**
+	 * M2.5-4: Fetch one snippet by name including its full function body.
+	 * Returns a struct with .name empty if not found.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeShaderSnippet GetSharedSnippet(const FString& Name);
 };
