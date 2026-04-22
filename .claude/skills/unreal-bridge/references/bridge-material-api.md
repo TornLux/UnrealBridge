@@ -263,3 +263,99 @@ for vp in info.vector_parameters:
 ### Notes
 
 - **MPC at runtime** — these defaults are the *authored* values. At runtime / PIE, the effective values live in `UWorld::GetParameterCollectionInstance(MPC)`. MPC write APIs (design-time default edit + runtime instance mutation) land in M6.
+
+---
+
+## get_material_graph(material_path) -> FBridgeMaterialGraph
+
+**M1-2.** The full expression graph for a `UMaterial` or `UMaterialFunction`: every node with its class, position, caption, pin names, and key properties, plus every wire between expressions, plus — for `UMaterial` — the main-property wiring (BaseColor / Metallic / Normal / WorldPositionOffset / ...).
+
+This is the primary "read the shader" function. Use it before any optimization / edit task to know what you're modifying; use it after an edit to diff what changed.
+
+Connections reference expressions by `MaterialExpressionGuid` and pins by **name** (not index). Output connections reference the material property by enum name (`"BaseColor"` / `"Metallic"` / etc.).
+
+```python
+g = unreal.UnrealBridgeMaterialLibrary.get_material_graph('/Game/Materials/M_MyMaster')
+
+# Per-node summary
+for n in g.nodes:
+    print(f"[{n.class_name}] guid={n.guid}  pos=({n.x},{n.y})")
+    print(f"  caption: {n.caption}")
+    if n.key_properties:
+        print(f"  props: {n.key_properties}")
+    print(f"  in={list(n.input_names)}  out={list(n.output_names)}")
+
+# Where the main outputs come from
+for c in g.output_connections:
+    print(f"{c.dst_property_name} <- src_guid={c.src_guid} ({c.src_output_name or 'default'})")
+
+# All expression→expression edges
+for c in g.connections:
+    print(f"{c.src_guid}[{c.src_output_name or 'default'}] --> "
+          f"{c.dst_guid}[{c.dst_input_name}]")
+```
+
+### FBridgeMaterialGraph fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `found` | bool | `False` if the path could not be loaded or the asset is neither `UMaterial` nor `UMaterialFunction` |
+| `path` | str | Full object path |
+| `is_material_function` | bool | `True` if the asset is a `UMaterialFunction` — in that case `output_connections` will be empty |
+| `nodes` | list[FBridgeMaterialGraphNode] | All expression nodes, in declaration order |
+| `connections` | list[FBridgeMaterialGraphConnection] | Expression → expression wires |
+| `output_connections` | list[FBridgeMaterialGraphConnection] | For `UMaterial` only: wires into `BaseColor` / `Metallic` / etc. `dst_guid` is the invalid (all-zero) GUID; `dst_property_name` is the enum name without the `MP_` prefix |
+
+### FBridgeMaterialGraphNode fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `guid` | FGuid | `MaterialExpressionGuid` — stable across reloads, what connections reference |
+| `class_name` | str | UE class name with `UMaterialExpression` / `MaterialExpression` prefix stripped (e.g. `"Constant3Vector"`, `"TextureSampleParameter2D"`) |
+| `x` / `y` | int | Editor-space position (`MaterialExpressionEditorX` / `Y`) |
+| `caption` | str | First line of `UMaterialExpression::GetCaption()` — what the node displays as its title (class-dependent; subclasses override) |
+| `desc` | str | The comment set on the node (`UMaterialExpression::Desc`) |
+| `input_names` | list[str] | Input pin names. `"None"` (string) = anonymous default input |
+| `output_names` | list[str] | Output pin names. Single-output nodes typically list `["None"]`. Multi-output nodes like `TextureSample` list `["RGB", "R", "G", "B", "A", "RGBA"]` |
+| `key_properties` | str | Class-specific k=v pairs (semicolon-separated) covering the most relevant fields. See "Supported key_properties" below |
+
+### FBridgeMaterialGraphConnection fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `src_guid` | FGuid | Source expression `MaterialExpressionGuid` |
+| `src_output_name` | str | Source pin name (empty or `"None"` if the default output) |
+| `src_output_index` | int | Source pin index (secondary — prefer name) |
+| `dst_guid` | FGuid | Destination expression guid. **Invalid (all-zero) GUID** for entries in `output_connections` — the destination is the material property itself |
+| `dst_input_name` | str | Destination pin name |
+| `dst_input_index` | int | Destination pin index (secondary — prefer name) |
+| `dst_property_name` | str | For `output_connections` only: `"BaseColor"` / `"Metallic"` / `"Roughness"` / `"Normal"` / `"EmissiveColor"` / `"Opacity"` / `"OpacityMask"` / `"WorldPositionOffset"` / `"AmbientOcclusion"` / `"Refraction"` / `"PixelDepthOffset"` / `"SubsurfaceColor"` / `"Tangent"` / `"Anisotropy"` / `"CustomizedUVs0..7"` / `"MaterialAttributes"` / etc. Empty for expression→expression edges |
+
+### Supported `key_properties`
+
+| Expression class | Fields extracted |
+|---|---|
+| `ScalarParameter` | `ParameterName`, `DefaultValue`, `Group`, `SortPriority` |
+| `VectorParameter` | `ParameterName`, `DefaultValue` as `(R,G,B,A)`, `Group` |
+| `StaticSwitchParameter` | `ParameterName`, `DefaultValue` as `True`/`False` |
+| `StaticBoolParameter` | `ParameterName`, `DefaultValue` |
+| `Constant` | `R` |
+| `Constant2Vector` | `R`, `G` |
+| `Constant3Vector` | `Constant` as `(R,G,B)` |
+| `Constant4Vector` | `Constant` as `(R,G,B,A)` |
+| `MaterialFunctionCall` | `MaterialFunction` asset path |
+| `TextureSample` | `Texture` asset path, `SamplerType` |
+| `TextureSampleParameter2D` (and subclasses) | `ParameterName`, `Texture`, `SamplerType` |
+| `Comment` | `Text` (truncated 80 chars), `Size` as `WxH` |
+| `Custom` | `Description`, `CodeLen`, `OutputType`, `NumInputs` (HLSL code body itself not dumped — use a dedicated future call when that is needed) |
+| `FunctionInput` | `InputName`, `InputType`, `SortPriority` |
+| `FunctionOutput` | `OutputName`, `SortPriority` |
+| (other classes) | empty — rely on `caption` |
+
+### Notes
+
+- **Name vs index for pins** — connections always carry both. Prefer name when diffing/applying since reordering pins on a node would shift indices but keep names.
+- **`dst_guid` validity** — for `output_connections` the destination is the material itself, not an expression, so `dst_guid` is the invalid GUID `00000000-0000-0000-0000-000000000000`. Python check: `str(c.dst_guid) == '00000000-0000-0000-0000-000000000000'` or `not c.dst_guid.is_valid()` (if available). In practice callers distinguish by looking at `dst_property_name` being non-empty vs. empty.
+- **Reroute nodes** — appear in `nodes` as class `Reroute`. Their single input/output preserves type; walking through them is the consumer's responsibility.
+- **Material functions inside** — `MaterialFunctionCall` nodes appear once in the parent graph; the function's internal expressions are *not* inlined. Call `get_material_function` / `get_material_graph` on the referenced path for the inner graph.
+- **Main-output properties** — the full enum covers masters' properties (`BaseColor` / `Metallic` / `Roughness` / `Normal` / `EmissiveColor` / `Opacity` / `OpacityMask` / `WorldPositionOffset` / `Refraction` / `AmbientOcclusion` / `PixelDepthOffset` / `SubsurfaceColor` / `Tangent` / `Anisotropy` / `FrontMaterial` / `MaterialAttributes` / `CustomizedUVs0..7` / `CustomData0..1`). Only entries that are actually wired up appear in `output_connections`.

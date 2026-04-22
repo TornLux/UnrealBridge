@@ -7,6 +7,19 @@
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionStaticSwitchParameter.h"
+#include "Materials/MaterialExpressionStaticBoolParameter.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionConstant2Vector.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionConstant4Vector.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "Materials/MaterialExpressionComment.h"
+#include "Materials/MaterialExpressionCustom.h"
+#include "MaterialExpressionIO.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -593,6 +606,214 @@ FBridgeMaterialInstanceChain UUnrealBridgeMaterialLibrary::ListMaterialInstanceC
 	return Chain;
 }
 
+namespace BridgeMaterialImpl
+{
+	static FString StripClassPrefix(const FString& In)
+	{
+		// UMaterialExpressionConstant3Vector -> Constant3Vector
+		FString Out = In;
+		Out.RemoveFromStart(TEXT("UMaterialExpression"));
+		Out.RemoveFromStart(TEXT("MaterialExpression"));
+		return Out;
+	}
+
+	static FString JoinKV(const TArray<TPair<FString, FString>>& Pairs)
+	{
+		FString Out;
+		for (const TPair<FString, FString>& KV : Pairs)
+		{
+			if (!Out.IsEmpty())
+			{
+				Out.Append(TEXT("; "));
+			}
+			Out.Appendf(TEXT("%s=%s"), *KV.Key, *KV.Value);
+		}
+		return Out;
+	}
+
+	static FString TruncateForSummary(const FString& In, int32 MaxLen)
+	{
+		if (In.Len() <= MaxLen)
+		{
+			return In;
+		}
+		return In.Left(MaxLen) + TEXT("...");
+	}
+
+	static FString DescribeExpressionKeyProps(const UMaterialExpression* Expr)
+	{
+		TArray<TPair<FString, FString>> KV;
+
+		if (const UMaterialExpressionScalarParameter* Scalar = Cast<UMaterialExpressionScalarParameter>(Expr))
+		{
+			KV.Emplace(TEXT("ParameterName"), Scalar->ParameterName.ToString());
+			KV.Emplace(TEXT("DefaultValue"), FString::SanitizeFloat(Scalar->DefaultValue));
+			KV.Emplace(TEXT("Group"), Scalar->Group.ToString());
+			KV.Emplace(TEXT("SortPriority"), FString::FromInt(Scalar->SortPriority));
+		}
+		else if (const UMaterialExpressionVectorParameter* Vector = Cast<UMaterialExpressionVectorParameter>(Expr))
+		{
+			KV.Emplace(TEXT("ParameterName"), Vector->ParameterName.ToString());
+			KV.Emplace(TEXT("DefaultValue"), FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"),
+				Vector->DefaultValue.R, Vector->DefaultValue.G, Vector->DefaultValue.B, Vector->DefaultValue.A));
+			KV.Emplace(TEXT("Group"), Vector->Group.ToString());
+		}
+		else if (const UMaterialExpressionStaticSwitchParameter* SSwitch = Cast<UMaterialExpressionStaticSwitchParameter>(Expr))
+		{
+			KV.Emplace(TEXT("ParameterName"), SSwitch->ParameterName.ToString());
+			KV.Emplace(TEXT("DefaultValue"), SSwitch->DefaultValue ? TEXT("True") : TEXT("False"));
+		}
+		else if (const UMaterialExpressionStaticBoolParameter* SBool = Cast<UMaterialExpressionStaticBoolParameter>(Expr))
+		{
+			KV.Emplace(TEXT("ParameterName"), SBool->ParameterName.ToString());
+			KV.Emplace(TEXT("DefaultValue"), SBool->DefaultValue ? TEXT("True") : TEXT("False"));
+		}
+		else if (const UMaterialExpressionConstant* C1 = Cast<UMaterialExpressionConstant>(Expr))
+		{
+			KV.Emplace(TEXT("R"), FString::SanitizeFloat(C1->R));
+		}
+		else if (const UMaterialExpressionConstant2Vector* C2 = Cast<UMaterialExpressionConstant2Vector>(Expr))
+		{
+			KV.Emplace(TEXT("R"), FString::SanitizeFloat(C2->R));
+			KV.Emplace(TEXT("G"), FString::SanitizeFloat(C2->G));
+		}
+		else if (const UMaterialExpressionConstant3Vector* C3 = Cast<UMaterialExpressionConstant3Vector>(Expr))
+		{
+			KV.Emplace(TEXT("Constant"), FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f)"),
+				C3->Constant.R, C3->Constant.G, C3->Constant.B));
+		}
+		else if (const UMaterialExpressionConstant4Vector* C4 = Cast<UMaterialExpressionConstant4Vector>(Expr))
+		{
+			KV.Emplace(TEXT("Constant"), FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"),
+				C4->Constant.R, C4->Constant.G, C4->Constant.B, C4->Constant.A));
+		}
+		else if (const UMaterialExpressionMaterialFunctionCall* MFCall = Cast<UMaterialExpressionMaterialFunctionCall>(Expr))
+		{
+			KV.Emplace(TEXT("MaterialFunction"),
+				MFCall->MaterialFunction ? MFCall->MaterialFunction->GetPathName() : TEXT("None"));
+		}
+		else if (const UMaterialExpressionTextureSampleParameter* TSP = Cast<UMaterialExpressionTextureSampleParameter>(Expr))
+		{
+			KV.Emplace(TEXT("ParameterName"), TSP->ParameterName.ToString());
+			KV.Emplace(TEXT("Texture"), TSP->Texture ? TSP->Texture->GetPathName() : TEXT("None"));
+			KV.Emplace(TEXT("SamplerType"), StaticEnum<EMaterialSamplerType>()->GetNameStringByValue((int64)TSP->SamplerType));
+		}
+		else if (const UMaterialExpressionTextureSample* TS = Cast<UMaterialExpressionTextureSample>(Expr))
+		{
+			KV.Emplace(TEXT("Texture"), TS->Texture ? TS->Texture->GetPathName() : TEXT("None"));
+			KV.Emplace(TEXT("SamplerType"), StaticEnum<EMaterialSamplerType>()->GetNameStringByValue((int64)TS->SamplerType));
+		}
+		else if (const UMaterialExpressionComment* Comment = Cast<UMaterialExpressionComment>(Expr))
+		{
+			KV.Emplace(TEXT("Text"), TruncateForSummary(Comment->Text, 80));
+			KV.Emplace(TEXT("Size"), FString::Printf(TEXT("%dx%d"), Comment->SizeX, Comment->SizeY));
+		}
+		else if (const UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr))
+		{
+			KV.Emplace(TEXT("Description"), Custom->Description);
+			KV.Emplace(TEXT("CodeLen"), FString::FromInt(Custom->Code.Len()));
+			KV.Emplace(TEXT("OutputType"), StaticEnum<ECustomMaterialOutputType>()->GetNameStringByValue((int64)Custom->OutputType));
+			KV.Emplace(TEXT("NumInputs"), FString::FromInt(Custom->Inputs.Num()));
+		}
+		else if (const UMaterialExpressionFunctionInput* FuncIn = Cast<UMaterialExpressionFunctionInput>(Expr))
+		{
+			KV.Emplace(TEXT("InputName"), FuncIn->InputName.ToString());
+			KV.Emplace(TEXT("InputType"), FunctionInputTypeToString(FuncIn->InputType));
+			KV.Emplace(TEXT("SortPriority"), FString::FromInt(FuncIn->SortPriority));
+		}
+		else if (const UMaterialExpressionFunctionOutput* FuncOut = Cast<UMaterialExpressionFunctionOutput>(Expr))
+		{
+			KV.Emplace(TEXT("OutputName"), FuncOut->OutputName.ToString());
+			KV.Emplace(TEXT("SortPriority"), FString::FromInt(FuncOut->SortPriority));
+		}
+
+		return JoinKV(KV);
+	}
+
+	static FString PropertyNameFromEnum(EMaterialProperty Prop)
+	{
+		UEnum* PropEnum = StaticEnum<EMaterialProperty>();
+		if (!PropEnum)
+		{
+			return FString::Printf(TEXT("MP_%d"), (int32)Prop);
+		}
+		FString Raw = PropEnum->GetNameStringByValue((int64)Prop);
+		Raw.RemoveFromStart(TEXT("MP_"));
+		return Raw;
+	}
+
+	static FBridgeMaterialGraphNode BuildGraphNode(UMaterialExpression* Expr)
+	{
+		FBridgeMaterialGraphNode Node;
+		Node.Guid = Expr->MaterialExpressionGuid;
+		Node.ClassName = StripClassPrefix(Expr->GetClass()->GetName());
+		Node.X = Expr->MaterialExpressionEditorX;
+		Node.Y = Expr->MaterialExpressionEditorY;
+		Node.Desc = Expr->Desc;
+
+		TArray<FString> Captions;
+		Expr->GetCaption(Captions);
+		if (Captions.Num() > 0)
+		{
+			Node.Caption = Captions[0];
+		}
+
+		// Input names — use the non-deprecated FExpressionInputIterator (UE 5.5+).
+		for (FExpressionInputIterator It{Expr}; It; ++It)
+		{
+			Node.InputNames.Add(Expr->GetInputName(It.Index).ToString());
+		}
+
+		// Output names
+		for (const FExpressionOutput& Out : Expr->GetOutputs())
+		{
+			Node.OutputNames.Add(Out.OutputName.ToString());
+		}
+
+		Node.KeyProperties = DescribeExpressionKeyProps(Expr);
+
+		return Node;
+	}
+
+	static void CollectConnectionsFromExpressions(
+		const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions,
+		TArray<FBridgeMaterialGraphConnection>& OutConnections)
+	{
+		for (const TObjectPtr<UMaterialExpression>& ExprPtr : Expressions)
+		{
+			UMaterialExpression* Expr = ExprPtr.Get();
+			if (!Expr)
+			{
+				continue;
+			}
+
+			for (FExpressionInputIterator It{Expr}; It; ++It)
+			{
+				FExpressionInput* Input = It.Input;
+				if (!Input || !Input->Expression)
+				{
+					continue;
+				}
+
+				FBridgeMaterialGraphConnection Conn;
+				Conn.SrcGuid = Input->Expression->MaterialExpressionGuid;
+				Conn.SrcOutputIndex = Input->OutputIndex;
+				TArray<FExpressionOutput>& SrcOutputs = Input->Expression->GetOutputs();
+				if (SrcOutputs.IsValidIndex(Input->OutputIndex))
+				{
+					Conn.SrcOutputName = SrcOutputs[Input->OutputIndex].OutputName.ToString();
+				}
+
+				Conn.DstGuid = Expr->MaterialExpressionGuid;
+				Conn.DstInputIndex = It.Index;
+				Conn.DstInputName = Expr->GetInputName(It.Index).ToString();
+
+				OutConnections.Add(MoveTemp(Conn));
+			}
+		}
+	}
+}
+
 FBridgeMaterialParameterCollectionInfo UUnrealBridgeMaterialLibrary::GetMaterialParameterCollection(const FString& CollectionPath)
 {
 	FBridgeMaterialParameterCollectionInfo Info;
@@ -627,4 +848,86 @@ FBridgeMaterialParameterCollectionInfo UUnrealBridgeMaterialLibrary::GetMaterial
 	}
 
 	return Info;
+}
+
+FBridgeMaterialGraph UUnrealBridgeMaterialLibrary::GetMaterialGraph(const FString& MaterialPath)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialGraph Graph;
+
+	UObject* LoadedObj = LoadObject<UObject>(nullptr, *MaterialPath);
+	if (!LoadedObj)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetMaterialGraph could not load '%s'"), *MaterialPath);
+		return Graph;
+	}
+
+	Graph.bFound = true;
+	Graph.Path = LoadedObj->GetPathName();
+
+	TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions;
+
+	if (UMaterial* Mat = Cast<UMaterial>(LoadedObj))
+	{
+		Expressions = Mat->GetExpressions();
+
+		// Main-output wiring — walk EMaterialProperty and emit a connection for each connected slot.
+		// Material can also use MaterialAttributes pin; GetExpressionInputForProperty handles that transparently.
+		UEnum* PropEnum = StaticEnum<EMaterialProperty>();
+		if (PropEnum)
+		{
+			for (int32 EnumIdx = 0; EnumIdx < PropEnum->NumEnums(); ++EnumIdx)
+			{
+				const int64 Val = PropEnum->GetValueByIndex(EnumIdx);
+				if (Val == INDEX_NONE || Val == (int64)MP_MAX)
+				{
+					continue;
+				}
+				const EMaterialProperty Prop = (EMaterialProperty)Val;
+				FExpressionInput* Input = Mat->GetExpressionInputForProperty(Prop);
+				if (!Input || !Input->Expression)
+				{
+					continue;
+				}
+				FBridgeMaterialGraphConnection Conn;
+				Conn.SrcGuid = Input->Expression->MaterialExpressionGuid;
+				Conn.SrcOutputIndex = Input->OutputIndex;
+				TArray<FExpressionOutput>& SrcOutputs = Input->Expression->GetOutputs();
+				if (SrcOutputs.IsValidIndex(Input->OutputIndex))
+				{
+					Conn.SrcOutputName = SrcOutputs[Input->OutputIndex].OutputName.ToString();
+				}
+				Conn.DstGuid = FGuid(); // no dst expression — it's the material itself
+				Conn.DstPropertyName = PropertyNameFromEnum(Prop);
+				Graph.OutputConnections.Add(MoveTemp(Conn));
+			}
+		}
+	}
+	else if (UMaterialFunction* MF = Cast<UMaterialFunction>(LoadedObj))
+	{
+		Graph.bIsMaterialFunction = true;
+		Expressions = MF->GetExpressions();
+	}
+	else
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: GetMaterialGraph: '%s' is neither UMaterial nor UMaterialFunction (%s)"),
+			*MaterialPath, *LoadedObj->GetClass()->GetName());
+		Graph.bFound = false;
+		return Graph;
+	}
+
+	Graph.Nodes.Reserve(Expressions.Num());
+	for (const TObjectPtr<UMaterialExpression>& ExprPtr : Expressions)
+	{
+		if (UMaterialExpression* Expr = ExprPtr.Get())
+		{
+			Graph.Nodes.Add(BuildGraphNode(Expr));
+		}
+	}
+
+	CollectConnectionsFromExpressions(Expressions, Graph.Connections);
+
+	return Graph;
 }

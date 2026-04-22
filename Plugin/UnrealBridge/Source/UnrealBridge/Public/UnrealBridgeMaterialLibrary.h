@@ -316,6 +316,107 @@ struct FBridgeMaterialParameterCollectionInfo
 	TArray<FBridgeMPCVectorParam> VectorParameters;
 };
 
+/** One expression node in a material or material function graph. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialGraphNode
+{
+	GENERATED_BODY()
+
+	/** MaterialExpressionGuid — stable across reloads, what connections reference. */
+	UPROPERTY(BlueprintReadOnly)
+	FGuid Guid;
+
+	/** UMaterialExpression subclass name ("MaterialExpressionConstant3Vector"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ClassName;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 X = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 Y = 0;
+
+	/** First line of UMaterialExpression::GetCaption() — typically the displayed node title. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Caption;
+
+	/** UMaterialExpression::Desc — user comment on the node. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Desc;
+
+	/** Named output pins on this node (empty string if anonymous default output). */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> OutputNames;
+
+	/** Named input pins on this node. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> InputNames;
+
+	/** Class-specific key properties as "k=v;k=v" — ParameterName, DefaultValue, Texture, SamplerType, FunctionPath, Code (truncated) for Custom, etc. */
+	UPROPERTY(BlueprintReadOnly)
+	FString KeyProperties;
+};
+
+/** One wire connecting two expressions (or an expression to a material property output). */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialGraphConnection
+{
+	GENERATED_BODY()
+
+	/** Source expression's MaterialExpressionGuid. */
+	UPROPERTY(BlueprintReadOnly)
+	FGuid SrcGuid;
+
+	/** Name of the output pin on the source expression ("" = default / index 0 anonymous output). */
+	UPROPERTY(BlueprintReadOnly)
+	FString SrcOutputName;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 SrcOutputIndex = 0;
+
+	/** Destination expression's guid. Invalid (all-zero) for material-property output connections (see DstPropertyName). */
+	UPROPERTY(BlueprintReadOnly)
+	FGuid DstGuid;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString DstInputName;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 DstInputIndex = 0;
+
+	/** For wires into main material outputs ("BaseColor" / "Metallic" / ...), the property name. Empty for expression→expression. */
+	UPROPERTY(BlueprintReadOnly)
+	FString DstPropertyName;
+};
+
+/** Result of get_material_graph. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialGraph
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	/** True if the asset is a UMaterialFunction (in which case OutputConnections will be empty). */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsMaterialFunction = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialGraphNode> Nodes;
+
+	/** Expression → expression edges. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialGraphConnection> Connections;
+
+	/** Expression → main material output (BaseColor / Metallic / Normal / ...) edges. Empty for material functions. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialGraphConnection> OutputConnections;
+};
+
 /**
  * Material introspection via UnrealBridge.
  */
@@ -371,4 +472,13 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMaterialParameterCollectionInfo GetMaterialParameterCollection(const FString& CollectionPath);
+
+	/**
+	 * M1-2: Full expression graph for a UMaterial or UMaterialFunction —
+	 * nodes (class / position / caption / key properties / pin names) + connection edges +
+	 * main-output wiring (UMaterial only). Connections identify source/destination by
+	 * MaterialExpressionGuid and pin *name* (not index — names are stable across reorders).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialGraph GetMaterialGraph(const FString& MaterialPath);
 };
