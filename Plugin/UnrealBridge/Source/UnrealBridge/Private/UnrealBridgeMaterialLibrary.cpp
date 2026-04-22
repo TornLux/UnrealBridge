@@ -30,6 +30,17 @@
 #include "RHIDefinitions.h"
 #include "DataDrivenShaderPlatformInfo.h"
 #include "MaterialStatsCommon.h"
+#include "PreviewScene.h"
+#include "Engine/StaticMesh.h"
+#include "Engine/StaticMeshActor.h"
+#include "Components/StaticMeshComponent.h"
+#include "Components/DirectionalLightComponent.h"
+#include "Components/SkyLightComponent.h"
+#include "Engine/TextureRenderTarget2D.h"
+#include "Engine/SceneCapture2D.h"
+#include "Components/SceneCaptureComponent2D.h"
+#include "ImageUtils.h"
+#include "Misc/Paths.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -1175,6 +1186,272 @@ FBridgeMaterialStats UUnrealBridgeMaterialLibrary::GetMaterialStats(
 	Stats.VirtualTextureStackCount = (int32)Resource->GetNumVirtualTextureStacks();
 
 	return Stats;
+}
+
+namespace BridgeMaterialImpl
+{
+	static UStaticMesh* LoadPreviewMesh(const FString& Preset)
+	{
+		FString Path;
+		const FString Key = Preset.ToLower();
+		if (Key.IsEmpty() || Key == TEXT("sphere"))   Path = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+		else if (Key == TEXT("plane"))                Path = TEXT("/Engine/BasicShapes/Plane.Plane");
+		else if (Key == TEXT("cube"))                 Path = TEXT("/Engine/BasicShapes/Cube.Cube");
+		else if (Key == TEXT("cylinder"))             Path = TEXT("/Engine/BasicShapes/Cylinder.Cylinder");
+		else if (Key == TEXT("cone"))                 Path = TEXT("/Engine/BasicShapes/Cone.Cone");
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown preview mesh '%s' — falling back to sphere"), *Preset);
+			Path = TEXT("/Engine/BasicShapes/Sphere.Sphere");
+		}
+		return LoadObject<UStaticMesh>(nullptr, *Path);
+	}
+
+	static void SetupPreviewLighting(FPreviewScene& Scene, const FString& Preset)
+	{
+		const FString Key = Preset.ToLower();
+
+		if (Key.IsEmpty() || Key == TEXT("studio"))
+		{
+			// 3-point directional setup — matches the anim pose-grid capture.
+			UDirectionalLightComponent* Key3P = NewObject<UDirectionalLightComponent>(
+				GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+			Key3P->SetIntensity(4.0f);
+			Key3P->SetLightColor(FLinearColor(1.0f, 0.98f, 0.95f));
+			Scene.AddComponent(Key3P, FTransform(FRotator(-45.0f, 30.0f, 0.0f)));
+
+			UDirectionalLightComponent* Fill3P = NewObject<UDirectionalLightComponent>(
+				GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+			Fill3P->SetIntensity(1.5f);
+			Fill3P->SetLightColor(FLinearColor(0.85f, 0.9f, 1.0f));
+			Scene.AddComponent(Fill3P, FTransform(FRotator(-30.0f, -150.0f, 0.0f)));
+
+			UDirectionalLightComponent* Rim3P = NewObject<UDirectionalLightComponent>(
+				GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+			Rim3P->SetIntensity(2.0f);
+			Rim3P->SetLightColor(FLinearColor(0.95f, 0.95f, 1.0f));
+			Scene.AddComponent(Rim3P, FTransform(FRotator(-20.0f, 180.0f, 0.0f)));
+		}
+		else if (Key == TEXT("hdri") || Key == TEXT("outdoor"))
+		{
+			// Sky + single directional — better for reflective PBR evaluation.
+			USkyLightComponent* Sky = NewObject<USkyLightComponent>(
+				GetTransientPackage(), USkyLightComponent::StaticClass());
+			Sky->SetIntensity(3.0f);
+			Sky->SourceType = ESkyLightSourceType::SLS_CapturedScene;
+			Scene.AddComponent(Sky, FTransform::Identity);
+
+			UDirectionalLightComponent* Sun = NewObject<UDirectionalLightComponent>(
+				GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+			Sun->SetIntensity(6.0f);
+			Sun->SetLightColor(FLinearColor(1.0f, 0.96f, 0.88f));
+			Scene.AddComponent(Sun, FTransform(FRotator(-40.0f, 60.0f, 0.0f)));
+		}
+		else if (Key == TEXT("night"))
+		{
+			UDirectionalLightComponent* Moon = NewObject<UDirectionalLightComponent>(
+				GetTransientPackage(), UDirectionalLightComponent::StaticClass());
+			Moon->SetIntensity(0.3f);
+			Moon->SetLightColor(FLinearColor(0.6f, 0.75f, 1.0f));
+			Scene.AddComponent(Moon, FTransform(FRotator(-65.0f, 45.0f, 0.0f)));
+
+			USkyLightComponent* Sky = NewObject<USkyLightComponent>(
+				GetTransientPackage(), USkyLightComponent::StaticClass());
+			Sky->SetIntensity(0.15f);
+			Sky->SourceType = ESkyLightSourceType::SLS_CapturedScene;
+			Scene.AddComponent(Sky, FTransform::Identity);
+		}
+		else
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: unknown lighting preset '%s' — falling back to studio"), *Preset);
+			SetupPreviewLighting(Scene, TEXT("studio"));
+		}
+	}
+
+	static bool SaveBGRAToPng(
+		const TArray<FColor>& Pixels,
+		int32 Width,
+		int32 Height,
+		const FString& OutPath)
+	{
+		FImage Img;
+		Img.Init(Width, Height, ERawImageFormat::BGRA8, EGammaSpace::sRGB);
+		FColor* Dst = reinterpret_cast<FColor*>(Img.RawData.GetData());
+		// Flip vertically on copy — same reason as the anim pose capture: GPU origin is
+		// bottom-left, PNG wants top-left.
+		const FColor* Src = Pixels.GetData();
+		for (int32 Y = 0; Y < Height; ++Y)
+		{
+			FMemory::Memcpy(
+				Dst + Y * Width,
+				Src + (Height - 1 - Y) * Width,
+				Width * sizeof(FColor));
+		}
+
+		FString Resolved = OutPath;
+		if (FPaths::IsRelative(Resolved))
+		{
+			Resolved = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir(), Resolved);
+		}
+		return FImageUtils::SaveImageByExtension(*Resolved, Img, /*CompressionQuality=*/ 0);
+	}
+
+	static bool RenderMaterialPreview(
+		const FString& MaterialPath,
+		const FString& MeshPreset,
+		const FString& LightingPreset,
+		int32 Resolution,
+		float CameraYawDeg,
+		float CameraPitchDeg,
+		float CameraDistance,
+		const FString& OutPngPath,
+		bool bShaderComplexity)
+	{
+		UMaterialInterface* MatInterface = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+		if (!MatInterface)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: PreviewMaterial could not load '%s'"), *MaterialPath);
+			return false;
+		}
+
+		UStaticMesh* PreviewMesh = LoadPreviewMesh(MeshPreset);
+		if (!PreviewMesh)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: PreviewMaterial failed to load preview mesh for preset '%s'"), *MeshPreset);
+			return false;
+		}
+
+		const int32 Res = FMath::Clamp(Resolution > 0 ? Resolution : 512, 32, 4096);
+
+		FPreviewScene::ConstructionValues CVS;
+		CVS.SetCreatePhysicsScene(false);
+		CVS.SetTransactional(false);
+		FPreviewScene PreviewScene(CVS);
+		UWorld* PreviewWorld = PreviewScene.GetWorld();
+		if (!PreviewWorld)
+		{
+			return false;
+		}
+
+		SetupPreviewLighting(PreviewScene, LightingPreset);
+
+		UStaticMeshComponent* Comp = NewObject<UStaticMeshComponent>(
+			GetTransientPackage(), UStaticMeshComponent::StaticClass());
+		Comp->SetStaticMesh(PreviewMesh);
+		Comp->SetMaterial(0, MatInterface);
+		PreviewScene.AddComponent(Comp, FTransform::Identity);
+
+		// Compute framing: use the mesh bounds radius + requested / auto distance.
+		const FBoxSphereBounds Bounds = PreviewMesh->GetBounds();
+		const float Radius = FMath::Max(Bounds.SphereRadius, 1.0f);
+
+		constexpr float FOVDeg = 35.0f;
+		const float AutoDistance = Radius / FMath::Tan(FMath::DegreesToRadians(FOVDeg * 0.5f));
+		const float Distance = CameraDistance > 0.0f ? CameraDistance : AutoDistance;
+
+		// Polar → cartesian camera position. Yaw rotates around Z, pitch up from equator.
+		const float YawRad = FMath::DegreesToRadians(CameraYawDeg);
+		const float PitchRad = FMath::DegreesToRadians(CameraPitchDeg);
+		const FVector CamOffset(
+			FMath::Cos(PitchRad) * FMath::Cos(YawRad),
+			FMath::Cos(PitchRad) * FMath::Sin(YawRad),
+			FMath::Sin(PitchRad));
+		const FVector Origin = Bounds.Origin;
+		const FVector CamLoc = Origin + CamOffset * Distance;
+		const FRotator CamRot = (Origin - CamLoc).Rotation();
+
+		FActorSpawnParameters SpawnInfo;
+		SpawnInfo.ObjectFlags |= RF_Transient;
+		SpawnInfo.Name = MakeUniqueObjectName(PreviewWorld, ASceneCapture2D::StaticClass(), TEXT("BridgeMatPreviewCam"));
+		ASceneCapture2D* CaptureActor = PreviewWorld->SpawnActor<ASceneCapture2D>(CamLoc, CamRot, SpawnInfo);
+		if (!CaptureActor || !CaptureActor->GetCaptureComponent2D())
+		{
+			return false;
+		}
+
+		UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(
+			GetTransientPackage(),
+			MakeUniqueObjectName(GetTransientPackage(), UTextureRenderTarget2D::StaticClass(), TEXT("BridgeMatPreviewRT")));
+		RT->ClearColor = FLinearColor(0.12f, 0.12f, 0.13f, 1.0f);
+		RT->bAutoGenerateMips = false;
+		RT->InitCustomFormat(Res, Res, PF_B8G8R8A8, /*bForceLinearGamma=*/ false);
+		RT->UpdateResourceImmediate(true);
+
+		USceneCaptureComponent2D* SCC = CaptureActor->GetCaptureComponent2D();
+		SCC->ProjectionType = ECameraProjectionMode::Perspective;
+		SCC->FOVAngle = FOVDeg;
+		SCC->CaptureSource = ESceneCaptureSource::SCS_FinalColorLDR;
+		SCC->bCaptureEveryFrame = false;
+		SCC->bCaptureOnMovement = false;
+		SCC->TextureTarget = RT;
+
+		if (bShaderComplexity)
+		{
+			// Toggle ShaderComplexity in the capture's show flags — SCS_FinalColorLDR
+			// reads back the post-processed frame, which honours this view mode.
+			// Use SetShowFlagSettings to avoid the UE 5.5 deprecation on direct field access.
+			TArray<FEngineShowFlagsSetting> Settings = SCC->GetShowFlagSettings();
+			FEngineShowFlagsSetting Setting;
+			Setting.ShowFlagName = TEXT("ShaderComplexity");
+			Setting.Enabled = true;
+			Settings.Add(Setting);
+			SCC->SetShowFlagSettings(Settings);
+		}
+
+		SCC->CaptureScene();
+		FlushRenderingCommands();
+
+		TArray<FColor> Pixels;
+		FTextureRenderTargetResource* Res2 = RT->GameThread_GetRenderTargetResource();
+		if (!Res2)
+		{
+			CaptureActor->Destroy();
+			return false;
+		}
+		FReadSurfaceDataFlags ReadFlags(RCM_UNorm);
+		ReadFlags.SetLinearToGamma(false);
+		if (!Res2->ReadPixels(Pixels, ReadFlags) || Pixels.Num() != Res * Res)
+		{
+			CaptureActor->Destroy();
+			return false;
+		}
+
+		const bool bSaved = SaveBGRAToPng(Pixels, Res, Res, OutPngPath);
+		CaptureActor->Destroy();
+		return bSaved;
+	}
+}
+
+bool UUnrealBridgeMaterialLibrary::PreviewMaterial(
+	const FString& MaterialPath,
+	const FString& Mesh,
+	const FString& Lighting,
+	int32 Resolution,
+	float CameraYawDeg,
+	float CameraPitchDeg,
+	float CameraDistance,
+	const FString& OutPngPath)
+{
+	return BridgeMaterialImpl::RenderMaterialPreview(
+		MaterialPath, Mesh, Lighting, Resolution,
+		CameraYawDeg, CameraPitchDeg, CameraDistance,
+		OutPngPath, /*bShaderComplexity=*/ false);
+}
+
+bool UUnrealBridgeMaterialLibrary::PreviewMaterialComplexity(
+	const FString& MaterialPath,
+	const FString& Mesh,
+	const FString& Lighting,
+	int32 Resolution,
+	float CameraYawDeg,
+	float CameraPitchDeg,
+	float CameraDistance,
+	const FString& OutPngPath)
+{
+	return BridgeMaterialImpl::RenderMaterialPreview(
+		MaterialPath, Mesh, Lighting, Resolution,
+		CameraYawDeg, CameraPitchDeg, CameraDistance,
+		OutPngPath, /*bShaderComplexity=*/ true);
 }
 
 TArray<FString> UUnrealBridgeMaterialLibrary::GetMaterialCompileErrors(

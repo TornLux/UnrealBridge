@@ -569,4 +569,45 @@ public:
 		const FString& MaterialPath,
 		const FString& FeatureLevel,
 		const FString& Quality);
+
+	/**
+	 * M1-6: Render a preview of a Material on a standard mesh in an isolated FPreviewScene
+	 * and save as PNG. The scene has its own lights (3-point or HDRI-style) — no dependency
+	 * on the current level.
+	 *
+	 * @param MaterialPath  Material or MI to preview.
+	 * @param Mesh          "sphere" / "plane" / "cube" / "cylinder" — engine basic shapes.
+	 * @param Lighting      "studio" (3-point directional) / "hdri" (skylight + single dir).
+	 * @param Resolution    Pixel square edge (e.g. 512). Clamped to [32, 4096].
+	 * @param CameraYawDeg  Orbit azimuth around the mesh. 0 = front.
+	 * @param CameraPitchDeg Orbit elevation. 0 = horizontal, +90 looks down.
+	 * @param CameraDistance Distance from mesh center, cm. 0 = auto (2× mesh radius / tan(FOV/2)).
+	 * @param OutPngPath    Where to write the PNG. Relative paths resolve to project root.
+	 * @return True on success, false on any failure (logs to LogTemp).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool PreviewMaterial(
+		const FString& MaterialPath,
+		const FString& Mesh,
+		const FString& Lighting,
+		int32 Resolution,
+		float CameraYawDeg,
+		float CameraPitchDeg,
+		float CameraDistance,
+		const FString& OutPngPath);
+
+	/**
+	 * M1-7: Same as PreviewMaterial but with the ShaderComplexity view mode enabled.
+	 * Output is the green→red heatmap UE's Shader Complexity viewmode produces.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool PreviewMaterialComplexity(
+		const FString& MaterialPath,
+		const FString& Mesh,
+		const FString& Lighting,
+		int32 Resolution,
+		float CameraYawDeg,
+		float CameraPitchDeg,
+		float CameraDistance,
+		const FString& OutPngPath);
 };

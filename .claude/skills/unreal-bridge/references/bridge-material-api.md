@@ -434,3 +434,57 @@ Parameters match `get_material_stats`. Returns:
 - Empty list — material compiled cleanly (or no shader map yet)
 - Non-empty — each entry is a compile error as reported by the shader map
 - On load failure — a single synthetic entry starting with `"UnrealBridge: could not load material"`
+
+---
+
+## preview_material(material_path, mesh, lighting, resolution, camera_yaw_deg, camera_pitch_deg, camera_distance, out_png_path) -> bool
+
+**M1-6.** Render a preview of a material on a standard mesh in an isolated `FPreviewScene` (no dependency on the active level, PIE, or any actors) and save to PNG. Uses `ASceneCapture2D` with `SCS_FinalColorLDR`, so the PNG is what you'd see in the viewport — full PBR shading, post-processing, tonemapping.
+
+```python
+import os, unreal
+out = os.path.join(unreal.Paths.project_dir(), "temp/previews/my_mat.png").replace("\\", "/")
+ok = unreal.UnrealBridgeMaterialLibrary.preview_material(
+    "/Game/Materials/M_Armor",
+    mesh="sphere", lighting="studio",
+    resolution=512,
+    camera_yaw_deg=30.0, camera_pitch_deg=15.0,
+    camera_distance=0.0,        # 0 = auto-fit to mesh bounds
+    out_png_path=out)
+assert ok, "render failed"
+```
+
+Parameters:
+- `mesh` — `"sphere"` / `"plane"` / `"cube"` / `"cylinder"` / `"cone"`. Engine basic shapes from `/Engine/BasicShapes/`. Unknown name falls back to sphere.
+- `lighting` — `"studio"` (3-point directional, default) / `"hdri"` (sky + single key, better for reflective PBR) / `"night"` (dim). Unknown name falls back to studio.
+- `resolution` — pixel square edge. Clamped to `[32, 4096]`. Default effective = 512.
+- `camera_yaw_deg` — orbit azimuth (Z rotation). 0 = front, 90 = right.
+- `camera_pitch_deg` — orbit elevation. 0 = horizontal, +20 typical for slight tilt-down, +90 top-down, -20 slight tilt-up.
+- `camera_distance` — cm from mesh center. **0 = auto**: Radius / tan(FOV/2) at a 35° FOV, which frames the mesh tightly.
+- `out_png_path` — relative paths resolve against the project root; absolute paths are used as-is.
+
+Returns `True` on success, `False` on any failure (logs via `LogTemp` with details).
+
+### Notes
+
+- **PreviewScene isolation** — creating the scene, rendering, and destroying all happen inside one GameThread call. Previous renders don't linger. Does *not* touch the editor viewport or any opened level.
+- **Throughput** — about 50-100 ms per 512² render on typical hardware. Batching many is fine but each render is a synchronous GameThread stall (expected; you called a sync preview).
+- **Auto distance** — `camera_distance=0` frames the mesh radius at 35° FOV. For MI variants you want at identical framing, pass a fixed distance.
+- **Material instance compile** — when previewing an MI with a static switch or permutation that hasn't been cooked for the preview feature level, the first render triggers a compile; call once to warm it up, then batch subsequent renders.
+- **Expected usage** — pairs with `get_material_stats` for numerical cost and `preview_material_complexity` for heat-map style.
+
+---
+
+## preview_material_complexity(...) -> bool
+
+**M1-7.** Same signature as `preview_material`, but toggles the `ShaderComplexity` show flag on the capture. Renders the shader-complexity visualization rather than the normal shaded output.
+
+**Known limitation (UE 5.7).** `SceneCapture2D`'s simplified renderer only partially honors the `ShaderComplexity` view mode — the flag takes effect (output clearly differs from `preview_material`) but the full green→red heatmap may not render for all material configurations. The quantitative complexity signal lives in `get_material_stats` (instruction counts) and `get_material_graph` (node / edge / sampler inventory). Treat this as a qualitative hint, not a definitive metric.
+
+```python
+ok = unreal.UnrealBridgeMaterialLibrary.preview_material_complexity(
+    "/Game/Materials/M_Armor",
+    "sphere", "studio", 512, 30.0, 15.0, 0.0, out_path)
+```
+
+Returns same contract as `preview_material`.
