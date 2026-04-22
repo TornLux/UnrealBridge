@@ -179,3 +179,87 @@ for p in info.outputs:
 
 - **FText category display** — `library_category` comes from localized `FText`. In non-English UE editor locales the string may render as mojibake in Git Bash / cmd; the value itself is correct. Inspect in Python with `repr()` or write to a file if needed.
 - **Output port types** — intentionally empty in this milestone. M1-2's `get_material_graph` will provide enough graph visibility to resolve output types via upstream tracing; adding type inference here would duplicate work.
+
+---
+
+## list_material_instance_chain(material_path) -> FBridgeMaterialInstanceChain
+
+**M1-5.** Walk MI → parent → ... → UMaterial base. Each layer lists the parameter overrides contributed by *that* layer — useful for debugging which ancestor actually set a value, and for diffing two MIs that share a base.
+
+Accepts either a `UMaterial` (returns a single-element chain) or a `UMaterialInstance` (returns `[MI, ..., parent MIs ..., base UMaterial]`).
+
+```python
+chain = unreal.UnrealBridgeMaterialLibrary.list_material_instance_chain(
+    '/Engine/EngineMaterials/Widget3DPassThrough_Opaque')
+for i, layer in enumerate(chain.layers):
+    tag = 'BASE' if layer.is_base_material else 'MI'
+    print(f"L{i} [{tag}] {layer.name} — {len(layer.override_parameters)} overrides")
+    for p in layer.override_parameters:
+        print(f"    [{p.param_type}] {p.name} = {p.value}")
+```
+
+### FBridgeMaterialInstanceChain fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `found` | bool | `False` if the path could not be loaded |
+| `path` | str | Full path of the leaf asset that was passed in |
+| `layers` | list[FBridgeMaterialInstanceLayer] | Ordered leaf → base. Element 0 is the input asset; last element is the ultimate `UMaterial` |
+
+### FBridgeMaterialInstanceLayer fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` / `path` | str | This layer's asset |
+| `is_base_material` | bool | `True` for the final `UMaterial` leaf of the chain |
+| `override_parameters` | list[FBridgeMaterialParam] | Parameters *explicitly set on this layer*. Always empty for the base `UMaterial` (defaults for master parameters are reported by `get_material_info`, not here). Covers all 5 override tables: Scalar / Vector / DoubleVector / Texture / RuntimeVirtualTexture. |
+
+### Notes
+
+- **Depth cap** — chain walks up to 64 layers deep; any deeper is treated as a pathological cycle and truncated. Real MI chains rarely exceed 3-4 layers.
+- **Use vs. `get_material_instance_parameters`** — that function reports *only the leaf MI's overrides*. This one reports overrides per layer, useful when you need to answer "which ancestor set this value?"
+
+---
+
+## get_material_parameter_collection(collection_path) -> FBridgeMaterialParameterCollectionInfo
+
+**M1-9.** Read scalar + vector parameters from a `UMaterialParameterCollection` with their default values and stable GUIDs.
+
+```python
+info = unreal.UnrealBridgeMaterialLibrary.get_material_parameter_collection(
+    '/Landmass/Landscape/BlueprintBrushes/MPC/MPC_Landscape.MPC_Landscape')
+for sp in info.scalar_parameters:
+    print(f"scalar {sp.name} = {sp.default_value}")
+for vp in info.vector_parameters:
+    c = vp.default_value
+    print(f"vector {vp.name} = ({c.r:.3f}, {c.g:.3f}, {c.b:.3f}, {c.a:.3f})")
+```
+
+### FBridgeMaterialParameterCollectionInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `found` | bool | `False` if the path could not be loaded |
+| `name` / `path` | str | Asset name / full object path |
+| `scalar_parameters` | list[FBridgeMPCScalarParam] | All scalar params |
+| `vector_parameters` | list[FBridgeMPCVectorParam] | All vector params |
+
+### FBridgeMPCScalarParam fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Parameter name (as referenced in material graphs) |
+| `default_value` | float | |
+| `id` | FGuid | Stable across renames; what UE uses internally to resolve params |
+
+### FBridgeMPCVectorParam fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | |
+| `default_value` | FLinearColor | Access channels via `.r .g .b .a` |
+| `id` | FGuid | |
+
+### Notes
+
+- **MPC at runtime** — these defaults are the *authored* values. At runtime / PIE, the effective values live in `UWorld::GetParameterCollectionInstance(MPC)`. MPC write APIs (design-time default edit + runtime instance mutation) land in M6.

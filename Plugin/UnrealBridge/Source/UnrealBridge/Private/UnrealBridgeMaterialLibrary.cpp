@@ -9,6 +9,7 @@
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
+#include "Materials/MaterialParameterCollection.h"
 #include "Engine/Texture.h"
 #include "Engine/SubsurfaceProfile.h"
 #include "VT/RuntimeVirtualTexture.h"
@@ -491,6 +492,139 @@ FBridgeMaterialFunctionInfo UUnrealBridgeMaterialLibrary::GetMaterialFunction(co
 	{
 		return A.SortPriority < B.SortPriority;
 	});
+
+	return Info;
+}
+
+namespace BridgeMaterialImpl
+{
+	static void AppendMILayerOverrides(const UMaterialInstance* MI, FBridgeMaterialInstanceLayer& Layer)
+	{
+		for (const FScalarParameterValue& P : MI->ScalarParameterValues)
+		{
+			FBridgeMaterialParam Param;
+			Param.Name = P.ParameterInfo.Name.ToString();
+			Param.ParamType = TEXT("Scalar");
+			Param.Value = FString::SanitizeFloat(P.ParameterValue);
+			Layer.OverrideParameters.Add(MoveTemp(Param));
+		}
+		for (const FVectorParameterValue& P : MI->VectorParameterValues)
+		{
+			FBridgeMaterialParam Param;
+			Param.Name = P.ParameterInfo.Name.ToString();
+			Param.ParamType = TEXT("Vector");
+			Param.Value = FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"),
+				P.ParameterValue.R, P.ParameterValue.G, P.ParameterValue.B, P.ParameterValue.A);
+			Layer.OverrideParameters.Add(MoveTemp(Param));
+		}
+		for (const FDoubleVectorParameterValue& P : MI->DoubleVectorParameterValues)
+		{
+			FBridgeMaterialParam Param;
+			Param.Name = P.ParameterInfo.Name.ToString();
+			Param.ParamType = TEXT("DoubleVector");
+			Param.Value = P.ParameterValue.ToString();
+			Layer.OverrideParameters.Add(MoveTemp(Param));
+		}
+		for (const FTextureParameterValue& P : MI->TextureParameterValues)
+		{
+			FBridgeMaterialParam Param;
+			Param.Name = P.ParameterInfo.Name.ToString();
+			Param.ParamType = TEXT("Texture");
+			Param.Value = P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None");
+			Layer.OverrideParameters.Add(MoveTemp(Param));
+		}
+		for (const FRuntimeVirtualTextureParameterValue& P : MI->RuntimeVirtualTextureParameterValues)
+		{
+			FBridgeMaterialParam Param;
+			Param.Name = P.ParameterInfo.Name.ToString();
+			Param.ParamType = TEXT("RuntimeVirtualTexture");
+			Param.Value = P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None");
+			Layer.OverrideParameters.Add(MoveTemp(Param));
+		}
+	}
+}
+
+FBridgeMaterialInstanceChain UUnrealBridgeMaterialLibrary::ListMaterialInstanceChain(const FString& MaterialPath)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialInstanceChain Chain;
+
+	UMaterialInterface* Current = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!Current)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: ListMaterialInstanceChain could not load '%s'"), *MaterialPath);
+		return Chain;
+	}
+
+	Chain.bFound = true;
+	Chain.Path = Current->GetPathName();
+
+	// Guard against pathological circular Parent chains: cap at a generous depth.
+	constexpr int32 MaxDepth = 64;
+	int32 Depth = 0;
+	while (Current && Depth++ < MaxDepth)
+	{
+		FBridgeMaterialInstanceLayer Layer;
+		Layer.Name = Current->GetName();
+		Layer.Path = Current->GetPathName();
+
+		if (UMaterialInstance* MI = Cast<UMaterialInstance>(Current))
+		{
+			Layer.bIsBaseMaterial = false;
+			AppendMILayerOverrides(MI, Layer);
+			Chain.Layers.Add(MoveTemp(Layer));
+			Current = MI->Parent;
+		}
+		else if (UMaterial* BaseMat = Cast<UMaterial>(Current))
+		{
+			Layer.bIsBaseMaterial = true;
+			Chain.Layers.Add(MoveTemp(Layer));
+			break;
+		}
+		else
+		{
+			// UMaterialInterface subclass we don't recognize — record and stop.
+			Chain.Layers.Add(MoveTemp(Layer));
+			break;
+		}
+	}
+
+	return Chain;
+}
+
+FBridgeMaterialParameterCollectionInfo UUnrealBridgeMaterialLibrary::GetMaterialParameterCollection(const FString& CollectionPath)
+{
+	FBridgeMaterialParameterCollectionInfo Info;
+
+	UMaterialParameterCollection* MPC = LoadObject<UMaterialParameterCollection>(nullptr, *CollectionPath);
+	if (!MPC)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetMaterialParameterCollection could not load '%s'"), *CollectionPath);
+		return Info;
+	}
+
+	Info.bFound = true;
+	Info.Name = MPC->GetName();
+	Info.Path = MPC->GetPathName();
+
+	for (const FCollectionScalarParameter& P : MPC->ScalarParameters)
+	{
+		FBridgeMPCScalarParam Out;
+		Out.Name = P.ParameterName.ToString();
+		Out.DefaultValue = P.DefaultValue;
+		Out.Id = P.Id;
+		Info.ScalarParameters.Add(MoveTemp(Out));
+	}
+
+	for (const FCollectionVectorParameter& P : MPC->VectorParameters)
+	{
+		FBridgeMPCVectorParam Out;
+		Out.Name = P.ParameterName.ToString();
+		Out.DefaultValue = P.DefaultValue;
+		Out.Id = P.Id;
+		Info.VectorParameters.Add(MoveTemp(Out));
+	}
 
 	return Info;
 }

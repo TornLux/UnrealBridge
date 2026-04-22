@@ -224,6 +224,98 @@ struct FBridgeMaterialFunctionInfo
 	int32 NumExpressions = 0;
 };
 
+/** One layer of an MI → parent → ... → UMaterial chain. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialInstanceLayer
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	/** True for the final UMaterial base; false for all intermediate MIs. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsBaseMaterial = false;
+
+	/** Parameters set *on this layer* (MI overrides). Empty for the base UMaterial — defaults live on the base. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialParam> OverrideParameters;
+};
+
+/** Result of walking an MI up to its UMaterial base. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialInstanceChain
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	/** Ordered leaf → base. Element 0 is the MI passed in; last element is the UMaterial. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialInstanceLayer> Layers;
+};
+
+/** Scalar entry on a UMaterialParameterCollection. */
+USTRUCT(BlueprintType)
+struct FBridgeMPCScalarParam
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	float DefaultValue = 0.f;
+
+	UPROPERTY(BlueprintReadOnly)
+	FGuid Id;
+};
+
+/** Vector entry on a UMaterialParameterCollection. */
+USTRUCT(BlueprintType)
+struct FBridgeMPCVectorParam
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FLinearColor DefaultValue = FLinearColor::Black;
+
+	UPROPERTY(BlueprintReadOnly)
+	FGuid Id;
+};
+
+/** UMaterialParameterCollection metadata. */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialParameterCollectionInfo
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMPCScalarParam> ScalarParameters;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMPCVectorParam> VectorParameters;
+};
+
 /**
  * Material introspection via UnrealBridge.
  */
@@ -265,4 +357,18 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMaterialFunctionInfo GetMaterialFunction(const FString& FunctionPath);
+
+	/**
+	 * M1-5: Walk MI → parent → ... → UMaterial. Each layer lists the parameter overrides it
+	 * contributes (empty for the base UMaterial). The input path may be either a MI or a UMaterial —
+	 * a UMaterial resolves to a single-element chain.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialInstanceChain ListMaterialInstanceChain(const FString& MaterialPath);
+
+	/**
+	 * M1-9: UMaterialParameterCollection scalar + vector parameters with their defaults.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialParameterCollectionInfo GetMaterialParameterCollection(const FString& CollectionPath);
 };
