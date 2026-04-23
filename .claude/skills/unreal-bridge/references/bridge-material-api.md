@@ -1215,7 +1215,8 @@ Fails (returns `False`) if the target material isn't `MaterialDomain=PostProcess
 | `M5-4` | Two or more `TextureSample` / `TextureSampleParameter2D` nodes reading the same texture with the same UV wire — candidate for a shared sample + reroute. |
 | `M5-5` | Mixing `SSM_FromTextureAsset` with `SSM_Wrap_WorldGroupSettings` sibling samples (wastes slots), or dense (≥4) sample blocks all using `SSM_FromTextureAsset` (suggest switching to the shared wrap sampler). |
 | `M5-8` | Shading-model ↔ main-output-wiring consistency. Unlit with no `EmissiveColor`, Unlit with `Metallic`/`Specular`/`Roughness`/`Normal` wired (dead connections), lit without `BaseColor` or `Normal`, Subsurface without `SubsurfaceColor`, ClearCoat without `CustomData0`. Skipped when the material uses `MaterialAttributes`. |
-| `M5-11` | Custom HLSL node body is trivially short (<64 chars / ≤1 newline) — worth inlining as plain graph nodes so UE's compiler can apply constant folding, CSE, and DCE. |
+| `M5-10` | Texture compression ↔ `SamplerType` consistency. `Color` expects BC1/BC3/BC7 + sRGB; `Normal` expects `TC_Normalmap` + non-sRGB; `Masks` / `Linear*` expect non-sRGB. Info-level (not warning) when the texture is an engine placeholder (`/Engine/EngineResources/...`) because MI overrides almost always replace those — the finding auto-resolves when the real texture lands. |
+| `M5-11` | Custom HLSL node body is trivially short (<64 chars / ≤1 newline) AND doesn't include a `.ush` snippet — worth inlining as plain graph nodes so UE's compiler can apply constant folding, CSE, and DCE. Snippet trampolines (`return BridgeXxx(...);` with `IncludeFilePaths`) are exempt. |
 | `M5-12` | Custom HLSL body calls `Texture2DSample` / `SceneTextureLookup` directly — bypasses sampler sharing + dependency tracking. Feed a graph `TextureSample` node's output into the Custom input instead. |
 
 ```python
@@ -1253,7 +1254,7 @@ if r.found:
 
 | Field | Type | Description |
 |---|---|---|
-| `rule_id` | str | Stable rule ID (`"M5-2"`, `"M5-3"`, `"M5-4"`, `"M5-5"`, `"M5-8"`, `"M5-11"`, `"M5-12"`) |
+| `rule_id` | str | Stable rule ID (`"M5-2"`, `"M5-3"`, `"M5-4"`, `"M5-5"`, `"M5-8"`, `"M5-10"`, `"M5-11"`, `"M5-12"`) |
 | `severity` | str | `"error"` / `"warning"` / `"info"` |
 | `message` | str | Short human-readable description |
 | `expression_guid` | FGuid | Offending expression (invalid guid for material-level findings) |

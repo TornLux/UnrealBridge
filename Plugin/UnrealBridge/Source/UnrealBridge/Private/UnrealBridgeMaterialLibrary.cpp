@@ -4305,6 +4305,144 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 		}
 	}
 
+	// ── Rule M5-10: texture compression ↔ sampler-type consistency ─
+	// Every TextureSample references a UTexture asset with both a
+	// CompressionSettings enum and an SRGB bool. The SamplerType enum on
+	// the expression has implicit expectations about both; a mismatch
+	// means UE emits a shader-compile warning at best (wrong channel layout)
+	// or a corrupt-looking render at worst. Flag per-expression so the agent
+	// can pick which to fix.
+	{
+		auto CompressionName = [](TextureCompressionSettings S) -> const TCHAR*
+		{
+			switch (S)
+			{
+			case TC_Default:                  return TEXT("TC_Default");
+			case TC_Normalmap:                return TEXT("TC_Normalmap");
+			case TC_Masks:                    return TEXT("TC_Masks");
+			case TC_Grayscale:                return TEXT("TC_Grayscale");
+			case TC_Alpha:                    return TEXT("TC_Alpha");
+			case TC_HDR:                      return TEXT("TC_HDR");
+			case TC_BC7:                      return TEXT("TC_BC7");
+			case TC_VectorDisplacementmap:    return TEXT("TC_VectorDisplacementmap");
+			case TC_DistanceFieldFont:        return TEXT("TC_DistanceFieldFont");
+			case TC_HalfFloat:                return TEXT("TC_HalfFloat");
+			case TC_LQ:                       return TEXT("TC_LQ");
+			case TC_EditorIcon:               return TEXT("TC_EditorIcon");
+			case TC_HDR_Compressed:           return TEXT("TC_HDR_Compressed");
+			case TC_SingleFloat:              return TEXT("TC_SingleFloat");
+			default:                          return TEXT("TC_Unknown");
+			}
+		};
+		auto SamplerTypeName = [](EMaterialSamplerType ST) -> const TCHAR*
+		{
+			switch (ST)
+			{
+			case SAMPLERTYPE_Color:            return TEXT("Color");
+			case SAMPLERTYPE_Grayscale:        return TEXT("Grayscale");
+			case SAMPLERTYPE_Alpha:            return TEXT("Alpha");
+			case SAMPLERTYPE_Normal:           return TEXT("Normal");
+			case SAMPLERTYPE_Masks:            return TEXT("Masks");
+			case SAMPLERTYPE_DistanceFieldFont:return TEXT("DistanceFieldFont");
+			case SAMPLERTYPE_LinearColor:      return TEXT("LinearColor");
+			case SAMPLERTYPE_LinearGrayscale:  return TEXT("LinearGrayscale");
+			case SAMPLERTYPE_Data:             return TEXT("Data");
+			default:                           return TEXT("Unknown");
+			}
+		};
+		auto IsEnginePlaceholder = [](const FString& Path) -> bool
+		{
+			// Engine 1×1 defaults used by template builders — MI override replaces
+			// the real texture at runtime, so an agent shouldn't be forced to fix
+			// the sampler mismatch on these defaults themselves.
+			return Path.StartsWith(TEXT("/Engine/EngineResources/"))
+				|| Path == TEXT("/Engine/EngineMaterials/DefaultNormal.DefaultNormal")
+				|| Path == TEXT("/Engine/EngineMaterials/DefaultTexture.DefaultTexture");
+		};
+
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			UMaterialExpressionTextureSample* TS = Cast<UMaterialExpressionTextureSample>(Expr);
+			if (!TS || !TS->Texture) continue;
+
+			const UTexture* Tex = TS->Texture;
+			const TextureCompressionSettings Comp = Tex->CompressionSettings;
+			const bool bSRGB = Tex->SRGB;
+			const EMaterialSamplerType ST = TS->SamplerType;
+			const FString TexPath = Tex->GetPathName();
+			const bool bPlaceholder = IsEnginePlaceholder(TexPath);
+			// Engine placeholders → demote warning to info so templates that
+			// default-assign WhiteSquareTexture don't get yelled at.
+			const TCHAR* Severity = bPlaceholder ? TEXT("info") : TEXT("warning");
+
+			auto Emit = [&](const TCHAR* Msg)
+			{
+				EmitFinding(Out.Findings, TEXT("M5-10"), Severity,
+					FString::Printf(TEXT("%s: sampler=%s, texture compression=%s, sRGB=%s"),
+						Msg, SamplerTypeName(ST), CompressionName(Comp),
+						bSRGB ? TEXT("true") : TEXT("false")),
+					Expr->MaterialExpressionGuid,
+					Expr->GetClass()->GetName(),
+					TexPath);
+			};
+
+			switch (ST)
+			{
+			case SAMPLERTYPE_Color:
+				// Color sampler: sRGB=true + BC1/BC3/BC7/Default expected.
+				if (!bSRGB)
+				{
+					Emit(TEXT("Color sampler on a non-sRGB texture — did you mean LinearColor?"));
+				}
+				if (Comp == TC_Normalmap || Comp == TC_Masks || Comp == TC_Grayscale
+					|| Comp == TC_HDR || Comp == TC_HDR_Compressed)
+				{
+					Emit(TEXT("Color sampler but texture compression is data-class (not BC1/BC3/BC7)"));
+				}
+				break;
+			case SAMPLERTYPE_Normal:
+				if (Comp != TC_Normalmap)
+				{
+					Emit(TEXT("Normal sampler but compression isn't TC_Normalmap"));
+				}
+				if (bSRGB)
+				{
+					Emit(TEXT("Normal sampler requires sRGB=false"));
+				}
+				break;
+			case SAMPLERTYPE_Masks:
+				if (Comp != TC_Masks)
+				{
+					Emit(TEXT("Masks sampler but compression isn't TC_Masks"));
+				}
+				if (bSRGB)
+				{
+					Emit(TEXT("Masks sampler requires sRGB=false"));
+				}
+				break;
+			case SAMPLERTYPE_Grayscale:
+				if (bSRGB)
+				{
+					// Grayscale is sRGB by default in UE, so don't flag sRGB=true.
+				}
+				if (Comp != TC_Grayscale)
+				{
+					Emit(TEXT("Grayscale sampler but compression isn't TC_Grayscale"));
+				}
+				break;
+			case SAMPLERTYPE_LinearColor:
+			case SAMPLERTYPE_LinearGrayscale:
+				if (bSRGB)
+				{
+					Emit(TEXT("Linear* sampler requires sRGB=false"));
+				}
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
 	// ── Rule M5-11: trivial Custom nodes ────────────────────────────
 	// Custom blocks lose constant folding / CSE / DCE — tiny bodies are
 	// almost always a net negative vs. equivalent node chains.
