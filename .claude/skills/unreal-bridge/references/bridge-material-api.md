@@ -1129,6 +1129,70 @@ print(L.diff_mi_params(mi_bronze_a, mi_bronze_b))
 
 ---
 
+## analyze_material(material_path, instruction_budget, sampler_budget) -> FBridgeMaterialAnalysis
+
+**M5-1.** Full lint-pass over a Material. Wraps the M1-3 shader stats + M1-4 compile errors with a rules engine that flags common authoring / perf bugs. Runs the following rules (each emits 0+ findings):
+
+| Rule | Checks |
+|---|---|
+| `M5-2` | Instruction count or distinct-texture count exceeds the supplied budget. Skipped when the respective budget is 0. |
+| `M5-3` | Expressions with no path back to any main material output (ignores comments + function-input/output nodes). |
+| `M5-4` | Two or more `TextureSample` / `TextureSampleParameter2D` nodes reading the same texture with the same UV wire — candidate for a shared sample + reroute. |
+| `M5-5` | Mixing `SSM_FromTextureAsset` with `SSM_Wrap_WorldGroupSettings` sibling samples (wastes slots), or dense (≥4) sample blocks all using `SSM_FromTextureAsset` (suggest switching to the shared wrap sampler). |
+| `M5-8` | Shading-model ↔ main-output-wiring consistency. Unlit with no `EmissiveColor`, Unlit with `Metallic`/`Specular`/`Roughness`/`Normal` wired (dead connections), lit without `BaseColor` or `Normal`, Subsurface without `SubsurfaceColor`, ClearCoat without `CustomData0`. Skipped when the material uses `MaterialAttributes`. |
+
+```python
+L = unreal.UnrealBridgeMaterialLibrary
+r = L.analyze_material("/Game/BridgeTemplates/M_Character_Armor",
+                       instruction_budget=250, sampler_budget=10)
+if r.found:
+    print(f"{r.path}  domain={r.material_domain}  models={list(r.shading_models)}")
+    print(f"  instr={r.max_instructions} samplers={r.sampler_count}")
+    for f in r.findings:
+        print(f"  [{f.severity}] {f.rule_id}: {f.message}")
+        if f.expression_class:
+            print(f"      on {f.expression_class} ({f.expression_guid})")
+        if f.detail:
+            print(f"      detail: {f.detail}")
+```
+
+### FBridgeMaterialAnalysis fields
+
+| Field | Type | Description |
+|---|---|---|
+| `found` | bool | `False` if the material couldn't be loaded |
+| `path` | str | Full object path |
+| `material_domain` | str | `"Surface"` / `"PostProcess"` / … |
+| `shading_models` | list[str] | Active shading models (one material can have several in Strata) |
+| `max_instructions` | int | Highest instruction count across all representative shader variants |
+| `sampler_count` | int | Distinct texture-parameter count (upper bound on sampler slots) |
+| `expression_count` | int | Non-comment expression count on the master graph |
+| `instruction_budget` / `sampler_budget` | int | Echoed from the request for downstream reporting |
+| `compile_errors` | list[str] | Shader-map compile errors (same as `get_material_compile_errors`) |
+| `findings` | list[FBridgeMaterialFinding] | Sorted error → warning → info, then by `rule_id` |
+| `shader_stats_ready` | bool | `False` = shader map still compiling; `max_instructions` is unreliable until this flips true |
+
+### FBridgeMaterialFinding fields
+
+| Field | Type | Description |
+|---|---|---|
+| `rule_id` | str | Stable rule ID (`"M5-2"`, `"M5-3"`, `"M5-4"`, `"M5-5"`, `"M5-8"`) |
+| `severity` | str | `"error"` / `"warning"` / `"info"` |
+| `message` | str | Short human-readable description |
+| `expression_guid` | FGuid | Offending expression (invalid guid for material-level findings) |
+| `expression_class` | str | Class of the offending node (`"MaterialExpressionTextureSampleParameter2D"`, ...) |
+| `detail` | str | Free-form extra context — e.g. for M5-4 it carries the `TexturePath|UV=...` group key |
+
+### Budget semantics
+
+`instruction_budget` / `sampler_budget` are **opt-in thresholds**, not defaults. Pass `0` (or just don't supply them) to skip the M5-2 check. Typical values per template type live in the `material-capability-roadmap.md` (character / weapon 250 instr / 10 sampler; environment 200 / 8; foliage 180 / 6; UI 60 / 2; VFX 100 / 4).
+
+### When `shader_stats_ready` is false
+
+Freshly-built masters report `shader_stats_ready=False` and `max_instructions=0` until at least one representative variant is compiled. This is a UE quirk — variants populate lazily on first use / when the material is opened in the editor. In that state the graph-structure rules (M5-3/4/5/8) still fire with accurate results; re-run `analyze_material` after the editor has had a chance to settle to get trustworthy instruction counts.
+
+---
+
 ## Master material templates (M3)
 
 Python packages under `Plugin/UnrealBridge/Content/Python/material_templates/` generate complete AAA-aligned master materials from the M2 / M2.5 primitives. Each module exposes a ``build(...)`` entry point that calls `create_material` → `add_custom_expression` (when needed) → `apply_material_graph_ops` (sync compile) → optional `create_material_instance` + `preview_material`, and returns a stats + budget dict.

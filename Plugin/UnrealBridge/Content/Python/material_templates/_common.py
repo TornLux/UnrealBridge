@@ -324,6 +324,22 @@ def ensure_master_material(path: str,
     return path
 
 
+def save_master(material_path: str) -> bool:
+    """Persist the master material to disk after a build.
+
+    ``apply_material_graph_ops(..., compile=True)`` only recompiles the shader
+    map; the UMaterial itself sits dirty in memory and vanishes on editor
+    restart if never saved. Templates must call this after the flush so the
+    asset survives.
+    """
+    try:
+        return bool(unreal.EditorAssetLibrary.save_asset(material_path,
+                                                         only_if_is_dirty=False))
+    except Exception as e:
+        unreal.log_warning(f"save_master({material_path}) failed: {e}")
+        return False
+
+
 def collect_stats(material_path: str,
                   feature_level: str = "SM5",
                   quality: str = "High") -> Dict[str, Any]:

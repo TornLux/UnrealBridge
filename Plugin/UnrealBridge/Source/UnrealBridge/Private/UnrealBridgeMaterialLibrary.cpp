@@ -15,6 +15,7 @@
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
+#include "Materials/MaterialExpressionTextureBase.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Materials/MaterialExpressionComment.h"
@@ -3641,4 +3642,407 @@ TArray<FString> UUnrealBridgeMaterialLibrary::GetMaterialCompileErrors(
 		Errors = Resource->GetCompileErrors();
 	}
 	return Errors;
+}
+
+
+// ─── M5: analyze_material — lint rules ──────────────────────────────
+
+namespace BridgeMaterialImpl
+{
+	using EProp = EMaterialProperty;
+
+	static void EmitFinding(TArray<FBridgeMaterialFinding>& Out,
+		const TCHAR* RuleId, const TCHAR* Severity,
+		FString Message,
+		const FGuid& Guid = FGuid(),
+		const FString& ExprClass = FString(),
+		const FString& Detail = FString())
+	{
+		FBridgeMaterialFinding F;
+		F.RuleId = RuleId;
+		F.Severity = Severity;
+		F.Message = MoveTemp(Message);
+		F.ExpressionGuid = Guid;
+		F.ExpressionClass = ExprClass;
+		F.Detail = Detail;
+		Out.Add(MoveTemp(F));
+	}
+
+	/** Collect the set of expression guids reachable from any main material output. */
+	static void CollectReachableFromMainOutputs(UMaterial* Material, TSet<FGuid>& OutReachable)
+	{
+		if (!Material) return;
+
+		TArray<UMaterialExpression*> Stack;
+
+		for (int32 i = 0; i < MP_MAX; ++i)
+		{
+			const EProp Prop = (EProp)i;
+			FExpressionInput* In = Material->GetExpressionInputForProperty(Prop);
+			if (In && In->Expression)
+			{
+				Stack.Add(In->Expression);
+			}
+		}
+
+		while (Stack.Num() > 0)
+		{
+			UMaterialExpression* Expr = Stack.Pop(EAllowShrinking::No);
+			if (!Expr) continue;
+			const FGuid& Guid = Expr->MaterialExpressionGuid;
+			if (!Guid.IsValid() || OutReachable.Contains(Guid)) continue;
+			OutReachable.Add(Guid);
+			for (FExpressionInputIterator It{Expr}; It; ++It)
+			{
+				if (It->Expression)
+				{
+					Stack.Add(It->Expression);
+				}
+			}
+		}
+	}
+
+	/** Unique key for a TextureSample node — texture asset + UV source guid (or "default"). */
+	static FString TextureSampleKey(UMaterialExpressionTextureSample* TS)
+	{
+		if (!TS) return FString();
+		const UTexture* Tex = TS->Texture;
+		const FString TexPath = Tex ? Tex->GetPathName() : TEXT("<null>");
+
+		FString UvKey = TEXT("default_uv0");
+		if (TS->Coordinates.Expression)
+		{
+			UvKey = FString::Printf(TEXT("expr=%s:%d"),
+				*TS->Coordinates.Expression->MaterialExpressionGuid.ToString(EGuidFormats::Digits),
+				TS->Coordinates.OutputIndex);
+		}
+		return FString::Printf(TEXT("%s|%s"), *TexPath, *UvKey);
+	}
+
+	static FString SamplerSourceToString(ESamplerSourceMode Mode)
+	{
+		switch (Mode)
+		{
+		case ESamplerSourceMode::SSM_FromTextureAsset:           return TEXT("SSM_FromTextureAsset");
+		case ESamplerSourceMode::SSM_Wrap_WorldGroupSettings:    return TEXT("SSM_Wrap_WorldGroupSettings");
+		case ESamplerSourceMode::SSM_Clamp_WorldGroupSettings:   return TEXT("SSM_Clamp_WorldGroupSettings");
+		default:                                                  return TEXT("Unknown");
+		}
+	}
+
+	static const TCHAR* MaterialPropertyName(EProp Prop)
+	{
+		switch (Prop)
+		{
+		case MP_BaseColor:            return TEXT("BaseColor");
+		case MP_Metallic:             return TEXT("Metallic");
+		case MP_Specular:             return TEXT("Specular");
+		case MP_Roughness:            return TEXT("Roughness");
+		case MP_Anisotropy:           return TEXT("Anisotropy");
+		case MP_EmissiveColor:        return TEXT("EmissiveColor");
+		case MP_Opacity:              return TEXT("Opacity");
+		case MP_OpacityMask:          return TEXT("OpacityMask");
+		case MP_Normal:               return TEXT("Normal");
+		case MP_Tangent:              return TEXT("Tangent");
+		case MP_WorldPositionOffset:  return TEXT("WorldPositionOffset");
+		case MP_SubsurfaceColor:      return TEXT("SubsurfaceColor");
+		case MP_CustomData0:          return TEXT("CustomData0");
+		case MP_CustomData1:          return TEXT("CustomData1");
+		case MP_AmbientOcclusion:     return TEXT("AmbientOcclusion");
+		case MP_Refraction:           return TEXT("Refraction");
+		case MP_PixelDepthOffset:     return TEXT("PixelDepthOffset");
+		case MP_ShadingModel:         return TEXT("ShadingModel");
+		default:                       return TEXT("Unknown");
+		}
+	}
+
+	static bool IsPropertyWired(UMaterial* Material, EProp Prop)
+	{
+		if (!Material) return false;
+		FExpressionInput* In = Material->GetExpressionInputForProperty(Prop);
+		return In && In->Expression != nullptr;
+	}
+}  // namespace BridgeMaterialImpl
+
+
+FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
+	const FString& MaterialPath,
+	int32 InstructionBudget,
+	int32 SamplerBudget)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialAnalysis Out;
+	Out.InstructionBudget = FMath::Max(0, InstructionBudget);
+	Out.SamplerBudget = FMath::Max(0, SamplerBudget);
+
+	UMaterialInterface* MatInterface = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!MatInterface)
+	{
+		return Out;
+	}
+	UMaterial* Material = MatInterface->GetMaterial();
+	if (!Material)
+	{
+		return Out;
+	}
+
+	Out.bFound = true;
+	Out.Path = MatInterface->GetPathName();
+	Out.MaterialDomain = DomainToString(Material->MaterialDomain);
+
+	// Shading models + compile errors + stats (M1-1/M1-3/M1-4 reuse).
+	FMaterialShadingModelField Models = MatInterface->GetShadingModels();
+	for (int32 i = 0; i < MSM_NUM; ++i)
+	{
+		const EMaterialShadingModel SM = (EMaterialShadingModel)i;
+		if (Models.HasShadingModel(SM))
+		{
+			Out.ShadingModels.Add(ShadingModelToString(SM));
+		}
+	}
+
+	// Collect stats (best effort — may report 0 if shader map still compiling).
+	{
+		const ERHIFeatureLevel::Type FeatureLevel = GMaxRHIFeatureLevel;
+		const EMaterialQualityLevel::Type Quality = EMaterialQualityLevel::High;
+
+		const FMaterialResource* Resource = ResolveMaterialResource(MatInterface, FeatureLevel, Quality);
+		if (Resource)
+		{
+			Out.CompileErrors = Resource->GetCompileErrors();
+
+			// Walk representative shader variants via the same helper M1-3 uses;
+			// empty array = shader map still compiling.
+			TArray<FBridgeMaterialShaderStat> Stats;
+			CollectShaderInstructionStats(Resource, Stats);
+			Out.bShaderStatsReady = Stats.Num() > 0;
+			for (const FBridgeMaterialShaderStat& Stat : Stats)
+			{
+				Out.MaxInstructions = FMath::Max(Out.MaxInstructions, Stat.InstructionCount);
+			}
+		}
+	}
+
+	// Count distinct texture parameters (upper bound on sampler slots).
+	{
+		TArray<FMaterialParameterInfo> ParamInfos;
+		TArray<FGuid> ParamGuids;
+		MatInterface->GetAllTextureParameterInfo(ParamInfos, ParamGuids);
+		Out.SamplerCount = ParamInfos.Num();
+	}
+
+	// Walk the graph — collect non-comment expressions for rule scans.
+	TArray<UMaterialExpression*> Expressions;
+	Expressions.Reserve(Material->GetExpressions().Num());
+	for (const TObjectPtr<UMaterialExpression>& ExprPtr : Material->GetExpressions())
+	{
+		UMaterialExpression* Expr = ExprPtr.Get();
+		if (Expr && !Expr->IsA<UMaterialExpressionComment>())
+		{
+			Expressions.Add(Expr);
+		}
+	}
+	Out.ExpressionCount = Expressions.Num();
+
+	// ── Rule M5-2: budget check ─────────────────────────────────────
+	if (Out.InstructionBudget > 0 && Out.bShaderStatsReady && Out.MaxInstructions > Out.InstructionBudget)
+	{
+		EmitFinding(Out.Findings, TEXT("M5-2"), TEXT("warning"),
+			FString::Printf(TEXT("Instruction count %d exceeds budget %d"),
+				Out.MaxInstructions, Out.InstructionBudget));
+	}
+	if (Out.SamplerBudget > 0 && Out.SamplerCount > Out.SamplerBudget)
+	{
+		EmitFinding(Out.Findings, TEXT("M5-2"), TEXT("warning"),
+			FString::Printf(TEXT("Sampler count %d exceeds budget %d"),
+				Out.SamplerCount, Out.SamplerBudget));
+	}
+
+	// ── Rule M5-3: unreachable expressions (back-BFS from main outputs) ─────
+	{
+		TSet<FGuid> Reachable;
+		CollectReachableFromMainOutputs(Material, Reachable);
+
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			if (!Expr->MaterialExpressionGuid.IsValid()) continue;
+			// Ignore function-input / -output (never used in top-level materials
+			// but cheap to guard).
+			if (Expr->IsA<UMaterialExpressionFunctionInput>()) continue;
+			if (Expr->IsA<UMaterialExpressionFunctionOutput>()) continue;
+
+			if (!Reachable.Contains(Expr->MaterialExpressionGuid))
+			{
+				EmitFinding(Out.Findings, TEXT("M5-3"), TEXT("info"),
+					FString::Printf(TEXT("Unused expression %s has no path to a main output"),
+						*Expr->GetClass()->GetName()),
+					Expr->MaterialExpressionGuid,
+					Expr->GetClass()->GetName());
+			}
+		}
+	}
+
+	// ── Rule M5-4: duplicate TextureSample nodes ─────────────────────
+	// Only flag plain `UMaterialExpressionTextureSample` — a
+	// `UMaterialExpressionTextureSampleParameter*`'s default texture is MI-
+	// overridable, so sibling parameters that happen to share a default
+	// WhiteSquareTexture aren't actually redundant at runtime.
+	{
+		TMap<FString, TArray<UMaterialExpression*>> Groups;
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			UMaterialExpressionTextureSample* TS = Cast<UMaterialExpressionTextureSample>(Expr);
+			if (!TS) continue;
+			if (Expr->IsA<UMaterialExpressionTextureSampleParameter>()) continue;
+			const FString Key = TextureSampleKey(TS);
+			if (Key.IsEmpty()) continue;
+			Groups.FindOrAdd(Key).Add(Expr);
+		}
+		for (const auto& Pair : Groups)
+		{
+			if (Pair.Value.Num() < 2) continue;
+			for (UMaterialExpression* Dup : Pair.Value)
+			{
+				EmitFinding(Out.Findings, TEXT("M5-4"), TEXT("warning"),
+					FString::Printf(TEXT("Duplicate texture lookup — %d samples share the same texture + UV"),
+						Pair.Value.Num()),
+					Dup->MaterialExpressionGuid,
+					Dup->GetClass()->GetName(),
+					Pair.Key);
+			}
+		}
+	}
+
+	// ── Rule M5-5: inconsistent SamplerSource across sibling samples ─────
+	// SamplerSource lives on UMaterialExpressionTextureSample (not TextureBase)
+	// — the base class exposes Texture + SamplerType only.
+	{
+		int32 FromAsset = 0;
+		int32 Shared = 0;
+		TArray<UMaterialExpression*> FromAssetNodes;
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			UMaterialExpressionTextureSample* TS = Cast<UMaterialExpressionTextureSample>(Expr);
+			if (!TS) continue;
+			if (TS->SamplerSource == SSM_FromTextureAsset)
+			{
+				++FromAsset;
+				FromAssetNodes.Add(Expr);
+			}
+			else
+			{
+				++Shared;
+			}
+		}
+		// Mixed: some use shared, some don't — each SSM_FromTextureAsset eats a slot.
+		if (FromAsset > 0 && Shared > 0)
+		{
+			for (UMaterialExpression* Node : FromAssetNodes)
+			{
+				EmitFinding(Out.Findings, TEXT("M5-5"), TEXT("info"),
+					TEXT("Mixing SSM_FromTextureAsset with SSM_Wrap_WorldGroupSettings — ")
+					TEXT("switch this one to the shared wrap sampler to free a slot"),
+					Node->MaterialExpressionGuid,
+					Node->GetClass()->GetName(),
+					TEXT("SamplerSource=SSM_FromTextureAsset"));
+			}
+		}
+		// All from-asset + dense (>=4 textures): suggest sharing.
+		else if (FromAsset >= 4 && Shared == 0)
+		{
+			EmitFinding(Out.Findings, TEXT("M5-5"), TEXT("info"),
+				FString::Printf(TEXT("%d texture samples all use SSM_FromTextureAsset — ")
+					TEXT("switch tileable textures to SSM_Wrap_WorldGroupSettings to ")
+					TEXT("collapse them onto one shared sampler."), FromAsset));
+		}
+	}
+
+	// ── Rule M5-8: shading-model ↔ main-output wiring consistency ─────
+	// Skip when the material uses MaterialAttributes — the wiring comes through
+	// MP_MaterialAttributes and per-property probing doesn't apply.
+	if (!Material->bUseMaterialAttributes && Material->MaterialDomain == MD_Surface)
+	{
+		const bool bIsUnlit      = Models.HasShadingModel(MSM_Unlit);
+		const bool bHasLit       = Models.HasShadingModel(MSM_DefaultLit)
+									|| Models.HasShadingModel(MSM_Subsurface)
+									|| Models.HasShadingModel(MSM_PreintegratedSkin)
+									|| Models.HasShadingModel(MSM_ClearCoat)
+									|| Models.HasShadingModel(MSM_SubsurfaceProfile)
+									|| Models.HasShadingModel(MSM_TwoSidedFoliage)
+									|| Models.HasShadingModel(MSM_Hair)
+									|| Models.HasShadingModel(MSM_Cloth)
+									|| Models.HasShadingModel(MSM_Eye);
+
+		// Unlit: EmissiveColor is the only meaningful output; metallic / specular /
+		// roughness / normal wires cost shader instructions for no visual effect.
+		if (bIsUnlit && !bHasLit)
+		{
+			if (!IsPropertyWired(Material, MP_EmissiveColor))
+			{
+				EmitFinding(Out.Findings, TEXT("M5-8"), TEXT("warning"),
+					TEXT("Unlit material has no EmissiveColor wired — it will render pitch-black."));
+			}
+			const EProp LitOnly[] = { MP_Metallic, MP_Specular, MP_Roughness, MP_Normal };
+			for (EProp P : LitOnly)
+			{
+				if (IsPropertyWired(Material, P))
+				{
+					EmitFinding(Out.Findings, TEXT("M5-8"), TEXT("info"),
+						FString::Printf(TEXT("Unlit material has %s wired — the connection is ignored at runtime."),
+							MaterialPropertyName(P)));
+				}
+			}
+		}
+		// DefaultLit (and lit-variants): BaseColor + Normal strongly recommended.
+		else if (bHasLit)
+		{
+			const EProp RequiredBase[] = { MP_BaseColor, MP_Normal };
+			for (EProp P : RequiredBase)
+			{
+				if (!IsPropertyWired(Material, P))
+				{
+					EmitFinding(Out.Findings, TEXT("M5-8"), TEXT("warning"),
+						FString::Printf(TEXT("Lit material is missing a %s wire — fall-back default will be used."),
+							MaterialPropertyName(P)));
+				}
+			}
+			// Subsurface family should wire SubsurfaceColor.
+			if (Models.HasShadingModel(MSM_Subsurface) || Models.HasShadingModel(MSM_PreintegratedSkin)
+				|| Models.HasShadingModel(MSM_TwoSidedFoliage))
+			{
+				if (!IsPropertyWired(Material, MP_SubsurfaceColor))
+				{
+					EmitFinding(Out.Findings, TEXT("M5-8"), TEXT("info"),
+						TEXT("Subsurface shading model with no SubsurfaceColor wire — scatter tint will be white."));
+				}
+			}
+			// ClearCoat uses CustomData0 = ClearCoat amount, CustomData1 = CC roughness.
+			if (Models.HasShadingModel(MSM_ClearCoat))
+			{
+				if (!IsPropertyWired(Material, MP_CustomData0))
+				{
+					EmitFinding(Out.Findings, TEXT("M5-8"), TEXT("info"),
+						TEXT("ClearCoat shading model with no ClearCoat amount (CustomData0) — varnish layer will be absent."));
+				}
+			}
+		}
+	}
+
+	// Sort findings: error → warning → info, then by RuleId.
+	auto SevRank = [](const FString& S) -> int32
+	{
+		if (S == TEXT("error")) return 0;
+		if (S == TEXT("warning")) return 1;
+		return 2;
+	};
+	Out.Findings.Sort([&SevRank](const FBridgeMaterialFinding& A, const FBridgeMaterialFinding& B)
+	{
+		const int32 SA = SevRank(A.Severity);
+		const int32 SB = SevRank(B.Severity);
+		if (SA != SB) return SA < SB;
+		return A.RuleId.Compare(B.RuleId) < 0;
+	});
+
+	return Out;
 }

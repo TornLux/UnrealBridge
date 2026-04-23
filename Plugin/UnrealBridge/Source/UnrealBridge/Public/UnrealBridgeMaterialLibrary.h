@@ -476,6 +476,89 @@ struct FBridgeMaterialStats
 	bool bShaderMapReady = false;
 };
 
+/** One diagnostic emitted by analyze_material (M5). */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialFinding
+{
+	GENERATED_BODY()
+
+	/** Stable rule id ("M5-2", "M5-3", ...). Stable for programmatic filtering. */
+	UPROPERTY(BlueprintReadOnly)
+	FString RuleId;
+
+	/** "info" / "warning" / "error". */
+	UPROPERTY(BlueprintReadOnly)
+	FString Severity;
+
+	/** Short human-readable description. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Message;
+
+	/** Guid of the offending UMaterialExpression (invalid for material-level findings). */
+	UPROPERTY(BlueprintReadOnly)
+	FGuid ExpressionGuid;
+
+	/** Class of the offending expression (empty for material-level findings). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ExpressionClass;
+
+	/** Free-form extra context (e.g. "Texture=.. UV=.. OutPin=.."). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Detail;
+};
+
+/** Result of analyze_material (M5-1). */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialAnalysis
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Path;
+
+	/** Resolved material domain ("Surface" / "PostProcess" / ...). */
+	UPROPERTY(BlueprintReadOnly)
+	FString MaterialDomain;
+
+	/** Shading models present on the material. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> ShadingModels;
+
+	/** Max instructions across all shader variants (0 if shader map not ready). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 MaxInstructions = 0;
+
+	/** Distinct texture-parameter count (upper bound on sampler slots). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 SamplerCount = 0;
+
+	/** Total expression count on the graph (excluding comments / reroutes). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 ExpressionCount = 0;
+
+	/** Budgets echoed back from the analyze call (0 = not enforced). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 InstructionBudget = 0;
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 SamplerBudget = 0;
+
+	/** Compile errors from the shader map, if any. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> CompileErrors;
+
+	/** Ordered error → warning → info, then by RuleId ascending. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgeMaterialFinding> Findings;
+
+	/** False when shader stats couldn't be collected (material still compiling). */
+	UPROPERTY(BlueprintReadOnly)
+	bool bShaderStatsReady = false;
+};
+
 /** Result of a material or MI asset creation (M2-1 / M2-2). */
 USTRUCT(BlueprintType)
 struct FBridgeCreateAssetResult
@@ -1174,4 +1257,35 @@ public:
 	static FString DiffMIParams(
 		const FString& PathA,
 		const FString& PathB);
+
+	/**
+	 * M5-1: Full lint-pass over a Material. Combines M1-3 shader stats + M1-4
+	 * compile errors with a rules engine that flags common authoring / performance
+	 * bugs. Fires the following rules (each emits 0+ findings):
+	 *
+	 *   M5-2  budget       — MaxInstructions > InstructionBudget, or SamplerCount > SamplerBudget
+	 *                        (only when the respective budget is > 0; skip otherwise).
+	 *   M5-3  unreachable  — nodes with no path to any main output via back-BFS from
+	 *                        the MP_* inputs. Comments + reroutes are ignored.
+	 *   M5-4  dup texture  — two or more TextureSample / TextureSampleParameter2D
+	 *                        nodes reading the same texture with the same UV wire
+	 *                        — suggest sharing a single sample.
+	 *   M5-5  sampler src  — mixing SSM_FromTextureAsset and SSM_Wrap_WorldGroupSettings
+	 *                        across sibling texture samples wastes sampler slots
+	 *                        on dense PBR masters.
+	 *   M5-8  shading/wire — DefaultLit missing BaseColor/Normal, Unlit wiring
+	 *                        Metallic/Specular/Roughness (dead connections), etc.
+	 *
+	 * @param InstructionBudget  >0 to enforce; 0 to skip M5-2 instruction check.
+	 * @param SamplerBudget      >0 to enforce; 0 to skip M5-2 sampler check.
+	 *
+	 * bShaderStatsReady=false means the shader map is still compiling — the
+	 * graph-structure rules still ran, but MaxInstructions is unreliable. Call
+	 * again after the compile settles.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialAnalysis AnalyzeMaterial(
+		const FString& MaterialPath,
+		int32 InstructionBudget,
+		int32 SamplerBudget);
 };

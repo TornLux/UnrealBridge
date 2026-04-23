@@ -378,6 +378,9 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Character_Armor",
         raise RuntimeError(
             f"apply_material_graph_ops failed at op #{result.failed_at_index}: "
             f"{result.error}")
+    # Persist the master to disk — compile=True recompiles shaders but leaves
+    # the asset dirty in memory; an editor restart would lose the build.
+    C.save_master(master_path)
 
     # 5. Collect stats + budget check.
     stats = C.collect_stats(master_path) if compile else {}

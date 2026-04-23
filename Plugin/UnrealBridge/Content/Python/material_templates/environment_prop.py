@@ -141,10 +141,10 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Environment_Prop",
         ops.connect("uv0", "", tex, "UVs")
 
     # ---------- static switches ----------------------------------------
-    C.add_static_switch_param(ops, "ss_use_overlay",
-                              X_SWITCH, _row(Y_OVERLAY, 0),
-                              "UseOverlay", default=False,
-                              group="02 Overlay", sort_priority=0)
+    # The overlay switches (ss_bc_ov / ss_rough_ov / ss_metal_ov / ss_normal_ov)
+    # are declared later in the overlay-blend section so each sits next to the
+    # branch it gates — they all share ParameterName="UseOverlay" and drive
+    # the same permutation.
     C.add_static_switch_param(ops, "ss_bc_wet",
                               X_SWITCH, _row(Y_WETNESS - 140, 0),
                               "UseWetness", default=False,
@@ -360,6 +360,7 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Environment_Prop",
         raise RuntimeError(
             f"apply_material_graph_ops failed at op #{result.failed_at_index}: "
             f"{result.error}")
+    C.save_master(master_path)
 
     stats = C.collect_stats(master_path) if compile else {}
     budget = C.check_budget(stats, instr_budget, sampler_budget) if stats else {}
