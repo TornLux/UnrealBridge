@@ -46,6 +46,17 @@ def _rename_prop_kwarg(kw: Dict[str, Any]) -> Dict[str, Any]:
     return {rename.get(k, k): v for k, v in kw.items()}
 
 
+def guid_to_str(guid: Any) -> str:
+    """UE's default ``str(unreal.Guid)`` prints ``<Struct 'Guid' (0x...) {}>``
+    — useless for FGuid::Parse on the C++ side. Use ``.to_string()`` (UE
+    exposes it via StructOps), which returns the 32-hex-char digits form
+    (``EGuidFormats::Digits``) — FGuid::Parse accepts that directly.
+    """
+    if isinstance(guid, str):
+        return guid
+    return str(guid.to_string())
+
+
 class OpList:
     """Accumulator for graph ops with symbolic names.
 
@@ -81,12 +92,25 @@ class OpList:
         return ref
 
     def _ref(self, name_or_ref: str) -> str:
-        """Resolve a symbolic name to its $N ref; pass through literal refs."""
-        if name_or_ref.startswith("$") or (len(name_or_ref) == 36 and "-" in name_or_ref):
+        """Resolve a symbolic name to the underlying ref.
+
+        - Known name → the $N or guid string stored in ``add`` / ``add_literal``.
+        - Starts with ``$`` → literal back-reference, pass through.
+        - Anything else → assumed to be a raw guid string (``FGuid::Parse`` will
+          reject malformed ones on the C++ side).
+        """
+        if name_or_ref in self._names:
+            return self._names[name_or_ref]
+        if name_or_ref.startswith("$"):
             return name_or_ref
-        if name_or_ref not in self._names:
-            raise KeyError(f"OpList: unknown node name '{name_or_ref}'")
-        return self._names[name_or_ref]
+        # Unknown symbolic name — most common cause is a typo in the template.
+        # Raise early so the user sees a Python-side error instead of "bad
+        # dst_ref" buried in op #N.
+        raise KeyError(
+            f"OpList: unknown node name '{name_or_ref}' — "
+            f"did you forget an ops.add('{name_or_ref}', ...) or "
+            f"ops.add_literal(guid, '{name_or_ref}') first?"
+        )
 
     # ---- public ---------------------------------------------------------
 

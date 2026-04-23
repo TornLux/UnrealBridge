@@ -432,13 +432,13 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 
 			const FTCHARToUTF8 RespUtf8(*RespJson);
 			const int32 RespLen = RespUtf8.Length();
-			uint8 LenBuf[4] = {
+			uint8 AuthRespLenBuf[4] = {
 				(uint8)((RespLen >> 24) & 0xFF),
 				(uint8)((RespLen >> 16) & 0xFF),
 				(uint8)((RespLen >> 8) & 0xFF),
 				(uint8)(RespLen & 0xFF),
 			};
-			SendAll(ClientSocket, LenBuf, 4);
+			SendAll(ClientSocket, AuthRespLenBuf, 4);
 			SendAll(ClientSocket, (const uint8*)RespUtf8.Get(), RespLen);
 
 			UE_LOG(LogUnrealBridge, Warning,

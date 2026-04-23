@@ -113,7 +113,7 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Character_Armor",
     )
     if not custom.success:
         raise RuntimeError(f"add_custom_expression failed: {custom.error}")
-    custom_guid_str = str(custom.guid)
+    custom_guid_str = C.guid_to_str(custom.guid)
 
     # 3. Build the ops batch.
     ops = C.OpList()
