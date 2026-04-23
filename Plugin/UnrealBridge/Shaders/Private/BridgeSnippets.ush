@@ -67,21 +67,22 @@ float3 BridgeACESTonemap(float3 Color)
 
 //@snippet BridgeBlendAngleCorrectedNormals
 // @desc     Detail / overlay normal blend using Reoriented Normal Mapping (Barré-Brisebois 2012).
-//           Both inputs are tangent-space normals in [0,1] texture form (will be expanded).
+//           Inputs are tangent-space normals already in [-1,1] (UE SamplerType=Normal output);
+//           output is [-1,1] — wire the result directly to the Material's Normal pin.
 //           Strength fades between pure BaseN (0) and full blend (1).
 // @sig      float3 BridgeBlendAngleCorrectedNormals(float3 BaseN, float3 DetailN, float Strength)
 // @fl       SM5
-// @inst     ~14
+// @inst     ~12
 float3 BridgeBlendAngleCorrectedNormals(float3 BaseN, float3 DetailN, float Strength)
 {
-	// Expand both from [0,1] sample → [-1,1], plus the magic +float3(0,0,1) / -float3(1,1,-1)
-	// trick that makes the dot product give the correct blended normal without building a TBN.
-	float3 t = BaseN.xyz * float3(2.0, 2.0, 2.0) + float3(-1.0, -1.0, 0.0);
-	float3 u = DetailN.xyz * float3(-2.0, -2.0, 2.0) + float3(1.0, 1.0, -1.0);
+	// Reoriented Normal Mapping — algebraically simplified for the case where
+	// both inputs are already in [-1,1] (i.e. already unpacked by UE's normal
+	// sampler). t / u are the rotated frame vectors that make the dot-product
+	// reorient the detail onto the base without an explicit TBN construction.
+	float3 t = float3(BaseN.x,  BaseN.y,  BaseN.z + 1.0);
+	float3 u = float3(-DetailN.x, -DetailN.y, DetailN.z);
 	float3 Blended = t * dot(t, u) / max(t.z, 1e-5) - u;
 	float3 Result = normalize(Blended);
-	// Convert back to [0,1] for the node output.
-	Result = Result * 0.5 + 0.5;
 	return lerp(BaseN, Result, saturate(Strength));
 }
 

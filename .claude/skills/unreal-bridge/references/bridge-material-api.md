@@ -1126,3 +1126,93 @@ print(L.diff_mi_params(mi_bronze_a, mi_bronze_b))
 # ~ Scalar Roughness: 0.5 -> 0.75
 # ~ Vector BaseColor: (R=1.0,G=0.2,B=0.2,A=1.0) -> (R=0.3,G=0.3,B=0.35,A=1.0)
 ```
+
+---
+
+## Master material templates (M3)
+
+Python packages under `Plugin/UnrealBridge/Content/Python/material_templates/` generate complete AAA-aligned master materials from the M2 / M2.5 primitives. Each module exposes a ``build(...)`` entry point that calls `create_material` → `add_custom_expression` (when needed) → `apply_material_graph_ops` (sync compile) → optional `create_material_instance` + `preview_material`, and returns a stats + budget dict.
+
+Invoke from the host via ``bridge.py exec-file -c`` or ``exec``. Templates assume they run inside UE's Python env.
+
+### character_armor.build(...)
+
+**M3-2** — ``M_Character_Armor`` master. PBR core + optional Detail-Normal blend (RNM via `BridgeBlendAngleCorrectedNormals`), Wear mask, Wetness, Emissive, Anisotropy. Every feature is gated by a `StaticSwitchParameter` — default MI has all switches off and compiles to ~80 instructions.
+
+```python
+from material_templates import character_armor
+
+r = character_armor.build(
+    master_path="/Game/BridgeTemplates/M_Character_Armor",
+    mi_path="/Game/BridgeTemplates/MI_Character_Armor_Test",
+    preview_png="character_armor_default.png",
+    rebuild=False,   # True = wipe existing master's expressions and rebuild
+)
+assert r["compile_clean"], r["compile_errors"]
+assert r["max_instructions"] <= 250, r["max_instructions"]
+```
+
+Signature:
+
+| kwarg | default | effect |
+|---|---|---|
+| `master_path` | `/Game/BridgeTemplates/M_Character_Armor` | Master asset path |
+| `mi_path` | `/Game/BridgeTemplates/MI_Character_Armor_Test` | Test MI (pass `None` to skip) |
+| `preview_png` | `None` | PNG path — pass to render a preview of the MI |
+| `preview_mesh` | `sphere` | `preview_material` mesh name |
+| `preview_lighting` | `studio` | `preview_material` lighting preset |
+| `preview_resolution` | `512` | PNG edge in pixels |
+| `preview_camera_yaw` / `pitch` / `distance` | `35 / -15 / 0` | Auto-framed by default (distance=0) |
+| `instr_budget` / `sampler_budget` | `250 / 10` | Used by the budget check in the return dict |
+| `compile` | `True` | Blocks on shader compile and collects stats |
+| `rebuild` | `False` | Wipe & rebuild if the master already exists |
+
+Returns:
+
+| key | type | meaning |
+|---|---|---|
+| `master_path` | str | Resolved master path |
+| `mi_path` | str (optional) | Test MI path |
+| `ops_applied` | int | Number of graph ops applied |
+| `custom_node_guid` | str | FGuid of the HLSL Custom node |
+| `max_instructions` | int | Highest per-variant instruction count |
+| `sampler_count` | int | Distinct texture parameters = upper-bound sampler usage |
+| `compile_errors` | list[str] | Empty on clean compile |
+| `compile_clean` | bool | `len(compile_errors) == 0` |
+| `over_instr` / `over_sampler` / `ok` | bool | Budget pass/fail |
+| `preview_ok` | bool (optional) | Only present when `preview_png` requested |
+| `preview_png` | str (optional) | Echoed path |
+
+Parameter groups exposed in the MI editor (sort-prefixed so the panels stay ordered):
+
+- `01 Base` — BaseColorTint, RoughnessMin, RoughnessMax, MetallicScale, NormalIntensity
+- `02 Normal` — UseDetailNormal
+- `03 Detail` — DetailNormalScale, DetailNormalIntensity
+- `04 Emissive` — UseEmissive, EmissiveTint, EmissiveIntensity
+- `05 Wear` — UseWear (shared across BaseColor + Roughness paths), WearColor, WearRoughness, WearAmount
+- `06 Wetness` — UseWetness (shared), WetnessAmount
+- `07 Anisotropy` — UseAnisotropy, AnisotropyAmount
+- `Textures` — BaseColorTex, ORMTex, NormalTex, DetailNormalTex, EmissiveTex (all share UE's `SSM_Wrap_WorldGroupSettings` global wrap sampler — zero dedicated sampler slots)
+
+Engine default textures (`/Engine/EngineResources/WhiteSquareTexture`, `/Engine/EngineResources/Black`, `/Engine/EngineMaterials/DefaultNormal`) are pre-assigned so a fresh MI compiles and previews cleanly without any author-supplied assets.
+
+### Shared helpers: `_common`
+
+``material_templates._common`` exposes primitives reusable by any template:
+
+| helper | purpose |
+|---|---|
+| `OpList` | Accumulates `FBridgeMaterialGraphOp` entries with symbolic names → resolved to `$N` refs at flush time. Supports `add` / `comment` / `reroute` / `setp` / `connect` / `connect_out` / `add_literal` (for guids produced by calls outside the batch, e.g. Custom nodes). |
+| `add_scalar_param` / `add_vector_param` / `add_static_switch_param` / `add_texture_param_2d` | One-liner parameter-node factories that set ParameterName / Group / SortPriority / defaults / sampler config in a single `set_prop` burst. |
+| `ensure_master_material(path, ..., rebuild=False)` | Create-or-clear helper. Raises on pre-existing master unless `rebuild=True`, in which case it wipes every expression (safe for dependent MIs — overrides re-resolve by name). |
+| `clear_material_graph(path) -> int` | Iterates `get_material_graph` + `delete_material_expression`; returns deletion count. |
+| `collect_stats(path)` | Reads `get_material_stats` + `get_material_info`, returns `{max_instructions, sampler_count, vt_stack_count, compile_errors, shaders, num_expressions, ...}`. |
+| `check_budget(stats, instr, sampler)` | Compares collected stats to a template budget and returns `{over_instr, over_sampler, compile_clean, ok, ...}`. |
+
+### Authoring a new template
+
+1. New module under `Plugin/UnrealBridge/Content/Python/material_templates/<name>.py` (or inside a subpackage).
+2. Define `build(...)` → returns a dict like character_armor does.
+3. Use `C.OpList` + `C.add_*_param` helpers for consistency with other templates.
+4. If the template needs HLSL, prefer a shared snippet in `BridgeSnippets.ush` + `add_custom_expression` (always separate from `apply_material_graph_ops` — register the returned guid via `ops.add_literal(str(guid), "name")` before referencing it in connects).
+5. Sync the plugin (`sync_plugin.bat`) before the editor sees the new module.
