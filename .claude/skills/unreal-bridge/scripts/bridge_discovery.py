@@ -158,7 +158,14 @@ def select(endpoints: List[Endpoint],
     if not endpoints:
         raise DiscoveryError(
             "no UnrealBridge editors found on the LAN (multicast probe timed out). "
-            "Start the editor, or pass --endpoint=host:port to bypass discovery."
+            "Check — in this order:\n"
+            "  1. UE editor is running (and loaded past the splash screen).\n"
+            "  2. The UnrealBridge plugin is installed in that project's "
+            "Plugins/ folder AND enabled in the .uproject.\n"
+            "  3. Multicast isn't being dropped by a VPN / virtual NIC — if "
+            "everything else is fine, pass --endpoint=127.0.0.1:<port>, "
+            "reading <port> from the editor log line "
+            "`LogUnrealBridge: Listening on 127.0.0.1:<port>`."
         )
 
     if project_filter and project_filter != "*":

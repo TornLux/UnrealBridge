@@ -8,6 +8,18 @@ allowed-tools: Bash Read Write Edit Glob Grep
 
 Execute Python code directly inside a running Unreal Engine 5.7 editor. The bridge auto-discovers the editor via UDP multicast (`239.255.42.99:9876`) so the TCP data port is picked by the OS at runtime — zero port-conflict across multiple editors.
 
+## Preconditions (check before first use)
+
+Three things must all be true for `bridge.py` to reach the editor. If any `bridge.py` call returns `discovery: no UnrealBridge editors found`, walk this list with the user in order — don't start troubleshooting Python or firewalls first.
+
+1. **Plugin is installed in the target UE project.** The plugin source lives in `Plugin/UnrealBridge/` in the repo that ships this skill. It must be copied into the user's `<UEProject>/Plugins/UnrealBridge/` (the repo ships `sync_plugin.bat` for this; the user has to edit its `DST=` line once). `ls <UEProject>/Plugins/UnrealBridge/UnrealBridge.uplugin` should exist.
+2. **Plugin is enabled in the .uproject.** The `EnabledByDefault: true` in `UnrealBridge.uplugin` covers this on a fresh plugin install, but a previously-disabled plugin stays disabled. Check the `"Plugins"` block of `<UEProject>/<Project>.uproject` for an `{"Name":"UnrealBridge", "Enabled":false}` override and flip it to `true` if present.
+3. **Editor is running and past MainFrame init.** `bridge.py ping` returns `"ready": true` in the JSON when the editor's window is fully up. `"ready": false` means the editor is still loading — wait 10–60s and retry. The editor also has to be the one built against a project that has the plugin — if the user launched a different `.uproject`, discovery will find nothing.
+
+Python requirements: **Python 3.7+** with the stdlib — no third-party packages. The skill scripts use only `socket`, `json`, `struct`, `uuid`, `hashlib`, `subprocess`, `pathlib`.
+
+If you see `discovery: no UnrealBridge editors found on the LAN`, work the list above. Only fall back to `--endpoint=127.0.0.1:<port>` (reading the port from the editor log line `LogUnrealBridge: Listening on 127.0.0.1:<port>`) if you've confirmed the plugin is loaded but multicast is somehow being dropped (rare — corporate VPNs, virtual network interfaces).
+
 ## Bridge CLI
 
 ```bash
@@ -41,7 +53,7 @@ If two or more editors are running, the first `exec` / `ping` fails with a list 
 
 ### When discovery fails
 
-Discovery uses UDP multicast; some firewalls / VPNs / tightly-segmented networks block it. Symptoms: `discovery: no UnrealBridge editors found on the LAN`. Work around with an explicit `--endpoint=127.0.0.1:<port>` — read the port from the editor's `LogUnrealBridgeModule: Server up on 127.0.0.1:XXXXX` startup line, or from the editor's Output Log.
+Discovery uses UDP multicast; some firewalls / VPNs / tightly-segmented networks block it. Symptoms: `discovery: no UnrealBridge editors found on the LAN`. First walk the **Preconditions** section above — the vast majority of discovery failures are "editor not running" or "plugin not enabled", not networking. If those all check out, fall back to an explicit `--endpoint=127.0.0.1:<port>` — read `<port>` from the editor's startup log (`LogUnrealBridge: Listening on 127.0.0.1:<port>`).
 
 ### Diagnosing a stuck `exec`
 
