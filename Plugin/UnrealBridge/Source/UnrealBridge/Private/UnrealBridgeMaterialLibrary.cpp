@@ -20,6 +20,7 @@
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
 #include "Engine/PostProcessVolume.h"
 #include "EngineUtils.h"
+#include "MaterialGraph/MaterialGraphNode.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionReroute.h"
@@ -802,10 +803,14 @@ namespace BridgeMaterialImpl
 			Node.Caption = Captions[0];
 		}
 
-		// Input names — use the non-deprecated FExpressionInputIterator (UE 5.5+).
+		// Input names — emit UI-shortened forms ("UVs" not "Coordinates",
+		// "A > B" not "AGreaterThanB") so what the agent reads here matches
+		// both the Material Editor UI *and* what ConnectMaterialExpressions
+		// expects on the write side.
 		for (FExpressionInputIterator It{Expr}; It; ++It)
 		{
-			Node.InputNames.Add(Expr->GetInputName(It.Index).ToString());
+			const FName Short = UMaterialGraphNode::GetShortenPinName(Expr->GetInputName(It.Index));
+			Node.InputNames.Add(Short.IsNone() ? FString() : Short.ToString());
 		}
 
 		// Output names
@@ -850,7 +855,10 @@ namespace BridgeMaterialImpl
 
 				Conn.DstGuid = Expr->MaterialExpressionGuid;
 				Conn.DstInputIndex = It.Index;
-				Conn.DstInputName = Expr->GetInputName(It.Index).ToString();
+				{
+					const FName ShortDst = UMaterialGraphNode::GetShortenPinName(Expr->GetInputName(It.Index));
+					Conn.DstInputName = ShortDst.IsNone() ? FString() : ShortDst.ToString();
+				}
 
 				OutConnections.Add(MoveTemp(Conn));
 			}
@@ -1631,14 +1639,24 @@ namespace BridgeMaterialImpl
 
 	// ─── Pin name normalization + lookup ──────────────────────────
 
+	/**
+	 * Normalize a pin name for comparison.
+	 *
+	 * "" and "None" both mean the default anonymous output. We also apply
+	 * UMaterialGraphNode::GetShortenPinName so the bridge accepts both the
+	 * raw UPROPERTY name ("Coordinates") and the UI-shortened name ("UVs") —
+	 * the engine's own ConnectMaterialExpressions only accepts the short form,
+	 * so without this normalization the bridge would silently reject the raw
+	 * field name that `get_material_graph` used to return.
+	 */
 	static FString NormalizePinName(const FString& Name)
 	{
-		// "" and "None" both mean the default anonymous output — CE treats empty as default.
-		if (Name.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+		if (Name.IsEmpty() || Name.Equals(TEXT("None"), ESearchCase::IgnoreCase))
 		{
 			return FString();
 		}
-		return Name;
+		const FName Short = UMaterialGraphNode::GetShortenPinName(FName(*Name));
+		return Short.IsNone() ? FString() : Short.ToString();
 	}
 
 	/** Find the index of an input pin by name on an expression, or INDEX_NONE. */
