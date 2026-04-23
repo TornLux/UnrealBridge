@@ -39,14 +39,36 @@ FUnrealBridgeServer::~FUnrealBridgeServer()
 
 bool FUnrealBridgeServer::Start(int32 Port)
 {
+	FStartConfig Cfg;
+	Cfg.Port = Port;
+	return Start(Cfg);
+}
+
+bool FUnrealBridgeServer::Start(const FStartConfig& Config)
+{
 	if (bIsRunning)
 	{
 		return true;
 	}
 
-	ListenPort = Port;
+	// Safety gate: binding to a non-localhost interface exposes Python exec to
+	// the LAN. Refuse if the caller didn't supply a token.
+	const bool bIsLoopback =
+		(Config.BindAddress == FIPv4Address(127, 0, 0, 1)) ||
+		(Config.BindAddress == FIPv4Address::InternalLoopback);
+	if (!bIsLoopback && Config.Token.IsEmpty())
+	{
+		UE_LOG(LogUnrealBridge, Error,
+			TEXT("Refusing to bind %s:%d without a token — set -UnrealBridgeToken=... ")
+			TEXT("or use -UnrealBridgeBind=127.0.0.1"),
+			*Config.BindAddress.ToString(), Config.Port);
+		return false;
+	}
 
-	FIPv4Endpoint Endpoint(FIPv4Address(127, 0, 0, 1), ListenPort);
+	BindAddressStr = Config.BindAddress.ToString();
+	Token = Config.Token;
+
+	const FIPv4Endpoint Endpoint(Config.BindAddress, Config.Port);
 
 	// 100ms poll (vs default 1s) collapses the accept-race window that produced
 	// intermittent WSAECONNABORTED 10053 on clients. bInReusable=true lets Start()
@@ -60,9 +82,25 @@ bool FUnrealBridgeServer::Start(int32 Port)
 
 	if (!Listener.IsValid() || !Listener->IsActive())
 	{
-		UE_LOG(LogUnrealBridge, Error, TEXT("Failed to create TCP listener on port %d"), ListenPort);
+		UE_LOG(LogUnrealBridge, Error, TEXT("Failed to create TCP listener on %s:%d"),
+			*BindAddressStr, Config.Port);
 		Listener.Reset();
 		return false;
+	}
+
+	// When Port=0 the kernel picks a free ephemeral port — read it back so
+	// clients and the discovery responder know where to connect.
+	ListenPort = Config.Port;
+	if (Listener->GetSocket() != nullptr)
+	{
+		TSharedRef<FInternetAddr> LocalAddr =
+			ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM)->CreateInternetAddr();
+		Listener->GetSocket()->GetAddress(*LocalAddr);
+		const int32 ResolvedPort = LocalAddr->GetPort();
+		if (ResolvedPort > 0)
+		{
+			ListenPort = ResolvedPort;
+		}
 	}
 
 	Listener->OnConnectionAccepted().BindRaw(this, &FUnrealBridgeServer::OnConnectionAccepted);
@@ -103,7 +141,9 @@ bool FUnrealBridgeServer::Start(int32 Port)
 	});
 
 	bIsRunning = true;
-	UE_LOG(LogUnrealBridge, Log, TEXT("Listening on 127.0.0.1:%d"), ListenPort);
+	UE_LOG(LogUnrealBridge, Log, TEXT("Listening on %s:%d%s"),
+		*BindAddressStr, ListenPort,
+		HasToken() ? TEXT(" (token auth enforced)") : TEXT(""));
 	return true;
 }
 
@@ -360,6 +400,53 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 	// 4. Build response
 	TSharedRef<FJsonObject> Response = MakeShared<FJsonObject>();
 	Response->SetStringField(TEXT("id"), RequestId);
+
+	// 4a. Token auth — only enforced when the server was started with a token
+	// (i.e. binding to a non-localhost interface). Constant-time compare so a
+	// timing oracle can't whittle the secret out.
+	if (!Token.IsEmpty())
+	{
+		FString GivenToken;
+		Request->TryGetStringField(TEXT("token"), GivenToken);
+
+		const auto* A = (const TCHAR*)*Token;
+		const auto* B = (const TCHAR*)*GivenToken;
+		const int32 LenA = Token.Len();
+		const int32 LenB = GivenToken.Len();
+		uint32 Diff = (uint32)(LenA ^ LenB);
+		const int32 Cmp = FMath::Min(LenA, LenB);
+		for (int32 i = 0; i < Cmp; ++i)
+		{
+			Diff |= (uint32)(A[i] ^ B[i]);
+		}
+
+		if (Diff != 0)
+		{
+			Response->SetBoolField(TEXT("success"), false);
+			Response->SetStringField(TEXT("output"), TEXT(""));
+			Response->SetStringField(TEXT("error"), TEXT("unauthorized: missing or invalid token"));
+
+			FString RespJson;
+			TSharedRef<TJsonWriter<>> RespWriter = TJsonWriterFactory<>::Create(&RespJson);
+			FJsonSerializer::Serialize(Response, RespWriter);
+
+			const FTCHARToUTF8 RespUtf8(*RespJson);
+			const int32 RespLen = RespUtf8.Length();
+			uint8 LenBuf[4] = {
+				(uint8)((RespLen >> 24) & 0xFF),
+				(uint8)((RespLen >> 16) & 0xFF),
+				(uint8)((RespLen >> 8) & 0xFF),
+				(uint8)(RespLen & 0xFF),
+			};
+			SendAll(ClientSocket, LenBuf, 4);
+			SendAll(ClientSocket, (const uint8*)RespUtf8.Get(), RespLen);
+
+			UE_LOG(LogUnrealBridge, Warning,
+				TEXT("[%s] unauthorized request id=%s (bad token)"),
+				*EndpointStr, *RequestId);
+			return;
+		}
+	}
 
 	FString Command;
 	Request->TryGetStringField(TEXT("command"), Command); // optional

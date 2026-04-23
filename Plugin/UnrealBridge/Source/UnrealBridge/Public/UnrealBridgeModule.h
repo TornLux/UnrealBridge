@@ -4,6 +4,7 @@
 #include "Modules/ModuleManager.h"
 
 class FUnrealBridgeServer;
+class FBridgeDiscoveryService;
 
 class FUnrealBridgeModule : public IModuleInterface
 {
@@ -13,4 +14,5 @@ public:
 
 private:
 	TSharedPtr<FUnrealBridgeServer> Server;
+	TUniquePtr<FBridgeDiscoveryService> Discovery;
 };

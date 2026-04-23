@@ -8,6 +8,7 @@
 #include "Async/Future.h"
 #include "Containers/Set.h"
 #include "Misc/ScopeLock.h"
+#include "Interfaces/IPv4/IPv4Address.h"
 
 /**
  * TCP server that listens for incoming connections and executes Python scripts
@@ -23,17 +24,50 @@
 class FUnrealBridgeServer : public TSharedFromThis<FUnrealBridgeServer>
 {
 public:
+	/** Configuration for Start — replaces the legacy `int32 Port` signature. */
+	struct FStartConfig
+	{
+		/** Interface to bind. 127.0.0.1 is local-only; 0.0.0.0 is all interfaces. */
+		FIPv4Address BindAddress = FIPv4Address(127, 0, 0, 1);
+
+		/**
+		 * TCP port. `0` = let the OS pick a free ephemeral port; the actual
+		 * bound port is read back via GetBoundPort() after Start() succeeds.
+		 */
+		int32 Port = 0;
+
+		/**
+		 * Optional token. When non-empty, every inbound JSON request must carry
+		 * a matching `"token": "..."` field or it is rejected with "unauthorized".
+		 * Always required when BindAddress is not 127.0.0.1 (the server refuses
+		 * to start otherwise to avoid accidental RCE exposure on a LAN).
+		 */
+		FString Token;
+	};
+
 	FUnrealBridgeServer();
 	~FUnrealBridgeServer();
 
-	/** Start listening on the given port. Returns true on success. */
-	bool Start(int32 Port = 9876);
+	/** Bring the server up using the given config. Returns true on success. */
+	bool Start(const FStartConfig& Config);
+
+	/** Legacy entry — bind to 127.0.0.1 on the given port. Kept for hot-reload callers. */
+	bool Start(int32 Port);
 
 	/** Stop the server and close all connections. */
 	void Stop();
 
 	/** Whether the server is currently listening. */
 	bool IsRunning() const;
+
+	/** The interface the server bound to (as a dotted string). */
+	FString GetBoundAddress() const { return BindAddressStr; }
+
+	/** The TCP port actually resolved at bind time (differs from FStartConfig::Port when 0). */
+	int32 GetBoundPort() const { return ListenPort; }
+
+	/** True if a token was set and request-time auth is enforced. */
+	bool HasToken() const { return !Token.IsEmpty(); }
 
 	/**
 	 * Mark the editor as fully initialized (main frame created). Until this is
@@ -88,7 +122,9 @@ private:
 	FExecResult DoPythonExec(const FString& Script);
 
 	TUniquePtr<FTcpListener> Listener;
-	int32 ListenPort = 9876;
+	int32 ListenPort = 0;
+	FString BindAddressStr = TEXT("127.0.0.1");
+	FString Token;
 	FThreadSafeBool bIsRunning = false;
 	FThreadSafeBool bEditorReady = false;
 
