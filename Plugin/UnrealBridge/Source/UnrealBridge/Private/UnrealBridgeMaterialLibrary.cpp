@@ -12,6 +12,7 @@
 #include "Materials/MaterialExpressionStaticSwitchParameter.h"
 #include "Materials/MaterialExpressionStaticBoolParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
@@ -4300,6 +4301,90 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 				{
 					EmitFinding(Out.Findings, TEXT("M5-8"), TEXT("info"),
 						TEXT("ClearCoat shading model with no ClearCoat amount (CustomData0) — varnish layer will be absent."));
+				}
+			}
+		}
+	}
+
+	// ── Rule M5-6: static-switch misuse ─────────────────────────────
+	// Two patterns flagged:
+	//   1. LinearInterpolate whose Alpha is wired to a Constant (or Constant
+	//      whose R is 0 / 1) — only one branch will ever be picked, so the
+	//      Lerp is dead weight. Fix by inlining the chosen side OR converting
+	//      to a StaticSwitchParameter if the decision is per-MI.
+	//   2. LinearInterpolate whose Alpha is a ScalarParameter named like a
+	//      boolean (`Use*` / `Enable*` / `Is*` / `Has*` / `Should*`) — info
+	//      hint that a StaticSwitchParameter would compile the dead side out.
+	{
+		auto LooksBoolean = [](const FString& Name) -> bool
+		{
+			static const TCHAR* BoolPrefixes[] = {
+				TEXT("Use"), TEXT("Enable"), TEXT("Is"), TEXT("Has"),
+				TEXT("Should"), TEXT("Show"), TEXT("Bool"), TEXT("Toggle")
+			};
+			for (const TCHAR* P : BoolPrefixes)
+			{
+				if (Name.StartsWith(P, ESearchCase::IgnoreCase)) return true;
+			}
+			return false;
+		};
+
+		auto ConstantIsBinary = [](UMaterialExpressionConstant* C) -> int32
+		{
+			if (!C) return -1;
+			if (FMath::IsNearlyEqual(C->R, 0.0f)) return 0;
+			if (FMath::IsNearlyEqual(C->R, 1.0f)) return 1;
+			return -1;
+		};
+
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			UMaterialExpressionLinearInterpolate* Lerp =
+				Cast<UMaterialExpressionLinearInterpolate>(Expr);
+			if (!Lerp) continue;
+
+			UMaterialExpression* AlphaSrc = Lerp->Alpha.Expression;
+			if (!AlphaSrc) continue;
+
+			// Pattern 1: Alpha is a literal Constant — dead branch.
+			if (UMaterialExpressionConstant* C = Cast<UMaterialExpressionConstant>(AlphaSrc))
+			{
+				const int32 Binary = ConstantIsBinary(C);
+				if (Binary == 0)
+				{
+					EmitFinding(Out.Findings, TEXT("M5-6"), TEXT("info"),
+						TEXT("Lerp Alpha is Constant(0) — output is always the A input. "
+							"Inline A and drop the Lerp, or convert to StaticSwitchParameter if the choice should be per-MI."),
+						Expr->MaterialExpressionGuid,
+						Expr->GetClass()->GetName(),
+						TEXT("Dead branch: B never selected"));
+				}
+				else if (Binary == 1)
+				{
+					EmitFinding(Out.Findings, TEXT("M5-6"), TEXT("info"),
+						TEXT("Lerp Alpha is Constant(1) — output is always the B input. "
+							"Inline B and drop the Lerp, or convert to StaticSwitchParameter if the choice should be per-MI."),
+						Expr->MaterialExpressionGuid,
+						Expr->GetClass()->GetName(),
+						TEXT("Dead branch: A never selected"));
+				}
+				else
+				{
+					// Non-binary constant (e.g. 0.5) — valid blend, no finding.
+				}
+			}
+			// Pattern 2: Alpha is a ScalarParameter that names a boolean intent.
+			else if (UMaterialExpressionScalarParameter* SP = Cast<UMaterialExpressionScalarParameter>(AlphaSrc))
+			{
+				const FString PName = SP->ParameterName.ToString();
+				if (LooksBoolean(PName))
+				{
+					EmitFinding(Out.Findings, TEXT("M5-6"), TEXT("info"),
+						FString::Printf(TEXT("Lerp Alpha driven by ScalarParameter '%s' (boolean-intent name) — consider StaticSwitchParameter so UE compiles the unused branch out instead of emitting a runtime lerp."),
+							*PName),
+						Expr->MaterialExpressionGuid,
+						Expr->GetClass()->GetName(),
+						TEXT("Candidate for StaticSwitch conversion"));
 				}
 			}
 		}
