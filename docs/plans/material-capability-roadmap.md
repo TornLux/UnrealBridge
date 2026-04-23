@@ -9,7 +9,7 @@
 
 硬约束：成品质量对齐 AAA 项目常见实践（SM5+ / Lumen / Nanite 就绪、正确的 ShadingModel / MaterialDomain / 纹理压缩 / sampler 复用 / 静态分支），性能口径按"不退化 GPU 时长、不超 sampler/ instruction 预算"衡量。
 
-最后更新：2026-04-24（v0.5 — M3 7/9 模板、**M4 全部 5/5 模板 + 全部 C++ 原语**、M5 全部 13 条规则 + auto_fix 落地；handoff list item 11 本次交付：PP_ColorGradeLUT_Extended + PP_Film_Grain_AA）
+最后更新：2026-04-24（v0.6 — **M3 全部 9/9 模板**、**M4 全部 5/5 模板**、**M5 全部 13 规则 + 4/4 auto_fix IDs（新两条已编译通过但未 smoke-test）**；本次交付：character_pbr / weapon_hero / layered + static_switch_conversion / inline_trivial_custom C++ 实现）
 
 ---
 
@@ -21,9 +21,9 @@
 | M2 表达式工厂 + 图写原语 | ✅ 全部交付 | create_material / MI / MF + add_material_expression (35+ 类) + connect/disconnect (pin name 现在走 GetShortenPinName) + set_prop / add_comment / add_reroute / auto_layout / apply_material_graph_ops / compile_material / snapshot + diff |
 | M2.5 HLSL 片段库 | ✅ 全部交付 | BridgeSnippets.ush + add_custom_expression + list / get 共享片段；现有 snippet：Luminance, Unpack/Pack ORM, ACES, BlendAngleCorrectedNormals (已修成 `-1..1` 约定), DepthFade, DitherLODTransition, Hash21/31, ValueNoise3D, ThinFilmInterference, FBM3D, IQFlow3D, SwirledNoise3D, Voronoi2D |
 | M6 参数迭代闭环 | ✅ 全部交付 | set_mi_params / set_mi_and_preview / sweep / MPC setter / diff / golden snapshot+compare |
-| M3 母材质模板 | 🟡 7 / 9 模板 | **已交付**：M3-2 Character_Armor、M3-3 Environment_Prop、M3-4 Foliage_Master、M3-6 Glass_Translucent、M3-8 UI_Unlit、M3-9 VFX (Unlit Additive + Translucent Soft，两个一并算作 M3-9). **未交付**：M3-1 Character_PBR (可视作 M3-2 的精简子集，优先级低)、M3-5 Weapon_Hero (建议先加 BridgePOMRayMarch snippet)、M3-7 Layered (材质层系统，体量最大 300-500 行 Python) |
+| M3 母材质模板 | ✅ 9 / 9 模板 | **已交付**：M3-1 Character_PBR (thin wrapper over M3-2 with distinct asset path)、M3-2 Character_Armor、M3-3 Environment_Prop、M3-4 Foliage_Master、M3-5 Weapon_Hero (dual-UV + 正弦脉冲发光；POM + CurveAtlas 延后)、M3-6 Glass_Translucent、M3-7 Layered (MF_Layer_{Metal,Fabric,Dirt} + BlendMaterialAttributes, VertexColor 驱动 3 层混合)、M3-8 UI_Unlit、M3-9 VFX (Unlit Additive + Translucent Soft). |
 | M4 后处理材质 | ✅ 5 / 5 模板 + 全部 C++ 原语 | **已交付**：create_post_process_material / apply / remove / get_post_process_state + PP_Posterize、PP_Halftone、PP_Outline (4-neighbour depth gradient)、PP_Sketch (Sobel edge + crosshatch + posterize)、PP_ColorGradeLUT_Extended (2D-unwrapped LUT + 3-zone 分区曲线 + 饱和度)、PP_Film_Grain_AA (BridgeHash21 动态颗粒 + sub-LSB dither) |
-| M5 Lint / 自动修复 | ✅ 13 / 13 规则 + auto_fix (2/4 fix IDs) | **已交付**：analyze_material 聚合 + 全部 12 条检查规则（M5-2..M5-13），auto_fix_material 支持 `drop_unused` + `samplersource_share`. **未交付的仅剩 auto_fix 扩展**：`static_switch_conversion` (把 M5-6 Pattern 2 flagged 的 ScalarParameter 图结构替换成 StaticSwitchParameter) + `inline_trivial_custom` (把 M5-11 flagged 的小 Custom 替换成原生节点链) — 两者都是复杂的图重写，每个 ~200 行 C++。 |
+| M5 Lint / 自动修复 | ✅ 13 / 13 规则 + auto_fix (4/4 fix IDs, 新两条**编译通过但未 smoke-test**) | **已交付**：analyze_material 聚合 + 全部 13 条检查规则（M5-2..M5-13）+ 全部 4 个 auto_fix IDs：`drop_unused` (M5-3) + `samplersource_share` (M5-5) + **`static_switch_conversion` (M5-6 Pattern 2 → StaticSwitchParameter，含 Lerp 改写 / ScalarParameter 清理 / 下游重连) + `inline_trivial_custom` (M5-11 → 17 种单运算模式：Add/Sub/Mul/Div/Saturate/Abs/Frac/Floor/Ceil/OneMinus/Lerp/Min/Max/Power/Dot/Normalize)**. 新两条已 rebuild_relaunch 通过编译但**本 session 没执行真实 material 上的 smoke-test**，留给下 session 收尾（见 handoff #8 / #9）. |
 
 ### 顺带交付（不在原路线图但相关）
 
@@ -331,12 +331,19 @@
 6. ✅ ~~**M5-7 Feature/Quality switch 缺失检查**~~ (已交付，commit 987524f — 计 TextureSample + SceneTexture + Custom，阈值触发 info；PostProcess domain 自动豁免)
 7. ✅ ~~**M5-13 Custom SM-only intrinsic**~~ (已交付，commit 987524f — 覆盖 ddx_fine/ddy_fine/firstbithigh/firstbitlow/reversebits/countbits)
 
-**M4 + M5 现已全部交付。** 剩余（按下次 session 推荐顺序）：
+**M3 + M4 + M5 规则与 auto_fix 代码全部落地。** 剩余仅是 smoke-test + 小规模 polish：
 
-8. **M3-7 Layered 材质层框架** — `MaterialAttributeLayers` + 3-4 个 `MF_Layer_*` MaterialFunction (Metal / Fabric / Dirt)。体量最大（300-500 行 Python），但覆盖 AAA 项目的"层级材质"workflow。
-9. **M3-5 Weapon_Hero** — 建立在 M3-2 基础上 + Parallax Occlusion（POM）HLSL snippet（~40 行 HLSL）+ Curve Atlas 驱动的脉冲发光 + 第二套 UV (Emissive-only)。需要先加 `BridgePOMRayMarch` snippet；无 POM 版本可简化为"M3-2 + 脉冲发光 + 双 UV"，~300 行 Python。
-10. **auto_fix 扩展**：`static_switch_conversion` (把 M5-6 Pattern 2 的 ScalarParameter 替换成 StaticSwitchParameter) + `inline_trivial_custom` (把 M5-11 小 Custom 替换成原生节点链)。这两个是复杂的图重写，每个 ~200 行 C++，需要非常小心的 PreEditChange / PostEditChange 流程。
-11. **M3-1 Character_PBR 精简版** — 优先级最低，可忽略（M3-2 所有开关默认 false = Character_PBR）。
+8. **auto_fix smoke-test** — `static_switch_conversion` 和 `inline_trivial_custom` 在本 session rebuild_relaunch 通过编译但没在真实 material 上跑过。下 session 需要：
+   - 搭一个合成 material 故意触发 M5-6 Pattern 2（Lerp + boolean-intent ScalarParameter），跑 `auto_fix_material(path, ['static_switch_conversion'])` 确认：Lerp 消失 / StaticSwitchParameter 出现 / 下游节点仍正常连 / ScalarParameter 删除 / 编译无错.
+   - 搭一个合成 material，用 `add_custom_expression` 放一个 body 为 `"return A + B;"` 的 Custom，跑 `auto_fix_material(path, ['inline_trivial_custom'])` 确认 Custom → Add 节点替换成功. 再测 `"return saturate(A);"` / `"return lerp(A, B, C);"` / `"return 1 - A;"` 三条路径.
+   - 如果拍扁后 `analyze_material` 发现新 finding（比如意外残留 orphan）则补坑.
+9. **POM + Curve Atlas for Weapon_Hero (optional polish)** — 当前 M3-5 已交付基础版 (dual-UV + sine pulse)。要升级到 roadmap 里承诺的"full AAA 版"需要：
+   - `BridgePOMRayMarch` HLSL snippet (~40 行)，注意 M5-12：不能在 Custom 内做 `Texture2DSample`，要么 graph 侧多次预采样 heightmap 后喂进 Custom（~16 个 TextureSample 节点，丑但合规），要么接受 M5-12 warning.
+   - `Curve Atlas` 驱动 Pulse 替换当前 sine — UE `UCurveLinearColorAtlas` + `UMaterialExpressionCurveAtlasRowParameter`. 这是可选项，sine 版已经覆盖 90% 用例.
+10. **M3-7 升级到 MaterialAttributeLayers**（可选）— 当前 layered.py 用 MF + BlendMaterialAttributes 手动 3-层混合，能 work 但不是 UE 标准的 MaterialLayerStacks. 要切到标准 stacks 需要:
+    - 扩 bridge C++ 让 `ApplyMaterialGraphOps` / `AddMaterialExpression` / `ConnectMaterialExpressions` 接受 `UMaterialFunctionInterface*`（既包含 `UMaterial` 也包含 `UMaterialFunction`），避免当前只能改 UMaterial 的限制.
+    - 创建 `UMaterialFunctionMaterialLayer` / `UMaterialFunctionMaterialLayerBlend` 两种特殊 MF 类型.
+    - 成品一致性上略好（能走 UE 的 Layer 编辑 UI），但 authoring 能力上和当前方案差不多. Tier-B.
 
 ### 本轮发现的坑 / 已在代码里注释
 
@@ -355,6 +362,9 @@
 - **UE Python 对 bool USTRUCT 字段去掉 `b` 前缀**：`bool bSuccess` → Python 里是 `.success`，不是 `.b_success`。
 - **UE 5.7 `EBlendableLocation` 没有 `BL_SceneColorBeforeTonemapping`**（被删了）；要 pre-tonemap 用 `BL_SceneColorBeforeBloom`。bridge 的 `ParseBlendableLocation` 把字符串 `"BeforeTonemapping"` 作为别名映射到它。
 - **TextureObjectParameter 继承自 UMaterialExpressionTextureSample**（经 TextureSampleParameter），所以 M5-5 / M5-10 把它当成 "一个采样" 纳入统计。用 TextureObjectParameter 当共享 texture 源时，必须跟下游的 TextureSample 同步 `SamplerSource`（默认 `SSM_FromTextureAsset`）否则 M5-5 会 flag "mixing sampler sources"。参见 pp_color_grade_lut.py 的 LUT_Texture 节点。
+- **`UMaterialExpression::MaterialExpressionGuid` 不是 UPROPERTY**，所以 Python 侧用 `MEL.create_material_expression(...)` 或 `set_editor_property('material_expression_guid', ...)` 都读不出来. 要拿新建节点的 GUID，过一遍 `bridge.get_material_graph(master_path)` 用 class 名 + (x, y) 坐标匹配是最可靠的 workaround — layered.py 就是这么做的.
+- **`FExpressionInput` 在 UE 5.7 里没有 `OutputName` 字段**（输出名存在源节点的 `FExpressionOutput` 列表上，不在 input 端）. 如果你要鑫鑫改向 RedirectUsageToNewSource 之类的 helper，只设 `Input->Expression` + `Input->OutputIndex` 即可，别写 `Input->OutputName = ...` 否则编译报 C2039 "OutputName: not a member".
+- **`UMaterialFunction` 的图不是 UMaterial 的图** — bridge 的 `ApplyMaterialGraphOps` / `AddMaterialExpression` / `ConnectMaterialExpressions` 都硬 Cast 成 `UMaterial*`，不能直接编辑 MF 图. 要在 MF 里加节点，用 UE Python `MaterialEditingLibrary.create_material_expression_in_function` / `connect_material_expressions`（不带路径参数那版）/ `update_material_function` 一路手动调. layered.py 的 `_build_layer_mf` 是参考例.
 
 ### 回归测试的最小集合
 
@@ -365,10 +375,13 @@ python .claude/skills/unreal-bridge/scripts/bridge.py ping
 python .claude/skills/unreal-bridge/scripts/bridge.py exec "
 import importlib, material_templates._common as c
 import material_templates.character_armor as ca
+import material_templates.character_pbr as cp
 import material_templates.environment_prop as ep
 import material_templates.foliage_master as fm
 import material_templates.glass_translucent as gl
 import material_templates.ui_unlit as ui
+import material_templates.weapon_hero as wh
+import material_templates.layered as ly
 import material_templates.pp_posterize as pp
 import material_templates.pp_halftone as ph
 import material_templates.pp_outline as po
@@ -377,14 +390,14 @@ import material_templates.pp_color_grade_lut as cg
 import material_templates.pp_film_grain as fg
 import material_templates.vfx_unlit_additive as va
 import material_templates.vfx_translucent_soft as vt
-for mod in (c, ca, ep, fm, gl, ui, pp, ph, po, ps, cg, fg, va, vt): importlib.reload(mod)
+for mod in (c, ca, cp, ep, fm, gl, ui, wh, ly, pp, ph, po, ps, cg, fg, va, vt): importlib.reload(mod)
 import unreal
 L = unreal.UnrealBridgeMaterialLibrary
 # Regular masters — build + lint
-for b in (ca, ep, fm, gl, ui, va, vt):
+for b in (ca, cp, ep, fm, gl, ui, wh, ly, va, vt):
     r = b.build(rebuild=True); ar = L.analyze_material(r['master_path'], 0, 0)
     real_findings = [f for f in ar.findings if str(f.severity) != 'info']
-    print(f\"{r['master_path']}: exprs={r['num_expressions']} warnings={len(real_findings)}\")
+    print(f\"{r['master_path']}: exprs={r.get('num_expressions','?')} warnings={len(real_findings)}\")
 # PP templates — no apply
 for b in (pp, ph, po, ps, cg, fg):
     r = b.build(rebuild=True, apply_weight=0); ar = L.analyze_material(r['master_path'], 0, 0)

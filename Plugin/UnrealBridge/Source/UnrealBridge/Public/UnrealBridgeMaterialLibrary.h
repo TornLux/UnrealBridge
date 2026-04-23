@@ -617,7 +617,7 @@ struct FBridgeMaterialAutoFixResult
 	UPROPERTY(BlueprintReadOnly)
 	int32 FindingsFixed = 0;
 
-	/** Number of expressions deleted (drop_unused). */
+	/** Number of expressions deleted (drop_unused, static_switch_conversion, inline_trivial_custom). */
 	UPROPERTY(BlueprintReadOnly)
 	int32 NodesRemoved = 0;
 
@@ -625,7 +625,11 @@ struct FBridgeMaterialAutoFixResult
 	UPROPERTY(BlueprintReadOnly)
 	int32 PropertiesChanged = 0;
 
-	/** Fix IDs that were requested but are not implemented / unsupported — e.g. "static_switch_conversion". */
+	/** Number of expressions added by graph rewrites (static_switch_conversion, inline_trivial_custom). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 NodesAdded = 0;
+
+	/** Fix IDs that were requested but not recognised by the current implementation. */
 	UPROPERTY(BlueprintReadOnly)
 	TArray<FString> SkippedFixes;
 
@@ -1424,6 +1428,20 @@ public:
 	 *   "samplersource_share"  — flip every TextureSample whose SamplerSource
 	 *                            was flagged by M5-5 to SSM_Wrap_WorldGroupSettings
 	 *                            so it feeds the global shared sampler.
+	 *   "static_switch_conversion" — replace each M5-6 Pattern 2 Lerp whose
+	 *                            Alpha is a boolean-intent ScalarParameter
+	 *                            (Use* / Enable* / Is* / Has* / Should* / Show* /
+	 *                            Bool* / Toggle*) with a StaticSwitchParameter
+	 *                            that shares the same name. The dead side
+	 *                            compiles out of the permutation. Deletes the
+	 *                            ScalarParameter when no other node refers to it.
+	 *   "inline_trivial_custom"  — replace each M5-11 flagged trivial Custom
+	 *                            node whose body is a single-op expression
+	 *                            (Add / Subtract / Multiply / Divide / Saturate
+	 *                            / Abs / OneMinus / Frac / Floor / Ceil / Min
+	 *                            / Max / Power / Lerp / Dot / Normalize) with
+	 *                            the equivalent native graph node. Preserves
+	 *                            the original input → new input wiring.
 	 *
 	 * Any unrecognised fix id lands in `SkippedFixes` on the result — the call
 	 * itself still succeeds for the fixes it could apply. Material is

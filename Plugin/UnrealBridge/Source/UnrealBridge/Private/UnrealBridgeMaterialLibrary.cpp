@@ -1663,6 +1663,97 @@ namespace BridgeMaterialImpl
 		return Short.IsNone() ? FString() : Short.ToString();
 	}
 
+	/** Result of redirecting every downstream consumer of one expression output to another. */
+	struct FRewireCounts
+	{
+		int32 ExpressionInputs = 0;
+		int32 MainOutputs = 0;
+	};
+
+	/** Redirect every FExpressionInput / main-output that currently reads
+	 *  OldSource[OldOutputIdx] to instead read NewSource[NewOutputIdx].
+	 *  Used by static_switch_conversion + inline_trivial_custom to splice a
+	 *  replacement node in without hunting for each consumer by hand.
+	 *  FExpressionInput has no ``OutputName`` field in UE 5.7 — the output
+	 *  label lives on the source expression's ``FExpressionOutput``, so we
+	 *  only rewrite ``Expression`` + ``OutputIndex``.
+	 */
+	static FRewireCounts RedirectUsageToNewSource(
+		UMaterial* Material,
+		UMaterialExpression* OldSource, int32 OldOutputIdx,
+		UMaterialExpression* NewSource, int32 NewOutputIdx)
+	{
+		FRewireCounts Counts;
+		if (!Material || !OldSource || !NewSource || OldSource == NewSource)
+		{
+			return Counts;
+		}
+
+		for (const TObjectPtr<UMaterialExpression>& EP : Material->GetExpressions())
+		{
+			UMaterialExpression* E = EP.Get();
+			if (!E || E == OldSource) continue;
+
+			bool bModified = false;
+			for (FExpressionInputIterator It{E}; It; ++It)
+			{
+				FExpressionInput* Input = It.Input;
+				if (!Input) continue;
+				if (Input->Expression == OldSource && Input->OutputIndex == OldOutputIdx)
+				{
+					if (!bModified)
+					{
+						E->Modify();
+						bModified = true;
+					}
+					Input->Expression = NewSource;
+					Input->OutputIndex = NewOutputIdx;
+					++Counts.ExpressionInputs;
+				}
+			}
+		}
+
+		for (int32 P = 0; P < MP_MAX; ++P)
+		{
+			const EMaterialProperty Prop = (EMaterialProperty)P;
+			FExpressionInput* MI = Material->GetExpressionInputForProperty(Prop);
+			if (MI && MI->Expression == OldSource && MI->OutputIndex == OldOutputIdx)
+			{
+				MI->Expression = NewSource;
+				MI->OutputIndex = NewOutputIdx;
+				++Counts.MainOutputs;
+			}
+		}
+
+		return Counts;
+	}
+
+	/** Returns true if at least one expression input (anywhere in the material)
+	 *  still references the given expression as its source.
+	 */
+	static bool IsExpressionReferenced(UMaterial* Material, UMaterialExpression* Target)
+	{
+		if (!Material || !Target) return false;
+		for (const TObjectPtr<UMaterialExpression>& EP : Material->GetExpressions())
+		{
+			UMaterialExpression* E = EP.Get();
+			if (!E || E == Target) continue;
+			for (FExpressionInputIterator It{E}; It; ++It)
+			{
+				if (It.Input && It.Input->Expression == Target)
+				{
+					return true;
+				}
+			}
+		}
+		for (int32 P = 0; P < MP_MAX; ++P)
+		{
+			FExpressionInput* MI = Material->GetExpressionInputForProperty((EMaterialProperty)P);
+			if (MI && MI->Expression == Target) return true;
+		}
+		return false;
+	}
+
 	/** Find the index of an input pin by name on an expression, or INDEX_NONE. */
 	static int32 FindInputIndexByName(UMaterialExpression* Expr, const FString& Name)
 	{
@@ -4756,6 +4847,8 @@ FBridgeMaterialAutoFixResult UUnrealBridgeMaterialLibrary::AutoFixMaterial(
 	const TSet<FString> KnownFixes = {
 		TEXT("drop_unused"),
 		TEXT("samplersource_share"),
+		TEXT("static_switch_conversion"),
+		TEXT("inline_trivial_custom"),
 	};
 	TSet<FString> RequestedFixes;
 	for (const FString& F : Fixes)
@@ -4843,10 +4936,398 @@ FBridgeMaterialAutoFixResult UUnrealBridgeMaterialLibrary::AutoFixMaterial(
 		}
 	}
 
+	// --- static_switch_conversion (M5-6 Pattern 2) ------------------
+	//
+	// The M5-6 finding fires on the Lerp. Pattern 2 specifically sets
+	// Detail = "Candidate for StaticSwitch conversion" — we restrict the
+	// fix to that variant so we don't accidentally process Pattern 1
+	// (Lerp with a Constant alpha) which wants inlining, not a switch.
+	if (RequestedFixes.Contains(TEXT("static_switch_conversion")))
+	{
+		TArray<FGuid> LerpGuids;
+		for (const FBridgeMaterialFinding& F : Analysis.Findings)
+		{
+			if (F.RuleId == TEXT("M5-6")
+				&& F.ExpressionGuid.IsValid()
+				&& F.Detail == TEXT("Candidate for StaticSwitch conversion"))
+			{
+				LerpGuids.AddUnique(F.ExpressionGuid);
+			}
+		}
+
+		for (const FGuid& LerpGuid : LerpGuids)
+		{
+			UMaterialExpression* Expr = FindExpressionByGuid(Material, LerpGuid);
+			UMaterialExpressionLinearInterpolate* Lerp =
+				Cast<UMaterialExpressionLinearInterpolate>(Expr);
+			if (!Lerp) continue;
+
+			UMaterialExpressionScalarParameter* SP =
+				Cast<UMaterialExpressionScalarParameter>(Lerp->Alpha.Expression);
+			if (!SP)
+			{
+				Out.Log.Add(FString::Printf(TEXT("static_switch_conversion: SKIP — %s alpha is no longer a ScalarParameter"),
+					*LerpGuid.ToString(EGuidFormats::Digits)));
+				continue;
+			}
+
+			const FName ParamName = SP->ParameterName;
+			const bool DefaultBool = (SP->DefaultValue >= 0.5f);
+			const FName Group = SP->Group;
+			const int32 SortPriority = SP->SortPriority;
+
+			UClass* SSClass = UMaterialExpressionStaticSwitchParameter::StaticClass();
+			UMaterialExpression* NewExpr = UMaterialEditingLibrary::CreateMaterialExpression(
+				Material, SSClass,
+				Lerp->MaterialExpressionEditorX + 20,
+				Lerp->MaterialExpressionEditorY);
+			UMaterialExpressionStaticSwitchParameter* SS =
+				Cast<UMaterialExpressionStaticSwitchParameter>(NewExpr);
+			if (!SS)
+			{
+				Out.Log.Add(FString::Printf(TEXT("static_switch_conversion: FAIL — could not create StaticSwitchParameter for %s"),
+					*ParamName.ToString()));
+				continue;
+			}
+
+			SS->Modify();
+			SS->PreEditChange(nullptr);
+			SS->ParameterName = ParamName;
+			SS->DefaultValue = DefaultBool;
+			SS->Group = Group;
+			SS->SortPriority = SortPriority;
+			if (!SS->MaterialExpressionGuid.IsValid())
+			{
+				SS->MaterialExpressionGuid = FGuid::NewGuid();
+			}
+			// StaticSwitch.A = True branch (Lerp's B, picked when alpha=1)
+			// StaticSwitch.B = False branch (Lerp's A, picked when alpha=0)
+			SS->A = Lerp->B;
+			SS->B = Lerp->A;
+			SS->PostEditChange();
+
+			const FRewireCounts Counts = RedirectUsageToNewSource(
+				Material, Lerp, 0, SS, 0);
+
+			UMaterialEditingLibrary::DeleteMaterialExpression(Material, Lerp);
+			++Out.NodesRemoved;
+
+			// Drop the now-orphan ScalarParameter so the MI parameter list
+			// doesn't end up with a dead entry. If another node still reads it
+			// (unlikely but possible) we leave it in place.
+			bool bSPDropped = false;
+			if (!IsExpressionReferenced(Material, SP))
+			{
+				UMaterialEditingLibrary::DeleteMaterialExpression(Material, SP);
+				++Out.NodesRemoved;
+				bSPDropped = true;
+			}
+
+			++Out.NodesAdded;
+			++FindingsHandled;
+			Out.Log.Add(FString::Printf(TEXT("static_switch_conversion: '%s' Lerp → StaticSwitchParameter (default=%s, rewired %d inputs + %d main outputs, ScalarParameter %s)"),
+				*ParamName.ToString(),
+				DefaultBool ? TEXT("true") : TEXT("false"),
+				Counts.ExpressionInputs, Counts.MainOutputs,
+				bSPDropped ? TEXT("dropped") : TEXT("kept (still referenced)")));
+		}
+	}
+
+	// --- inline_trivial_custom (M5-11) ------------------------------
+	//
+	// Match a small set of single-op HLSL bodies and replace the Custom
+	// with the equivalent native graph node. Keeps the existing input
+	// wiring (Custom.Inputs[i].Input → new node's i-th input), preserves
+	// downstream consumers via RedirectUsageToNewSource.
+	//
+	// Patterns recognised:
+	//   return A + B;       → Add
+	//   return A - B;       → Subtract
+	//   return A * B;       → Multiply
+	//   return A / B;       → Divide
+	//   return saturate(A); → Saturate
+	//   return abs(A);      → Abs
+	//   return frac(A);     → Frac
+	//   return floor(A);    → Floor
+	//   return ceil(A);     → Ceil
+	//   return 1 - A;       → OneMinus
+	//   return 1.0 - A;     → OneMinus
+	//   return lerp(A,B,C); → LinearInterpolate
+	//   return min(A, B);   → Min
+	//   return max(A, B);   → Max
+	//   return pow(A, B);   → Power
+	//   return dot(A, B);   → DotProduct
+	//   return normalize(A);→ Normalize
+	if (RequestedFixes.Contains(TEXT("inline_trivial_custom")))
+	{
+		auto StripWs = [](FString In) -> FString
+		{
+			In.ReplaceInline(TEXT("\n"), TEXT(" "));
+			In.ReplaceInline(TEXT("\r"), TEXT(" "));
+			In.ReplaceInline(TEXT("\t"), TEXT(" "));
+			while (In.ReplaceInline(TEXT("  "), TEXT(" ")) > 0) {}
+			In.TrimStartAndEndInline();
+			if (In.EndsWith(TEXT(";")))
+			{
+				In.LeftChopInline(1);
+				In.TrimStartAndEndInline();
+			}
+			return In;
+		};
+
+		auto FindCustomInputByName = [](UMaterialExpressionCustom* Custom, const FString& Name) -> int32
+		{
+			for (int32 i = 0; i < Custom->Inputs.Num(); ++i)
+			{
+				if (Custom->Inputs[i].InputName.ToString().Equals(Name, ESearchCase::IgnoreCase))
+				{
+					return i;
+				}
+			}
+			return INDEX_NONE;
+		};
+
+		// Resolve one token from the HLSL return — either a Custom input name
+		// (wire to its source expression) or a literal constant (materialize
+		// as a new Constant expression). Only literals "1", "1.0", and "0"
+		// are accepted so we don't silently inline arbitrary numbers.
+		auto ResolveToken = [&](UMaterial* Mat,
+		                        UMaterialExpressionCustom* Custom,
+		                        const FString& Token,
+		                        int32 FallbackX, int32 FallbackY,
+		                        FExpressionInput& OutInput) -> bool
+		{
+			const FString Tok = Token.TrimStartAndEnd();
+			const int32 InIdx = FindCustomInputByName(Custom, Tok);
+			if (InIdx != INDEX_NONE)
+			{
+				OutInput = Custom->Inputs[InIdx].Input;
+				return true;
+			}
+			// Fall back to literal 0 / 1.
+			float LitValue = 0.0f;
+			if (Tok == TEXT("1") || Tok == TEXT("1.0") || Tok == TEXT("1.0f")) LitValue = 1.0f;
+			else if (Tok == TEXT("0") || Tok == TEXT("0.0") || Tok == TEXT("0.0f")) LitValue = 0.0f;
+			else return false;
+
+			UMaterialExpression* Lit = UMaterialEditingLibrary::CreateMaterialExpression(
+				Mat, UMaterialExpressionConstant::StaticClass(), FallbackX, FallbackY);
+			if (UMaterialExpressionConstant* LC = Cast<UMaterialExpressionConstant>(Lit))
+			{
+				LC->R = LitValue;
+				if (!LC->MaterialExpressionGuid.IsValid()) LC->MaterialExpressionGuid = FGuid::NewGuid();
+				OutInput.Expression = LC;
+				OutInput.OutputIndex = 0;
+				return true;
+			}
+			return false;
+		};
+
+		struct FPattern
+		{
+			const TCHAR* Prefix;       // token that introduces the op, e.g. "saturate("
+			int32 ArgCount;            // 1, 2, or 3
+			const TCHAR* ShortClassName; // short name for ResolveExpressionClass
+			const TCHAR* ArgPinNames[3]; // names to wire each arg to on the new node
+		};
+
+		static const FPattern Patterns[] =
+		{
+			{ TEXT("saturate("),  1, TEXT("Saturate"),   { TEXT(""),     TEXT(""),    TEXT("") } },
+			{ TEXT("abs("),       1, TEXT("Abs"),        { TEXT(""),     TEXT(""),    TEXT("") } },
+			{ TEXT("frac("),      1, TEXT("Frac"),       { TEXT(""),     TEXT(""),    TEXT("") } },
+			{ TEXT("floor("),     1, TEXT("Floor"),      { TEXT(""),     TEXT(""),    TEXT("") } },
+			{ TEXT("ceil("),      1, TEXT("Ceil"),       { TEXT(""),     TEXT(""),    TEXT("") } },
+			{ TEXT("normalize("), 1, TEXT("Normalize"),  { TEXT(""),     TEXT(""),    TEXT("") } },
+			{ TEXT("lerp("),      3, TEXT("LinearInterpolate"), { TEXT("A"), TEXT("B"), TEXT("Alpha") } },
+			{ TEXT("min("),       2, TEXT("Min"),        { TEXT("A"),    TEXT("B"),   TEXT("") } },
+			{ TEXT("max("),       2, TEXT("Max"),        { TEXT("A"),    TEXT("B"),   TEXT("") } },
+			{ TEXT("pow("),       2, TEXT("Power"),      { TEXT("Base"), TEXT("Exp"), TEXT("") } },
+			{ TEXT("dot("),       2, TEXT("DotProduct"), { TEXT("A"),    TEXT("B"),   TEXT("") } },
+		};
+
+		TArray<FGuid> CustomGuids;
+		for (const FBridgeMaterialFinding& F : Analysis.Findings)
+		{
+			if (F.RuleId == TEXT("M5-11") && F.ExpressionGuid.IsValid())
+			{
+				CustomGuids.AddUnique(F.ExpressionGuid);
+			}
+		}
+
+		for (const FGuid& CGuid : CustomGuids)
+		{
+			UMaterialExpression* Expr = FindExpressionByGuid(Material, CGuid);
+			UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr);
+			if (!Custom) continue;
+
+			const FString Body = StripWs(Custom->Code);
+
+			// Must start with "return " to qualify; single expression only.
+			if (!Body.StartsWith(TEXT("return ")))
+			{
+				Out.Log.Add(FString::Printf(TEXT("inline_trivial_custom: SKIP — %s has no 'return' (body='%s')"),
+					*CGuid.ToString(EGuidFormats::Digits), *Body));
+				continue;
+			}
+			FString Expr1 = Body.RightChop(7).TrimStartAndEnd();
+
+			UClass* ReplaceClass = nullptr;
+			TArray<FString> ArgTokens;
+			TArray<FString> PinNames;
+
+			// Try binary operator patterns first (simpler parse).
+			// Order-sensitive: check explicit "1 - X" / "1.0 - X" as OneMinus
+			// before the generic Subtract.
+
+			// Specialised OneMinus: body is `1 - <token>` / `1.0 - <token>`.
+			{
+				FString Lhs, Rhs;
+				if (Expr1.Split(TEXT(" - "), &Lhs, &Rhs))
+				{
+					const FString LhsTrim = Lhs.TrimStartAndEnd();
+					if (LhsTrim == TEXT("1") || LhsTrim == TEXT("1.0") || LhsTrim == TEXT("1.0f"))
+					{
+						ReplaceClass = ResolveExpressionClass(TEXT("OneMinus"));
+						ArgTokens.Add(Rhs.TrimStartAndEnd());
+						PinNames.Add(TEXT(""));
+					}
+				}
+			}
+
+			if (!ReplaceClass)
+			{
+				// Generic binary operators — search for " + " / " - " / " * " / " / " in Expr1.
+				struct FBinOp { const TCHAR* Op; const TCHAR* ShortClass; const TCHAR* PinA; const TCHAR* PinB; };
+				static const FBinOp Binops[] = {
+					{ TEXT(" + "), TEXT("Add"),      TEXT("A"), TEXT("B") },
+					{ TEXT(" - "), TEXT("Subtract"), TEXT("A"), TEXT("B") },
+					{ TEXT(" * "), TEXT("Multiply"), TEXT("A"), TEXT("B") },
+					{ TEXT(" / "), TEXT("Divide"),   TEXT("A"), TEXT("B") },
+				};
+				for (const FBinOp& B : Binops)
+				{
+					FString Lhs, Rhs;
+					if (Expr1.Split(B.Op, &Lhs, &Rhs))
+					{
+						// Don't treat function-call-internal operators as binary.
+						if (Lhs.Contains(TEXT("(")) || Rhs.Contains(TEXT("("))) continue;
+						ReplaceClass = ResolveExpressionClass(B.ShortClass);
+						ArgTokens.Add(Lhs.TrimStartAndEnd());
+						ArgTokens.Add(Rhs.TrimStartAndEnd());
+						PinNames.Add(B.PinA);
+						PinNames.Add(B.PinB);
+						break;
+					}
+				}
+			}
+
+			// Function-call patterns.
+			if (!ReplaceClass)
+			{
+				for (const FPattern& P : Patterns)
+				{
+					if (!Expr1.StartsWith(P.Prefix)) continue;
+					if (!Expr1.EndsWith(TEXT(")"))) continue;
+					FString Inner = Expr1.Mid(FCString::Strlen(P.Prefix));
+					Inner.LeftChopInline(1); // drop trailing ')'
+					TArray<FString> Args;
+					Inner.ParseIntoArray(Args, TEXT(","), /*CullEmpty=*/ false);
+					if (Args.Num() != P.ArgCount) continue;
+					ReplaceClass = ResolveExpressionClass(P.ShortClassName);
+					for (int32 i = 0; i < P.ArgCount; ++i)
+					{
+						ArgTokens.Add(Args[i].TrimStartAndEnd());
+						PinNames.Add(P.ArgPinNames[i]);
+					}
+					break;
+				}
+			}
+
+			if (!ReplaceClass || ArgTokens.Num() == 0)
+			{
+				Out.Log.Add(FString::Printf(TEXT("inline_trivial_custom: SKIP — %s body does not match a known single-op pattern (expr='%s')"),
+					*CGuid.ToString(EGuidFormats::Digits), *Expr1));
+				continue;
+			}
+
+			// Build the replacement node.
+			UMaterialExpression* NewNode = UMaterialEditingLibrary::CreateMaterialExpression(
+				Material, ReplaceClass,
+				Custom->MaterialExpressionEditorX,
+				Custom->MaterialExpressionEditorY);
+			if (!NewNode)
+			{
+				Out.Log.Add(FString::Printf(TEXT("inline_trivial_custom: FAIL — could not create %s"),
+					*ReplaceClass->GetName()));
+				continue;
+			}
+			if (!NewNode->MaterialExpressionGuid.IsValid())
+			{
+				NewNode->MaterialExpressionGuid = FGuid::NewGuid();
+			}
+			NewNode->Modify();
+			NewNode->PreEditChange(nullptr);
+
+			// Wire each argument.
+			bool bWireOk = true;
+			int32 LitStackY = Custom->MaterialExpressionEditorY + 80;
+			for (int32 i = 0; i < ArgTokens.Num(); ++i)
+			{
+				FExpressionInput SrcInput;
+				if (!ResolveToken(Material, Custom, ArgTokens[i],
+						Custom->MaterialExpressionEditorX - 160,
+						LitStackY, SrcInput))
+				{
+					Out.Log.Add(FString::Printf(TEXT("inline_trivial_custom: SKIP — '%s' token not a known Custom input or 0/1 literal"),
+						*ArgTokens[i]));
+					bWireOk = false;
+					break;
+				}
+				LitStackY += 60;
+
+				const int32 DstIdx = FindInputIndexByName(NewNode, PinNames[i]);
+				if (DstIdx == INDEX_NONE)
+				{
+					Out.Log.Add(FString::Printf(TEXT("inline_trivial_custom: FAIL — '%s' pin missing on %s"),
+						*PinNames[i], *ReplaceClass->GetName()));
+					bWireOk = false;
+					break;
+				}
+				FExpressionInput* DstInput = NewNode->GetInput(DstIdx);
+				if (!DstInput)
+				{
+					bWireOk = false;
+					break;
+				}
+				*DstInput = SrcInput;
+			}
+			NewNode->PostEditChange();
+
+			if (!bWireOk)
+			{
+				// Partial wire — drop the stub and leave the Custom in place.
+				UMaterialEditingLibrary::DeleteMaterialExpression(Material, NewNode);
+				continue;
+			}
+
+			const FRewireCounts Counts = RedirectUsageToNewSource(
+				Material, Custom, 0, NewNode, 0);
+
+			UMaterialEditingLibrary::DeleteMaterialExpression(Material, Custom);
+			++Out.NodesRemoved;
+			++Out.NodesAdded;
+			++FindingsHandled;
+			Out.Log.Add(FString::Printf(TEXT("inline_trivial_custom: Custom → %s (%d args, rewired %d inputs + %d main outputs)"),
+				*ReplaceClass->GetName(),
+				ArgTokens.Num(), Counts.ExpressionInputs, Counts.MainOutputs));
+		}
+	}
+
 	Material->PostEditChange();
 	Material->MarkPackageDirty();
 
-	if (bSaveAfter && (Out.NodesRemoved > 0 || Out.PropertiesChanged > 0))
+	if (bSaveAfter && (Out.NodesRemoved > 0 || Out.PropertiesChanged > 0 || Out.NodesAdded > 0))
 	{
 		TArray<UPackage*> Pkgs;
 		Pkgs.Add(Material->GetPackage());
