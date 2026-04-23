@@ -559,6 +559,51 @@ struct FBridgeMaterialAnalysis
 	bool bShaderStatsReady = false;
 };
 
+/** One weighted-blendable entry on a PostProcessVolume (M4-8). */
+USTRUCT(BlueprintType)
+struct FBridgePostProcessBlendable
+{
+	GENERATED_BODY()
+
+	/** Material (or MI) asset path — empty when the blendable points at something non-UMaterialInterface. */
+	UPROPERTY(BlueprintReadOnly)
+	FString MaterialPath;
+
+	UPROPERTY(BlueprintReadOnly)
+	float Weight = 1.0f;
+};
+
+/** One PostProcessVolume's snapshot (M4-8). */
+USTRUCT(BlueprintType)
+struct FBridgePostProcessVolumeInfo
+{
+	GENERATED_BODY()
+
+	/** Editor-visible label (the one you see in the Outliner). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ActorLabel;
+
+	/** Internal UObject name (stable across relabels). */
+	UPROPERTY(BlueprintReadOnly)
+	FString ActorName;
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bEnabled = false;
+
+	/** True = global / ignores volume bounds. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bUnbound = false;
+
+	UPROPERTY(BlueprintReadOnly)
+	float BlendWeight = 1.0f;
+
+	UPROPERTY(BlueprintReadOnly)
+	float Priority = 0.0f;
+
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FBridgePostProcessBlendable> Blendables;
+};
+
 /** Result of a material or MI asset creation (M2-1 / M2-2). */
 USTRUCT(BlueprintType)
 struct FBridgeCreateAssetResult
@@ -1257,6 +1302,56 @@ public:
 	static FString DiffMIParams(
 		const FString& PathA,
 		const FString& PathB);
+
+	/**
+	 * M4-1: Create a new UMaterial at Path with Domain=PostProcess, ready to
+	 * be wired to SceneTexture / Sobel / tonemap chains.
+	 *
+	 * @param BlendableLocation  "AfterTonemapping" (default, LDR post-FX),
+	 *                           "BeforeTonemapping" (HDR, pre-tonemap),
+	 *                           "BeforeBloom", "SSRInput", "ReplacingTonemapper".
+	 * @param bOutputAlpha        Set `BlendableOutputAlpha` — needed for masks
+	 *                           that compose over the translucency pass.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeCreateAssetResult CreatePostProcessMaterial(
+		const FString& Path,
+		const FString& BlendableLocation,
+		bool bOutputAlpha);
+
+	/**
+	 * M4-8: Enumerate every APostProcessVolume in the current editor world,
+	 * returning its enable state, bounds mode, priority / blend weight, and
+	 * the full list of WeightedBlendables (material paths + weights).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static TArray<FBridgePostProcessVolumeInfo> GetPostProcessState();
+
+	/**
+	 * M4-7: Append a PostProcess material (or MI) to a volume's
+	 * WeightedBlendables. Updates the existing entry if the material is
+	 * already present.
+	 *
+	 * @param VolumeActor    Actor label (as shown in the Outliner). Pass "" to
+	 *                       target the first unbound PPV in the level — and
+	 *                       spawn a new unbound PPV if none exists yet.
+	 * @param MaterialPath   Material or MI path. Domain must be PostProcess.
+	 * @param Weight         0..1 blend strength.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool ApplyPostProcessMaterial(
+		const FString& VolumeActor,
+		const FString& MaterialPath,
+		float Weight);
+
+	/**
+	 * M4-7 companion: Remove a PostProcess material from a volume's
+	 * WeightedBlendables. Returns false if the material wasn't present.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static bool RemovePostProcessMaterial(
+		const FString& VolumeActor,
+		const FString& MaterialPath);
 
 	/**
 	 * M5-1: Full lint-pass over a Material. Combines M1-3 shader stats + M1-4

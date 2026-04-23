@@ -18,6 +18,8 @@
 #include "Materials/MaterialExpressionTextureBase.h"
 #include "Materials/MaterialExpressionTextureSample.h"
 #include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "Engine/PostProcessVolume.h"
+#include "EngineUtils.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionReroute.h"
@@ -3642,6 +3644,261 @@ TArray<FString> UUnrealBridgeMaterialLibrary::GetMaterialCompileErrors(
 		Errors = Resource->GetCompileErrors();
 	}
 	return Errors;
+}
+
+
+// ─── M4: post-process material ops ──────────────────────────────
+
+namespace BridgeMaterialImpl
+{
+	static bool ParseBlendableLocation(const FString& S, EBlendableLocation& Out)
+	{
+		// Canonical UE 5.7 enum tail names — accept bare names too for convenience.
+		// UE 5.7 EBlendableLocation values: AfterTonemapping / BeforeBloom /
+		// ReplacingTonemapper / TranslucencyAfterDOF / SSRInput. (There's no
+		// "BeforeTonemapping" in UE 5.x — use BeforeBloom for pre-tonemap.)
+		static const TMap<FString, EBlendableLocation> Map = {
+			{ TEXT("BL_SceneColorAfterTonemapping"),  BL_SceneColorAfterTonemapping },
+			{ TEXT("AfterTonemapping"),               BL_SceneColorAfterTonemapping },
+			{ TEXT("BL_SceneColorBeforeBloom"),       BL_SceneColorBeforeBloom },
+			{ TEXT("BeforeBloom"),                    BL_SceneColorBeforeBloom },
+			{ TEXT("BeforeTonemapping"),              BL_SceneColorBeforeBloom },  // alias
+			{ TEXT("BL_ReplacingTonemapper"),         BL_ReplacingTonemapper },
+			{ TEXT("ReplacingTonemapper"),            BL_ReplacingTonemapper },
+			{ TEXT("BL_SSRInput"),                    BL_SSRInput },
+			{ TEXT("SSRInput"),                       BL_SSRInput },
+			{ TEXT("BL_TranslucencyAfterDOF"),        BL_TranslucencyAfterDOF },
+			{ TEXT("TranslucencyAfterDOF"),           BL_TranslucencyAfterDOF },
+		};
+		if (const EBlendableLocation* Found = Map.Find(S))
+		{
+			Out = *Found;
+			return true;
+		}
+		return false;
+	}
+
+	static UWorld* GetEditorWorld()
+	{
+		if (!GEditor) return nullptr;
+		return GEditor->GetEditorWorldContext().World();
+	}
+
+	/** Find a PPV by actor label. If Label is empty, return the first unbound one
+	 *  (creating a new unbound PPV if none exists when bCreateIfMissing). */
+	static APostProcessVolume* ResolveVolume(const FString& Label, bool bCreateIfMissing)
+	{
+		UWorld* World = GetEditorWorld();
+		if (!World) return nullptr;
+
+		for (TActorIterator<APostProcessVolume> It(World); It; ++It)
+		{
+			APostProcessVolume* V = *It;
+			if (!V) continue;
+			if (Label.IsEmpty())
+			{
+				if (V->bUnbound) return V;
+			}
+			else if (V->GetActorLabel().Equals(Label, ESearchCase::IgnoreCase)
+				|| V->GetName().Equals(Label, ESearchCase::IgnoreCase))
+			{
+				return V;
+			}
+		}
+
+		if (bCreateIfMissing && Label.IsEmpty())
+		{
+			FActorSpawnParameters Params;
+			Params.ObjectFlags |= RF_Transactional;
+			APostProcessVolume* NewVol = World->SpawnActor<APostProcessVolume>(
+				APostProcessVolume::StaticClass(), FTransform::Identity, Params);
+			if (NewVol)
+			{
+				NewVol->bUnbound = true;
+				NewVol->SetActorLabel(TEXT("PPV_Bridge"));
+				NewVol->MarkPackageDirty();
+			}
+			return NewVol;
+		}
+		return nullptr;
+	}
+
+	static FString BlendableToPath(const FWeightedBlendable& WB)
+	{
+		if (UMaterialInterface* Mat = Cast<UMaterialInterface>(WB.Object))
+		{
+			return Mat->GetPathName();
+		}
+		return WB.Object ? WB.Object->GetPathName() : FString();
+	}
+}  // namespace BridgeMaterialImpl
+
+
+FBridgeCreateAssetResult UUnrealBridgeMaterialLibrary::CreatePostProcessMaterial(
+	const FString& Path,
+	const FString& BlendableLocation,
+	bool bOutputAlpha)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeCreateAssetResult Result;
+
+	EBlendableLocation BL = BL_SceneColorAfterTonemapping;
+	if (!BlendableLocation.IsEmpty() && !ParseBlendableLocation(BlendableLocation, BL))
+	{
+		Result.Error = FString::Printf(TEXT("unknown blendable_location '%s'"), *BlendableLocation);
+		return Result;
+	}
+
+	FString PackagePath, AssetName;
+	if (!SplitAssetPath(Path, PackagePath, AssetName))
+	{
+		Result.Error = FString::Printf(TEXT("invalid path '%s' — expected /Game/Folder/AssetName"), *Path);
+		return Result;
+	}
+
+	IAssetTools& AssetTools = FModuleManager::LoadModuleChecked<FAssetToolsModule>("AssetTools").Get();
+	UMaterialFactoryNew* Factory = NewObject<UMaterialFactoryNew>();
+	UObject* NewAsset = AssetTools.CreateAsset(AssetName, PackagePath, UMaterial::StaticClass(), Factory);
+	UMaterial* Material = Cast<UMaterial>(NewAsset);
+	if (!Material)
+	{
+		Result.Error = FString::Printf(TEXT("AssetTools.CreateAsset returned null for %s/%s"),
+			*PackagePath, *AssetName);
+		return Result;
+	}
+
+	Material->MaterialDomain = MD_PostProcess;
+	Material->BlendableLocation = BL;
+	Material->BlendableOutputAlpha = bOutputAlpha;
+	Material->BlendablePriority = 0;
+
+	Material->PreEditChange(nullptr);
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+
+	Result.bSuccess = true;
+	Result.Path = Material->GetPathName();
+	return Result;
+}
+
+
+TArray<FBridgePostProcessVolumeInfo> UUnrealBridgeMaterialLibrary::GetPostProcessState()
+{
+	using namespace BridgeMaterialImpl;
+
+	TArray<FBridgePostProcessVolumeInfo> Out;
+	UWorld* World = GetEditorWorld();
+	if (!World) return Out;
+
+	for (TActorIterator<APostProcessVolume> It(World); It; ++It)
+	{
+		APostProcessVolume* V = *It;
+		if (!V) continue;
+
+		FBridgePostProcessVolumeInfo Info;
+		Info.ActorLabel = V->GetActorLabel();
+		Info.ActorName = V->GetName();
+		Info.bEnabled = V->bEnabled;
+		Info.bUnbound = V->bUnbound;
+		Info.BlendWeight = V->BlendWeight;
+		Info.Priority = V->Priority;
+
+		for (const FWeightedBlendable& WB : V->Settings.WeightedBlendables.Array)
+		{
+			FBridgePostProcessBlendable B;
+			B.Weight = WB.Weight;
+			B.MaterialPath = BlendableToPath(WB);
+			Info.Blendables.Add(B);
+		}
+		Out.Add(Info);
+	}
+	return Out;
+}
+
+
+bool UUnrealBridgeMaterialLibrary::ApplyPostProcessMaterial(
+	const FString& VolumeActor,
+	const FString& MaterialPath,
+	float Weight)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterialInterface* Mat = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!Mat)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyPostProcessMaterial: could not load material '%s'"), *MaterialPath);
+		return false;
+	}
+	if (Mat->GetMaterial() && Mat->GetMaterial()->MaterialDomain != MD_PostProcess)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyPostProcessMaterial: '%s' is not a PostProcess material"),
+			*MaterialPath);
+		return false;
+	}
+
+	APostProcessVolume* Volume = ResolveVolume(VolumeActor, /*bCreateIfMissing=*/ VolumeActor.IsEmpty());
+	if (!Volume)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("ApplyPostProcessMaterial: no PPV named '%s' (and not creating one)"),
+			*VolumeActor);
+		return false;
+	}
+
+	Volume->Modify();
+
+	// Update if already present; otherwise append. Identity comparison — the
+	// same asset loaded twice returns the same UObject*, so string path
+	// normalization isn't our concern here.
+	bool bUpdated = false;
+	for (FWeightedBlendable& WB : Volume->Settings.WeightedBlendables.Array)
+	{
+		if (WB.Object == Mat)
+		{
+			WB.Weight = Weight;
+			bUpdated = true;
+			break;
+		}
+	}
+	if (!bUpdated)
+	{
+		FWeightedBlendable NewWB;
+		NewWB.Object = Mat;
+		NewWB.Weight = Weight;
+		Volume->Settings.WeightedBlendables.Array.Add(NewWB);
+	}
+
+	Volume->PostEditChange();
+	Volume->MarkPackageDirty();
+	return true;
+}
+
+
+bool UUnrealBridgeMaterialLibrary::RemovePostProcessMaterial(
+	const FString& VolumeActor,
+	const FString& MaterialPath)
+{
+	using namespace BridgeMaterialImpl;
+
+	APostProcessVolume* Volume = ResolveVolume(VolumeActor, /*bCreateIfMissing=*/ false);
+	if (!Volume) return false;
+
+	// Resolve via LoadObject so "/Game/Foo/M" and "/Game/Foo/M.M" both match —
+	// the WB.Object UObject identity is authoritative, not the string form.
+	UMaterialInterface* Target = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!Target) return false;
+
+	Volume->Modify();
+
+	const int32 Removed = Volume->Settings.WeightedBlendables.Array.RemoveAll(
+		[Target](const FWeightedBlendable& WB)
+		{
+			return WB.Object == Target;
+		});
+
+	Volume->PostEditChange();
+	Volume->MarkPackageDirty();
+	return Removed > 0;
 }
 
 

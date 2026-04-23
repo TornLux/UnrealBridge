@@ -1129,6 +1129,81 @@ print(L.diff_mi_params(mi_bronze_a, mi_bronze_b))
 
 ---
 
+## create_post_process_material(path, blendable_location, output_alpha) -> FBridgeCreateAssetResult
+
+**M4-1.** Create a new `UMaterial` with `MaterialDomain = PostProcess`, ready to be wired to `SceneTexture` / Sobel / tonemap chains.
+
+```python
+L = unreal.UnrealBridgeMaterialLibrary
+r = L.create_post_process_material(
+    "/Game/BridgeTemplates/PP_Sketch",
+    blendable_location="AfterTonemapping",   # LDR post-FX default
+    output_alpha=False)
+```
+
+`blendable_location` accepts either the bare name or the full UE enum tail:
+
+| Bare name | UE enum | When to use |
+|---|---|---|
+| `"AfterTonemapping"` | `BL_SceneColorAfterTonemapping` | LDR post-FX (default) — sketch, halftone, posterize, final colour grade |
+| `"BeforeBloom"` / `"BeforeTonemapping"` | `BL_SceneColorBeforeBloom` | HDR space, before tonemap / bloom — extended tonemap or HDR-space blur |
+| `"ReplacingTonemapper"` | `BL_ReplacingTonemapper` | Replace UE's tonemapper entirely — film curves, custom ACES |
+| `"SSRInput"` | `BL_SSRInput` | Modify what the SSR pass sees — rare |
+| `"TranslucencyAfterDOF"` | `BL_TranslucencyAfterDOF` | Composite over translucents after DOF |
+
+`output_alpha=True` sets `BlendableOutputAlpha` — needed for masks that compose over the translucency pass.
+
+Returns `FBridgeCreateAssetResult { success, path, error }`. The created material has an empty graph — use `add_material_expression` / `apply_material_graph_ops` (M2) to wire it.
+
+---
+
+## get_post_process_state() -> list[FBridgePostProcessVolumeInfo]
+
+**M4-8.** Snapshot every `APostProcessVolume` in the current editor world.
+
+```python
+for v in L.get_post_process_state():
+    print(f"{v.actor_label}  unbound={v.unbound}  priority={v.priority}  weight={v.blend_weight}")
+    for b in v.blendables:
+        print(f"  + {b.material_path}  @ {b.weight:.2f}")
+```
+
+### FBridgePostProcessVolumeInfo fields
+
+| Field | Type | Description |
+|---|---|---|
+| `actor_label` | str | Outliner-visible label |
+| `actor_name` | str | Internal UObject name (stable across relabels) |
+| `enabled` | bool | Per-volume enable flag |
+| `unbound` | bool | `True` = global volume (ignores bounds) |
+| `blend_weight` | float | Volume's master weight |
+| `priority` | float | Higher priority = overrides lower-priority overlaps |
+| `blendables` | list[FBridgePostProcessBlendable] | `{material_path, weight}` entries |
+
+---
+
+## apply_post_process_material(volume_actor, material_path, weight) -> bool
+
+**M4-7.** Append (or update) a PostProcess material on a PPV's `WeightedBlendables`. If `volume_actor` is empty, targets the first unbound PPV — creating a new `"PPV_Bridge"` unbound volume if none exists yet.
+
+```python
+# Create + apply + verify in three calls.
+L.create_post_process_material("/Game/BridgeTemplates/PP_Sketch", "AfterTonemapping", False)
+L.apply_post_process_material("", "/Game/BridgeTemplates/PP_Sketch", 1.0)    # "" = use/create unbound PPV
+state = L.get_post_process_state()
+print(state[0].blendables[-1].material_path)  # the just-added entry
+```
+
+Fails (returns `False`) if the target material isn't `MaterialDomain=PostProcess`. The existing entry is updated in place when the same material is re-applied — use `remove_post_process_material` to drop it.
+
+---
+
+## remove_post_process_material(volume_actor, material_path) -> bool
+
+**M4-7 companion.** Drop every weighted-blendable entry referencing `material_path` from the named volume's stack. Returns `True` if at least one entry was removed, `False` otherwise.
+
+---
+
 ## analyze_material(material_path, instruction_budget, sampler_budget) -> FBridgeMaterialAnalysis
 
 **M5-1.** Full lint-pass over a Material. Wraps the M1-3 shader stats + M1-4 compile errors with a rules engine that flags common authoring / perf bugs. Runs the following rules (each emits 0+ findings):
