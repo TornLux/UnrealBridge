@@ -4029,6 +4029,49 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 		}
 	}
 
+	// ── Rule M5-11: trivial Custom nodes ────────────────────────────
+	// Custom blocks lose constant folding / CSE / DCE — tiny bodies are
+	// almost always a net negative vs. equivalent node chains.
+	// ── Rule M5-12: Custom nodes that grab textures themselves ─────
+	// Texture2DSample / SceneTextureLookup inside a Custom bypass UE's
+	// sampler-sharing + dependency tracking. Pass the sample result in
+	// from a graph TextureSample node instead.
+	{
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr);
+			if (!Custom) continue;
+
+			// Strip comments + whitespace for the triviality heuristic.
+			const FString& Code = Custom->Code;
+			const int32 SigChars = Code.TrimStartAndEnd().Len();
+			int32 Newlines = 0;
+			for (int32 i = 0; i < Code.Len(); ++i)
+			{
+				if (Code[i] == TEXT('\n')) ++Newlines;
+			}
+
+			if (SigChars > 0 && SigChars < 64 && Newlines <= 1)
+			{
+				EmitFinding(Out.Findings, TEXT("M5-11"), TEXT("info"),
+					FString::Printf(TEXT("Custom node body is only %d chars / %d newlines — likely cheaper as native graph nodes (keeps const folding + CSE + DCE)."),
+						SigChars, Newlines + 1),
+					Expr->MaterialExpressionGuid,
+					Expr->GetClass()->GetName());
+			}
+
+			if (Code.Contains(TEXT("Texture2DSample")) || Code.Contains(TEXT("SceneTextureLookup")))
+			{
+				EmitFinding(Out.Findings, TEXT("M5-12"), TEXT("warning"),
+					TEXT("Custom node sources textures directly (Texture2DSample / SceneTextureLookup) — ")
+					TEXT("use a graph TextureSample node and feed its result into the Custom input instead, ")
+					TEXT("so UE can share samplers and track dependencies."),
+					Expr->MaterialExpressionGuid,
+					Expr->GetClass()->GetName());
+			}
+		}
+	}
+
 	// Sort findings: error → warning → info, then by RuleId.
 	auto SevRank = [](const FString& S) -> int32
 	{
