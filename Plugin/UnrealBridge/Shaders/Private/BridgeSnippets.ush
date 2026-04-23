@@ -266,6 +266,55 @@ float BridgeSwirledNoise3D(float3 Pos, float WarpStrength)
 	return BridgeValueNoise3D(Pos + (Warp - 0.5) * WarpStrength);
 }
 
+//@snippet BridgeSobelEdge
+// @desc     4-neighbour depth-gradient edge detector for PP materials. Pass the
+//           depth (or luminance / any scalar) sampled at four 1-texel offsets
+//           (left / right / up / down); returns a 0..1 edge mask, thresholded
+//           and scaled by Gain. Designed to be driven from graph-level
+//           SceneTexture lookups — so UE keeps sampler sharing + dependency
+//           tracking intact (don't call SceneTextureLookup inside Custom).
+// @sig      float BridgeSobelEdge(float dL, float dR, float dU, float dD, float Threshold, float Gain)
+// @fl       SM5
+// @inst     ~6
+float BridgeSobelEdge(float dL, float dR, float dU, float dD, float Threshold, float Gain)
+{
+	float gx = abs(dR - dL);
+	float gy = abs(dD - dU);
+	return saturate((gx + gy - Threshold) * Gain);
+}
+
+//@snippet BridgeCrossHatch
+// @desc     Four-layer pencil cross-hatch mask: darker pixels accumulate more
+//           hatch directions (45° / -45° / horizontal / vertical). Returns a
+//           scalar in [0,1] where 1 = paper (no hatch) and 0 = dark ink line.
+//           Frequency sets lines-per-UV-unit; pair with ScreenPosition UV
+//           (ranges 0..1 across the viewport) and roughly 40..400 Frequency
+//           for a pleasing stroke density.
+// @sig      float BridgeCrossHatch(float2 UV, float Luminance, float Frequency)
+// @fl       SM5
+// @inst     ~30
+float BridgeCrossHatch(float2 UV, float Luminance, float Frequency)
+{
+	float A = abs(sin((UV.x + UV.y) * Frequency));           // +45°
+	float B = abs(sin((UV.x - UV.y) * Frequency * 1.07));    // -45°
+	float C = abs(sin(UV.x * Frequency * 0.93));             // vertical
+	float D = abs(sin(UV.y * Frequency * 1.03));             // horizontal
+
+	// Thin strokes: hatch present when sin-magnitude is small.
+	float LineA = step(0.15, A);
+	float LineB = step(0.15, B);
+	float LineC = step(0.15, C);
+	float LineD = step(0.15, D);
+
+	// Reveal layers in at luminance thresholds: darker → more hatch.
+	float Mask = 1.0;
+	Mask = lerp(LineD, Mask, saturate((Luminance - 0.75) * 4.0));
+	Mask = lerp(LineC, Mask, saturate((Luminance - 0.55) * 4.0));
+	Mask = lerp(LineB, Mask, saturate((Luminance - 0.35) * 4.0));
+	Mask = lerp(LineA, Mask, saturate((Luminance - 0.15) * 4.0));
+	return Mask;
+}
+
 //@snippet BridgeVoronoi2D
 // @desc     2D Voronoi cellular noise — returns closest-cell distance, scaled to roughly [0,1].
 //           Cells param controls grid density (larger = tighter cells).

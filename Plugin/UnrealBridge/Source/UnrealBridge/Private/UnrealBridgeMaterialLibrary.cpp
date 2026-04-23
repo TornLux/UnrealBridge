@@ -4308,6 +4308,10 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 	// ── Rule M5-11: trivial Custom nodes ────────────────────────────
 	// Custom blocks lose constant folding / CSE / DCE — tiny bodies are
 	// almost always a net negative vs. equivalent node chains.
+	// Exception: a one-liner that's just `return BridgeXxx(...);` through an
+	// included .ush is the intended snippet-dispatch pattern; the real work
+	// lives in the shared library, not the node body. Don't flag those.
+	//
 	// ── Rule M5-12: Custom nodes that grab textures themselves ─────
 	// Texture2DSample / SceneTextureLookup inside a Custom bypass UE's
 	// sampler-sharing + dependency tracking. Pass the sample result in
@@ -4327,7 +4331,13 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 				if (Code[i] == TEXT('\n')) ++Newlines;
 			}
 
-			if (SigChars > 0 && SigChars < 64 && Newlines <= 1)
+			// Skip snippet-dispatch nodes: body is a call to a shared helper
+			// via an included .ush. The helper itself may be hundreds of lines.
+			const bool bIsSnippetTrampoline =
+				Custom->IncludeFilePaths.Num() > 0 &&
+				Code.Contains(TEXT("Bridge"));
+
+			if (SigChars > 0 && SigChars < 64 && Newlines <= 1 && !bIsSnippetTrampoline)
 			{
 				EmitFinding(Out.Findings, TEXT("M5-11"), TEXT("info"),
 					FString::Printf(TEXT("Custom node body is only %d chars / %d newlines — likely cheaper as native graph nodes (keeps const folding + CSE + DCE)."),
