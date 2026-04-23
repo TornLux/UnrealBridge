@@ -1270,6 +1270,46 @@ Freshly-built masters report `shader_stats_ready=False` and `max_instructions=0`
 
 ---
 
+## auto_fix_material(material_path, fixes, save_after) -> FBridgeMaterialAutoFixResult
+
+**M5-14.** Mechanical auto-fixes for the subset of lint findings that can be safely resolved without changing shader behavior. Each requested fix ID targets the matching rule's findings from a fresh `analyze_material` pass.
+
+```python
+L = unreal.UnrealBridgeMaterialLibrary
+r = L.auto_fix_material(
+    "/Game/BridgeTemplates/M_Character_Armor",
+    ["drop_unused", "samplersource_share"],
+    save_after=True)
+print(f"ok={r.success}  fixed={r.findings_fixed}  "
+      f"dropped={r.nodes_removed}  props_changed={r.properties_changed}")
+for line in r.log:
+    print(f"  {line}")
+```
+
+### Supported fix IDs
+
+| Fix | Targets | Action |
+|---|---|---|
+| `"drop_unused"` | `M5-3` findings | Call `delete_material_expression` on every unreachable node. Safe: the node contributes nothing to the compiled shader. |
+| `"samplersource_share"` | `M5-5` findings | Flip each flagged `TextureSample`'s `SamplerSource` to `SSM_Wrap_WorldGroupSettings` so it feeds UE's global shared sampler. Frees up sampler slots on dense masters. |
+
+Unknown fix IDs land in `skipped_fixes` on the result — the call itself still succeeds for the fixes it could apply. Risk-averse rules (M5-6 static-switch conversion, M5-11 inline-trivial-Custom) are intentionally excluded; they require rewriting the graph structure and should stay advisory for now.
+
+### FBridgeMaterialAutoFixResult fields
+
+| Field | Type | Description |
+|---|---|---|
+| `success` | bool | Fix pass completed without fatal errors |
+| `findings_fixed` | int | Count of findings handled across all applied fixes |
+| `nodes_removed` | int | Expressions deleted by `drop_unused` |
+| `properties_changed` | int | Property writes performed by `samplersource_share` etc. |
+| `skipped_fixes` | list[str] | Fix IDs not recognized / not implemented |
+| `log` | list[str] | One-line-per-action human-readable report |
+
+All mutations run inside a single `FScopedTransaction` so `Ctrl+Z` in the editor rolls the whole auto-fix pass back. The material is saved when `save_after=True` and at least one fix applied.
+
+---
+
 ## Master material templates (M3)
 
 Python packages under `Plugin/UnrealBridge/Content/Python/material_templates/` generate complete AAA-aligned master materials from the M2 / M2.5 primitives. Each module exposes a ``build(...)`` entry point that calls `create_material` → `add_custom_expression` (when needed) → `apply_material_graph_ops` (sync compile) → optional `create_material_instance` + `preview_material`, and returns a stats + budget dict.

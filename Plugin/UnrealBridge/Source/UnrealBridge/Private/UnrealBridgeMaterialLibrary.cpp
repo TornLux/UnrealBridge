@@ -21,6 +21,7 @@
 #include "Engine/PostProcessVolume.h"
 #include "EngineUtils.h"
 #include "MaterialGraph/MaterialGraphNode.h"
+#include "ScopedTransaction.h"
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionReroute.h"
@@ -4362,5 +4363,130 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 		return A.RuleId.Compare(B.RuleId) < 0;
 	});
 
+	return Out;
+}
+
+
+// ─── M5-14: auto_fix_material ──────────────────────────────────────
+
+FBridgeMaterialAutoFixResult UUnrealBridgeMaterialLibrary::AutoFixMaterial(
+	const FString& MaterialPath,
+	const TArray<FString>& Fixes,
+	bool bSaveAfter)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialAutoFixResult Out;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		Out.Log.Add(FString::Printf(TEXT("could not load material '%s'"), *MaterialPath));
+		return Out;
+	}
+
+	// Normalize + partition requested fixes.
+	const TSet<FString> KnownFixes = {
+		TEXT("drop_unused"),
+		TEXT("samplersource_share"),
+	};
+	TSet<FString> RequestedFixes;
+	for (const FString& F : Fixes)
+	{
+		if (KnownFixes.Contains(F))
+		{
+			RequestedFixes.Add(F);
+		}
+		else
+		{
+			Out.SkippedFixes.Add(F);
+			Out.Log.Add(FString::Printf(TEXT("SKIP: unknown fix id '%s'"), *F));
+		}
+	}
+
+	if (RequestedFixes.Num() == 0)
+	{
+		Out.bSuccess = Out.SkippedFixes.Num() == 0;
+		return Out;
+	}
+
+	// Re-run the analysis so we operate on the current snapshot.
+	FBridgeMaterialAnalysis Analysis =
+		UUnrealBridgeMaterialLibrary::AnalyzeMaterial(MaterialPath, 0, 0);
+	if (!Analysis.bFound)
+	{
+		Out.Log.Add(TEXT("analyze_material failed — aborting"));
+		return Out;
+	}
+
+	const FScopedTransaction Transaction(NSLOCTEXT("UnrealBridge",
+		"AutoFixMaterial", "Auto-fix material"));
+	Material->Modify();
+
+	int32 FindingsHandled = 0;
+
+	// --- drop_unused (M5-3) ----------------------------------------
+	if (RequestedFixes.Contains(TEXT("drop_unused")))
+	{
+		// Collect guids so we don't mutate the expression list mid-iteration.
+		TArray<FGuid> ToDelete;
+		for (const FBridgeMaterialFinding& F : Analysis.Findings)
+		{
+			if (F.RuleId == TEXT("M5-3") && F.ExpressionGuid.IsValid())
+			{
+				ToDelete.AddUnique(F.ExpressionGuid);
+			}
+		}
+		for (const FGuid& Guid : ToDelete)
+		{
+			UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
+			if (!Expr) continue;
+			UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expr);
+			++Out.NodesRemoved;
+			++FindingsHandled;
+			Out.Log.Add(FString::Printf(TEXT("drop_unused: removed %s (%s)"),
+				*Expr->GetClass()->GetName(), *Guid.ToString(EGuidFormats::Digits)));
+		}
+	}
+
+	// --- samplersource_share (M5-5) --------------------------------
+	if (RequestedFixes.Contains(TEXT("samplersource_share")))
+	{
+		TSet<FGuid> ToSwitch;
+		for (const FBridgeMaterialFinding& F : Analysis.Findings)
+		{
+			if (F.RuleId == TEXT("M5-5") && F.ExpressionGuid.IsValid())
+			{
+				ToSwitch.Add(F.ExpressionGuid);
+			}
+		}
+		for (const FGuid& Guid : ToSwitch)
+		{
+			UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
+			UMaterialExpressionTextureSample* TS = Cast<UMaterialExpressionTextureSample>(Expr);
+			if (!TS) continue;
+			TS->Modify();
+			TS->PreEditChange(nullptr);
+			TS->SamplerSource = SSM_Wrap_WorldGroupSettings;
+			TS->PostEditChange();
+			++Out.PropertiesChanged;
+			++FindingsHandled;
+			Out.Log.Add(FString::Printf(TEXT("samplersource_share: %s → SSM_Wrap_WorldGroupSettings (%s)"),
+				*Expr->GetClass()->GetName(), *Guid.ToString(EGuidFormats::Digits)));
+		}
+	}
+
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+
+	if (bSaveAfter && (Out.NodesRemoved > 0 || Out.PropertiesChanged > 0))
+	{
+		TArray<UPackage*> Pkgs;
+		Pkgs.Add(Material->GetPackage());
+		UEditorLoadingAndSavingUtils::SavePackages(Pkgs, /*bOnlyDirty=*/ true);
+	}
+
+	Out.FindingsFixed = FindingsHandled;
+	Out.bSuccess = true;
 	return Out;
 }

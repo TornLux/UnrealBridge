@@ -604,6 +604,36 @@ struct FBridgePostProcessVolumeInfo
 	TArray<FBridgePostProcessBlendable> Blendables;
 };
 
+/** Summary of an auto_fix_material call (M5-14). */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialAutoFixResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	bool bSuccess = false;
+
+	/** Count of findings resolved by the fix pass. */
+	UPROPERTY(BlueprintReadOnly)
+	int32 FindingsFixed = 0;
+
+	/** Number of expressions deleted (drop_unused). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 NodesRemoved = 0;
+
+	/** Number of expression properties changed (samplersource_share). */
+	UPROPERTY(BlueprintReadOnly)
+	int32 PropertiesChanged = 0;
+
+	/** Fix IDs that were requested but are not implemented / unsupported — e.g. "static_switch_conversion". */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> SkippedFixes;
+
+	/** Human-readable, one-action-per-line report. */
+	UPROPERTY(BlueprintReadOnly)
+	TArray<FString> Log;
+};
+
 /** Result of a material or MI asset creation (M2-1 / M2-2). */
 USTRUCT(BlueprintType)
 struct FBridgeCreateAssetResult
@@ -1383,4 +1413,25 @@ public:
 		const FString& MaterialPath,
 		int32 InstructionBudget,
 		int32 SamplerBudget);
+
+	/**
+	 * M5-14: Apply the safe subset of lint auto-fixes to a Material.
+	 *
+	 * Supported fix IDs:
+	 *   "drop_unused"          — delete every expression flagged by M5-3.
+	 *                            Safe: unreachable nodes contribute zero to
+	 *                            the compiled shader.
+	 *   "samplersource_share"  — flip every TextureSample whose SamplerSource
+	 *                            was flagged by M5-5 to SSM_Wrap_WorldGroupSettings
+	 *                            so it feeds the global shared sampler.
+	 *
+	 * Any unrecognised fix id lands in `SkippedFixes` on the result — the call
+	 * itself still succeeds for the fixes it could apply. Material is
+	 * PostEditChanged + saved when ``bSaveAfter`` is true.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialAutoFixResult AutoFixMaterial(
+		const FString& MaterialPath,
+		const TArray<FString>& Fixes,
+		bool bSaveAfter);
 };
