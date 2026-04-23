@@ -6,7 +6,7 @@ allowed-tools: Bash Read Write Edit Glob Grep
 
 # UnrealBridge
 
-Execute Python code directly inside a running Unreal Engine 5.7 editor. The bridge communicates over TCP with the UnrealBridge plugin (default port 9876).
+Execute Python code directly inside a running Unreal Engine 5.7 editor. The bridge auto-discovers the editor via UDP multicast (`239.255.42.99:9876`) so the TCP data port is picked by the OS at runtime — zero port-conflict across multiple editors.
 
 ## Bridge CLI
 
@@ -21,8 +21,27 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | `exec-file` | `bridge.py exec-file script.py` | Execute a .py file |
 | `gamethread-ping` | `bridge.py gamethread-ping` | Probe GameThread liveness (bypasses exec queue) |
 | `resume` | `bridge.py resume` | Unstick a paused BP breakpoint (bypasses exec queue) |
+| `list-editors` | `bridge.py list-editors` | Send a discovery probe; print every editor that responded |
 
-Options: `--host`, `--port` (default 9876), `--timeout` (default 30), `--json`
+Discovery is automatic — the common case needs no flags. Overrides (all optional):
+
+| Flag | Env fallback | Purpose |
+|---|---|---|
+| `--project=<name\|path>` | `UNREAL_BRIDGE_PROJECT` | Disambiguate when >1 editors are running |
+| `--endpoint=host:port` | `UNREAL_BRIDGE_ENDPOINT` | Skip discovery, connect directly |
+| `--token=<secret>` | `UNREAL_BRIDGE_TOKEN` | Required only when the server binds non-loopback |
+| `--discovery-timeout=<ms>` | — | Probe wait window (default: 800ms) |
+| `--discovery-group=host:port` | `UNREAL_BRIDGE_DISCOVERY_GROUP` | Override the multicast group |
+| `--timeout=<s>` | — | Per-request TCP timeout (default: 30s) |
+| `--json` | — | Machine-readable output |
+
+### Multi-editor disambiguation
+
+If two or more editors are running, the first `exec` / `ping` fails with a list — re-run with `--project=<name>` or set `UNREAL_BRIDGE_PROJECT`. Filter matches against the project's short name, its full `.uproject` path, a path suffix, or a case-insensitive name substring.
+
+### When discovery fails
+
+Discovery uses UDP multicast; some firewalls / VPNs / tightly-segmented networks block it. Symptoms: `discovery: no UnrealBridge editors found on the LAN`. Work around with an explicit `--endpoint=127.0.0.1:<port>` — read the port from the editor's `LogUnrealBridgeModule: Server up on 127.0.0.1:XXXXX` startup line, or from the editor's Output Log.
 
 ### Diagnosing a stuck `exec`
 
