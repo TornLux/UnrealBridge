@@ -9,7 +9,7 @@
 
 硬约束：成品质量对齐 AAA 项目常见实践（SM5+ / Lumen / Nanite 就绪、正确的 ShadingModel / MaterialDomain / 纹理压缩 / sampler 复用 / 静态分支），性能口径按"不退化 GPU 时长、不超 sampler/ instruction 预算"衡量。
 
-最后更新：2026-04-24（v0.4 — M3 7/9 模板、M4 4/5 模板、**M5 全部 13 条规则 + auto_fix 落地**；handoff list item 1-5 + 8-9 本次交付）
+最后更新：2026-04-24（v0.5 — M3 7/9 模板、**M4 全部 5/5 模板 + 全部 C++ 原语**、M5 全部 13 条规则 + auto_fix 落地；handoff list item 11 本次交付：PP_ColorGradeLUT_Extended + PP_Film_Grain_AA）
 
 ---
 
@@ -22,7 +22,7 @@
 | M2.5 HLSL 片段库 | ✅ 全部交付 | BridgeSnippets.ush + add_custom_expression + list / get 共享片段；现有 snippet：Luminance, Unpack/Pack ORM, ACES, BlendAngleCorrectedNormals (已修成 `-1..1` 约定), DepthFade, DitherLODTransition, Hash21/31, ValueNoise3D, ThinFilmInterference, FBM3D, IQFlow3D, SwirledNoise3D, Voronoi2D |
 | M6 参数迭代闭环 | ✅ 全部交付 | set_mi_params / set_mi_and_preview / sweep / MPC setter / diff / golden snapshot+compare |
 | M3 母材质模板 | 🟡 7 / 9 模板 | **已交付**：M3-2 Character_Armor、M3-3 Environment_Prop、M3-4 Foliage_Master、M3-6 Glass_Translucent、M3-8 UI_Unlit、M3-9 VFX (Unlit Additive + Translucent Soft，两个一并算作 M3-9). **未交付**：M3-1 Character_PBR (可视作 M3-2 的精简子集，优先级低)、M3-5 Weapon_Hero (建议先加 BridgePOMRayMarch snippet)、M3-7 Layered (材质层系统，体量最大 300-500 行 Python) |
-| M4 后处理材质 | 🟡 4 / 5 模板 + 全部 C++ 原语 | **已交付**：create_post_process_material / apply / remove / get_post_process_state + PP_Posterize、PP_Halftone、PP_Outline (4-neighbour depth gradient)、PP_Sketch (Sobel edge + crosshatch + posterize). **未交付**：PP_ColorGradeLUT_Extended、PP_Film_Grain_AA (两者都是 scope 较小的 PP，只需几十个节点) |
+| M4 后处理材质 | ✅ 5 / 5 模板 + 全部 C++ 原语 | **已交付**：create_post_process_material / apply / remove / get_post_process_state + PP_Posterize、PP_Halftone、PP_Outline (4-neighbour depth gradient)、PP_Sketch (Sobel edge + crosshatch + posterize)、PP_ColorGradeLUT_Extended (2D-unwrapped LUT + 3-zone 分区曲线 + 饱和度)、PP_Film_Grain_AA (BridgeHash21 动态颗粒 + sub-LSB dither) |
 | M5 Lint / 自动修复 | ✅ 13 / 13 规则 + auto_fix (2/4 fix IDs) | **已交付**：analyze_material 聚合 + 全部 12 条检查规则（M5-2..M5-13），auto_fix_material 支持 `drop_unused` + `samplersource_share`. **未交付的仅剩 auto_fix 扩展**：`static_switch_conversion` (把 M5-6 Pattern 2 flagged 的 ScalarParameter 图结构替换成 StaticSwitchParameter) + `inline_trivial_custom` (把 M5-11 flagged 的小 Custom 替换成原生节点链) — 两者都是复杂的图重写，每个 ~200 行 C++。 |
 
 ### 顺带交付（不在原路线图但相关）
@@ -331,13 +331,12 @@
 6. ✅ ~~**M5-7 Feature/Quality switch 缺失检查**~~ (已交付，commit 987524f — 计 TextureSample + SceneTexture + Custom，阈值触发 info；PostProcess domain 自动豁免)
 7. ✅ ~~**M5-13 Custom SM-only intrinsic**~~ (已交付，commit 987524f — 覆盖 ddx_fine/ddy_fine/firstbithigh/firstbitlow/reversebits/countbits)
 
-**M5 现已全部交付。** 剩余（按下次 session 推荐顺序）：
+**M4 + M5 现已全部交付。** 剩余（按下次 session 推荐顺序）：
 
 8. **M3-7 Layered 材质层框架** — `MaterialAttributeLayers` + 3-4 个 `MF_Layer_*` MaterialFunction (Metal / Fabric / Dirt)。体量最大（300-500 行 Python），但覆盖 AAA 项目的"层级材质"workflow。
 9. **M3-5 Weapon_Hero** — 建立在 M3-2 基础上 + Parallax Occlusion（POM）HLSL snippet（~40 行 HLSL）+ Curve Atlas 驱动的脉冲发光 + 第二套 UV (Emissive-only)。需要先加 `BridgePOMRayMarch` snippet；无 POM 版本可简化为"M3-2 + 脉冲发光 + 双 UV"，~300 行 Python。
 10. **auto_fix 扩展**：`static_switch_conversion` (把 M5-6 Pattern 2 的 ScalarParameter 替换成 StaticSwitchParameter) + `inline_trivial_custom` (把 M5-11 小 Custom 替换成原生节点链)。这两个是复杂的图重写，每个 ~200 行 C++，需要非常小心的 PreEditChange / PostEditChange 流程。
-11. **M4-5 PP_ColorGradeLUT_Extended + M4-6 PP_Film_Grain_AA** — 两个小后处理模板，每个 100-150 行 Python。前者需要 `SceneTexture(PPI_SceneColor) → 3D LUT 采样`；后者是简单的噪声叠加。
-12. **M3-1 Character_PBR 精简版** — 优先级最低，可忽略（M3-2 所有开关默认 false = Character_PBR）。
+11. **M3-1 Character_PBR 精简版** — 优先级最低，可忽略（M3-2 所有开关默认 false = Character_PBR）。
 
 ### 本轮发现的坑 / 已在代码里注释
 
@@ -355,6 +354,7 @@
 - **UE Python `str(unreal.Guid)` 返回 `<Struct 'Guid' (0x...) {}>`**，对 `FGuid::Parse` 无效。用 `.to_string()`（或我封装的 `_common.guid_to_str(g)`）拿 32-hex 形式。
 - **UE Python 对 bool USTRUCT 字段去掉 `b` 前缀**：`bool bSuccess` → Python 里是 `.success`，不是 `.b_success`。
 - **UE 5.7 `EBlendableLocation` 没有 `BL_SceneColorBeforeTonemapping`**（被删了）；要 pre-tonemap 用 `BL_SceneColorBeforeBloom`。bridge 的 `ParseBlendableLocation` 把字符串 `"BeforeTonemapping"` 作为别名映射到它。
+- **TextureObjectParameter 继承自 UMaterialExpressionTextureSample**（经 TextureSampleParameter），所以 M5-5 / M5-10 把它当成 "一个采样" 纳入统计。用 TextureObjectParameter 当共享 texture 源时，必须跟下游的 TextureSample 同步 `SamplerSource`（默认 `SSM_FromTextureAsset`）否则 M5-5 会 flag "mixing sampler sources"。参见 pp_color_grade_lut.py 的 LUT_Texture 节点。
 
 ### 回归测试的最小集合
 
@@ -373,9 +373,11 @@ import material_templates.pp_posterize as pp
 import material_templates.pp_halftone as ph
 import material_templates.pp_outline as po
 import material_templates.pp_sketch as ps
+import material_templates.pp_color_grade_lut as cg
+import material_templates.pp_film_grain as fg
 import material_templates.vfx_unlit_additive as va
 import material_templates.vfx_translucent_soft as vt
-for mod in (c, ca, ep, fm, gl, ui, pp, ph, po, ps, va, vt): importlib.reload(mod)
+for mod in (c, ca, ep, fm, gl, ui, pp, ph, po, ps, cg, fg, va, vt): importlib.reload(mod)
 import unreal
 L = unreal.UnrealBridgeMaterialLibrary
 # Regular masters — build + lint
@@ -384,7 +386,7 @@ for b in (ca, ep, fm, gl, ui, va, vt):
     real_findings = [f for f in ar.findings if str(f.severity) != 'info']
     print(f\"{r['master_path']}: exprs={r['num_expressions']} warnings={len(real_findings)}\")
 # PP templates — no apply
-for b in (pp, ph, po, ps):
+for b in (pp, ph, po, ps, cg, fg):
     r = b.build(rebuild=True, apply_weight=0); ar = L.analyze_material(r['master_path'], 0, 0)
     real_findings = [f for f in ar.findings if str(f.severity) != 'info']
     print(f\"{r['master_path']}: ops={r['ops_applied']} warnings={len(real_findings)}\")
