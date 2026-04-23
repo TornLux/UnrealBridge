@@ -37,7 +37,8 @@ flowchart LR
     UE["Unreal Editor 5.7"]
 
     Agent -- "shell" --> CLI
-    CLI -- "TCP / JSON<br/>127.0.0.1:9876" --> Server
+    CLI -- "UDP 探测<br/>239.255.42.99:9876" --> Server
+    CLI -- "TCP / JSON<br/>（端口由发现得到）" --> Server
     Server -- "GameThread<br/>Python 派发" --> Libs
     Libs --> UE
 ```
@@ -63,7 +64,7 @@ set "DST=D:\Path\To\YourProject\Plugins\UnrealBridge"
 
 ### 3. 构建并启动
 
-用 UE 打开 `.uproject` 让它自动重建插件，或从命令行跑项目自带的 `Build.bat`。启动编辑器 —— 插件会在 `PostEngineInit` 拉起服务器，看到日志里出现 `LogUnrealBridge: Listening on 127.0.0.1:9876` 就算成功。
+用 UE 打开 `.uproject` 让它自动重建插件，或从命令行跑项目自带的 `Build.bat`。启动编辑器 —— 插件会在 `PostEngineInit` 拉起服务器，看到日志里出现 `LogUnrealBridge: Listening on 127.0.0.1:<端口>` 就算成功。端口由 OS 分配，客户端通过多播发现自动找到它，不需要手动配置。
 
 ### 4. 验证
 
@@ -112,7 +113,14 @@ bridge.py exec "print('hello from UE')"
 bridge.py exec-file my_script.py
 ```
 
-参数：`--host`、`--port`（默认 9876）、`--timeout`（默认 30 秒）、`--json`。
+参数（全部可选，常规使用可以一个都不传）：
+
+- `--project=<名称|路径>` —— 同时跑多个编辑器时用来挑一个
+- `--endpoint=host:port` —— 跳过发现直连（或环境变量 `UNREAL_BRIDGE_ENDPOINT`）
+- `--token=<密钥>` —— 仅当 server 绑定非 loopback 时需要（或 `UNREAL_BRIDGE_TOKEN`）
+- `--timeout`（默认 30 秒）、`--json`、`--discovery-timeout=<ms>`（默认 800）
+
+`bridge.py list-editors` 发一次探测并列出所有响应的编辑器 —— 多编辑器场景的诊断快捷命令。
 
 ### 在 UE 的 Python 里调用
 
@@ -157,15 +165,31 @@ python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # 动到反射
 
 ## 协议
 
-`127.0.0.1:9876` 上的长度前缀 JSON：
+两个通道：
+
+1. **UDP 多播发现**：`239.255.42.99:9876`。客户端广播一个带 request_id 的 `probe`（可带 project 过滤器），每个运行中的编辑器单播回自己的 TCP 绑定地址 + 端口 + token 指纹。多编辑器通过 `SO_REUSEADDR` 共存。
+
+2. **TCP 数据通道**：端口由编辑器在发现响应里给出（OS 分配，默认 `127.0.0.1`）。长度前缀 JSON：
 
 ```
-请求:  [4 字节大端长度][{"id","script","timeout"}]
+请求:  [4 字节大端长度][{"id","script","timeout","token?"}]
 响应:  [4 字节大端长度][{"id","success","output","error"}]
 Ping:  {"id","command":"ping"}  →  pong
 ```
 
+当 server 绑定非 loopback 时自动启用 token 鉴权；客户端从 `<Project>/Saved/UnrealBridge/token.txt` 读取并在每个请求里带上。
+
 脚本在 GameThread 上执行；捕获的 stdout 与 stderr 通过特殊分隔符 `__UB_ERR__` 区分。
+
+### 服务器配置（CLI / 环境变量 / `EditorPerProjectUserSettings.ini [UnrealBridge]`）
+
+| CLI | 环境变量 | 默认 |
+|---|---|---|
+| `-UnrealBridgeBind=` | `UNREAL_BRIDGE_BIND` | `127.0.0.1` |
+| `-UnrealBridgePort=` | `UNREAL_BRIDGE_PORT` | `0`（OS 分配） |
+| `-UnrealBridgeToken=` | `UNREAL_BRIDGE_TOKEN` | 空（非 loopback 时必填） |
+| `-UnrealBridgeDiscoveryGroup=` | `UNREAL_BRIDGE_DISCOVERY_GROUP` | `239.255.42.99:9876` |
+| `-UnrealBridgeNoDiscovery` *(flag)* | `UNREAL_BRIDGE_DISCOVERY=0` | 默认开启 |
 
 ## 仓库结构
 
@@ -193,7 +217,7 @@ UnrealBridge/
 ## 安全
 
 - 所有关卡编辑操作都包在 `FScopedTransaction` 里 —— 编辑器内按 Ctrl+Z 可以撤销桥接做过的任何改动。
-- TCP 服务器只绑定到 `127.0.0.1`，外网不可达。
+- TCP 服务器**默认绑到 `127.0.0.1`**，外网不可达。要开放 LAN 必须显式 `-UnrealBridgeBind=0.0.0.0 -UnrealBridgeToken=<密钥>`；非 loopback 绑定若未提供 token，server 会拒绝启动以避免 Python RCE 外漏。
 
 ## 许可证
 

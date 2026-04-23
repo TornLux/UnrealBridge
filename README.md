@@ -37,7 +37,8 @@ flowchart LR
     UE["Unreal Editor 5.7"]
 
     Agent -- "shell" --> CLI
-    CLI -- "TCP / JSON<br/>127.0.0.1:9876" --> Server
+    CLI -- "UDP probe<br/>239.255.42.99:9876" --> Server
+    CLI -- "TCP / JSON<br/>(port from discovery)" --> Server
     Server -- "GameThread<br/>Python dispatch" --> Libs
     Libs --> UE
 ```
@@ -63,7 +64,7 @@ Run `sync_plugin.bat`. It mirrors `Plugin/UnrealBridge/` into the project, skipp
 
 ### 3. Build & launch
 
-Open the `.uproject` and let UE rebuild the plugin automatically, or run the project's `Build.bat` from the command line. Launch the editor — the plugin starts the server at `PostEngineInit`. You're good once `LogUnrealBridge: Listening on 127.0.0.1:9876` shows up in the log.
+Open the `.uproject` and let UE rebuild the plugin automatically, or run the project's `Build.bat` from the command line. Launch the editor — the plugin starts the server at `PostEngineInit`. You're good once `LogUnrealBridge: Listening on 127.0.0.1:<port>` shows up in the log (the port is OS-assigned; the client finds it via multicast — no manual config needed).
 
 ### 4. Verify
 
@@ -112,7 +113,14 @@ bridge.py exec "print('hello from UE')"
 bridge.py exec-file my_script.py
 ```
 
-Flags: `--host`, `--port` (default 9876), `--timeout` (default 30s), `--json`.
+Flags (all optional — the common case works with no flags):
+
+- `--project=<name|path>` — disambiguate when >1 editors are running
+- `--endpoint=host:port` — skip discovery, connect directly (also env `UNREAL_BRIDGE_ENDPOINT`)
+- `--token=<secret>` — only when the server binds non-loopback (also env `UNREAL_BRIDGE_TOKEN`)
+- `--timeout` (default 30s), `--json`, `--discovery-timeout=<ms>` (default 800)
+
+`bridge.py list-editors` sends a probe and lists every editor that answered — handy for multi-editor setups.
 
 ### From Python inside UE
 
@@ -157,15 +165,31 @@ python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # reflection ch
 
 ## Protocol
 
-Length-prefixed JSON on `127.0.0.1:9876`:
+Two channels:
+
+1. **UDP multicast discovery** on `239.255.42.99:9876`. Client broadcasts a `probe` with a request id and an optional project filter; every running editor replies with its bound TCP address + port + token fingerprint. Multiple editors coexist on the same host via `SO_REUSEADDR`.
+
+2. **TCP data** on the port the editor reports in its discovery response (OS-assigned; `127.0.0.1` by default). Length-prefixed JSON:
 
 ```
-Request :  [4-byte big-endian length][{"id","script","timeout"}]
+Request :  [4-byte big-endian length][{"id","script","timeout","token?"}]
 Response:  [4-byte big-endian length][{"id","success","output","error"}]
 Ping    :  {"id","command":"ping"}  →  pong
 ```
 
+Token auth kicks in automatically when the server binds non-loopback; the client reads the token from `<Project>/Saved/UnrealBridge/token.txt` and includes it in every request.
+
 Scripts run on the GameThread; captured stdout and stderr are separated by the special `__UB_ERR__` sentinel.
+
+### Server config (CLI / env / `EditorPerProjectUserSettings.ini [UnrealBridge]`)
+
+| CLI | Env | Default |
+|---|---|---|
+| `-UnrealBridgeBind=` | `UNREAL_BRIDGE_BIND` | `127.0.0.1` |
+| `-UnrealBridgePort=` | `UNREAL_BRIDGE_PORT` | `0` (OS-assigned) |
+| `-UnrealBridgeToken=` | `UNREAL_BRIDGE_TOKEN` | empty (required when bind ≠ loopback) |
+| `-UnrealBridgeDiscoveryGroup=` | `UNREAL_BRIDGE_DISCOVERY_GROUP` | `239.255.42.99:9876` |
+| `-UnrealBridgeNoDiscovery` *(flag)* | `UNREAL_BRIDGE_DISCOVERY=0` | discovery on |
 
 ## Repository layout
 
