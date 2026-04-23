@@ -9,7 +9,27 @@
 
 硬约束：成品质量对齐 AAA 项目常见实践（SM5+ / Lumen / Nanite 就绪、正确的 ShadingModel / MaterialDomain / 纹理压缩 / sampler 复用 / 静态分支），性能口径按"不退化 GPU 时长、不超 sampler/ instruction 预算"衡量。
 
-最后更新：2026-04-22（草案 v0.1 — 追加 M2.5 HLSL 混合编程基建；未排期）
+最后更新：2026-04-24（v0.2 — M1/M2/M2.5/M6 全部落地；M3 6/9 模板、M4 3/5 模板、M5 7 条规则 + auto_fix 已交付；下面的状态总览按 commit 同步）
+
+---
+
+## 当前交付状态（按里程碑）
+
+| 里程碑 | 状态 | 备注 |
+|---|---|---|
+| M1 读 / 观察 | ✅ 全部交付 | get_material_info / graph / stats / compile_errors / preview / preview_complexity / list_functions / get_function / list_instance_chain / get_parameter_collection |
+| M2 表达式工厂 + 图写原语 | ✅ 全部交付 | create_material / MI / MF + add_material_expression (35+ 类) + connect/disconnect (pin name 现在走 GetShortenPinName) + set_prop / add_comment / add_reroute / auto_layout / apply_material_graph_ops / compile_material / snapshot + diff |
+| M2.5 HLSL 片段库 | ✅ 全部交付 | BridgeSnippets.ush + add_custom_expression + list / get 共享片段；现有 snippet：Luminance, Unpack/Pack ORM, ACES, BlendAngleCorrectedNormals (已修成 `-1..1` 约定), DepthFade, DitherLODTransition, Hash21/31, ValueNoise3D, ThinFilmInterference, FBM3D, IQFlow3D, SwirledNoise3D, Voronoi2D |
+| M6 参数迭代闭环 | ✅ 全部交付 | set_mi_params / set_mi_and_preview / sweep / MPC setter / diff / golden snapshot+compare |
+| M3 母材质模板 | 🟡 6 / 9 模板 | **已交付**：M3-2 Character_Armor、M3-3 Environment_Prop、M3-4 Foliage_Master、M3-6 Glass_Translucent、M3-8 UI_Unlit. **未交付**：M3-1 Character_PBR (可视作 M3-2 的精简子集，优先级低)、M3-5 Weapon_Hero (需 POM HLSL 片段)、M3-7 Layered (材质层系统)、M3-9 VFX (Unlit Additive / Translucent Soft) |
+| M4 后处理材质 | 🟡 3 / 5 模板 + 全部 C++ 原语 | **已交付**：create_post_process_material / apply / remove / get_post_process_state + PP_Posterize、PP_Halftone、PP_Outline (4-neighbour depth gradient). **未交付**：PP_Sketch (需 BridgeSobelEdge snippet + 交叉线)、PP_ColorGradeLUT_Extended、PP_Film_Grain_AA |
+| M5 Lint / 自动修复 | 🟡 7 / 13 规则 + auto_fix | **已交付**：analyze_material 聚合 + M5-2 预算、M5-3 不可达节点、M5-4 重复 TextureSample、M5-5 SamplerSource 混用、M5-8 ShadingModel↔wiring、M5-11 Custom body trivia、M5-12 Custom 内部 SceneTextureLookup 绕过分析；auto_fix_material 支持 `drop_unused` + `samplersource_share`. **未交付**：M5-6 静态开关误用、M5-7 feature level / quality switch 缺失、M5-9 MI chain depth、M5-10 texture compression 合规、M5-13 Custom SM-only intrinsic 缺 FeatureLevelSwitch、auto_fix 里的 `static_switch_conversion` / `inline_trivial_custom` |
+
+### 顺带交付（不在原路线图但相关）
+
+- **bridge 基础设施**：UDP 多播发现 (`239.255.42.99:9876`) + TCP 端口 `0` (OS 分配) + 可选 token 鉴权。`bridge.py` / `bridge_discovery.py` / SKILL.md / README.md 全部同步更新。
+- **pin name 兼容层**：`NormalizePinName` + `get_material_graph` 现在都走 `UMaterialGraphNode::GetShortenPinName`，"Coordinates" / "AGreaterThanB" / "TextureObject" 等长名自动短化成 UI-可见的 "UVs" / "A > B" / "Tex"，读写对称。这条是 M4 开发时发现的隐性坑，已修。
+- **模板共享基建**：`material_templates._common` — `OpList` 支持符号名 → `$N` 解析、未知名称早爆 KeyError；`ensure_master_material(rebuild=True)` 幂等重建；`guid_to_str()` 避开 UE Python `str(unreal.Guid)` 返回 `<Struct>` 的坑；`save_master()` 显式 asset.save (apply_ops compile=True 只编译不保存会在编辑器重启时丢失模板)。
 
 ---
 
@@ -296,3 +316,57 @@
 - **A6-#23**（Golden-image 回归）直接复用 M1-6 的预览 pipeline + M6-6 的 snapshot/compare
 - **A1-#2**（GBuffer 通道截图）已交付，M1-7（shader complexity view）是同一套 `ASceneCapture2D` + ViewFamily 参数扩展
 - **M2.5 HLSL 基建**可回流到 Niagara module / Control Rig 等其它走 `UMaterialExpression*` 或类似图的子系统 —— `BridgeSnippets.ush` 是跨子系统共享的代码库，不是 Material 专属
+
+---
+
+## 下次上手清单（handoff）
+
+剩余工作按"每个 bullet = 一次 commit 大小的垂直切片"列出，从最容易上手的往后排，互不依赖。pick 一个开始即可，不必按顺序：
+
+1. **M4-2 PP_Sketch（需先加 snippet）** — 在 `BridgeSnippets.ush` 加 `BridgeSobelEdge(d_l,d_r,d_u,d_d, threshold, gain)` HLSL 片段（~5 行）和 `BridgeCrossHatch(uv, lum, freq)`；再写 `material_templates/pp_sketch.py`（约 200 行 Python），复用 pp_outline 的 4-邻居采样结构 + 叠加 posterize + crosshatch 线条。验收：compile-clean + 0 lint finding。
+2. **M3-9 VFX 基础模板** — 两个小模板：`vfx_unlit_additive.py`（Unlit + Additive blend + Depth Fade via `BridgeDepthFade` snippet）和 `vfx_translucent_soft.py`（Unlit + Translucent + 粒子 alpha + soft depth fade）。预算 100 指令 / 4 sampler。
+3. **M5-10 texture compression 合规检查** — `analyze_material` 新增规则：BaseColorTex 压缩必须 BC1/BC7 + sRGB=true；Normal 必须 BC5 + NormalMap sampler；ORM 必须 Masks + sRGB=false；单通道遮罩 Grayscale。每条违反出一条 finding。C++ 大约 80 行。
+4. **M5-9 MI chain depth** — 扩展 `analyze_material` 接受 MI 路径（目前只吃 UMaterial），沿 `Parent` 递归；超过 3 层出 warning，覆盖 StaticSwitch 出 permutation-爆炸 warning。约 60 行 C++。
+5. **M5-6 静态开关误用** — 对 Lerp/If 节点，若所有 Alpha 输入都链到 ScalarParameter 常量 + 参数从未被 MI 重载，出 "可静态化" info。需要扫 MI 使用情况，中等难度（~120 行 C++）。
+6. **M3-7 Layered 材质层框架** — `MaterialAttributeLayers` + 3-4 个 `MF_Layer_*` MaterialFunction (Metal / Fabric / Dirt)。体量大（300-500 行 Python），但覆盖 AAA 项目的"层级材质"workflow。
+7. **M3-5 Weapon_Hero** — 建立在 M3-2 基础上 + Parallax Occlusion（POM）HLSL snippet + Curve Atlas 驱动的脉冲发光。需要先加 `BridgePOMRayMarch` snippet。
+8. **M3-1 Character_PBR 精简版** — 纯 M3-2 的子集，把 Detail/Wear/Wetness/Anisotropy 那几个 StaticSwitch 砍掉。可选，优先级最低（代理可以直接用 M3-2 + 所有开关默认 false）。
+
+### 本轮发现的坑 / 已在代码里注释
+
+写新模板时照抄这些 pitfall 可避免同样的失误：
+
+- **Fresnel 节点**：pin 叫 `ExponentIn`（连线用），fallback scalar **属性**叫 `Exponent`（set_prop 用）。混用会报 "could not set ExponentIn"。
+- **If 节点**：branch 的 pin 名叫 `A > B` / `A == B` / `A < B`（空格+符号形式，不是 `AGreaterThanB`）——`GetShortenPinName` 在引擎侧对等转换。实际写 step 函数时改走 `saturate((a-b)*1000)` 更简单。
+- **SceneTexture `Coordinates`**：写时必须叫 `UVs`（短名）。现在 bridge 双向兼容，但 get_material_graph 返回的也已经是 `UVs`。
+- **SceneTexture 的 `Color` 输出是 float4**：接到 float3 的后续数学会报 "Arithmetic between float4 and float3 is undefined"。加一个 ComponentMask(R=G=B=true, A=false) 变 float3 再接。
+- **ESceneTextureId**：ImportText 要 `PPI_` 前缀，如 `PPI_PostProcessInput0` / `PPI_SceneDepth`，不是 bare name。
+- **VectorParameter 没有 `RGB` 输出**：outputs 是 `""` / `R` / `G` / `B` / `A`。写 Lerp 的 `B` 输入要用 `""`（float4）让下游隐式截断，或手动 ComponentMask。
+- **UMaterial 的 OpacityMaskClipValue 是 material-level 属性**，不是图输入。暴露成 ScalarParameter 会被 M5-3 标成 unused。要改就对 UMaterial 自身调 set_material_expression_property（或直接在 Material Editor Details 改）。
+- **apply_material_graph_ops(compile=True) 只重新编译 shader map，不保存 asset**。编辑器重启会丢模板；所有 template build 结尾都必须 `C.save_master(path)` 或 `unreal.EditorAssetLibrary.save_asset(path, only_if_is_dirty=False)`。
+- **TextureSampleParameter2D 的 default texture 不是真正的 "运行时纹理"**（MI 可覆盖）——M5-4 重复纹理查找规则故意只扫 plain `UMaterialExpressionTextureSample`，不扫 parameter 版本。
+- **UE Python `str(unreal.Guid)` 返回 `<Struct 'Guid' (0x...) {}>`**，对 `FGuid::Parse` 无效。用 `.to_string()`（或我封装的 `_common.guid_to_str(g)`）拿 32-hex 形式。
+- **UE Python 对 bool USTRUCT 字段去掉 `b` 前缀**：`bool bSuccess` → Python 里是 `.success`，不是 `.b_success`。
+- **UE 5.7 `EBlendableLocation` 没有 `BL_SceneColorBeforeTonemapping`**（被删了）；要 pre-tonemap 用 `BL_SceneColorBeforeBloom`。bridge 的 `ParseBlendableLocation` 把字符串 `"BeforeTonemapping"` 作为别名映射到它。
+
+### 回归测试的最小集合
+
+下次上手后验证现有代码还能跑，最小命令组（假设编辑器已启动且加载项目）：
+
+```bash
+python .claude/skills/unreal-bridge/scripts/bridge.py ping
+python .claude/skills/unreal-bridge/scripts/bridge.py exec "
+import importlib, material_templates._common as c, material_templates.character_armor as ca, material_templates.environment_prop as ep, material_templates.foliage_master as fm, material_templates.glass_translucent as gl, material_templates.ui_unlit as ui, material_templates.pp_posterize as pp, material_templates.pp_halftone as ph, material_templates.pp_outline as po
+for mod in (c, ca, ep, fm, gl, ui, pp, ph, po): importlib.reload(mod)
+import unreal
+L = unreal.UnrealBridgeMaterialLibrary
+for b in (ca, ep, fm, gl, ui):
+    r = b.build(rebuild=True); ar = L.analyze_material(r['master_path'], 0, 0)
+    print(f\"{r['master_path']}: exprs={r['num_expressions']} findings={len(list(ar.findings))}\")
+for b in (pp, ph, po):
+    r = b.build(rebuild=True, apply_weight=0); ar = L.analyze_material(r['master_path'], 0, 0)
+    print(f\"{r['master_path']}: ops={r['ops_applied']} findings={len(list(ar.findings))}\")
+"
+```
+
+期望：全部 `findings=0`，无 exception。如果有 finding 冒出，大概率是引擎版本升级或某个默认 MI 参数漂移，优先查 `analyze_material` 的 detail 字段。
