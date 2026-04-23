@@ -4496,6 +4496,69 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 		}
 	}
 
+	// ── Rule M5-9: MI chain depth + StaticSwitch override risk ─────
+	// Only relevant when analyze_material was called on a UMaterialInstance
+	// (not a UMaterial master). Deep chains hurt cook-time iteration + make
+	// it harder to predict final parameter state; a StaticSwitchParameter
+	// override on an MI causes an extra shader permutation on top of whatever
+	// the master already spawns.
+	if (UMaterialInstance* MI = Cast<UMaterialInstance>(MatInterface))
+	{
+		// Walk the parent chain, counting MI layers before we hit the UMaterial.
+		int32 ChainDepth = 0;
+		UMaterialInterface* Cursor = MI;
+		while (UMaterialInstance* CurMI = Cast<UMaterialInstance>(Cursor))
+		{
+			++ChainDepth;
+			Cursor = CurMI->Parent;
+			if (!Cursor) break;
+		}
+		if (ChainDepth > 3)
+		{
+			EmitFinding(Out.Findings, TEXT("M5-9"), TEXT("warning"),
+				FString::Printf(TEXT("MI chain is %d layers deep — consider flattening; deep chains slow cooks and make final parameter state hard to predict."),
+					ChainDepth));
+		}
+		else if (ChainDepth > 0)
+		{
+			// Informational — useful context without being alarming.
+			EmitFinding(Out.Findings, TEXT("M5-9"), TEXT("info"),
+				FString::Printf(TEXT("MI chain depth: %d (master at root)."), ChainDepth));
+		}
+
+		// Static-switch overrides on MI → each flip = a new shader permutation.
+		// Walk every MI in the chain, collect unique override names.
+		TSet<FString> SwitchOverrides;
+		for (UMaterialInterface* Walk = MI; Walk;
+		     Walk = Cast<UMaterialInstance>(Walk) ? Cast<UMaterialInstance>(Walk)->Parent : nullptr)
+		{
+			UMaterialInstance* WalkMI = Cast<UMaterialInstance>(Walk);
+			if (!WalkMI) break;
+			const FStaticParameterSet& StaticParams = WalkMI->GetStaticParameters();
+			for (const FStaticSwitchParameter& SSP : StaticParams.StaticSwitchParameters)
+			{
+				if (SSP.bOverride)
+				{
+					SwitchOverrides.Add(SSP.ParameterInfo.Name.ToString());
+				}
+			}
+		}
+		if (SwitchOverrides.Num() >= 3)
+		{
+			FString Names = FString::Join(SwitchOverrides.Array(), TEXT(", "));
+			EmitFinding(Out.Findings, TEXT("M5-9"), TEXT("warning"),
+				FString::Printf(TEXT("%d StaticSwitch overrides in the MI chain (%s) — each flip spawns a fresh shader permutation; consider pushing these into the master as defaults instead."),
+					SwitchOverrides.Num(), *Names));
+		}
+		else if (SwitchOverrides.Num() > 0)
+		{
+			FString Names = FString::Join(SwitchOverrides.Array(), TEXT(", "));
+			EmitFinding(Out.Findings, TEXT("M5-9"), TEXT("info"),
+				FString::Printf(TEXT("MI overrides StaticSwitch(es): %s — causes extra shader permutations beyond the master defaults."),
+					*Names));
+		}
+	}
+
 	// Sort findings: error → warning → info, then by RuleId.
 	auto SevRank = [](const FString& S) -> int32
 	{
