@@ -1196,6 +1196,33 @@ Parameter groups exposed in the MI editor (sort-prefixed so the panels stay orde
 
 Engine default textures (`/Engine/EngineResources/WhiteSquareTexture`, `/Engine/EngineResources/Black`, `/Engine/EngineMaterials/DefaultNormal`) are pre-assigned so a fresh MI compiles and previews cleanly without any author-supplied assets.
 
+### environment_prop.build(...)
+
+**M3-3** — ``M_Environment_Prop`` master. Two PBR layers (base + overlay) blended by `VertexColor.R` with a bias + hardness shaping, plus a puddle chain driven by `VertexNormalWS.Z` that darkens base color + drops roughness → `0.05` + flattens the normal on up-facing surfaces. `UseOverlay` and `UseWetness` are independent static switches — default MI has both off and stays at the PBR-core base layer.
+
+```python
+from material_templates import environment_prop
+
+r = environment_prop.build(
+    master_path="/Game/BridgeTemplates/M_Environment_Prop",
+    mi_path="/Game/BridgeTemplates/MI_Environment_Prop_Test",
+    preview_png="environment_prop_default.png",
+)
+assert r["compile_clean"], r["compile_errors"]
+assert r["max_instructions"] <= 200, r["max_instructions"]
+```
+
+Signature matches `character_armor.build` with defaults `instr_budget=200 / sampler_budget=8`. Same return-dict contract.
+
+Parameter groups:
+
+- `01 Base` — BaseColorTint, RoughnessMin, RoughnessMax, MetallicScale, NormalIntensity
+- `02 Overlay` — UseOverlay, OverlayColorTint, OverlayBlendBias, OverlayBlendHardness
+- `03 Wetness` — UseWetness, WetnessAmount, WetnessNormalThreshold
+- `Textures` — BaseColorTex / ORMTex / NormalTex + OverlayColorTex / OverlayORMTex / OverlayNormalTex (all share the global wrap sampler)
+
+VertexColor.R is the artist-facing mask — drive it per-vertex via UE's VertexPaint tool or at mesh import time. Clean meshes (no paint) default to 0 → pure base layer.
+
 ### Shared helpers: `_common`
 
 ``material_templates._common`` exposes primitives reusable by any template:
