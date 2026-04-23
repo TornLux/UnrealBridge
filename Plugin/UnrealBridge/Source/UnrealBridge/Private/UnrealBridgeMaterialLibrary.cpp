@@ -13,6 +13,8 @@
 #include "Materials/MaterialExpressionStaticBoolParameter.h"
 #include "Materials/MaterialExpressionConstant.h"
 #include "Materials/MaterialExpressionLinearInterpolate.h"
+#include "Materials/MaterialExpressionFeatureLevelSwitch.h"
+#include "Materials/MaterialExpressionQualitySwitch.h"
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
@@ -4301,6 +4303,75 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 				{
 					EmitFinding(Out.Findings, TEXT("M5-8"), TEXT("info"),
 						TEXT("ClearCoat shading model with no ClearCoat amount (CustomData0) — varnish layer will be absent."));
+				}
+			}
+		}
+	}
+
+	// ── Rule M5-7: expensive material missing Feature/Quality switch gate
+	// Material with ≥1 Custom node OR ≥4 TextureSample nodes but no
+	// FeatureLevelSwitch/QualitySwitch anywhere → info. Wrapping the
+	// expensive subgraph with a QualitySwitch lets UE compile a cheaper
+	// Low/Medium variant instead of forcing every hardware tier to run
+	// the full-fat shader.
+	//
+	// ── Rule M5-13: Custom node uses SM5-only intrinsic without gate
+	// Custom Code contains ddx_fine / ddy_fine / firstbithigh / firstbitlow
+	// / reversebits / countbits → info. These need SM5; no gate means
+	// Low/Mobile fallback has no way to compile a cheaper path.
+	// PostProcess domain materials skip M5-7 entirely — they run every frame
+	// regardless and the FeatureLevelSwitch / QualitySwitch gating doesn't
+	// match the typical PP authoring idiom.
+	if (Material->MaterialDomain != MD_PostProcess)
+	{
+		int32 TextureSampleCount = 0;
+		int32 SceneTextureCount = 0;
+		int32 CustomCount = 0;
+		bool  bHasFLSwitch = false;
+		bool  bHasQSwitch = false;
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			if (Expr->IsA<UMaterialExpressionTextureSample>()) ++TextureSampleCount;
+			if (Expr->GetClass()->GetName() == TEXT("MaterialExpressionSceneTexture")) ++SceneTextureCount;
+			if (Expr->IsA<UMaterialExpressionCustom>()) ++CustomCount;
+			if (Expr->IsA<UMaterialExpressionFeatureLevelSwitch>()) bHasFLSwitch = true;
+			if (Expr->IsA<UMaterialExpressionQualitySwitch>()) bHasQSwitch = true;
+		}
+
+		const int32 TexLookups = TextureSampleCount + SceneTextureCount;
+		const bool bExpensive = (CustomCount >= 1 || TexLookups >= 4);
+		if (bExpensive && !bHasFLSwitch && !bHasQSwitch)
+		{
+			EmitFinding(Out.Findings, TEXT("M5-7"), TEXT("info"),
+				FString::Printf(TEXT("Material has %d TextureSample + %d SceneTexture + %d Custom nodes but no FeatureLevelSwitch / QualitySwitch — consider wrapping expensive work so UE can emit cheaper Low/Medium variants for weaker hardware."),
+					TextureSampleCount, SceneTextureCount, CustomCount));
+		}
+	}
+	{
+
+		// M5-13: Custom SM-only intrinsics.
+		static const TCHAR* const Sm5Intrinsics[] = {
+			TEXT("ddx_fine"), TEXT("ddy_fine"),
+			TEXT("firstbithigh"), TEXT("firstbitlow"),
+			TEXT("reversebits"), TEXT("countbits"),
+		};
+		for (UMaterialExpression* Expr : Expressions)
+		{
+			UMaterialExpressionCustom* Custom = Cast<UMaterialExpressionCustom>(Expr);
+			if (!Custom) continue;
+			const FString& Code = Custom->Code;
+			for (const TCHAR* Intr : Sm5Intrinsics)
+			{
+				if (Code.Contains(Intr))
+				{
+					const FString IntrStr(Intr);
+					EmitFinding(Out.Findings, TEXT("M5-13"), TEXT("info"),
+						FString::Printf(TEXT("Custom node uses SM5-only intrinsic '%s' — make sure the material is gated by FeatureLevelSwitch so Mobile/ES3_1 has a fallback path."),
+							*IntrStr),
+						Expr->MaterialExpressionGuid,
+						Expr->GetClass()->GetName(),
+						IntrStr);
+					break;  // one finding per Custom node is enough
 				}
 			}
 		}

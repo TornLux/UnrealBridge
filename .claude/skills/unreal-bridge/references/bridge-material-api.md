@@ -1214,12 +1214,14 @@ Fails (returns `False`) if the target material isn't `MaterialDomain=PostProcess
 | `M5-3` | Expressions with no path back to any main material output (ignores comments + function-input/output nodes). |
 | `M5-4` | Two or more `TextureSample` / `TextureSampleParameter2D` nodes reading the same texture with the same UV wire — candidate for a shared sample + reroute. |
 | `M5-5` | Mixing `SSM_FromTextureAsset` with `SSM_Wrap_WorldGroupSettings` sibling samples (wastes slots), or dense (≥4) sample blocks all using `SSM_FromTextureAsset` (suggest switching to the shared wrap sampler). |
+| `M5-7` | Expensive Surface/Translucent/Decal material (≥1 Custom node OR ≥4 texture lookups counting TextureSample + SceneTexture) with no `FeatureLevelSwitch` / `QualitySwitch` anywhere in the graph — hint that UE can't emit a cheaper Low/Medium variant for weaker hardware. PostProcess domain is silently exempt (PP materials have fewer sane gating paths). |
 | `M5-6` | Static-switch misuse. Fires when a `LinearInterpolate.Alpha` is wired to `Constant(0)` or `Constant(1)` — only one branch is ever picked, so the Lerp is dead weight (inline the chosen side or convert to `StaticSwitchParameter`). Also fires when the Alpha is a `ScalarParameter` with a boolean-intent name (`Use*` / `Enable*` / `Is*` / `Has*` / `Should*` / `Show*` / `Bool*` / `Toggle*`) — candidate for `StaticSwitchParameter` conversion so UE compiles the unused branch out. |
 | `M5-8` | Shading-model ↔ main-output-wiring consistency. Unlit with no `EmissiveColor`, Unlit with `Metallic`/`Specular`/`Roughness`/`Normal` wired (dead connections), lit without `BaseColor` or `Normal`, Subsurface without `SubsurfaceColor`, ClearCoat without `CustomData0`. Skipped when the material uses `MaterialAttributes`. |
 | `M5-9` | When analyze_material is called on a `UMaterialInstance`: chain depth > 3 → warning; any StaticSwitch override in the chain → info (≥3 overrides total → warning) because every flip spawns a fresh shader permutation. Silently skipped for `UMaterial` masters. |
 | `M5-10` | Texture compression ↔ `SamplerType` consistency. `Color` expects BC1/BC3/BC7 + sRGB; `Normal` expects `TC_Normalmap` + non-sRGB; `Masks` / `Linear*` expect non-sRGB. Info-level (not warning) when the texture is an engine placeholder (`/Engine/EngineResources/...`) because MI overrides almost always replace those — the finding auto-resolves when the real texture lands. |
 | `M5-11` | Custom HLSL node body is trivially short (<64 chars / ≤1 newline) AND doesn't include a `.ush` snippet — worth inlining as plain graph nodes so UE's compiler can apply constant folding, CSE, and DCE. Snippet trampolines (`return BridgeXxx(...);` with `IncludeFilePaths`) are exempt. |
 | `M5-12` | Custom HLSL body calls `Texture2DSample` / `SceneTextureLookup` directly — bypasses sampler sharing + dependency tracking. Feed a graph `TextureSample` node's output into the Custom input instead. |
+| `M5-13` | Custom HLSL uses SM5-only intrinsics (`ddx_fine` / `ddy_fine` / `firstbithigh` / `firstbitlow` / `reversebits` / `countbits`) — reminder to gate with a `FeatureLevelSwitch` so Mobile/ES3_1 has a fallback path. One finding per Custom node, not per intrinsic. |
 
 ```python
 L = unreal.UnrealBridgeMaterialLibrary
@@ -1256,7 +1258,7 @@ if r.found:
 
 | Field | Type | Description |
 |---|---|---|
-| `rule_id` | str | Stable rule ID (`"M5-2"`, `"M5-3"`, `"M5-4"`, `"M5-5"`, `"M5-6"`, `"M5-8"`, `"M5-9"`, `"M5-10"`, `"M5-11"`, `"M5-12"`) |
+| `rule_id` | str | Stable rule ID (`"M5-2"`, `"M5-3"`, `"M5-4"`, `"M5-5"`, `"M5-6"`, `"M5-7"`, `"M5-8"`, `"M5-9"`, `"M5-10"`, `"M5-11"`, `"M5-12"`, `"M5-13"`) |
 | `severity` | str | `"error"` / `"warning"` / `"info"` |
 | `message` | str | Short human-readable description |
 | `expression_guid` | FGuid | Offending expression (invalid guid for material-level findings) |
