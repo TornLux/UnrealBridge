@@ -18,21 +18,33 @@ specific to hero weapons:
      intensity. Gated by ``UsePulse`` static switch so the sine math is
      dead-coded when a designer wants a constant glow.
 
-Not included (deferred — handoff notes them as optional):
+Parallax Occlusion Mapping — **delivered** via a call into UE's engine-
+shipped ``/Engine/Functions/Engine_MaterialFunctions01/Texturing/ParallaxOcclusionMapping``
+MaterialFunction, gated behind the ``UsePOM`` static switch. When enabled
+the POM-offset UVs replace UV0 on BaseColor / ORM / Normal / Detail / base
+Emissive samples; UV1 (emissive mask) stays untouched so designers can
+keep a tiling rune overlay independent of surface parallax. Sidesteps M5-12
+(no custom HLSL Texture2DSample) by using the graph-side MF.
 
-  * Parallax Occlusion Mapping — requires either a ~40-line HLSL snippet
-    with internal texture samples (triggers M5-12) or ~16 graph-side
-    pre-samples fed into a Custom (ugly). Revisit when graph-side POM
-    wiring becomes ergonomic enough.
-  * Curve Atlas driven pulse — a DataAsset-driven curve would replace the
-    parameter-driven sine. The parameter-driven sine covers 90% of pulse
-    authoring with zero extra asset surface area.
+Not included (deferred):
+
+  * Curve Atlas driven pulse — a ``UCurveLinearColorAtlas`` +
+    ``CurveAtlasRowParameter`` route would replace the sine chain with an
+    artist-authored curve. Blocked: ``UCurveLinearColor`` stores its
+    gradient keys in non-UPROPERTY ``FloatCurves[4]`` arrays, so UE Python
+    cannot programmatically populate a default curve — any helper that
+    creates the atlas ships with a curve that evaluates to 0 at every
+    time, producing a broken default that's worse than leaving sine in
+    place. Sine covers 90% of pulse authoring anyway. Would need a new
+    bridge C++ UFUNCTION to expose FRichCurve::AddKey.
 
 Parameters (all MI-overridable):
 
   Base:       BaseColorTex / BaseColorTint / ORMTex / NormalTex
               RoughnessMin / RoughnessMax / MetallicScale / NormalIntensity
   Detail:     DetailNormalTex / DetailNormalScale / DetailNormalIntensity
+  POM:        HeightmapTex / POMHeightRatio / POMMinSteps / POMMaxSteps
+              POMReferencePlane (height=0.5 centres the effect)
   Emissive:   EmissiveTex / EmissiveTint / EmissiveIntensity
               EmissiveMaskTex / EmissiveMaskScale / EmissiveMaskBoost
   Pulse:      PulseFrequency / PulseMin
@@ -42,9 +54,12 @@ Parameters (all MI-overridable):
 
 Static switches (default all false — stock permutation is lean core PBR):
 
-  UseDetailNormal / UseEmissive / UsePulse / UseWear / UseWetness / UseAnisotropy
+  UseDetailNormal / UsePOM / UseEmissive / UsePulse / UseWear / UseWetness
+  / UseAnisotropy
 
-Budget targets (SM5 / High): ≤ 260 instructions, ≤ 10 samplers.
+Budget targets (SM5 / High): ≤ 320 instructions (POM adds ~30-60 raw inst
+per sample lookup; default 32-step budget), ≤ 10 samplers (heightmap lookup
+from within the MF counts as 1 additional TextureSample for budget purposes).
 """
 
 from __future__ import annotations
@@ -67,6 +82,7 @@ X_DERIVE3 = -420
 X_SWITCH = -140
 X_OUTPUT = 180
 
+Y_POM = -1400
 Y_BASE = -900
 Y_NORMAL = -480
 Y_DETAIL = -220
@@ -74,6 +90,11 @@ Y_EMISSIVE = 220
 Y_WEAR = 620
 Y_WETNESS = 920
 Y_ANISO = 1160
+
+# Engine-shipped POM MaterialFunction. Called via MaterialFunctionCall
+# gated by UsePOM static switch — pre-sampled heightmap lookup happens
+# inside the MF, so M5-12 (Custom-with-TextureSample) doesn't flag it.
+ENGINE_POM_MF = "/Engine/Functions/Engine_MaterialFunctions01/Texturing/ParallaxOcclusionMapping"
 
 
 def _row(base: int, i: int, spacing: int = 80) -> int:
@@ -89,11 +110,12 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Weapon_Hero",
           preview_camera_yaw: float = 35.0,
           preview_camera_pitch: float = -15.0,
           preview_camera_distance: float = 0.0,
-          instr_budget: int = 260,
+          instr_budget: int = 320,
           sampler_budget: int = 10,
           compile: bool = True,
           rebuild: bool = False) -> Dict[str, Any]:
     L = unreal.UnrealBridgeMaterialLibrary
+    MEL = unreal.MaterialEditingLibrary
 
     # Master material (create or wipe-and-rebuild).
     master_path = C.ensure_master_material(
@@ -113,8 +135,34 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Weapon_Hero",
     if not custom.success:
         raise RuntimeError(f"add_custom_expression failed: {custom.error}")
 
+    # POM MaterialFunctionCall — created via MEL (not ops) so set_material_function
+    # runs and populates the MF's input/output pins from its signature. An
+    # ops.add("MaterialFunctionCall") would leave the node with no pins and
+    # downstream connects would fail. GUID is recovered below via graph query.
+    pom_call_pos = (X_DERIVE2, Y_POM + 200)
+    master_asset = unreal.EditorAssetLibrary.load_asset(master_path)
+    pom_mf = unreal.EditorAssetLibrary.load_asset(ENGINE_POM_MF)
+    if pom_mf is None:
+        raise RuntimeError(f"engine POM MF not loadable: {ENGINE_POM_MF}")
+    pom_call_node = MEL.create_material_expression(
+        master_asset, unreal.MaterialExpressionMaterialFunctionCall,
+        *pom_call_pos)
+    pom_call_node.set_material_function(pom_mf)
+
+    graph = L.get_material_graph(master_path)
+    pom_guid: Optional[str] = None
+    for n in graph.nodes:
+        if str(n.class_name) == "MaterialFunctionCall" \
+                and int(n.x) == pom_call_pos[0] \
+                and int(n.y) == pom_call_pos[1]:
+            pom_guid = C.guid_to_str(n.guid)
+            break
+    if pom_guid is None:
+        raise RuntimeError(f"could not recover POM MF call GUID at {pom_call_pos}")
+
     ops = C.OpList()
     ops.add_literal(C.guid_to_str(custom.guid), "custom_blend_normals")
+    ops.add_literal(pom_guid, "pom_call")
 
     # ---------- parameters (col X_PARAM) --------------------------------
     C.add_vector_param(ops, "vp_bc_tint", X_PARAM, _row(Y_BASE, 0),
@@ -178,6 +226,29 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Weapon_Hero",
                        "AnisotropyAmount", 0.40, group="08 Anisotropy", sort_priority=1,
                        slider_min=-1.0, slider_max=1.0)
 
+    # ---------- POM params + heightmap object + channel const ------------
+    C.add_scalar_param(ops, "sp_pom_height", X_PARAM, _row(Y_POM, 0),
+                       "POMHeightRatio", 0.075, group="09 POM", sort_priority=1,
+                       slider_min=0.0, slider_max=0.5)
+    C.add_scalar_param(ops, "sp_pom_min_steps", X_PARAM, _row(Y_POM, 1),
+                       "POMMinSteps", 8.0, group="09 POM", sort_priority=2,
+                       slider_min=4.0, slider_max=32.0)
+    C.add_scalar_param(ops, "sp_pom_max_steps", X_PARAM, _row(Y_POM, 2),
+                       "POMMaxSteps", 32.0, group="09 POM", sort_priority=3,
+                       slider_min=8.0, slider_max=128.0)
+    C.add_scalar_param(ops, "sp_pom_ref_plane", X_PARAM, _row(Y_POM, 3),
+                       "POMReferencePlane", 0.5, group="09 POM", sort_priority=4,
+                       slider_min=0.0, slider_max=1.0)
+    # SamplerSource must match the other textures (SSM_Wrap_WorldGroupSettings)
+    # or M5-5 flags a sampler-source-mix. SamplerType=LinearColor because a
+    # height mask is a scalar-per-pixel value, not a colour.
+    C.add_texture_object_param_2d(ops, "tp_heightmap", X_TEX, _row(Y_POM, 0),
+                                  "HeightmapTex", C.DEFAULT_BLACK_TEX,
+                                  sampler_type="LinearColor",
+                                  group="Textures", sort_priority=7)
+    ops.add("c4v_pom_channel", "Constant4Vector", X_DERIVE1, _row(Y_POM, 4))
+    ops.setp("c4v_pom_channel", "Constant", "(R=1,G=0,B=0,A=0)")
+
     # ---------- texture samples (col X_TEX) -----------------------------
     ops.add("uv0", "TextureCoordinate", X_UV, _row(Y_DETAIL, 5))
 
@@ -210,10 +281,6 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Weapon_Hero",
                            sampler_type="Masks",
                            group="Textures", sort_priority=6)
 
-    # Main UV hookup.
-    for tex in ("tp_basecolor", "tp_orm", "tp_normal", "tp_emissive"):
-        ops.connect("uv0", "", tex, "UVs")
-
     # ---------- static switches -----------------------------------------
     def _switch(name: str, param_name: str, x: int, y: int, group: str) -> None:
         C.add_static_switch_param(ops, name, x, y,
@@ -236,6 +303,28 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Weapon_Hero",
             X_SWITCH, _row(Y_WETNESS, 0), "07 Wetness")
     _switch("ss_anis", "UseAnisotropy",
             X_SWITCH, _row(Y_ANISO, 0), "08 Anisotropy")
+    _switch("ss_use_pom", "UsePOM",
+            X_DERIVE3, _row(Y_POM, 2), "09 POM")
+
+    # ---------- POM MF call wiring --------------------------------------
+    # MF input pin names (with spaces) — bridge NormalizePinName handles the
+    # whitespace. Verified via get_material_function(ENGINE_POM_MF).
+    ops.connect("tp_heightmap",     "",  "pom_call", "Heightmap Texture")
+    ops.connect("sp_pom_height",    "",  "pom_call", "Height Ratio")
+    ops.connect("sp_pom_min_steps", "",  "pom_call", "Min Steps")
+    ops.connect("sp_pom_max_steps", "",  "pom_call", "Max Steps")
+    ops.connect("uv0",              "",  "pom_call", "UVs")
+    ops.connect("c4v_pom_channel",  "",  "pom_call", "Heightmap Channel")
+    ops.connect("sp_pom_ref_plane", "",  "pom_call", "Reference Plane")
+
+    # Switch: True → POM.ParallaxUVs, False → raw uv0.
+    ops.connect("pom_call", "Parallax UVs", "ss_use_pom", "True")
+    ops.connect("uv0",      "",             "ss_use_pom", "False")
+
+    # Main UV hookup — now feeds through the POM switch (UV1 for emissive mask
+    # stays untouched — parallax on a tiling overlay looks wrong).
+    for tex in ("tp_basecolor", "tp_orm", "tp_normal", "tp_emissive"):
+        ops.connect("ss_use_pom", "", tex, "UVs")
 
     # ---------- base PBR chain (identical to armor) ---------------------
     ops.add("mul_bc_tint", "Multiply", X_DERIVE1, Y_BASE)
@@ -306,8 +395,10 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Weapon_Hero",
     ops.connect("tp_normal", "RGB", "lerp_base_normal", "B")
     ops.connect("sp_normal_int", "", "lerp_base_normal", "Alpha")
 
+    # Detail normal UV — also goes through POM switch so height-warped
+    # base surface and detail stay phase-locked.
     ops.add("mul_uv_detail", "Multiply", X_DERIVE1, Y_DETAIL + 120)
-    ops.connect("uv0", "", "mul_uv_detail", "A")
+    ops.connect("ss_use_pom", "", "mul_uv_detail", "A")
     ops.connect("sp_detail_scale", "", "mul_uv_detail", "B")
     ops.connect("mul_uv_detail", "", "tp_detail_normal", "UVs")
 
@@ -440,6 +531,11 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Weapon_Hero",
                 C.COMMENT_COLOR_WETNESS)
     ops.comment(X_TEX - 60, Y_ANISO - 60, 1900, 180,
                 "Anisotropy (scalar override when UseAnisotropy = true)",
+                C.COMMENT_COLOR_SWITCH)
+    ops.comment(X_TEX - 60, Y_POM - 160, 2600, 560,
+                "Parallax Occlusion Mapping via engine MF — UsePOM switches"
+                " UV0 between raw coords and POM-offset coords; UV1 (emissive"
+                " mask) stays untouched",
                 C.COMMENT_COLOR_SWITCH)
 
     # Flush + compile + save.

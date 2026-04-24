@@ -333,6 +333,35 @@ def add_texture_param_2d(ops: OpList, name: str, x: int, y: int,
     return ref
 
 
+def add_texture_object_param_2d(ops: OpList, name: str, x: int, y: int,
+                                param_name: str, default_texture: str,
+                                sampler_type: str = "Color",
+                                sampler_source: str = "SSM_Wrap_WorldGroupSettings",
+                                group: str = "",
+                                sort_priority: int = 0) -> str:
+    """Add TextureObjectParameter (texture pointer, no sample) with config.
+
+    Used when a texture needs to pass as a pin into a MaterialFunctionCall
+    (e.g. the engine POM MF expects a Texture2D input, not a float4 colour).
+    The node itself emits no samples — a downstream node that samples the
+    texture counts the sampler. Keep ``sampler_source`` in sync with the
+    downstream sampler nodes or M5-5 flags "mixing sampler sources".
+    """
+    ref = ops.add(name, "TextureObjectParameter", x, y)
+    props: Dict[str, str] = {
+        "ParameterName": param_name,
+        "Texture": default_texture,
+        "SamplerType": _normalize_sampler_type(sampler_type),
+        "SamplerSource": sampler_source,
+    }
+    if group:
+        props["Group"] = group
+    if sort_priority:
+        props["SortPriority"] = str(sort_priority)
+    ops.setps(name, props)
+    return ref
+
+
 # --- post-build reporting -------------------------------------------------------
 
 def clear_material_graph(material_path: str) -> int:

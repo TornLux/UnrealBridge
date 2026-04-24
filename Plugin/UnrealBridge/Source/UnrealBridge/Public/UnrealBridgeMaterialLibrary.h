@@ -1452,4 +1452,33 @@ public:
 		const FString& MaterialPath,
 		const TArray<FString>& Fixes,
 		bool bSaveAfter);
+
+	/**
+	 * M3-7: Configure a MaterialAttributeLayers expression's DefaultLayers
+	 * stack via the engine's authoritative FMaterialLayersFunctions APIs
+	 * (AddDefaultBackgroundLayer + AppendBlendedLayer).
+	 *
+	 * Python-side direct set_editor_property("default_layers", ...) with a
+	 * manually-constructed FMaterialLayersFunctions crashes UE 5.7 because
+	 * it bypasses the LayerGuids + LayerLinkStates + background-GUID
+	 * initialization that the struct's ctor/append methods do. This
+	 * UFUNCTION uses the right authoring path + validates layer/blend/name
+	 * counts, so Python only has to supply the MF pointers and display names.
+	 *
+	 * ``Layers`` must be ≥ 1 (first entry is the background).
+	 * ``Blends.Num() == Layers.Num() - 1`` — Blends[i] is the blend MF that
+	 *   composites Layers[i+1] onto the accumulated stack below it.
+	 * ``LayerNames.Num() == Layers.Num()`` — display names in the editor's
+	 *   Layers panel.
+	 *
+	 * Transactional (single FScopedTransaction) + calls PostEditChange so the
+	 * material recompiles with the new stack.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialGraphOpResult SetMaterialAttributeLayers(
+		const FString& MaterialPath,
+		FGuid ExpressionGuid,
+		const TArray<UMaterialFunctionInterface*>& Layers,
+		const TArray<UMaterialFunctionInterface*>& Blends,
+		const TArray<FString>& LayerNames);
 };

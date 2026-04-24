@@ -1,82 +1,86 @@
-"""M3-7: M_Layered_Base + MF_Layer_{Metal, Fabric, Dirt} — layered-material framework.
+"""M3-7: M_Layered_Stack + ML_Layer_{Metal, Fabric, Dirt} + MLB_{Fabric_Over_Metal, Dirt_Over_Layers}.
 
-Layers via ``UMaterialFunction`` + ``BlendMaterialAttributes`` rather than
-UE's heavier MaterialLayerStacks system. MaterialLayerStacks requires two
-special function types (``UMaterialFunctionMaterialLayer`` +
-``UMaterialFunctionMaterialLayerBlend``) with their own editor UX — for a
-3-4 layer blend driven by vertex colour masks the plain MF + Blend pattern
-gives 90% of the authoring ergonomics with a quarter of the asset surface.
+UE-standard MaterialLayerStacks: three ``UMaterialFunctionMaterialLayer``
+assets + two ``UMaterialFunctionMaterialLayerBlend`` assets wired into a
+single ``UMaterialExpressionMaterialAttributeLayers`` node on the master.
 
-Three parametric layer MFs:
+Contrast with the previous MF + BlendMaterialAttributes hand-build at
+``/Game/BridgeTemplates/M_Layered_Base``:
 
-  MF_Layer_Metal   — Metal_BaseColor / Metal_Roughness / Metal_Metallic
-                     (default: gunmetal grey, rough=0.30, metal=1.0)
-  MF_Layer_Fabric  — Fabric_BaseColor / Fabric_Roughness / Fabric_Metallic
-                     (default: deep-red cloth, rough=0.85, metal=0.0)
-  MF_Layer_Dirt    — Dirt_BaseColor / Dirt_Roughness / Dirt_Metallic
-                     (default: wet brown dirt, rough=0.95, metal=0.0)
+* The master graph is now a **single** MAL expression instead of a chain
+  of BlendMaterialAttributes + MaterialFunctionCall nodes — the layer
+  stack is data-driven via the MAL node's ``DefaultLayers`` struct rather
+  than hand-routed in the graph.
+* Designers edit the layer stack from the Material Editor's Layers panel
+  (the native UX for AAA workflows). The old master can only be edited by
+  re-running this script.
+* MIs can replace individual layers / blends via the standard
+  ``LayerFunctions`` + ``BlendFunctions`` parameter system (no custom
+  parameter plumbing on our side).
 
-Each MF outputs a ``MakeMaterialAttributes`` struct with a flat normal
-(authorable detail normals would be a v2 pass). Parameters are exposed via
-the standard UE MI-propagation: every ScalarParameter / VectorParameter
-declared inside an MF shows up in the parent material's MI parameter list
-verbatim, so designers override ``Metal_Roughness`` from the MI the same
-way they'd override any scalar.
+Layer stack:
 
-Master graph:
+  [0] Metal   — base (no blend below it)
+  [1] Fabric  — blended over Metal using VertexColor.R
+  [2] Dirt    — blended over the previous result using VertexColor.G
 
-  blend_mf    = BlendMaterialAttributes(metal, fabric, VertexColor.R)
-  dirt_mask   = VertexColor.G * Dirt_Opacity      # global attenuator
-  final       = BlendMaterialAttributes(blend_mf, dirt, dirt_mask)
-  (MaterialAttributes output)
+Paint VertexColor.R to pick between metal / fabric, paint VertexColor.G
+to grunge-mask dirt on top.
 
-Designers paint:
-  * VertexColor.R → 0=metal, 1=fabric (per-vertex material picker)
-  * VertexColor.G → dirt weight (grunge layer on top)
+The previous ``M_Layered_Base`` master is replaced by ``M_Layered_Stack``.
+The three old ``MF_Layer_*`` MFs (regular ``UMaterialFunction``) are
+replaced by ``ML_Layer_*`` (``UMaterialFunctionMaterialLayer``).
 
-``Dirt_Opacity`` is a master-level ScalarParameter so a single MI slider
-attenuates the whole dirt pass without touching vertex colours.
+**Asset-creation hazard**: ``UMaterialFunctionMaterialLayer`` and
+``UMaterialFunctionMaterialLayerBlend`` are specialized MF subclasses
+created via dedicated factories. Bundling all five factories + a master
+build + MI create in one exec risks the asset-reference-completing modal
+that already bit us on the Texture2DFactoryNew path. The pattern:
 
-Why the MFs aren't a ``MaterialAttributeLayers`` stack: that expression
-requires the two-function asset pattern above, and the current bridge C++
-APIs only edit UMaterial graphs (not UMaterialFunction graphs). We route
-around it by doing MF authoring through the raw ``MaterialEditingLibrary``
-Python API and only the master through the batched bridge ops.
+  1. First bridge exec → ``ensure_layer_stack_assets(rebuild=...)`` —
+     creates the 5 MFs, saves, returns.
+  2. Second bridge exec → ``build(rebuild=...)`` — master + MAL
+     expression; asserts the 5 assets exist.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import unreal
 
 from . import _common as C
 
 
-MF_METAL_PATH  = "/Game/BridgeTemplates/MF_Layer_Metal"
-MF_FABRIC_PATH = "/Game/BridgeTemplates/MF_Layer_Fabric"
-MF_DIRT_PATH   = "/Game/BridgeTemplates/MF_Layer_Dirt"
+ML_METAL_PATH  = "/Game/BridgeTemplates/ML_Layer_Metal"
+ML_FABRIC_PATH = "/Game/BridgeTemplates/ML_Layer_Fabric"
+ML_DIRT_PATH   = "/Game/BridgeTemplates/ML_Layer_Dirt"
+
+MLB_VC_R_PATH  = "/Game/BridgeTemplates/MLB_VertexColorR"
+MLB_VC_G_PATH  = "/Game/BridgeTemplates/MLB_VertexColorG"
 
 
-def _build_layer_mf(path: str, prefix: str,
-                    roughness: float, metallic: float,
-                    basecolor: Tuple[float, float, float, float],
-                    description: str) -> str:
-    """Create / rebuild one layer MaterialFunction.
+def _build_material_layer_mf(path: str, prefix: str,
+                             roughness: float, metallic: float,
+                             basecolor: Tuple[float, float, float, float],
+                             description: str) -> str:
+    """Create / rebuild one ``UMaterialFunctionMaterialLayer`` asset.
 
     Graph: 2 ScalarParams + 1 VectorParam + flat-normal Constant3Vector →
-    MakeMaterialAttributes → FunctionOutput. Parameters live in one group
-    named after the prefix so they collate nicely in MI details panels.
+    MakeMaterialAttributes → FunctionOutput "Result". Parameters live in
+    one group named after the prefix so they collate in MI details.
     """
-    L = unreal.UnrealBridgeMaterialLibrary
     MEL = unreal.MaterialEditingLibrary
+    atools = unreal.AssetToolsHelpers.get_asset_tools()
 
     if not unreal.EditorAssetLibrary.does_asset_exist(path):
-        r = L.create_material_function(path, description, True, "BridgeLayers")
-        if not r.success:
-            raise RuntimeError(f"create_material_function({path}) failed: {r.error}")
+        pkg_path, name = path.rsplit("/", 1)
+        factory = unreal.MaterialFunctionMaterialLayerFactory()
+        atools.create_asset(name, pkg_path,
+                            unreal.MaterialFunctionMaterialLayer, factory)
 
     mf = unreal.EditorAssetLibrary.load_asset(path)
+    mf.set_editor_property("description", description)
     MEL.delete_all_material_expressions_in_function(mf)
 
     x_param, x_mma, x_out = -600, -100, 300
@@ -121,7 +125,7 @@ def _build_layer_mf(path: str, prefix: str,
 
     fo = MEL.create_material_expression_in_function(
         mf, unreal.MaterialExpressionFunctionOutput, x_out, 60)
-    fo.set_editor_property("output_name", "Result")
+    fo.set_editor_property("output_name", "Material Attributes")
     MEL.connect_material_expressions(mma, "", fo, "")
 
     MEL.update_material_function(mf)
@@ -129,107 +133,190 @@ def _build_layer_mf(path: str, prefix: str,
     return path
 
 
-def build(master_path: str = "/Game/BridgeTemplates/M_Layered_Base",
-          mi_path: Optional[str] = "/Game/BridgeTemplates/MI_Layered_Base_Test",
+def _build_material_layer_blend_mf(path: str, vc_channel: str,
+                                   description: str) -> str:
+    """Create / rebuild one ``UMaterialFunctionMaterialLayerBlend`` asset.
+
+    Graph: two MaterialAttributes inputs (Background, Layer) blended by
+    VertexColor.<channel> via BlendMaterialAttributes, then output.
+    ``vc_channel`` is ``R`` / ``G`` / ``B`` / ``A``.
+    """
+    MEL = unreal.MaterialEditingLibrary
+    atools = unreal.AssetToolsHelpers.get_asset_tools()
+
+    if not unreal.EditorAssetLibrary.does_asset_exist(path):
+        pkg_path, name = path.rsplit("/", 1)
+        factory = unreal.MaterialFunctionMaterialLayerBlendFactory()
+        atools.create_asset(name, pkg_path,
+                            unreal.MaterialFunctionMaterialLayerBlend, factory)
+
+    mf = unreal.EditorAssetLibrary.load_asset(path)
+    mf.set_editor_property("description", description)
+    MEL.delete_all_material_expressions_in_function(mf)
+
+    x_in, x_vc, x_blend, x_out = -600, -600, -100, 300
+
+    # FunctionInput 0 — the Background (what's underneath this layer).
+    fi_bg = MEL.create_material_expression_in_function(
+        mf, unreal.MaterialExpressionFunctionInput, x_in, -120)
+    fi_bg.set_editor_property("input_name", "Background")
+    fi_bg.set_editor_property("input_type",
+                              unreal.FunctionInputType.FUNCTION_INPUT_MATERIAL_ATTRIBUTES)
+    fi_bg.set_editor_property("sort_priority", 0)
+
+    # FunctionInput 1 — the Layer (what's being blended on top).
+    fi_layer = MEL.create_material_expression_in_function(
+        mf, unreal.MaterialExpressionFunctionInput, x_in, 0)
+    fi_layer.set_editor_property("input_name", "Layer")
+    fi_layer.set_editor_property("input_type",
+                                 unreal.FunctionInputType.FUNCTION_INPUT_MATERIAL_ATTRIBUTES)
+    fi_layer.set_editor_property("sort_priority", 1)
+
+    # VertexColor node — its <channel> output drives the blend alpha.
+    vc = MEL.create_material_expression_in_function(
+        mf, unreal.MaterialExpressionVertexColor, x_vc, 160)
+
+    # BlendMaterialAttributes: A / B / Alpha pin-name convention.
+    blend = MEL.create_material_expression_in_function(
+        mf, unreal.MaterialExpressionBlendMaterialAttributes, x_blend, 0)
+
+    MEL.connect_material_expressions(fi_bg,    "", blend, "A")
+    MEL.connect_material_expressions(fi_layer, "", blend, "B")
+    MEL.connect_material_expressions(vc, vc_channel, blend, "Alpha")
+
+    fo = MEL.create_material_expression_in_function(
+        mf, unreal.MaterialExpressionFunctionOutput, x_out, 0)
+    fo.set_editor_property("output_name", "Material Attributes")
+    MEL.connect_material_expressions(blend, "", fo, "")
+
+    MEL.update_material_function(mf)
+    unreal.EditorAssetLibrary.save_asset(path, only_if_is_dirty=False)
+    return path
+
+
+def ensure_layer_stack_assets(rebuild: bool = False) -> Dict[str, str]:
+    """Idempotent: ensure the 5 layer-stack MFs exist at their canonical paths.
+
+    MUST be called from its own bridge exec, before ``build()``. Bundling
+    all five factory creations with a master-material build risks the
+    asset-reference-completing modal deadlock (see feedback_split_asset_ops
+    memory + the roadmap's pitfall list).
+
+    Returns the 5 asset paths by role.
+    """
+    if rebuild:
+        for p in (ML_METAL_PATH, ML_FABRIC_PATH, ML_DIRT_PATH,
+                  MLB_VC_R_PATH, MLB_VC_G_PATH):
+            if unreal.EditorAssetLibrary.does_asset_exist(p):
+                unreal.EditorAssetLibrary.delete_asset(p)
+
+    _build_material_layer_mf(ML_METAL_PATH, "Metal", 0.30, 1.00,
+                             (0.55, 0.55, 0.58, 1.0),
+                             "M3-7 Metal PBR layer (MaterialLayerStacks)")
+    _build_material_layer_mf(ML_FABRIC_PATH, "Fabric", 0.85, 0.00,
+                             (0.55, 0.25, 0.22, 1.0),
+                             "M3-7 Fabric PBR layer (MaterialLayerStacks)")
+    _build_material_layer_mf(ML_DIRT_PATH, "Dirt", 0.95, 0.00,
+                             (0.20, 0.15, 0.10, 1.0),
+                             "M3-7 Dirt overlay layer (MaterialLayerStacks)")
+
+    _build_material_layer_blend_mf(MLB_VC_R_PATH, "R",
+                                   "M3-7 blend using VertexColor.R (metal→fabric)")
+    _build_material_layer_blend_mf(MLB_VC_G_PATH, "G",
+                                   "M3-7 blend using VertexColor.G (dirt overlay)")
+
+    return {
+        "ml_metal":  ML_METAL_PATH,
+        "ml_fabric": ML_FABRIC_PATH,
+        "ml_dirt":   ML_DIRT_PATH,
+        "mlb_vc_r":  MLB_VC_R_PATH,
+        "mlb_vc_g":  MLB_VC_G_PATH,
+    }
+
+
+def _assert_stack_assets_exist() -> None:
+    missing = [p for p in (ML_METAL_PATH, ML_FABRIC_PATH, ML_DIRT_PATH,
+                           MLB_VC_R_PATH, MLB_VC_G_PATH)
+               if not unreal.EditorAssetLibrary.does_asset_exist(p)]
+    if missing:
+        raise RuntimeError(
+            "Layer-stack MF assets missing: " + ", ".join(missing) + ". "
+            "Call material_templates.layered.ensure_layer_stack_assets() in a "
+            "separate bridge exec before building M_Layered_Stack.")
+
+
+def build(master_path: str = "/Game/BridgeTemplates/M_Layered_Stack",
+          mi_path: Optional[str] = "/Game/BridgeTemplates/MI_Layered_Stack_Test",
           compile: bool = True,
           rebuild: bool = False) -> Dict[str, Any]:
+    """Build M_Layered_Stack with a MaterialAttributeLayers expression wired
+    to the 5 layer-stack MFs produced by ``ensure_layer_stack_assets()``.
+    """
     L = unreal.UnrealBridgeMaterialLibrary
     MEL = unreal.MaterialEditingLibrary
 
-    # 1. Build the three layer MFs. Always rebuilt — they're cheap (~8 nodes each)
-    # and we want them in lockstep with this template version.
-    _build_layer_mf(MF_METAL_PATH,  "Metal",  0.30, 1.00,
-                    (0.55, 0.55, 0.58, 1.0), "M3-7 Metal PBR layer")
-    _build_layer_mf(MF_FABRIC_PATH, "Fabric", 0.85, 0.00,
-                    (0.55, 0.25, 0.22, 1.0), "M3-7 Fabric PBR layer")
-    _build_layer_mf(MF_DIRT_PATH,   "Dirt",   0.95, 0.00,
-                    (0.20, 0.15, 0.10, 1.0), "M3-7 Dirt overlay layer")
+    _assert_stack_assets_exist()
 
-    # 2. Master material — use_material_attributes=True so the output is one
-    # MaterialAttributes pin that accepts a Blend chain.
+    # Master — use_material_attributes=True so the output is one MaterialAttributes pin.
     master_path = C.ensure_master_material(
         master_path, "Surface", "DefaultLit", "Opaque",
         two_sided=False, use_material_attributes=True,
         rebuild=rebuild)
     master = unreal.EditorAssetLibrary.load_asset(master_path)
 
-    mf_metal  = unreal.EditorAssetLibrary.load_asset(MF_METAL_PATH)
-    mf_fabric = unreal.EditorAssetLibrary.load_asset(MF_FABRIC_PATH)
-    mf_dirt   = unreal.EditorAssetLibrary.load_asset(MF_DIRT_PATH)
+    # Load the 5 MFs so we can reference them in the DefaultLayers struct.
+    ml_metal  = unreal.EditorAssetLibrary.load_asset(ML_METAL_PATH)
+    ml_fabric = unreal.EditorAssetLibrary.load_asset(ML_FABRIC_PATH)
+    ml_dirt   = unreal.EditorAssetLibrary.load_asset(ML_DIRT_PATH)
+    mlb_r     = unreal.EditorAssetLibrary.load_asset(MLB_VC_R_PATH)
+    mlb_g     = unreal.EditorAssetLibrary.load_asset(MLB_VC_G_PATH)
 
-    # 3. MFCall nodes — must be created via MEL directly so
-    # ``set_material_function`` can populate the pin set from the MF's
-    # FunctionInput / FunctionOutput signatures. A raw ``add`` op from
-    # apply_material_graph_ops would leave the call node with no output pins,
-    # which would fail at the connect step.
-    #
-    # Unique (x, y) positions so we can recover GUIDs via get_material_graph
-    # below — ``material_expression_guid`` is not a UPROPERTY, so Python can't
-    # read it directly off the returned expression pointer.
-    call_metal_pos  = (-1200, -200)
-    call_fabric_pos = (-1200,   40)
-    call_dirt_pos   = (-1200,  280)
+    # MaterialAttributeLayers expression — create via MEL (same pattern as
+    # MaterialFunctionCall in weapon_hero.py) so its ctor runs
+    # AddDefaultBackgroundLayer(). Then configure the stack via the bridge's
+    # SetMaterialAttributeLayers UFUNCTION, which uses the engine's
+    # authoritative FMaterialLayersFunctions::AddDefaultBackgroundLayer +
+    # AppendBlendedLayer APIs. Setting default_layers via Python
+    # set_editor_property directly crashes UE 5.7: the struct's EditorOnly
+    # sub-array invariants (LayerGuids / LayerLinkStates / per-layer parallel
+    # arrays) get violated and RebuildLayerGraph + GetID() downstream
+    # dereference uninitialized memory.
+    mal_pos = (-400, 0)
+    MEL.create_material_expression(
+        master, unreal.MaterialExpressionMaterialAttributeLayers, *mal_pos)
 
-    call_metal = MEL.create_material_expression(
-        master, unreal.MaterialExpressionMaterialFunctionCall, *call_metal_pos)
-    call_metal.set_material_function(mf_metal)
-
-    call_fabric = MEL.create_material_expression(
-        master, unreal.MaterialExpressionMaterialFunctionCall, *call_fabric_pos)
-    call_fabric.set_material_function(mf_fabric)
-
-    call_dirt = MEL.create_material_expression(
-        master, unreal.MaterialExpressionMaterialFunctionCall, *call_dirt_pos)
-    call_dirt.set_material_function(mf_dirt)
-
-    # Recover GUIDs via the graph query — the MEL-returned expression pointer
-    # doesn't expose material_expression_guid on the Python side.
+    # Recover MAL GUID via graph query (same trick as layered + weapon_hero).
     graph = L.get_material_graph(master_path)
+    mal_guid_fguid = None
+    for n in graph.nodes:
+        if str(n.class_name) == "MaterialAttributeLayers" \
+                and int(n.x) == mal_pos[0] and int(n.y) == mal_pos[1]:
+            mal_guid_fguid = n.guid
+            break
+    if mal_guid_fguid is None:
+        raise RuntimeError(f"could not find MaterialAttributeLayers at {mal_pos}")
+    mal_guid_str = C.guid_to_str(mal_guid_fguid)
 
-    def _find_guid(cls: str, pos: tuple) -> str:
-        for n in graph.nodes:
-            if str(n.class_name) == cls and int(n.x) == pos[0] and int(n.y) == pos[1]:
-                return C.guid_to_str(n.guid)
-        raise RuntimeError(f"could not find {cls} at {pos} in master graph")
+    # Delegate layer-stack config to the bridge C++ layer. Blends is one
+    # shorter than Layers: Blends[i] is the blend MF that composites
+    # Layers[i+1] onto the accumulated stack below it.
+    stack_r = L.set_material_attribute_layers(
+        master_path,
+        mal_guid_fguid,
+        [ml_metal, ml_fabric, ml_dirt],
+        [mlb_r, mlb_g],
+        ["Metal (base)", "Fabric (VC.R mask)", "Dirt (VC.G mask)"])
+    if not stack_r.success:
+        raise RuntimeError(f"set_material_attribute_layers failed: {stack_r.error}")
 
-    metal_guid  = _find_guid("MaterialFunctionCall", call_metal_pos)
-    fabric_guid = _find_guid("MaterialFunctionCall", call_fabric_pos)
-    dirt_guid   = _find_guid("MaterialFunctionCall", call_dirt_pos)
-
-    # 4. Remainder of the master — batch-applied via the bridge ops list.
+    # Wire the MAL output into the main MaterialAttributes slot via an ops list
+    # — one op, but using OpList keeps the compile+flush pipeline consistent.
     ops = C.OpList()
-    ops.add_literal(metal_guid,  "call_metal")
-    ops.add_literal(fabric_guid, "call_fabric")
-    ops.add_literal(dirt_guid,   "call_dirt")
+    ops.add_literal(mal_guid_str, "mal")
+    ops.connect_out("mal", "", "MaterialAttributes")
 
-    # Vertex colour drives the blend masks. R = metal→fabric blend, G = dirt weight.
-    ops.add("vc", "VertexColor", -1200, 520)
-
-    # Global dirt opacity — multiplies VC.G for a single MI attenuator.
-    C.add_scalar_param(ops, "sp_dirt_opacity", -1200, 640,
-                       "Dirt_Opacity", 1.0,
-                       group="Dirt", sort_priority=99,
-                       slider_min=0.0, slider_max=1.0)
-
-    ops.add("mul_dirt_mask", "Multiply", -900, 580)
-    ops.connect("vc", "G", "mul_dirt_mask", "A")
-    ops.connect("sp_dirt_opacity", "", "mul_dirt_mask", "B")
-
-    # BlendMaterialAttributes uses A / B / Alpha pin names (same as Lerp).
-    ops.add("blend_mf", "BlendMaterialAttributes", -700, -80)
-    ops.connect("call_metal",  "", "blend_mf", "A")
-    ops.connect("call_fabric", "", "blend_mf", "B")
-    ops.connect("vc", "R", "blend_mf", "Alpha")
-
-    ops.add("blend_final", "BlendMaterialAttributes", -400, 100)
-    ops.connect("blend_mf",  "", "blend_final", "A")
-    ops.connect("call_dirt", "", "blend_final", "B")
-    ops.connect("mul_dirt_mask", "", "blend_final", "Alpha")
-
-    ops.connect_out("blend_final", "", "MaterialAttributes")
-
-    ops.comment(-1260, -260, 1300, 1020,
-                "M_Layered_Base — Metal + Fabric + Dirt via BlendMaterialAttributes",
+    ops.comment(-520, -180, 300, 360,
+                "M_Layered_Stack — MaterialAttributeLayers with 3 layers",
                 C.COMMENT_COLOR_PBR)
 
     result = ops.flush(master_path, compile)
@@ -245,9 +332,11 @@ def build(master_path: str = "/Game/BridgeTemplates/M_Layered_Base",
         "master_path": master_path,
         "ops_applied": int(result.ops_applied),
         "mf_paths": {
-            "metal":  MF_METAL_PATH,
-            "fabric": MF_FABRIC_PATH,
-            "dirt":   MF_DIRT_PATH,
+            "ml_metal":  ML_METAL_PATH,
+            "ml_fabric": ML_FABRIC_PATH,
+            "ml_dirt":   ML_DIRT_PATH,
+            "mlb_vc_r":  MLB_VC_R_PATH,
+            "mlb_vc_g":  MLB_VC_G_PATH,
         },
     }
     if stats:

@@ -71,6 +71,8 @@
 #include "FileHelpers.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
+#include "Materials/MaterialExpressionMaterialAttributeLayers.h"
+#include "Materials/MaterialLayersFunctions.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Engine/Texture.h"
 #include "Engine/SubsurfaceProfile.h"
@@ -5336,5 +5338,117 @@ FBridgeMaterialAutoFixResult UUnrealBridgeMaterialLibrary::AutoFixMaterial(
 
 	Out.FindingsFixed = FindingsHandled;
 	Out.bSuccess = true;
+	return Out;
+}
+
+
+FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::SetMaterialAttributeLayers(
+	const FString& MaterialPath,
+	FGuid ExpressionGuid,
+	const TArray<UMaterialFunctionInterface*>& Layers,
+	const TArray<UMaterialFunctionInterface*>& Blends,
+	const TArray<FString>& LayerNames)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialGraphOpResult Out;
+	Out.bSuccess = false;
+	Out.FailedAtIndex = 0;
+
+	// Input validation.
+	if (Layers.Num() < 1)
+	{
+		Out.Error = TEXT("Layers must contain at least one entry (the background).");
+		return Out;
+	}
+	if (Blends.Num() != Layers.Num() - 1)
+	{
+		Out.Error = FString::Printf(
+			TEXT("Blends count (%d) must equal Layers count - 1 (%d); Blends[i] is the blend MF for Layers[i+1]."),
+			Blends.Num(), Layers.Num() - 1);
+		return Out;
+	}
+	if (LayerNames.Num() != Layers.Num())
+	{
+		Out.Error = FString::Printf(
+			TEXT("LayerNames count (%d) must equal Layers count (%d)."),
+			LayerNames.Num(), Layers.Num());
+		return Out;
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		Out.Error = FString::Printf(TEXT("Material not loadable: %s"), *MaterialPath);
+		return Out;
+	}
+
+	UMaterialExpression* Expr = FindExpressionByGuid(Material, ExpressionGuid);
+	if (!Expr)
+	{
+		Out.Error = FString::Printf(TEXT("No expression with guid %s on %s."),
+			*ExpressionGuid.ToString(EGuidFormats::DigitsWithHyphens), *MaterialPath);
+		return Out;
+	}
+
+	UMaterialExpressionMaterialAttributeLayers* MAL =
+		Cast<UMaterialExpressionMaterialAttributeLayers>(Expr);
+	if (!MAL)
+	{
+		Out.Error = FString::Printf(
+			TEXT("Expression %s is not MaterialAttributeLayers (found %s)."),
+			*ExpressionGuid.ToString(EGuidFormats::DigitsWithHyphens),
+			*Expr->GetClass()->GetName());
+		return Out;
+	}
+
+	FScopedTransaction Tx(NSLOCTEXT("UnrealBridge", "SetMAL",
+		"Configure MaterialAttributeLayers stack"));
+	Material->Modify();
+	MAL->Modify();
+
+	// Build the stack via the authoritative engine APIs. Each Append* call
+	// updates Layers + Blends + every EditorOnly parallel array atomically
+	// (LayerStates / LayerNames / LayerGuids / LayerLinkStates / restrictions),
+	// keeping the invariants that RebuildLayerGraph + PostLoad rely on.
+	FMaterialLayersFunctions NewStack;
+	NewStack.Empty();
+	NewStack.AddDefaultBackgroundLayer();
+	for (int32 i = 1; i < Layers.Num(); ++i)
+	{
+		NewStack.AppendBlendedLayer();
+	}
+
+	// Assign the MF pointers produced by ensure_layer_stack_assets().
+	// Layers[0] = background; Blends[0] = blend for Layers[1]; etc.
+	for (int32 i = 0; i < Layers.Num(); ++i)
+	{
+		NewStack.Layers[i] = Layers[i];
+	}
+	for (int32 i = 0; i < Blends.Num(); ++i)
+	{
+		NewStack.Blends[i] = Blends[i];
+	}
+
+	// Override display names so the editor's Layers panel shows something
+	// meaningful instead of "Background" / "Layer 1" / "Layer 2".
+	for (int32 i = 0; i < LayerNames.Num(); ++i)
+	{
+		NewStack.EditorOnly.LayerNames[i] = FText::FromString(LayerNames[i]);
+	}
+
+	MAL->DefaultLayers = NewStack;
+	MAL->RebuildLayerGraph(/*bDisablePhysicalMaterials=*/ false);
+
+	// PostEditChange so the material recompiles the shader map with the new
+	// layer permutation. Callers that want to persist to disk should invoke
+	// save_master after this returns — matches the other graph-edit ops.
+	MAL->PostEditChange();
+	Material->PostEditChange();
+	Material->MarkPackageDirty();
+
+	Out.bSuccess = true;
+	Out.OpsApplied = 1;
+	Out.FailedAtIndex = -1;
 	return Out;
 }
