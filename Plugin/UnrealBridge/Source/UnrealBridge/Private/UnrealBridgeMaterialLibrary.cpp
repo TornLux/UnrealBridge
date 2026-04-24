@@ -3762,6 +3762,60 @@ TArray<FString> UUnrealBridgeMaterialLibrary::GetMaterialCompileErrors(
 }
 
 
+FBridgeShaderCompileStatus UUnrealBridgeMaterialLibrary::GetMaterialShaderCompileStatus(
+	const FString& MaterialPath,
+	const FString& FeatureLevelStr,
+	const FString& QualityStr)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeShaderCompileStatus Out;
+	Out.PendingAssetsGlobal = FAssetCompilingManager::Get().GetNumRemainingAssets();
+
+	UMaterialInterface* MatInterface = LoadObject<UMaterialInterface>(nullptr, *MaterialPath);
+	if (!MatInterface)
+	{
+		Out.Error = FString::Printf(TEXT("material not loadable: %s"), *MaterialPath);
+		return Out;
+	}
+
+	// Default feature level = the editor's current max. In UE 5.7 that's SM6 on
+	// DX12 hardware. Using SM5 here silently returns "not ready" forever because
+	// the SM5 resource never gets compiled in the current editor run. Matches
+	// the behaviour of `get_material_stats` at the top level.
+	const ERHIFeatureLevel::Type FeatureLevel =
+		FeatureLevelStr.IsEmpty() ? GMaxRHIFeatureLevel : ParseFeatureLevel(FeatureLevelStr);
+	const EMaterialQualityLevel::Type Quality =
+		QualityStr.IsEmpty() ? EMaterialQualityLevel::High : ParseQuality(QualityStr);
+
+	Out.FeatureLevel = FeatureLevelToString(FeatureLevel);
+	Out.QualityLevel = QualityToString(Quality);
+
+	// bFound = material asset loaded successfully. Matches GetMaterialStats.
+	// A resource-not-yet-resolved is a valid "not ready" state, not an error.
+	Out.bFound = true;
+
+	// Two independent signals AND'd together define "truly ready":
+	//   1. IsCompiling() == false   — this specific material has no pending
+	//      shader compile jobs (handles permutation-flip where the old shader
+	//      map is still live alongside a pending new one).
+	//   2. GetGameThreadShaderMap() != nullptr — a resource + live shader map
+	//      exists for the requested feature/quality level.
+	// Using only (2) gives false positives right after a static-switch flip:
+	// the old permutation's shader map is still live until the new one
+	// finishes, so #2 alone would claim "ready" before the new permutation
+	// is actually renderable. #1 guards against that.
+	const bool bIsCompiling = MatInterface->IsCompiling();
+
+	const FMaterialResource* Resource = ResolveMaterialResource(MatInterface, FeatureLevel, Quality);
+	const bool bHasLiveShaderMap = (Resource && Resource->GetGameThreadShaderMap() != nullptr);
+
+	Out.bShaderMapReady = !bIsCompiling && bHasLiveShaderMap;
+
+	return Out;
+}
+
+
 // ─── M4: post-process material ops ──────────────────────────────
 
 namespace BridgeMaterialImpl

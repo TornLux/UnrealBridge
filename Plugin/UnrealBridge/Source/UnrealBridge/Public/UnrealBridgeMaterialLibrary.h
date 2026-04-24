@@ -476,6 +476,58 @@ struct FBridgeMaterialStats
 	bool bShaderMapReady = false;
 };
 
+/**
+ * Lightweight compile-state probe for a material / MI. Cheap to call (no
+ * instruction collection, no graph walk) so it's safe to poll repeatedly
+ * from a client-side wait loop.
+ *
+ * Intended usage pattern to sequence a permutation-change + render pair
+ * without GT deadlock (see feedback_preview_material_serial_compile memory):
+ *
+ *     exec A — set_mi_params(StaticSwitch=...)   // queues shader recompile, returns
+ *     exec B — get_material_shader_compile_status(...)   // one-shot poll, returns
+ *     exec C — get_material_shader_compile_status(...)   // loop until ready
+ *     ...
+ *     exec N — preview_material(...)             // shader map already ready, no wait
+ *
+ * Between execs the GT is free to tick FAssetCompilingManager and process
+ * completion callbacks normally — a single busy-wait inside one exec would
+ * hold GT and deadlock, which is exactly the pattern this UFUNCTION replaces.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeShaderCompileStatus
+{
+	GENERATED_BODY()
+
+	/** True if the queried material resource was loadable + a FeatureLevel/Quality resolved. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bFound = false;
+
+	/** True when the requested shader map is compiled + live on the game thread. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bShaderMapReady = false;
+
+	/**
+	 * FAssetCompilingManager::GetNumRemainingAssets — editor-wide pending compile count
+	 * across ALL assets (materials, textures, static meshes, etc). Useful as a "the
+	 * editor isn't idle yet" signal even if this specific material already resolved.
+	 */
+	UPROPERTY(BlueprintReadOnly)
+	int32 PendingAssetsGlobal = 0;
+
+	/** Echo of the resolved feature level ("SM5", "SM6", "ES3_1"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString FeatureLevel;
+
+	/** Echo of the resolved quality level ("Low", "Medium", "High", "Epic"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString QualityLevel;
+
+	/** Populated on resolution failure (e.g. bad path, bad feature level string). */
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+};
+
 /** One diagnostic emitted by analyze_material (M5). */
 USTRUCT(BlueprintType)
 struct FBridgeMaterialFinding
@@ -937,6 +989,22 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static TArray<FString> GetMaterialCompileErrors(
+		const FString& MaterialPath,
+		const FString& FeatureLevel,
+		const FString& Quality);
+
+	/**
+	 * Cheap one-shot shader-map readiness probe. Intended for a client-side
+	 * poll loop that sequences permutation-change + render across separate
+	 * bridge execs. See FBridgeShaderCompileStatus docstring for the full
+	 * pattern. Does NOT block — returns current state and lets the caller
+	 * decide whether to poll again. Between poll execs the GT ticks
+	 * FAssetCompilingManager normally so completion callbacks drain.
+	 *
+	 * Empty FeatureLevel defaults to "SM5"; empty Quality defaults to "High".
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeShaderCompileStatus GetMaterialShaderCompileStatus(
 		const FString& MaterialPath,
 		const FString& FeatureLevel,
 		const FString& Quality);

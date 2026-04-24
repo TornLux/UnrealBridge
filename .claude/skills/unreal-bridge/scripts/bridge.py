@@ -234,6 +234,93 @@ def cmd_resume(args):
     return 0 if resp.get("success") else 1
 
 
+def cmd_wait_compile(args):
+    """Poll the editor for shader-map readiness on a given material / MI.
+
+    Each poll is one fast bridge.exec (GetMaterialShaderCompileStatus), the
+    GT is released between polls. This architecturally avoids the GT-waits-for-GT
+    deadlock that happens when in-exec FinishAllCompilation tries to drain
+    async completion callbacks while bridge is holding GT itself. See
+    feedback_preview_material_serial_compile memory for the history.
+
+    Exit codes:
+      0  ready (shader map compiled + live on GT)
+      1  timeout
+      2  material not loadable
+      3  bridge / transport error
+    """
+    import time as _time
+
+    deadline = _time.time() + args.wait_timeout
+    poll = max(0.1, float(args.poll_interval))
+    code = (
+        "import unreal, json\n"
+        f"r = unreal.UnrealBridgeMaterialLibrary.get_material_shader_compile_status("
+        f"'{args.material_path}', '{args.feature_level}', '{args.quality}')\n"
+        "print(json.dumps({'found': bool(r.found), 'ready': bool(r.shader_map_ready),"
+        " 'pending': int(r.pending_assets_global), 'fl': str(r.feature_level),"
+        " 'ql': str(r.quality_level), 'err': str(r.error)}))\n"
+    )
+
+    host, port, token = resolve_target(args)
+    last = None
+    while _time.time() < deadline:
+        payload = {"id": str(uuid.uuid4()), "script": code, "timeout": 5}
+        try:
+            resp = send_request(host, port, payload, 10.0, token=token)
+        except Exception as e:
+            if args.json:
+                print(json.dumps({"success": False, "error": f"transport: {e}"}))
+            else:
+                print(f"ERROR: {e}", file=sys.stderr)
+            return 3
+
+        if not resp.get("success"):
+            err = resp.get("error") or "unknown"
+            if args.json:
+                print(json.dumps({"success": False, "error": err}))
+            else:
+                print(f"ERROR: {err}", file=sys.stderr)
+            return 3
+
+        line = (resp.get("output") or "").strip().splitlines()[-1] if resp.get("output") else ""
+        try:
+            last = json.loads(line)
+        except Exception:
+            if args.json:
+                print(json.dumps({"success": False, "error": f"bad status payload: {line!r}"}))
+            else:
+                print(f"ERROR: bad payload: {line!r}", file=sys.stderr)
+            return 3
+
+        if not last.get("found"):
+            # Empty material path, missing FL/QL resource — not a poll condition,
+            # error out so the caller sees the config issue immediately.
+            if args.json:
+                print(json.dumps({"success": False, "status": last}))
+            else:
+                print(f"material lookup failed: {last.get('err')}", file=sys.stderr)
+            return 2
+
+        if last.get("ready"):
+            if args.json:
+                print(json.dumps({"success": True, "status": last}))
+            else:
+                print(f"ready ({last.get('fl')}/{last.get('ql')}, "
+                      f"pending_global={last.get('pending')})")
+            return 0
+
+        _time.sleep(poll)
+
+    if args.json:
+        print(json.dumps({"success": False, "error": "timeout", "status": last}))
+    else:
+        pending = (last or {}).get("pending", "?")
+        print(f"TIMEOUT after {args.wait_timeout}s  (last pending_global={pending})",
+              file=sys.stderr)
+    return 1
+
+
 def cmd_exec(args):
     return _execute(args, args.code)
 
@@ -405,6 +492,24 @@ def main():
         help="Send a discovery probe and list every editor that answered",
     )
 
+    wc_parser = subparsers.add_parser(
+        "wait-compile",
+        help="Poll shader-map readiness on a material / MI (client-side, "
+             "safe for post-permutation-change sequencing)",
+    )
+    wc_parser.add_argument("material_path",
+        help="Material or MI asset path, e.g. /Game/BridgeTemplates/MI_Foo")
+    wc_parser.add_argument("--wait-timeout", type=float, default=120.0,
+        help="Max total seconds to poll before giving up (default: 120)")
+    wc_parser.add_argument("--poll-interval", type=float, default=0.5,
+        help="Seconds between polls (default: 0.5). Between polls GT runs "
+             "normal ticks so async compile completions drain.")
+    wc_parser.add_argument("--feature-level", default="",
+        help='Feature level: "SM5" / "SM6" / "ES3_1". Empty → editor\'s '
+             'current max (SM6 on UE 5.7 DX12 by default).')
+    wc_parser.add_argument("--quality", default="",
+        help='Quality level: "Low" / "Medium" / "High" / "Epic". Empty → "High".')
+
     args = parser.parse_args()
 
     if args.command == "ping":
@@ -417,6 +522,8 @@ def main():
         sys.exit(cmd_resume(args))
     elif args.command == "gamethread-ping":
         sys.exit(cmd_gt_ping(args))
+    elif args.command == "wait-compile":
+        sys.exit(cmd_wait_compile(args))
     elif args.command == "list-editors":
         sys.exit(cmd_list_editors(args))
 
