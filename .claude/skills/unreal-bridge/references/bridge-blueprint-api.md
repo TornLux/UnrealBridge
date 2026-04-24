@@ -2,6 +2,33 @@
 
 Module: `unreal.UnrealBridgeBlueprintLibrary`
 
+---
+
+## ⚠️ 写蓝图前必读（Authoring policy — MUST read before any write op）
+
+**非必要不写蓝图 Node 和 Graph。** 当前 agent 无法产出"优美"的 BlueprintGraph——虽然可以调原语 spawn 节点 / 连线 / auto-layout，但成品相比人工 authoring 或 C++ 实现在以下维度都明显劣势：
+
+- **可读性 / 美感**：auto_layout 能把节点摆整齐，但"节点该怎么分组、exec rail 怎么走、哪里用 reroute、哪里 collapse 成子函数、注释该怎么分区" 这类需要审美 + 项目惯例的判断，agent 会做出机械但不优雅的布局。
+- **调试 / 维护成本**：自动生成的 Graph 往往函数/事件命名平淡、分段不清，人接手修改时成本比同等功能的 C++ 高出数倍。
+- **表达能力**：复杂控制流 / 泛型 / 模板 / 状态机 逻辑 在 C++ 里是几十行干净代码，在 BP 里是几十个节点 + 手工连线，一次错位就跑偏。
+- **性能**：BP VM 解释执行，hot path 永远应该走 C++。
+
+**当用户要求"用蓝图实现 X"时，先走以下对话流程，而不是直接动手**：
+
+1. **说明优势与劣势**：告诉用户你可以用 bridge 原语 spawn 节点 / 连线 / 建变量 / 建函数 / auto-layout / lint / compile，但**成品的美感与可维护性不如人工或 C++ 实现**（列出上面具体几点）。
+2. **给出替代方案**：提议改用 C++（新 `UCLASS` / `UFUNCTION(BlueprintCallable)`），蓝图里只做薄封装调用；或者改用现有的 bridge 写能力（材质 / 动画 / UMG / DataTable / Level 等都有结构化 API，这些领域 agent 可以做得很好）。
+3. **再次确认**：直接问"你仍然希望我用蓝图 Node/Graph 实现，还是改走 C++ / 其他方式？"——**不要自行决定**。
+4. **用户坚持才写**：用户明确说"就用蓝图写"之后再进入下方的 Write Operations / Graph Node Write Ops。写完后仍必须跑完 Blueprint review loop（auto_layout → lint → compile）。
+
+**例外情况**（可以不走确认流程直接写的）：
+- 用户明确指定"只改一个变量默认值 / 一个组件属性 / 一个函数参数"这类**非 Graph 结构性**的小改动——`set_blueprint_variable_default` / `set_component_property` / `add_blueprint_variable` 等纯数据写就直接做。
+- 用户显式请求了自动化或批量生成场景（如"扫 100 个 BP 把某变量默认值改成 X"），这是 agent 天然擅长的领域。
+- 用户在 CLAUDE.md 或当轮对话里已经授权过"本项目蓝图修改直接做"。
+
+硬约束：**任何向已有 Graph 新增节点 / 新连接 / 新 Event / 新 Function 的操作**，除非上面三类例外之一命中，否则都要先和用户对齐。
+
+---
+
 ## Class Hierarchy
 
 ### get_blueprint_parent_class(blueprint_path) -> (bool, FBridgeClassInfo)
@@ -448,6 +475,8 @@ for tl in timelines:
 
 ## Write Operations
 
+> ⚠️ **Graph-structural writes require user confirmation first.** See the "写蓝图前必读" callout at the top of this file. Pure data writes (`set_blueprint_variable_default` / `set_component_property` / `add_blueprint_variable`) don't need the confirmation dance; **anything that adds/removes/connects graph nodes does.**
+
 ### set_blueprint_variable_default(blueprint_path, variable_name, new_value) -> bool
 
 Set the default value of a Blueprint variable. Value is parsed as text (same format as Details panel).
@@ -626,6 +655,8 @@ unreal.UnrealBridgeBlueprintLibrary.add_blueprint_component(
 ---
 
 ## Graph Node Write Ops
+
+> ⚠️ **STOP — read the "写蓝图前必读" callout at top of file first.** Everything below mutates Graph structure (spawn nodes / connect pins / add events / add functions / `apply_graph_ops`). Before touching any of it on behalf of a user request, you MUST have explicitly surfaced the "agent 写出的 BP Graph 美感 / 可维护性不如 C++" tradeoff to the user and gotten their confirmation to proceed with BP rather than C++. **Default answer to "用蓝图实现 X" is "我建议走 C++，要不要改走 C++？"**, not "好的我这就开始 spawn 节点".
 
 Low-level graph manipulation. **Token budget matters here** — these calls return only a GUID (create) or bool (connect/remove/move) so a multi-node build doesn't flood context. Do not re-read the whole graph after each op; track GUIDs in your script and only call `get_function_nodes` when you actually need to inspect.
 

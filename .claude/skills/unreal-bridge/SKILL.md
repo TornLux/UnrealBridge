@@ -128,9 +128,27 @@ Every task executed through this skill MUST follow these principles — no excep
 
 > **Asset lookup by name defaults to `search_assets_in_all_content(name, max_results)` — read `bridge-asset-api.md` before searching.** When the user names an asset without giving a path, do **not** call `unreal.AssetRegistryHelpers.get_assets_by_path('/Game', recursive=True)` and filter in Python — that walks 100k–2M+ entries and times out. The full `search_assets` form needs `BridgeAssetSearchScope.ALL_ASSETS` (not `PROJECT`) when the asset might live in a plugin mount (`/PluginName/...`). `PROJECT` scope only covers `/Game`; using it for a plugin asset returns `[]` silently. The valid scope members are exactly `ALL_ASSETS`, `PROJECT`, `CUSTOM_PACKAGE_PATH` — there is no `GAME_FOLDER`.
 
+## Blueprint authoring policy (MUST read before touching BP write ops)
+
+**非必要不写蓝图 Node 和 Graph。** Even with `auto_layout_graph` + lint + the review loop below, agent-authored BPs are visibly worse than human-authored or C++-equivalent implementations: mechanical layout without project-aesthetic judgment, bland function/event naming, weak section grouping, no sense for when to collapse vs. inline, BP-VM performance overhead on hot paths.
+
+**When the user says "用蓝图实现 X"**, the default reply is NOT "ok, spawning nodes." It is a short exchange:
+
+1. **State the tradeoff up-front.** Acknowledge that the bridge has full graph-write primitives (spawn / connect / auto-layout / lint / compile), but agent-generated Graphs are measurably weaker than a C++ equivalent on readability, maintainability, and performance.
+2. **Offer the alternative.** Propose implementing the logic in C++ (a new `UCLASS` / `UFUNCTION(BlueprintCallable)`) with a thin BP wrapper for exposure; or using another bridge-authoring surface (Material / Anim / UMG / DataTable / Level) when the task fits there — those are areas the agent does handle well.
+3. **Re-confirm explicitly.** Ask: "你仍然希望我用蓝图 Node/Graph 实现，还是改走 C++ / 其他方式？" Do NOT decide unilaterally.
+4. **Only proceed on explicit user insistence.** If the user says "就用蓝图写" or equivalent, then run the review loop below. Otherwise, redirect to C++ or the suggested alternative.
+
+**Exceptions** (skip the confirmation dance — just do it):
+- Pure data writes: `set_blueprint_variable_default` / `set_component_property` / `add_blueprint_variable` without any new graph nodes.
+- Bulk / automation scenarios the user explicitly framed as automation (e.g. "扫 100 个 BP 改某变量默认值").
+- Standing authorization in `CLAUDE.md` or in the current conversation ("this session you can edit BPs freely").
+
+The hard line: **any op that spawns / connects / removes graph nodes, adds events, or creates functions** needs the confirmation-first dance unless one of the three exceptions above applies.
+
 ## Blueprint review loop (mandatory after any BP authoring)
 
-When you **author or modify a Blueprint graph** (spawn / connect / remove nodes, add variables, create functions), you MUST run this loop before calling the task done. AI-generated BPs default to a visually chaotic, maintainability-light shape — the review loop is what turns them into code a human will want to maintain.
+Applies once the user has confirmed they want a BP graph written (see policy above). When you **author or modify a Blueprint graph** (spawn / connect / remove nodes, add variables, create functions), you MUST run this loop before calling the task done. AI-generated BPs default to a visually chaotic, maintainability-light shape — the review loop is what turns them into code a human will want to maintain.
 
 **Auto-layout is not optional.** Every BP edit — even a single `add_call_function_node` or `connect_graph_pins` — leaves nodes at spawn-time XY (often stacked at origin or wherever a caller guessed). Before any reply claims "done", `auto_layout_graph` must have run on every function / event graph you touched in that session. If you edited three graphs, you run auto-layout three times. No exceptions for "just one tiny change".
 
