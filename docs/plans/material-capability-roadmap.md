@@ -334,6 +334,16 @@
 
 **M3 + M4 + M5 规则与 auto_fix 代码全部落地并 smoke-tested。所有原定 polish 项 + bonus 也全交付。**
 
+### 下一批候选工作（从 2026-04-25 Matrix-upgrade showcase 踩坑暴露的 bridge gap）
+
+11. **`WaitForMaterialShaderCompile(material_or_mi_path, timeout_s)` C++ UFUNCTION** — 一个纯 "block 到 shader map ready 为止" 的非 GT 阻塞 helper，基于 `FAssetCompilingManager::FinishCompilationForObjects({Material})` 或 poll `FMaterialResource::IsGameThreadShaderMapComplete()`. 动机：当前流程是 `set_mi_params` (改 permutation) → 下一次 `preview_material` / `capture_from_pose` 会 sync-wait compile → 和前一个 exec 的 GT-hold 叠加，多次踩过 GT 死锁 (2026-04-25 第 4 次 hang 同类根因). 有这个 UFUNCTION 之后，模式是: exec-A 改 switch → return → exec-B `wait_for_compile(timeout=60)` → return → exec-C render. 中间的 wait 不持 GT，editor 内的 compile 有机会用正常的 task graph 跑完. ~40 行 C++ + 一个 rebuild_relaunch. 见 `memory/feedback_preview_material_serial_compile.md` 末尾的协议细节.
+12. **`SetActorMesh` 扩展支持 `SkeletalMesh`** — 当前 `SetActorMesh` 硬 Cast 到 `UStaticMeshComponent`，只能处理 static mesh. 要给 `SkeletalMeshActor` 换 mesh，得 fall back 到原生 UE Python API 手拿 `skeletal_mesh_component.set_skeletal_mesh_asset(...)`. 补 C++: `if (auto* SMC = Actor->FindComponentByClass<USkeletalMeshComponent>()) SMC->SetSkeletalMeshAsset(...)` 分支. ~20 行.
+13. **Matrix-playbook 的 M_Cloth_Hero benchmark 模板** — 完整落地 Matrix 风格 800+ inst / 100+ static switch / A/B 层 mirror / VT 双轨 / pattern Texture2DArray 的 master. 依赖 #11 (多 permutation 测试需要 wait helper 才不会每次都踩 4 连 hang). 工作量估计 1500-3000 行 Python + 需要 `TextureSampleParameter2DArray` 的 bridge 支持 (见 playbook memory).
+14. **Ellie 背包 showcase 渲染** (被 #11 缺失阻塞) — 2026-04-25 尝试用 `M_Fabric_PBR` v2 渲染 `/LocomotionDriver/TheLastOfUs/Ellie/backpack-ellie1`, 3 个 MI (body / acces / velcro) 建好并写盘在 `/Game/BridgeTemplates/_EllieShowcase/*`，所有 texture/switch/scalar 参数都绑对 (`get_material_instance_parameters` 验过). 但多次触发 shader permutation change → sync-wait compile → GT 死锁 (一共 4 次 taskkill). 有 #11 之后可以重做.
+    - Staging artifacts (保留在项目盘): `MI_Backpack_Body_v2`, `MI_Backpack_Acces_v2`, `MI_Backpack_Velcro_v2` — 参数全部配好, parent 是 `M_Fabric_PBR`.
+
+
+
 8. ✅ ~~**auto_fix smoke-test**~~ (已完成 2026-04-24，commit 5537560 — 5 条合成 material 全过：M_Test_StaticSwitch (Lerp→StaticSwitchParameter 转换) + M_Test_Custom_{Add,Saturate,OneMinus,Lerp} (Custom→native 替换). 合成 material 保留在 `/Game/BridgeTemplates/_AutoFixSmokeTest/`, test scripts 在 `temp/test_m5_autofix_step{1,2}_*.py`, 可复用为 regression fixtures)
 9. ✅ ~~**POM for Weapon_Hero**~~ (已交付 2026-04-24 — 调用引擎的 `/Engine/Functions/Engine_MaterialFunctions01/Texturing/ParallaxOcclusionMapping` MF，经 `UsePOM` 静态开关在 UV0 的 raw-vs-POM-offset 路径间切换. 完全避开 M5-12——heightmap 采样在 engine MF 内部发生，不是 Custom HLSL. 加了 5 个 MI 参数 (`HeightmapTex`, `POMHeightRatio`, `POMMinSteps`, `POMMaxSteps`, `POMReferencePlane`). 实测：85 expressions / 7 samplers / compile clean / 0 warnings)
 
