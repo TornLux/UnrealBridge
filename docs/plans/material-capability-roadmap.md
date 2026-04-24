@@ -9,7 +9,7 @@
 
 硬约束：成品质量对齐 AAA 项目常见实践（SM5+ / Lumen / Nanite 就绪、正确的 ShadingModel / MaterialDomain / 纹理压缩 / sampler 复用 / 静态分支），性能口径按"不退化 GPU 时长、不超 sampler/ instruction 预算"衡量。
 
-最后更新：2026-04-24（v0.7 — **M3 全部 9/9 模板**、**M4 全部 5/5 模板**、**M5 全部 13 规则 + 4/4 auto_fix IDs 全部 smoke-tested**；本次交付：`static_switch_conversion` + `inline_trivial_custom` 在合成 material 上的 smoke-test，4 条 Custom 模式（Add / Saturate / OneMinus / Lerp）+ 1 条 Lerp→StaticSwitch 全部 pass，post-fix compile clean）
+最后更新：2026-04-24（v0.8 — **M3 10/10 模板**（新增 M3-10 `M_Fabric_PBR` — 独立 BaseColor/Normal/AO/Roughness/Metallic 纹理的 Sony-first-party 风格母材质）、**M4 全部 5/5 模板**、**M5 全部 13 规则 + 4/4 auto_fix IDs 全部 smoke-tested**；本次同时交付：`_common.py` 的 `ensure_default_masks_texture` / `ensure_default_linear_texture` 系统纹理 helper（引擎未 ship 合规的 TC_MASKS / TC_DEFAULT+sRGB=False 白纹理，旧模板用 WhiteSquareTexture 会悄悄挂掉 shader compile））
 
 ---
 
@@ -21,7 +21,7 @@
 | M2 表达式工厂 + 图写原语 | ✅ 全部交付 | create_material / MI / MF + add_material_expression (35+ 类) + connect/disconnect (pin name 现在走 GetShortenPinName) + set_prop / add_comment / add_reroute / auto_layout / apply_material_graph_ops / compile_material / snapshot + diff |
 | M2.5 HLSL 片段库 | ✅ 全部交付 | BridgeSnippets.ush + add_custom_expression + list / get 共享片段；现有 snippet：Luminance, Unpack/Pack ORM, ACES, BlendAngleCorrectedNormals (已修成 `-1..1` 约定), DepthFade, DitherLODTransition, Hash21/31, ValueNoise3D, ThinFilmInterference, FBM3D, IQFlow3D, SwirledNoise3D, Voronoi2D |
 | M6 参数迭代闭环 | ✅ 全部交付 | set_mi_params / set_mi_and_preview / sweep / MPC setter / diff / golden snapshot+compare |
-| M3 母材质模板 | ✅ 9 / 9 模板 | **已交付**：M3-1 Character_PBR (thin wrapper over M3-2 with distinct asset path)、M3-2 Character_Armor、M3-3 Environment_Prop、M3-4 Foliage_Master、M3-5 Weapon_Hero (dual-UV + 正弦脉冲发光；POM + CurveAtlas 延后)、M3-6 Glass_Translucent、M3-7 Layered (MF_Layer_{Metal,Fabric,Dirt} + BlendMaterialAttributes, VertexColor 驱动 3 层混合)、M3-8 UI_Unlit、M3-9 VFX (Unlit Additive + Translucent Soft). |
+| M3 母材质模板 | ✅ 10 / 9 模板（原路线图 + M3-10 bonus） | **已交付**：M3-1 Character_PBR (thin wrapper over M3-2 with distinct asset path)、M3-2 Character_Armor、M3-3 Environment_Prop、M3-4 Foliage_Master、M3-5 Weapon_Hero (dual-UV + 正弦脉冲发光；POM + CurveAtlas 延后)、M3-6 Glass_Translucent、M3-7 Layered (MF_Layer_{Metal,Fabric,Dirt} + BlendMaterialAttributes, VertexColor 驱动 3 层混合)、M3-8 UI_Unlit、M3-9 VFX (Unlit Additive + Translucent Soft)、**M3-10 Fabric_PBR (独立 BC/N/AO/R/M 纹理 — 对齐 Naughty-Dog / Sony-first-party 资产格式；AO 为 `lerp(1, AOTex.R, AOStrength)` 可调；Roughness 双参数重映射；无 ORM 打包)**. |
 | M4 后处理材质 | ✅ 5 / 5 模板 + 全部 C++ 原语 | **已交付**：create_post_process_material / apply / remove / get_post_process_state + PP_Posterize、PP_Halftone、PP_Outline (4-neighbour depth gradient)、PP_Sketch (Sobel edge + crosshatch + posterize)、PP_ColorGradeLUT_Extended (2D-unwrapped LUT + 3-zone 分区曲线 + 饱和度)、PP_Film_Grain_AA (BridgeHash21 动态颗粒 + sub-LSB dither) |
 | M5 Lint / 自动修复 | ✅ 13 / 13 规则 + auto_fix (4/4 fix IDs 全部 smoke-tested) | **已交付**：analyze_material 聚合 + 全部 13 条检查规则（M5-2..M5-13）+ 全部 4 个 auto_fix IDs：`drop_unused` (M5-3) + `samplersource_share` (M5-5) + `static_switch_conversion` (M5-6 Pattern 2 → StaticSwitchParameter，含 Lerp 改写 / ScalarParameter 清理 / 下游重连) + `inline_trivial_custom` (M5-11 → 17 种单运算模式：Add/Sub/Mul/Div/Saturate/Abs/Frac/Floor/Ceil/OneMinus/Lerp/Min/Max/Power/Dot/Normalize). 2026-04-24 在合成 material 上 smoke-tested 5/5 pass（StaticSwitch Lerp→Switch 转换 + 4 条 Custom→native 替换 + post-fix compile clean）. |
 
@@ -30,6 +30,7 @@
 - **bridge 基础设施**：UDP 多播发现 (`239.255.42.99:9876`) + TCP 端口 `0` (OS 分配) + 可选 token 鉴权。`bridge.py` / `bridge_discovery.py` / SKILL.md / README.md 全部同步更新。
 - **pin name 兼容层**：`NormalizePinName` + `get_material_graph` 现在都走 `UMaterialGraphNode::GetShortenPinName`，"Coordinates" / "AGreaterThanB" / "TextureObject" 等长名自动短化成 UI-可见的 "UVs" / "A > B" / "Tex"，读写对称。这条是 M4 开发时发现的隐性坑，已修。
 - **模板共享基建**：`material_templates._common` — `OpList` 支持符号名 → `$N` 解析、未知名称早爆 KeyError；`ensure_master_material(rebuild=True)` 幂等重建；`guid_to_str()` 避开 UE Python `str(unreal.Guid)` 返回 `<Struct>` 的坑；`save_master()` 显式 asset.save (apply_ops compile=True 只编译不保存会在编辑器重启时丢失模板)。
+- **系统纹理 helper**（2026-04-24 随 M3-10 交付）：`ensure_default_masks_texture()` / `ensure_default_linear_texture()` 幂等创建 `/Game/BridgeTemplates/_System/T_White_{Masks,Linear}`（TC_MASKS + sRGB=False / TC_DEFAULT + sRGB=False）。**必须在独立 exec 里先跑**，不能跟 template build 同 exec — `Texture2DFactoryNew + save_asset` 会触发 asset-reference-completing 模态，跟 master build 同 exec 会死锁 GT（2026-04-24 踩过一次，feedback_split_asset_ops memory 已更新）. 引擎未 ship 合规的 Masks 白纹理 / LinearColor 白纹理，旧模板用 `WhiteSquareTexture` 喂 ORM 槽位会让 shader_map_ready 永远是 False.
 
 ---
 
@@ -334,6 +335,7 @@
 **M3 + M4 + M5 规则与 auto_fix 代码全部落地并 smoke-tested。** 剩余仅是 optional polish：
 
 8. ✅ ~~**auto_fix smoke-test**~~ (已完成 2026-04-24，commit TBD — 5 条合成 material 全过：M_Test_StaticSwitch (Lerp→StaticSwitchParameter 转换) + M_Test_Custom_{Add,Saturate,OneMinus,Lerp} (Custom→native 替换). 合成 material 保留在 `/Game/BridgeTemplates/_AutoFixSmokeTest/`, test scripts 在 `temp/test_m5_autofix_step{1,2}_*.py`, 可复用为 regression fixtures)
+8b. ✅ ~~**M3-10 M_Fabric_PBR**~~ (已交付 2026-04-24，commit TBD — 独立 BaseColor/Normal/AO/Roughness/Metallic 纹理 master，对齐 Naughty-Dog / Sony 资产格式；20 exprs / 5 samplers / compile clean / 1 条 info-level M5-7 finding. 同步交付 `ensure_default_{masks,linear}_texture` helper 避免 ORM 槽位的 sRGB/压缩误配. 前置：先在独立 exec 跑 `ensure_default_linear_texture()`, 再跑 `fabric_pbr.build()`，不能同 exec — Texture2DFactoryNew + save_asset 与 master build 打包会触发 asset-reference-completing 模态死锁)
 9. **POM + Curve Atlas for Weapon_Hero (optional polish)** — 当前 M3-5 已交付基础版 (dual-UV + sine pulse)。要升级到 roadmap 里承诺的"full AAA 版"需要：
    - `BridgePOMRayMarch` HLSL snippet (~40 行)，注意 M5-12：不能在 Custom 内做 `Texture2DSample`，要么 graph 侧多次预采样 heightmap 后喂进 Custom（~16 个 TextureSample 节点，丑但合规），要么接受 M5-12 warning.
    - `Curve Atlas` 驱动 Pulse 替换当前 sine — UE `UCurveLinearColorAtlas` + `UMaterialExpressionCurveAtlasRowParameter`. 这是可选项，sine 版已经覆盖 90% 用例.
@@ -362,6 +364,7 @@
 - **`UMaterialExpression::MaterialExpressionGuid` 不是 UPROPERTY**，所以 Python 侧用 `MEL.create_material_expression(...)` 或 `set_editor_property('material_expression_guid', ...)` 都读不出来. 要拿新建节点的 GUID，过一遍 `bridge.get_material_graph(master_path)` 用 class 名 + (x, y) 坐标匹配是最可靠的 workaround — layered.py 就是这么做的.
 - **`FExpressionInput` 在 UE 5.7 里没有 `OutputName` 字段**（输出名存在源节点的 `FExpressionOutput` 列表上，不在 input 端）. 如果你要鑫鑫改向 RedirectUsageToNewSource 之类的 helper，只设 `Input->Expression` + `Input->OutputIndex` 即可，别写 `Input->OutputName = ...` 否则编译报 C2039 "OutputName: not a member".
 - **`UMaterialFunction` 的图不是 UMaterial 的图** — bridge 的 `ApplyMaterialGraphOps` / `AddMaterialExpression` / `ConnectMaterialExpressions` 都硬 Cast 成 `UMaterial*`，不能直接编辑 MF 图. 要在 MF 里加节点，用 UE Python `MaterialEditingLibrary.create_material_expression_in_function` / `connect_material_expressions`（不带路径参数那版）/ `update_material_function` 一路手动调. layered.py 的 `_build_layer_mf` 是参考例.
+- **Texture2DFactoryNew + save_asset 同 exec = GT 死锁** (2026-04-24, M3-10 incident)：`IAssetTools::CreateAsset(Texture2DFactoryNew)` 后紧跟 `save_asset` 走 asset-reference-completing 模态；如果这再跟 master material 的 apply_ops + compile + save + MI create 打包进一个 exec，GT 被卡到完全不响应，只能 taskkill. **模式**：template 需要自建系统纹理时，`ensure_default_*_texture()` **必须是独立 exec**；template 的 `build()` 不再内嵌 factory 路径，而是 `does_asset_exist` 检查 + 缺失就 raise（带清晰的前置 exec 提示）. `fabric_pbr.py` 的 `build()` 就是这么做的.
 
 ### 回归测试的最小集合
 
@@ -369,38 +372,84 @@
 
 ```bash
 python .claude/skills/unreal-bridge/scripts/bridge.py ping
+
+# Exec 1 — 必跑，fabric_pbr 依赖：创建系统纹理（独立 exec，不能跟 build 打包）
 python .claude/skills/unreal-bridge/scripts/bridge.py exec "
-import importlib, material_templates._common as c
+import material_templates._common as C
+print('masks:', C.ensure_default_masks_texture())
+print('linear:', C.ensure_default_linear_texture())
+"
+
+# Exec 2+ — 回归跑按批拆分（一把全跑会在 _common.save_master + factory path 混杂时触发
+# asset-reference-completing 模态死锁，2026-04-24 踩过；现在分批一次 3-4 个 template）.
+python .claude/skills/unreal-bridge/scripts/bridge.py --timeout 300 exec "
+import importlib
+import material_templates._common as c
 import material_templates.character_armor as ca
 import material_templates.character_pbr as cp
 import material_templates.environment_prop as ep
 import material_templates.foliage_master as fm
+for m in (c, ca, cp, ep, fm): importlib.reload(m)
+import unreal
+L = unreal.UnrealBridgeMaterialLibrary
+for b in (ca, cp, ep, fm):
+    r = b.build(rebuild=True); ar = L.analyze_material(r['master_path'], 0, 0)
+    real = [f for f in ar.findings if str(f.severity).lower() not in ('severity.info','info')]
+    print(f\"{r['master_path']}: exprs={r.get('num_expressions','?')} warnings={len(real)}\")
+"
+
+python .claude/skills/unreal-bridge/scripts/bridge.py --timeout 300 exec "
+import importlib
+import material_templates._common as c
 import material_templates.glass_translucent as gl
 import material_templates.ui_unlit as ui
 import material_templates.weapon_hero as wh
 import material_templates.layered as ly
+import material_templates.vfx_unlit_additive as va
+import material_templates.vfx_translucent_soft as vt
+for m in (c, gl, ui, wh, ly, va, vt): importlib.reload(m)
+import unreal
+L = unreal.UnrealBridgeMaterialLibrary
+for b in (gl, ui, wh, ly, va, vt):
+    r = b.build(rebuild=True); ar = L.analyze_material(r['master_path'], 0, 0)
+    real = [f for f in ar.findings if str(f.severity).lower() not in ('severity.info','info')]
+    print(f\"{r['master_path']}: exprs={r.get('num_expressions','?')} warnings={len(real)}\")
+"
+
+# M3-10 fabric_pbr — 纹理已在 Exec 1 建好
+python .claude/skills/unreal-bridge/scripts/bridge.py --timeout 180 exec "
+import importlib
+import material_templates._common as c
+import material_templates.fabric_pbr as fp
+for m in (c, fp): importlib.reload(m)
+import unreal
+L = unreal.UnrealBridgeMaterialLibrary
+r = fp.build(rebuild=True, mi_path=None)
+ar = L.analyze_material(r['master_path'], 0, 0)
+real = [f for f in ar.findings if str(f.severity).lower() not in ('severity.info','info')]
+print(f\"{r['master_path']}: exprs={r.get('num_expressions','?')} warnings={len(real)}\")
+"
+
+# PP 模板（apply_weight=0 不挂到 PPV，纯烘焙）
+python .claude/skills/unreal-bridge/scripts/bridge.py --timeout 300 exec "
+import importlib
+import material_templates._common as c
 import material_templates.pp_posterize as pp
 import material_templates.pp_halftone as ph
 import material_templates.pp_outline as po
 import material_templates.pp_sketch as ps
 import material_templates.pp_color_grade_lut as cg
 import material_templates.pp_film_grain as fg
-import material_templates.vfx_unlit_additive as va
-import material_templates.vfx_translucent_soft as vt
-for mod in (c, ca, cp, ep, fm, gl, ui, wh, ly, pp, ph, po, ps, cg, fg, va, vt): importlib.reload(mod)
+for m in (c, pp, ph, po, ps, cg, fg): importlib.reload(m)
 import unreal
 L = unreal.UnrealBridgeMaterialLibrary
-# Regular masters — build + lint
-for b in (ca, cp, ep, fm, gl, ui, wh, ly, va, vt):
-    r = b.build(rebuild=True); ar = L.analyze_material(r['master_path'], 0, 0)
-    real_findings = [f for f in ar.findings if str(f.severity) != 'info']
-    print(f\"{r['master_path']}: exprs={r.get('num_expressions','?')} warnings={len(real_findings)}\")
-# PP templates — no apply
 for b in (pp, ph, po, ps, cg, fg):
     r = b.build(rebuild=True, apply_weight=0); ar = L.analyze_material(r['master_path'], 0, 0)
-    real_findings = [f for f in ar.findings if str(f.severity) != 'info']
-    print(f\"{r['master_path']}: ops={r['ops_applied']} warnings={len(real_findings)}\")
+    real = [f for f in ar.findings if str(f.severity).lower() not in ('severity.info','info')]
+    print(f\"{r['master_path']}: ops={r['ops_applied']} warnings={len(real)}\")
 "
 ```
 
-期望：全部 `warnings=0`，无 exception。info-level finding 可接受（主要是 M5-10 的 engine placeholder 纹理和 M5-9 的 MI chain depth=1）。如果 warning 冒出，大概率是引擎版本升级或某个默认 MI 参数漂移，优先查 `analyze_material` 的 detail 字段。
+期望：全部 `warnings=0`，无 exception。info-level finding 可接受（fabric_pbr 目前会报一条 M5-7，建议包 FeatureLevelSwitch；其余可能是 M5-10 的 engine placeholder 纹理和 M5-9 的 MI chain depth=1）。如果 warning 冒出，大概率是引擎版本升级或某个默认 MI 参数漂移，优先查 `analyze_material` 的 detail 字段。
+
+**2026-04-24 一次跑全量结果**：全 17 个模板 0 warnings（M3 10 个 + M4 6 个 + M3-10 1 个）.

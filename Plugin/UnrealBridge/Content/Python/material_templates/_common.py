@@ -25,9 +25,77 @@ DEFAULT_WHITE_TEX = "/Engine/EngineResources/WhiteSquareTexture.WhiteSquareTextu
 DEFAULT_BLACK_TEX = "/Engine/EngineResources/Black.Black"
 DEFAULT_NORMAL_TEX = "/Engine/EngineMaterials/DefaultNormal.DefaultNormal"
 
+# Project-local defaults that the engine doesn't ship. Created on first use
+# by ``ensure_default_masks_texture`` / ``ensure_default_linear_texture``.
+# Required because:
+#   - SamplerType=Masks rejects any texture whose CompressionSettings is not
+#     TC_MASKS; the engine's WhiteSquareTexture is TC_DEFAULT + sRGB=True, so
+#     wiring it into an ORM / metallic / roughness slot silently tanks the
+#     shader compile (shader_map_ready stays False forever).
+#   - SamplerType=LinearColor rejects any sRGB=True texture for the same
+#     reason. No engine-shipped TC_DEFAULT+sRGB=False white exists.
+DEFAULT_MASKS_TEX = "/Game/BridgeTemplates/_System/T_White_Masks.T_White_Masks"
+DEFAULT_LINEAR_WHITE_TEX = "/Game/BridgeTemplates/_System/T_White_Linear.T_White_Linear"
+
 # Default preview mesh shipped by the preview scene code.
 DEFAULT_PREVIEW_MESH = "sphere"
 DEFAULT_PREVIEW_LIGHTING = "studio"
+
+
+def _ensure_system_texture(asset_path: str,
+                           compression: "unreal.TextureCompressionSettings",
+                           srgb: bool) -> str:
+    """Idempotent create-or-fix of a 4x4 white system texture.
+
+    Returns the asset path. Runs on first template build; subsequent calls
+    verify + no-op. The texture sits at the asset path regardless of whether
+    we had to create it or it already existed.
+    """
+    import unreal  # local import keeps this module importable outside UE
+    if not unreal.EditorAssetLibrary.does_asset_exist(asset_path):
+        atools = unreal.AssetToolsHelpers.get_asset_tools()
+        pkg_path, name = asset_path.rsplit("/", 1)
+        # Strip the .Name suffix if included
+        if "." in name:
+            name = name.split(".")[0]
+            asset_path_no_suffix = f"{pkg_path}/{name}"
+        else:
+            asset_path_no_suffix = asset_path
+        factory = unreal.Texture2DFactoryNew()
+        atools.create_asset(name, pkg_path, unreal.Texture2D, factory)
+        asset_path = asset_path_no_suffix  # reload key
+    tex = unreal.EditorAssetLibrary.load_asset(asset_path.split(".")[0])
+    if tex.get_editor_property("compression_settings") != compression:
+        tex.set_editor_property("compression_settings", compression)
+    if bool(tex.get_editor_property("srgb")) != srgb:
+        tex.set_editor_property("srgb", srgb)
+    unreal.EditorAssetLibrary.save_asset(asset_path.split(".")[0], only_if_is_dirty=False)
+    return asset_path
+
+
+def ensure_default_masks_texture() -> str:
+    """Idempotent: ensure ``/Game/BridgeTemplates/_System/T_White_Masks`` exists
+    with CompressionSettings=TC_MASKS + sRGB=False. Return the asset path.
+    """
+    import unreal
+    return _ensure_system_texture(
+        DEFAULT_MASKS_TEX,
+        unreal.TextureCompressionSettings.TC_MASKS,
+        False,
+    )
+
+
+def ensure_default_linear_texture() -> str:
+    """Idempotent: ensure ``/Game/BridgeTemplates/_System/T_White_Linear``
+    exists with CompressionSettings=TC_DEFAULT + sRGB=False. Used for
+    SamplerType=LinearColor / Grayscale slots where no engine default fits.
+    """
+    import unreal
+    return _ensure_system_texture(
+        DEFAULT_LINEAR_WHITE_TEX,
+        unreal.TextureCompressionSettings.TC_DEFAULT,
+        False,
+    )
 
 
 # --- FLinearColor literals used in comments ------------------------------------
