@@ -333,6 +333,87 @@ def add_texture_param_2d(ops: OpList, name: str, x: int, y: int,
     return ref
 
 
+def add_roughness_remap_4pt(ops: OpList, prefix: str, x: int, y: int,
+                            group: str,
+                            low: float = 0.5, high: float = 0.85,
+                            sculpt_low: float = 0.0, sculpt_high: float = 1.0,
+                            base_priority: int = 10) -> Dict[str, str]:
+    """Emit the 4 scalar parameters driving ``BridgeRoughnessRemap4Pt``.
+
+    Returns ``{"low", "high", "sculpt_low", "sculpt_high"}`` → ops symbol names
+    that downstream ops can reference. All 4 params share the passed ``group``
+    so designers see them stacked in MI details. ``base_priority`` sets the
+    sort_priority of the first scalar; the rest increment by 1.
+
+    Matrix-demo convention: Low / High bracket the common output range,
+    SculptLow / SculptHigh hold the input segments where output stays pinned
+    to Low / High respectively (see BridgeSnippets BridgeRoughnessRemap4Pt).
+    """
+    names = {
+        "low":         f"{prefix}_Rough_Low",
+        "high":        f"{prefix}_Rough_High",
+        "sculpt_low":  f"{prefix}_Rough_SculptLow",
+        "sculpt_high": f"{prefix}_Rough_SculptHigh",
+    }
+    symbols = {
+        "low":         f"sp_{prefix.lower()}_rough_low",
+        "high":        f"sp_{prefix.lower()}_rough_high",
+        "sculpt_low":  f"sp_{prefix.lower()}_rough_sculpt_low",
+        "sculpt_high": f"sp_{prefix.lower()}_rough_sculpt_high",
+    }
+    defaults = {"low": low, "high": high,
+                "sculpt_low": sculpt_low, "sculpt_high": sculpt_high}
+
+    # Permissive slider ranges — Matrix uses negative values on *_Low and >1
+    # on *_High for extreme remap curves. Matching those bounds here.
+    slider_ranges = {
+        "low":         (-0.5, 2.0),
+        "high":        (-0.5, 2.0),
+        "sculpt_low":  (0.0, 1.0),
+        "sculpt_high": (0.0, 1.0),
+    }
+
+    for i, role in enumerate(("low", "sculpt_low", "sculpt_high", "high")):
+        smin, smax = slider_ranges[role]
+        add_scalar_param(ops, symbols[role], x, y + i * 60,
+                         names[role], defaults[role],
+                         group=group, sort_priority=base_priority + i,
+                         slider_min=smin, slider_max=smax)
+    return symbols
+
+
+def add_charlie_sheen_scalars(ops: OpList, prefix: str, x: int, y: int,
+                              group: str = "Sheen",
+                              sheen_intensity_default: float = 0.0,
+                              sheen_roughness_default: float = 0.5,
+                              base_priority: int = 1) -> Dict[str, str]:
+    """Emit Sheen intensity + roughness scalar params + a sheen color vector.
+
+    Matrix convention: grazing-angle cloth sheen is a rim-light term
+    (``BridgeCharlieSheenGrazing``) multiplied by a SheenColor vector and
+    added to EmissiveColor, gated by a UseCharlieSheen static switch.
+
+    Returns ``{"intensity", "roughness", "color"}`` symbol names.
+    """
+    sym = {
+        "intensity": f"sp_{prefix.lower()}_sheen_intensity",
+        "roughness": f"sp_{prefix.lower()}_sheen_roughness",
+        "color":     f"vp_{prefix.lower()}_sheen_color",
+    }
+    add_scalar_param(ops, sym["intensity"], x, y,
+                     f"{prefix}_SheenIntensity", sheen_intensity_default,
+                     group=group, sort_priority=base_priority,
+                     slider_min=0.0, slider_max=4.0)
+    add_scalar_param(ops, sym["roughness"], x, y + 60,
+                     f"{prefix}_SheenRoughness", sheen_roughness_default,
+                     group=group, sort_priority=base_priority + 1,
+                     slider_min=0.02, slider_max=1.0)
+    add_vector_param(ops, sym["color"], x, y + 120,
+                     f"{prefix}_SheenColor", "(R=1,G=1,B=1,A=1)",
+                     group=group, sort_priority=base_priority + 2)
+    return sym
+
+
 def add_texture_object_param_2d(ops: OpList, name: str, x: int, y: int,
                                 param_name: str, default_texture: str,
                                 sampler_type: str = "Color",

@@ -315,6 +315,60 @@ float BridgeCrossHatch(float2 UV, float Luminance, float Frequency)
 	return Mask;
 }
 
+//@snippet BridgeCharlieSheenGrazing
+// @desc     Grazing-angle cloth sheen intensity (rim-light term, no L vector required).
+//           Returns a scalar in roughly [0,1] that peaks at NoV=0 (grazing) and falls
+//           to 0 at NoV=1 (head-on). Intended usage: multiply by a SheenColor vector
+//           and ADD to EmissiveColor inside a UseCharlieSheen static-switch gate.
+//           This mirrors the Matrix-demo approach to cloth fuzz highlight on top of
+//           UE deferred DefaultLit lighting — not a full Charlie BRDF (which would
+//           need a light vector + a forward-shading path), just the view-dependent
+//           grazing envelope. roughness ∈ (0,1]; lower values → sharper rim.
+// @sig      float BridgeCharlieSheenGrazing(float3 N, float3 V, float roughness)
+// @fl       SM5
+// @inst     ~6
+float BridgeCharlieSheenGrazing(float3 N, float3 V, float roughness)
+{
+	float NoV = saturate(dot(normalize(N), normalize(V)));
+	float grazing = 1.0 - NoV;
+	float invR = 1.0 / max(roughness, 0.02);
+	return pow(grazing, invR * 0.25);
+}
+
+//@snippet BridgeRoughnessRemap4Pt
+// @desc     4-point (Low / SculptLow / SculptHigh / High) piecewise-linear roughness
+//           remap matching the Matrix-demo clothing-master convention. Splits the
+//           input value into three linear segments: [0..sculptLow] maps to [low..low],
+//           [sculptLow..sculptHigh] maps to [low..high], [sculptHigh..1] maps to
+//           [high..high]. Clamps output to [0,1]. Typical usage: Low=0.5, High=0.85
+//           (cloth), SculptLow=0.0, SculptHigh=1.0 (pass-through) — set SculptLow>0
+//           to hold the low end flat, SculptHigh<1 to hold the high end flat.
+// @sig      float BridgeRoughnessRemap4Pt(float value, float low, float high, float sculptLow, float sculptHigh)
+// @fl       SM5
+// @inst     ~10
+float BridgeRoughnessRemap4Pt(float value, float low, float high, float sculptLow, float sculptHigh)
+{
+	float v = saturate(value);
+	float span = max(sculptHigh - sculptLow, 1e-4);
+	float t = saturate((v - sculptLow) / span);
+	return saturate(lerp(low, high, t));
+}
+
+//@snippet BridgeBentNormalAO
+// @desc     Derive a micro-AO scalar from a bent normal. Bent normal = the average
+//           unoccluded direction at the surface (baked offline), so saturate(dot(
+//           bentN, viewDir)) ≈ "how much of the view cone is open". Output is in
+//           [0,1]. Works in world-space; pass unnormalized inputs — normalized
+//           inside. Multiply onto a regular AO channel: bentNormal refines the AO
+//           at cavity detail the flat AO map can't resolve.
+// @sig      float BridgeBentNormalAO(float3 BentN, float3 V)
+// @fl       SM5
+// @inst     ~8
+float BridgeBentNormalAO(float3 BentN, float3 V)
+{
+	return saturate(dot(normalize(BentN), normalize(V)));
+}
+
 //@snippet BridgeVoronoi2D
 // @desc     2D Voronoi cellular noise — returns closest-cell distance, scaled to roughly [0,1].
 //           Cells param controls grid density (larger = tighter cells).
