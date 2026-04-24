@@ -1297,8 +1297,10 @@ for line in r.log:
 |---|---|---|
 | `"drop_unused"` | `M5-3` findings | Call `delete_material_expression` on every unreachable node. Safe: the node contributes nothing to the compiled shader. |
 | `"samplersource_share"` | `M5-5` findings | Flip each flagged `TextureSample`'s `SamplerSource` to `SSM_Wrap_WorldGroupSettings` so it feeds UE's global shared sampler. Frees up sampler slots on dense masters. |
+| `"static_switch_conversion"` | `M5-6` Pattern 2 findings (Lerp with a boolean-intent ScalarParameter Alpha, `Detail == "Candidate for StaticSwitch conversion"`) | Replace the Lerp with a `StaticSwitchParameter` of the same name (Lerp `B`→switch `A` True branch, Lerp `A`→switch `B` False branch; ScalarParameter default ≥0.5 → switch default `true`). Drops the ScalarParameter if nothing else references it. Rewires every downstream input + main output. Pattern 1 (Lerp with a Constant 0/1 Alpha) is **not** handled by this fix — those want inlining, not a switch. |
+| `"inline_trivial_custom"` | `M5-11` findings | Replace a `Custom` node whose body is a single-op `return …;` with the equivalent native expression (preserves const-folding / CSE / DCE). Recognised patterns: `return A + B;` / `A - B;` / `A * B;` / `A / B;` / `1 - A;` → Add/Sub/Mul/Div/OneMinus; `return saturate(A);` / `abs(A);` / `frac(A);` / `floor(A);` / `ceil(A);` / `normalize(A);` → Saturate/Abs/Frac/Floor/Ceil/Normalize; `return lerp(A,B,C);` / `min(A,B);` / `max(A,B);` / `pow(A,B);` / `dot(A,B);` → LinearInterpolate/Min/Max/Power/DotProduct. Tokens inside the return are matched against the Custom's `Inputs[i].InputName` (case-insensitive) or against literal `0` / `1` / `1.0`. Any body that doesn't match a pattern is skipped with a log line. |
 
-Unknown fix IDs land in `skipped_fixes` on the result — the call itself still succeeds for the fixes it could apply. Risk-averse rules (M5-6 static-switch conversion, M5-11 inline-trivial-Custom) are intentionally excluded; they require rewriting the graph structure and should stay advisory for now.
+Unknown fix IDs land in `skipped_fixes` on the result — the call itself still succeeds for the fixes it could apply.
 
 ### FBridgeMaterialAutoFixResult fields
 
@@ -1306,7 +1308,8 @@ Unknown fix IDs land in `skipped_fixes` on the result — the call itself still 
 |---|---|---|
 | `success` | bool | Fix pass completed without fatal errors |
 | `findings_fixed` | int | Count of findings handled across all applied fixes |
-| `nodes_removed` | int | Expressions deleted by `drop_unused` |
+| `nodes_added` | int | Expressions added by a fix (`static_switch_conversion` / `inline_trivial_custom` replace the flagged node with a new one) |
+| `nodes_removed` | int | Expressions deleted by `drop_unused` / `static_switch_conversion` (Lerp + orphaned ScalarParameter) / `inline_trivial_custom` (original Custom) |
 | `properties_changed` | int | Property writes performed by `samplersource_share` etc. |
 | `skipped_fixes` | list[str] | Fix IDs not recognized / not implemented |
 | `log` | list[str] | One-line-per-action human-readable report |

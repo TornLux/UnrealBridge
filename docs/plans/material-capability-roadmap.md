@@ -9,7 +9,7 @@
 
 硬约束：成品质量对齐 AAA 项目常见实践（SM5+ / Lumen / Nanite 就绪、正确的 ShadingModel / MaterialDomain / 纹理压缩 / sampler 复用 / 静态分支），性能口径按"不退化 GPU 时长、不超 sampler/ instruction 预算"衡量。
 
-最后更新：2026-04-24（v0.6 — **M3 全部 9/9 模板**、**M4 全部 5/5 模板**、**M5 全部 13 规则 + 4/4 auto_fix IDs（新两条已编译通过但未 smoke-test）**；本次交付：character_pbr / weapon_hero / layered + static_switch_conversion / inline_trivial_custom C++ 实现）
+最后更新：2026-04-24（v0.7 — **M3 全部 9/9 模板**、**M4 全部 5/5 模板**、**M5 全部 13 规则 + 4/4 auto_fix IDs 全部 smoke-tested**；本次交付：`static_switch_conversion` + `inline_trivial_custom` 在合成 material 上的 smoke-test，4 条 Custom 模式（Add / Saturate / OneMinus / Lerp）+ 1 条 Lerp→StaticSwitch 全部 pass，post-fix compile clean）
 
 ---
 
@@ -23,7 +23,7 @@
 | M6 参数迭代闭环 | ✅ 全部交付 | set_mi_params / set_mi_and_preview / sweep / MPC setter / diff / golden snapshot+compare |
 | M3 母材质模板 | ✅ 9 / 9 模板 | **已交付**：M3-1 Character_PBR (thin wrapper over M3-2 with distinct asset path)、M3-2 Character_Armor、M3-3 Environment_Prop、M3-4 Foliage_Master、M3-5 Weapon_Hero (dual-UV + 正弦脉冲发光；POM + CurveAtlas 延后)、M3-6 Glass_Translucent、M3-7 Layered (MF_Layer_{Metal,Fabric,Dirt} + BlendMaterialAttributes, VertexColor 驱动 3 层混合)、M3-8 UI_Unlit、M3-9 VFX (Unlit Additive + Translucent Soft). |
 | M4 后处理材质 | ✅ 5 / 5 模板 + 全部 C++ 原语 | **已交付**：create_post_process_material / apply / remove / get_post_process_state + PP_Posterize、PP_Halftone、PP_Outline (4-neighbour depth gradient)、PP_Sketch (Sobel edge + crosshatch + posterize)、PP_ColorGradeLUT_Extended (2D-unwrapped LUT + 3-zone 分区曲线 + 饱和度)、PP_Film_Grain_AA (BridgeHash21 动态颗粒 + sub-LSB dither) |
-| M5 Lint / 自动修复 | ✅ 13 / 13 规则 + auto_fix (4/4 fix IDs, 新两条**编译通过但未 smoke-test**) | **已交付**：analyze_material 聚合 + 全部 13 条检查规则（M5-2..M5-13）+ 全部 4 个 auto_fix IDs：`drop_unused` (M5-3) + `samplersource_share` (M5-5) + **`static_switch_conversion` (M5-6 Pattern 2 → StaticSwitchParameter，含 Lerp 改写 / ScalarParameter 清理 / 下游重连) + `inline_trivial_custom` (M5-11 → 17 种单运算模式：Add/Sub/Mul/Div/Saturate/Abs/Frac/Floor/Ceil/OneMinus/Lerp/Min/Max/Power/Dot/Normalize)**. 新两条已 rebuild_relaunch 通过编译但**本 session 没执行真实 material 上的 smoke-test**，留给下 session 收尾（见 handoff #8 / #9）. |
+| M5 Lint / 自动修复 | ✅ 13 / 13 规则 + auto_fix (4/4 fix IDs 全部 smoke-tested) | **已交付**：analyze_material 聚合 + 全部 13 条检查规则（M5-2..M5-13）+ 全部 4 个 auto_fix IDs：`drop_unused` (M5-3) + `samplersource_share` (M5-5) + `static_switch_conversion` (M5-6 Pattern 2 → StaticSwitchParameter，含 Lerp 改写 / ScalarParameter 清理 / 下游重连) + `inline_trivial_custom` (M5-11 → 17 种单运算模式：Add/Sub/Mul/Div/Saturate/Abs/Frac/Floor/Ceil/OneMinus/Lerp/Min/Max/Power/Dot/Normalize). 2026-04-24 在合成 material 上 smoke-tested 5/5 pass（StaticSwitch Lerp→Switch 转换 + 4 条 Custom→native 替换 + post-fix compile clean）. |
 
 ### 顺带交付（不在原路线图但相关）
 
@@ -331,12 +331,9 @@
 6. ✅ ~~**M5-7 Feature/Quality switch 缺失检查**~~ (已交付，commit 987524f — 计 TextureSample + SceneTexture + Custom，阈值触发 info；PostProcess domain 自动豁免)
 7. ✅ ~~**M5-13 Custom SM-only intrinsic**~~ (已交付，commit 987524f — 覆盖 ddx_fine/ddy_fine/firstbithigh/firstbitlow/reversebits/countbits)
 
-**M3 + M4 + M5 规则与 auto_fix 代码全部落地。** 剩余仅是 smoke-test + 小规模 polish：
+**M3 + M4 + M5 规则与 auto_fix 代码全部落地并 smoke-tested。** 剩余仅是 optional polish：
 
-8. **auto_fix smoke-test** — `static_switch_conversion` 和 `inline_trivial_custom` 在本 session rebuild_relaunch 通过编译但没在真实 material 上跑过。下 session 需要：
-   - 搭一个合成 material 故意触发 M5-6 Pattern 2（Lerp + boolean-intent ScalarParameter），跑 `auto_fix_material(path, ['static_switch_conversion'])` 确认：Lerp 消失 / StaticSwitchParameter 出现 / 下游节点仍正常连 / ScalarParameter 删除 / 编译无错.
-   - 搭一个合成 material，用 `add_custom_expression` 放一个 body 为 `"return A + B;"` 的 Custom，跑 `auto_fix_material(path, ['inline_trivial_custom'])` 确认 Custom → Add 节点替换成功. 再测 `"return saturate(A);"` / `"return lerp(A, B, C);"` / `"return 1 - A;"` 三条路径.
-   - 如果拍扁后 `analyze_material` 发现新 finding（比如意外残留 orphan）则补坑.
+8. ✅ ~~**auto_fix smoke-test**~~ (已完成 2026-04-24，commit TBD — 5 条合成 material 全过：M_Test_StaticSwitch (Lerp→StaticSwitchParameter 转换) + M_Test_Custom_{Add,Saturate,OneMinus,Lerp} (Custom→native 替换). 合成 material 保留在 `/Game/BridgeTemplates/_AutoFixSmokeTest/`, test scripts 在 `temp/test_m5_autofix_step{1,2}_*.py`, 可复用为 regression fixtures)
 9. **POM + Curve Atlas for Weapon_Hero (optional polish)** — 当前 M3-5 已交付基础版 (dual-UV + sine pulse)。要升级到 roadmap 里承诺的"full AAA 版"需要：
    - `BridgePOMRayMarch` HLSL snippet (~40 行)，注意 M5-12：不能在 Custom 内做 `Texture2DSample`，要么 graph 侧多次预采样 heightmap 后喂进 Custom（~16 个 TextureSample 节点，丑但合规），要么接受 M5-12 warning.
    - `Curve Atlas` 驱动 Pulse 替换当前 sine — UE `UCurveLinearColorAtlas` + `UMaterialExpressionCurveAtlasRowParameter`. 这是可选项，sine 版已经覆盖 90% 用例.
