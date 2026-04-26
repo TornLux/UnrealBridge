@@ -1,0 +1,1273 @@
+# UnrealBridge Editor Library API
+
+Module: `unreal.UnrealBridgeEditorLibrary`
+
+Editor session control: state query, asset open/save, Content Browser, viewport, PIE, undo/redo, console/CVars, redirector fixup, Blueprint compile.
+
+## Bridge protocol commands (non-`exec`)
+
+These are **server-level** commands, not Library functions — they're handled directly by `FUnrealBridgeServer::HandleClient` and bypass the FTSTicker exec queue. Use them when an `exec` is hung and you need to know *why* without queueing behind the stuck script.
+
+Each is a separate TCP connection (workers are per-connection, capped at 16). Send via `bridge.py` subcommand or by hand-crafting the JSON request:
+
+| Command JSON | CLI | Purpose |
+|---|---|---|
+| `{"command":"ping"}` | `bridge.py ping` | TCP-only liveness — proves the server process and accept loop are alive. Returns `pong` plus `ready: bool` (false during the editor's startup window before main frame creation). |
+| `{"command":"gamethread_ping","timeout":2.0}` | `bridge.py gamethread-ping [--probe-timeout S]` | GameThread liveness — dispatches a no-op `AsyncTask(GameThread)` and waits up to `timeout` seconds (default 2s, max 10s). Response includes `latency_ms`. |
+| `{"command":"debug_resume"}` | `bridge.py resume` | Recover from a stuck Blueprint breakpoint. Calls `FKismetDebugUtilities::RequestAbortingExecution` + `FSlateApplication::LeaveDebuggingMode` via `AsyncTask(GameThread)`. Fire-and-forget. |
+
+### `gamethread_ping` diagnostic table
+
+| Result | latency_ms | What it means | Why |
+|---|---|---|---|
+| `alive` | <50 | GT idle, exec queue healthy | AsyncTask fired the next frame |
+| `alive` | hundreds–seconds | GT mid-exec but pumping TaskGraph | Python script triggered a nested pump (asset load, BP compile). Editor is not deadlocked, but the FTSTicker exec queue still cannot drain until the current `exec` returns. |
+| `unresponsive` | == probe timeout | GT cannot pump TaskGraph at all | Modal dialog open, deadlock, pure-Python tight loop holding the GIL inside `IPythonScriptPlugin::ExecPythonCommandEx`, or Slate nested debug loop (try `bridge.py resume` for the last case). |
+
+Why this distinction matters: a hung `exec` doesn't tell you whether to wait it out or take recovery action. `gamethread_ping`'s latency does. It also confirms whether new `exec` calls have any chance of landing — they won't until the GT is responsive *and* the FTSTicker drains, which only happens at `FEngineLoop::Tick` boundaries (not nested TaskGraph pumps).
+
+Implementation: `Plugin/UnrealBridge/Source/UnrealBridge/Private/UnrealBridgeServer.cpp` — `HandleClient` command dispatch.
+
+## Editor State
+
+### get_editor_state() -> FBridgeEditorState
+
+Snapshot of the current editor session.
+
+```python
+s = unreal.UnrealBridgeEditorLibrary.get_editor_state()
+print(f'{s.project_name} on UE {s.engine_version}')
+print(f'PIE={s.b_is_pie} paused={s.b_is_paused} level={s.current_level_path}')
+print(f'opened={s.num_opened_assets} selectedActors={s.num_selected_actors} cbSel={s.num_content_browser_selection}')
+```
+
+### FBridgeEditorState fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `engine_version` | str | Engine version string |
+| `project_name` | str | Project name |
+| `b_is_pie` | bool | PIE is active |
+| `b_is_paused` | bool | PIE is paused |
+| `current_level_path` | str | Persistent level package path |
+| `num_opened_assets` | int | Count of open asset editors |
+| `num_selected_actors` | int | Count of selected actors in the world |
+| `num_content_browser_selection` | int | Count of assets selected in Content Browser |
+
+### get_engine_version() -> str
+
+### is_in_pie() -> bool
+
+### is_play_in_editor_paused() -> bool
+
+### get_opened_assets() -> list[FBridgeOpenedAsset]
+
+```python
+for a in unreal.UnrealBridgeEditorLibrary.get_opened_assets():
+    dirty = '*' if a.b_is_dirty else ''
+    print(f'[{a.class_name}] {a.path}{dirty}')
+```
+
+### FBridgeOpenedAsset fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | str | Asset object path |
+| `class_name` | str | Asset class short name |
+| `b_is_dirty` | bool | Has unsaved changes |
+
+---
+
+## Content Browser
+
+### get_content_browser_selection() -> list[str]
+
+Return object paths of assets currently selected in the Content Browser.
+
+### get_content_browser_path() -> str
+
+Currently-focused folder path (e.g. `/Game/MyFolder`). Empty if unavailable.
+
+### set_content_browser_selection(asset_paths) -> bool
+
+Select a set of assets in the Content Browser.
+
+### sync_content_browser_to_asset(asset_path) -> bool
+
+Navigate the Content Browser to the asset and highlight it.
+
+### set_content_browser_path(folder_path) -> bool
+
+Navigate the Content Browser to a folder (e.g. `/Game/Maps`). Returns False if the `ContentBrowser` module isn't loaded.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_content_browser_path('/Game/Maps')
+```
+
+---
+
+## Viewport
+
+### get_editor_viewport_camera() -> FBridgeViewportCamera
+
+Current perspective viewport camera.
+
+### FBridgeViewportCamera fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `location` | Vector | Camera location |
+| `rotation` | Rotator | Camera rotation |
+| `fov` | float | Field of view (degrees) |
+
+### set_editor_viewport_camera(location, rotation, fov) -> bool
+
+### focus_viewport_on_selection() -> bool
+
+Frame the viewport on the currently selected actor(s).
+
+### take_high_res_screenshot(resolution_multiplier) -> bool
+
+Queue a high-res screenshot of the active level viewport. `resolution_multiplier` scales viewport size (1.0 = native). Output is written to `<Project>/Saved/Screenshots/WindowsEditor/` (engine-named). Returns True if the request was queued.
+
+Asynchronous — the file appears 1–2 frames later. Use `capture_active_viewport` when you need the bytes in-process.
+
+```python
+unreal.UnrealBridgeEditorLibrary.take_high_res_screenshot(2.0)  # 2x native
+```
+
+### capture_active_viewport(out_file_path, b_include_base64) -> FBridgeScreenshotResult
+
+**Synchronous** viewport capture → PNG on disk and/or base64. Picks the PIE game viewport when PIE is running, otherwise the active level editor viewport. Runs a `Draw()` + `ReadPixels` round-trip on the game thread.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `out_file_path` | str | Absolute path to the PNG. Pass `""` to skip disk (requires `b_include_base64=True`). Parent dirs are created. |
+| `b_include_base64` | bool | When True, returns the compressed PNG as base64 so callers can read pixels without touching the filesystem. Adds ~33% payload size. |
+
+FBridgeScreenshotResult fields (UE Python strips the `b` prefix from bool fields):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | True when a PNG was produced. |
+| `file_path` | str | Absolute path written (empty when `out_file_path` was empty). |
+| `width` / `height` | int | Captured pixel dimensions. |
+| `source` | str | Which viewport produced the capture: `"LevelEditor"` / `"PIE"` / `""`. |
+| `base64` | str | Base64 PNG bytes (empty unless `b_include_base64=True`). |
+| `error` | str | Failure reason. Empty on success. |
+
+```python
+r = unreal.UnrealBridgeEditorLibrary.capture_active_viewport(
+    '<absolute-path>/viewport.png', False)
+print(r.success, r.source, r.width, r.height, r.file_path)
+```
+
+Tip: when the caller is Claude Code wanting to "see" the viewport, pass a disk path and then `Read` the PNG — cheaper and more reliable than round-tripping the bytes through base64.
+
+### capture_viewport_channel(channel, out_file_path, width, height, max_depth_clamp, b_include_base64) -> FBridgeChannelCaptureResult
+
+Synchronous GBuffer channel capture at the active editor viewport's pose. Unlike `capture_active_viewport` (final color only), this goes through a transient `ASceneCapture2D` + `UTextureRenderTarget2D` so you can read individual GBuffer channels — depth, world normals, albedo — for quantitative analysis.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `channel` | str | Case-insensitive. Valid: `SceneColor` / `SceneColorHDR` / `Depth` / `DeviceDepth` / `Normal` / `BaseColor`. |
+| `out_file_path` | str | Absolute path (parent dirs auto-created). Pass `""` to skip disk. |
+| `width` / `height` | int | Capture resolution. `0` = viewport native size. |
+| `max_depth_clamp` | float | **Depth-only**: clamp values to this max before mapping to 16-bit PNG. `0.0` = no clamp (sky saturates at fp16 ∞ ≈ 65504 and squashes foreground). Typical: `10000` (100 m) for outdoor scenes. Ignored for non-depth channels. |
+| `b_include_base64` | bool | Return compressed bytes as base64. |
+
+Channels explained:
+
+| Channel | Output | Notes |
+|---------|--------|-------|
+| `SceneColor` | 8-bit RGB PNG | Final LDR, post-processed. For a perfect viewport match use `capture_active_viewport` — this path uses SceneCapture defaults which diverge from editor viewport post-process. |
+| `SceneColorHDR` | 8-bit RGB PNG (quantized) | Pre-tonemap HDR, tonemapped via `FLinearColor::ToFColor(true)`. For genuine HDR export, add an `.exr` extension handler (TODO). |
+| `Depth` | 16-bit grayscale PNG | Linear world-space depth in cm. Pixel value in PNG = `((world_depth - DepthMin) / (DepthMax - DepthMin)) * 65535` — reconstruct via the `depth_min` / `depth_max` fields. Sky = fp16 ∞ (~65504), use `max_depth_clamp` to avoid squashing the foreground. |
+| `DeviceDepth` | 16-bit grayscale PNG | Non-linear device Z in `[0, 1]`. Preserves perspective distribution. Good for LOD / occlusion reasoning without needing projection matrices. |
+| `Normal` | 8-bit RGB PNG | World-space surface normal packed as `N * 0.5 + 0.5`. Reconstruct: `world_N = rgb * 2 - 1`. Sky / no-GBuffer pixels = `(0,0,0)`. |
+| `BaseColor` | 8-bit RGB PNG | Albedo / GBuffer base color, pre-lighting. Useful for "what color is this surface regardless of light". |
+
+Result fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | |
+| `file_path` | str | Absolute path written. |
+| `width` / `height` | int | |
+| `channel` | str | Echoes request. |
+| `format` | str | `"PNG"` (8-bit) / `"PNG16"` (16-bit grayscale depth). |
+| `depth_min` / `depth_max` | float | Depth channels only — linear range the PNG was normalized against. Zero for non-depth. |
+| `base64` | str | Base64 PNG (if requested). |
+| `error` | str | |
+
+```python
+# Foreground-scene depth with sky clipped to "far":
+r = unreal.UnrealBridgeEditorLibrary.capture_viewport_channel(
+    'Depth', '<absolute-path>/depth.png', 0, 0, 10000.0, False)
+print(r.depth_min, r.depth_max)  # e.g. 212.0 10000.0
+
+# World normal, native viewport resolution:
+r = unreal.UnrealBridgeEditorLibrary.capture_viewport_channel(
+    'Normal', '<absolute-path>/normal.png', 0, 0, 0.0, False)
+```
+
+**Gotcha — SceneCapture readback is top-down (verified UE 5.7, 2026-04-20).** Unlike the `FLevelEditorViewportClient::Viewport::ReadPixels` path in `UnrealBridgeLevelLibrary::CaptureSceneToPng`, the render-target resource ReadPixels / ReadLinearColorPixels here returns rows top-down already — no vertical flip needed. If you adapt this pattern, do NOT add an extra flip or the output lands upside-down.
+
+**`capture_viewport_channel` during PIE is broken** — it reads the active editor viewport's pose, which is *not* the player camera. The PIE player lives in `GameViewport->Viewport`, not `FLevelEditorViewportClient`. During Immersive PIE the editor viewport client may be dormant entirely. For PIE captures use `capture_channel_from_pose` with an explicit player-camera pose (see below).
+
+### capture_channel_from_pose(channel, location, rotation, fov, width, height, max_depth_clamp, out_file_path, b_include_base64) -> FBridgeChannelCaptureResult
+
+Same GBuffer channel capture as `capture_viewport_channel`, but takes an explicit camera pose instead of reading the active viewport. **This is the PIE-compatible path** — pair with `UnrealBridgeGameplayLibrary` to grab the player's camera and capture Depth / Normal / BaseColor from the player's perspective at runtime.
+
+Uses PIE world when PIE is active, editor world otherwise. No dependence on `FLevelEditorViewportClient`, so Immersive-PIE doesn't trip over a missing viewport client.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `channel` | str | Same values as `capture_viewport_channel`. |
+| `location` | Vector | World-space camera location (cm). |
+| `rotation` | Rotator | World-space camera rotation. |
+| `fov` | float | Horizontal FOV in degrees. `<= 0` defaults to 90. |
+| `width` / `height` | int | Pixel resolution. `<= 0` falls back to the active editor viewport size if available, else 1920×1080. |
+| `max_depth_clamp` | float | Depth channels only; see `capture_viewport_channel`. |
+| `out_file_path` | str | Absolute path. `""` = skip disk. |
+| `b_include_base64` | bool | |
+
+```python
+# Full "agent sees what the player sees" pipeline during PIE:
+# 1. get player camera pose
+loc, rot = unreal.UnrealBridgeGameplayLibrary.get_camera_view_point()
+fov      = unreal.UnrealBridgeGameplayLibrary.get_camera_fov()
+
+# 2. capture Depth from that pose with sky clipped to 100m
+r = unreal.UnrealBridgeEditorLibrary.capture_channel_from_pose(
+    'Depth', loc, rot, fov, 1280, 720, 10000.0,
+    '<absolute-path>/pie_depth.png', False)
+print(r.depth_min, r.depth_max)
+```
+
+Note on `get_camera_view_point()`: UE Python absorbs the C++ `bool` return of "function with out-params" and returns the out-params directly — so the Python call returns `(location, rotation)` as a 2-tuple, not `(success, loc, rot)`. Check for `None` to detect failure.
+
+FOV is whatever the player camera reports (often project-default 80°, not 90°). If you want a fixed FOV regardless of the player's setup, pass it explicitly instead of using `get_camera_fov()`.
+
+### capture_viewport_hit_proxy_map(out_file_path, b_include_base64) -> FBridgeScreenshotResult
+
+Per-pixel actor-ID pass. Uses the **editor viewport's HitProxy cache** (the same mechanism click-to-select uses), so every pixel resolves to an exact `AActor*`. Distinct actors get distinct colors (deterministic via golden-angle hue stepping). Black pixels = no actor (sky / empty).
+
+**Editor-only** — returns `success=False` with an error when PIE is active. For runtime object-ID during PIE you'd need a CustomStencil-based approach (deferred).
+
+```python
+r = unreal.UnrealBridgeEditorLibrary.capture_viewport_hit_proxy_map(
+    '<absolute-path>/idmap.png', False)
+```
+
+Mapping from color → actor is **not** returned directly (color is a hash of the per-frame index). Use `get_actor_under_viewport_pixel` to look up any specific pixel.
+
+### get_actor_under_viewport_pixel(x, y) -> str
+
+Return the `AActor` path name rendered at pixel `(x, y)` in the active editor viewport. Top-left origin, matching screenshot / hit-proxy orientation. Returns `""` for empty pixels, PIE-active state, or out-of-bounds coords.
+
+```python
+actor = unreal.UnrealBridgeEditorLibrary.get_actor_under_viewport_pixel(1236, 565)
+# e.g. "/Game/Levels/DefaultLevel.DefaultLevel:PersistentLevel.LevelBlock_C_1"
+```
+
+Combine with `capture_viewport_hit_proxy_map`: agent sees which actors segment the frame, picks one by spatial reasoning, then calls `get_actor_under_viewport_pixel` at its centroid to retrieve the path.
+
+### set_viewport_realtime(realtime) -> bool
+
+Toggle realtime rendering for the active level viewport. Returns False if no viewport.
+
+Note: the editor can stack temporary *realtime overrides* (e.g. during PIE,
+Sequencer playback, or while a modal tool runs) that win over the value set
+here. If `is_viewport_realtime()` disagrees with what you just set, an
+override is active — see `FEditorViewportClient::AddRealtimeOverride`.
+
+### is_viewport_realtime() -> bool
+
+### get_viewport_size() -> Vector2D
+
+Pixel size of the active viewport (`x` = width, `y` = height). `(0,0)` if no viewport.
+
+### set_viewport_view_mode(mode) -> bool
+
+Set the active viewport's view mode by name. Accepted values (case-insensitive):
+`Lit`, `Unlit`, `Wireframe` (alias for `BrushWireframe`), `CSGWireframe`,
+`DetailLighting`, `LightingOnly`, `LightComplexity`, `ShaderComplexity`,
+`LightmapDensity`, `ReflectionOverride`, `CollisionPawn`, `CollisionVisibility`,
+`LODColoration`, `QuadOverdraw`. Returns False on unknown name.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_viewport_view_mode('Unlit')
+```
+
+### get_viewport_view_mode() -> str
+
+Current view mode name (e.g. `"Lit"`). Empty if no viewport. Unknown numeric
+modes return `"VMI_<n>"`.
+
+### set_viewport_show_flag(flag_name, enabled) -> bool
+
+Toggle a named engine show flag on the active viewport. `flag_name` matches
+`FEngineShowFlags::FindIndexByName` — common names: `Grid`, `Bounds`,
+`Collision`, `Navigation`, `Landscape`, `StaticMeshes`, `SkeletalMeshes`,
+`Particles`, `Fog`, `PostProcessing`, `Lighting`. Returns False on unknown flag.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_viewport_show_flag('Grid', False)
+```
+
+### get_viewport_show_flag(flag_name) -> bool
+
+Read a named show flag. Returns False if the flag name is unknown (ambiguous
+with a legitimate off state — prefer checking via `set_viewport_show_flag`'s
+return before trusting `False`).
+
+### set_viewport_type(viewport_type) -> bool
+
+Set the active viewport's projection. Accepted (case-insensitive):
+`Perspective`, `Top` (alias `OrthoXY`), `Front` (alias `OrthoXZ`),
+`Side` (alias `OrthoYZ`), `OrthoFreelook`. Returns False on unknown name.
+
+```python
+unreal.UnrealBridgeEditorLibrary.set_viewport_type('Top')
+```
+
+### get_viewport_type() -> str
+
+Returns `"Perspective"`, `"Top"`, `"Front"`, `"Side"`, or `"OrthoFreelook"`.
+
+**Call cost & token footprint** — viewport render/display calls are all
+synchronous single-value returns; each round-trip is `~150B` of JSON. Prefer
+batching via `exec-file` if toggling many flags.
+
+---
+
+## Editor UX + plugin introspection
+
+### show_editor_notification(message, duration_seconds=4.0, b_success=True) -> bool
+
+Show a Slate toast (lower-right of the editor window) for long-running
+automation scripts. `duration_seconds` is clamped to `[1, 60]`. The
+`b_success` flag selects the icon — green checkmark when `True`, red X
+when `False`; use the failure style sparingly, it's loud.
+
+```python
+unreal.UnrealBridgeEditorLibrary.show_editor_notification(
+    'Import finished — 42 assets', 5.0, True)
+```
+
+Returns False only when `message` is empty or the Slate notification
+manager rejects the add (rare).
+
+### get_enabled_plugins() -> list[str]
+
+Alphabetically-sorted list of plugin names currently enabled for the
+project (e.g. `['UnrealBridge', 'EnhancedInput', 'GameplayAbilities', ...]`).
+Typical projects return 150–300 names — the list is small-ish but you
+probably want to filter client-side.
+
+### is_plugin_enabled(plugin_name) -> bool
+
+Case-insensitive match against the enabled-plugin set. Much cheaper
+than scanning the `get_enabled_plugins()` result when you only need a
+single boolean.
+
+```python
+if not unreal.UnrealBridgeEditorLibrary.is_plugin_enabled('PythonScriptPlugin'):
+    raise RuntimeError('PythonScriptPlugin disabled — bridge is broken')
+```
+
+### get_editor_build_config() -> str
+
+Build configuration the running editor was compiled in:
+`"Debug"` | `"DebugGame"` | `"Development"` | `"Shipping"` | `"Test"` |
+`"Unknown"`. Use to gate expensive debug-only automation.
+
+### write_log_message(message, severity="Log") -> bool
+
+Emit a message to `GLog` under the dedicated `LogUnrealBridgePy`
+category. Lands in the editor's Output Log and the project's `.log`
+file so Python automation output is captured alongside native UE logs.
+
+`severity` is case-insensitive, one of: `"Verbose"`, `"Log"` (default),
+`"Warning"`, `"Error"`. Unknown values fall back to `Log`.
+
+```python
+unreal.UnrealBridgeEditorLibrary.write_log_message('import finished', 'Log')
+unreal.UnrealBridgeEditorLibrary.write_log_message('asset missing', 'Warning')
+```
+
+Returns False only when `message` is empty.
+
+### get_log_file_path() -> str
+
+Absolute path to the current editor log file (typically
+`<Project>/Saved/Logs/<Project>.log`). Useful after long operations to
+`tail` the log from Python without guessing the path.
+
+### get_screenshot_directory() -> str
+
+Absolute path to `<Project>/Saved/Screenshots/<Platform>Editor/`. Pair
+with `take_high_res_screenshot` — UE picks the filename automatically,
+so scan this directory afterwards to find the newly-written file.
+
+### bring_editor_to_front() -> bool
+
+Raise and activate the editor's top-level window. Good at the end of a
+long background task that toasted a notification — without raising, the
+toast is hidden when the user alt-tabbed to another app.
+
+Returns False when no Slate application / no visible top-level window
+(e.g. commandlet / headless editor run).
+
+### get_frame_rate() -> float
+
+Instantaneous FPS from the last `FApp::GetDeltaTime()` sample.
+Per-frame jittery — average 10–30 samples client-side for anything a
+human reads. Returns 0 when the delta is near-zero (paused tick).
+
+### get_memory_usage_mb() -> float
+
+Physical memory used by the editor process, in MB. Sampled via
+`FPlatformMemory::GetStats().UsedPhysical`. On Windows this matches
+Task Manager's "Working set" value.
+
+### get_engine_uptime() -> float
+
+Seconds since `GStartTime` (engine init complete). Useful for gating
+early automation — e.g. skip expensive work during the first 30 s
+while the editor is still loading shaders.
+
+### trigger_garbage_collection(b_full_purge=False) -> bool
+
+Force a GC pass. `b_full_purge=False` runs an incremental collection
+(fast, default). `True` runs the full purge — slow, compacts the pool,
+blocks the game thread for up to several seconds on a large project.
+
+Use after destroying a batch of actors / unloading many assets when
+you want `get_memory_usage_mb` to reflect the drop immediately rather
+than waiting for the next engine-scheduled GC.
+
+```python
+unreal.UnrealBridgeLevelLibrary.destroy_actors(many_actor_names)
+unreal.UnrealBridgeEditorLibrary.trigger_garbage_collection(False)
+print(unreal.UnrealBridgeEditorLibrary.get_memory_usage_mb())
+```
+
+Returns True once the collection pass has run.
+
+### get_project_version() -> str
+
+Reads `ProjectVersion` from
+`[/Script/EngineSettings.GeneralProjectSettings]` in DefaultGame.ini.
+Empty string when unset.
+
+### get_project_company_name() -> str
+
+`CompanyName` from the project's general settings. Empty if unset.
+
+### get_project_id() -> str
+
+Stable per-project identifier. Current implementation returns the
+project short name — sufficient as a cache key. If you specifically need the .uproject GUID, parse the
+`.uproject` JSON yourself via `unreal.SystemLibrary.get_project_directory()`.
+
+### get_auto_save_directory() -> str
+
+Absolute path to `<Project>/Saved/Autosaves`. Use to locate `.auto.umap`
+files UE drops there during long editing sessions.
+
+### open_editor_tab(tab_name) -> bool
+
+Invoke a docked-tab spawner by tab id via `FGlobalTabmanager::TryInvokeTab`.
+Opens the tab if registered and not already open; refocuses it
+otherwise. Returns False when the id isn't a registered spawner.
+
+Common ids: `"OutputLog"`, `"ContentBrowserTab1"`, `"StatsViewer"`,
+`"MessageLog"`, `"LevelEditorToolBox"`, `"LevelEditorStatsViewer"`.
+
+### close_editor_tab(tab_name) -> bool
+
+Close a live docked tab. Returns False if no live tab with that id
+exists.
+
+### is_editor_tab_open(tab_name) -> bool
+
+Tab-liveness check via `FGlobalTabmanager::FindExistingLiveTab`.
+
+**Pitfall:** `FindExistingLiveTab` is stricter than `TryInvokeTab`'s
+spawner registry — freshly-invoked tabs may need a frame to register
+as "live", so immediately-following `is_editor_tab_open` can still
+return False even after `open_editor_tab` succeeded. Wait a tick, or
+rely on `open_editor_tab`'s return value directly.
+
+### get_main_window_title() -> str
+
+Title text of the editor's main frame window (e.g. `"MyProject -
+Unreal Editor"`). Empty string when the MainFrame module isn't
+loaded yet (very early boot).
+
+### get_os_version() -> str
+
+Human-readable OS version, e.g. `"Windows 10 (22H2) [10.0.19045.6466]"`.
+
+### get_cpu_brand() -> str
+
+CPU brand string from `FPlatformMisc::GetCPUBrand` (e.g. `"AMD Ryzen
+9 7950X 16-Core Processor"`). May include trailing spaces on some
+platforms — strip client-side if displaying.
+
+### get_cpu_core_count() -> int
+
+Logical core count (physical cores × hyperthreads) available to the
+editor process. Useful as a cap for parallel-work heuristics.
+
+### get_total_physical_memory_mb() -> float
+
+Total physical RAM on the host in MB. Pair with
+`get_memory_usage_mb()` to compute headroom ratios.
+
+### get_shader_compile_job_count() -> int
+
+Pending shader-compile jobs across `GShaderCompilingManager`. Non-zero
+right after opening a new level, editing a material, or reimporting
+a texture. Zero when the editor is idle.
+
+### get_asset_compile_job_count() -> int
+
+Pending async asset-compile count (materials, textures, meshes) via
+`FAssetCompilingManager`.
+
+### is_compiling() -> bool
+
+True while either shader or asset compilation is in-flight. Cheap
+gate for "wait until editor is idle" loops.
+
+### flush_compilation() -> bool
+
+Block the game thread until both queues drain via
+`FinishAllCompilation`. Can take tens of seconds after a big import —
+callers should show progress UI or raise their own watchdog.
+
+```python
+if unreal.UnrealBridgeEditorLibrary.is_compiling():
+    unreal.UnrealBridgeEditorLibrary.flush_compilation()
+# safe to take screenshots / run PIE now
+```
+
+### get_recent_log_lines(num_lines=50, min_severity="") -> list[str]
+
+Lazily installs a thread-safe `FOutputDevice` ring buffer on first
+call (capacity 500 lines). Each entry is preformatted as
+`"[Category][Severity] Message"`, ordered oldest → newest.
+
+`min_severity` (case-insensitive) is one of: `"Verbose"` | `"Log"` |
+`"Display"` | `"Warning"` | `"Error"` | `"Fatal"`. Empty string = no
+filter. Entries are returned at or above that severity.
+
+`num_lines=0` returns everything currently buffered; a positive value
+returns the last N after filtering.
+
+```python
+# Run an expensive op, then surface any warnings/errors.
+unreal.UnrealBridgeEditorLibrary.clear_log_buffer()
+run_big_thing()
+for l in unreal.UnrealBridgeEditorLibrary.get_recent_log_lines(0, 'Warning'):
+    print(l)
+```
+
+### get_log_buffer_size() -> int
+
+Current buffered line count (0..500). Maxes out once the ring fills;
+further writes overwrite the oldest entries.
+
+### get_log_buffer_capacity() -> int
+
+Fixed ring capacity (currently 500). Useful for clients that want to
+gauge potential loss before a big log-heavy operation.
+
+### clear_log_buffer() -> int
+
+Empty the ring; returns the count of lines dropped. The `FOutputDevice`
+stays registered — subsequent log output continues to accumulate.
+
+**Pitfalls**
+
+- The ring buffer is *append-only* across editor sessions; there's no
+  persistence. Log lines from before the first `get_recent_log_lines`
+  call of a session are lost — the device installs lazily.
+- At 500 lines capacity, a verbose operation (shader compile, asset
+  import) can overflow the buffer and drop earlier lines. Call
+  `clear_log_buffer()` right before the operation to make sure its
+  output fits.
+
+### is_module_loaded(module_name) -> bool
+
+True when an engine module is currently loaded. Complements
+`is_plugin_enabled` — plugins own modules, but modules can also exist
+standalone as engine built-ins.
+
+### get_registered_module_names() -> list[str]
+
+Alphabetically-sorted names of every module the `FModuleManager`
+knows about (loaded or not). Typical editor count: 900–1100. Large
+list — filter client-side.
+
+### load_module(module_name) -> bool
+
+Force-load a module if it isn't already loaded. Returns True only if
+the module is loaded after the call.
+
+**Pitfall:** loading game-side modules mid-session introduces new
+UObjects and can complicate GC / asset-registry snapshots. Prefer for
+editor-only tooling modules; cold-loading gameplay modules is risky.
+
+### get_module_binary_path(module_name) -> str
+
+Filesystem path to a loaded module's compiled binary. Empty string if
+the module isn't loaded or has no backing file (script-only modules).
+
+```python
+p = unreal.UnrealBridgeEditorLibrary.get_module_binary_path('UnrealBridge')
+# p → ".../Plugins/UnrealBridge/Binaries/Win64/UnrealEditor-UnrealBridge.dll"
+```
+
+### get_widget_mode() -> str
+
+Active transform-gizmo mode in the level viewport. One of:
+`"Translate"` | `"Rotate"` | `"Scale"` | `"TranslateRotateZ"` |
+`"2D"` | `"None"`. Empty on editor-mode-tools unavailable.
+
+### set_widget_mode(mode) -> bool
+
+Switch gizmo mode. Accepts the strings returned by `get_widget_mode`
+(case-insensitive). Returns False on unknown mode.
+
+### get_coord_system() -> str
+
+Current coordinate system used by the transform gizmo: `"World"` or
+`"Local"`.
+
+### set_coord_system(system) -> bool
+
+Toggle between `"World"` and `"Local"` (case-insensitive). Mirrors the
+`~` hotkey in the viewport toolbar. Returns False on unknown value.
+
+```python
+# Temporarily switch to rotate gizmo in local space for a scripted
+# placement, then restore.
+prev_mode = unreal.UnrealBridgeEditorLibrary.get_widget_mode()
+unreal.UnrealBridgeEditorLibrary.set_widget_mode('Rotate')
+unreal.UnrealBridgeEditorLibrary.set_coord_system('Local')
+# ... user interacts ...
+unreal.UnrealBridgeEditorLibrary.set_widget_mode(prev_mode)
+```
+
+### get_location_grid_size() -> float
+
+Active location-grid snap size in cm. Sourced from
+`ULevelEditorViewportSettings` — reads `Pow2GridSizes` when "use
+power-of-two snap size" is on, else `DecimalGridSizes`, indexed by
+`CurrentPosGridSize`.
+
+### get_rotation_grid_size() -> float
+
+Active rotation-grid snap size in degrees. Reads from
+`CommonRotGridSizes` (default) or `DivisionsOf360RotGridSizes`
+depending on the current grid mode.
+
+### is_grid_snap_enabled() -> bool
+
+True when viewport location-grid snapping is enabled. Mirrors the
+grid-snap toggle in the viewport toolbar.
+
+### set_grid_snap_enabled(enabled) -> bool
+
+Toggle location-grid snapping. Persists to editor config via
+`SaveConfig`. Returns True on success.
+
+**Pitfall:** setters are provided only for the enable toggle — the
+active grid size is index-based and changing it requires matching a
+stored preset. For custom sizes, edit the `*GridSizes` arrays directly
+via UE Python (`unreal.get_mutable_default_object(...)`).
+
+### is_auto_save_enabled() -> bool
+
+True if the editor autosave timer is enabled (matches the Editor
+Preferences → Loading & Saving → Auto Save checkbox).
+
+### set_auto_save_enabled(enabled) -> bool
+
+Toggle autosave. Persists to editor config.
+
+### get_auto_save_interval_minutes() -> int
+
+Autosave interval in minutes. Default `10`. Returns `-1` if the
+settings object is unavailable.
+
+### set_auto_save_interval_minutes(minutes) -> bool
+
+Set the interval. Accepts `1..120`; values outside that range are
+rejected. Persists to editor config.
+
+```python
+# Silence autosave while running a long scripted capture.
+prev = unreal.UnrealBridgeEditorLibrary.is_auto_save_enabled()
+unreal.UnrealBridgeEditorLibrary.set_auto_save_enabled(False)
+run_capture()
+unreal.UnrealBridgeEditorLibrary.set_auto_save_enabled(prev)
+```
+
+### does_asset_exist_on_disk(asset_path) -> bool
+
+Pure filesystem check — True when the package's `.uasset` or `.umap`
+file exists. Does not load the asset or consult the Asset Registry.
+Accepts package paths (`/Game/Foo/Bar`) or full object paths
+(`/Game/Foo/Bar.Bar` — the object suffix is stripped).
+
+### get_asset_disk_path(asset_path) -> str
+
+Absolute filesystem path to the package's backing file. Empty on
+unresolvable paths.
+
+### get_asset_file_size(asset_path) -> int
+
+File size in bytes. Returns `-1` when the file is missing.
+
+### get_asset_last_modified_time(asset_path) -> str
+
+ISO-8601 UTC timestamp of the file's last modification. Empty when
+the file is missing or the timestamp can't be read.
+
+```python
+# Detect recently-edited assets.
+import datetime
+p = '/Game/Maps/MyLevel'
+mtime = unreal.UnrealBridgeEditorLibrary.get_asset_last_modified_time(p)
+if mtime:
+    delta = datetime.datetime.utcnow() - datetime.datetime.fromisoformat(mtime.rstrip('Z'))
+    if delta.total_seconds() < 3600:
+        print(f'{p} modified within last hour')
+```
+
+### get_os_user_name() -> str
+
+Logged-in OS user name via `FPlatformProcess::UserName`.
+
+### get_machine_name() -> str
+
+Host computer name via `FPlatformProcess::ComputerName`.
+
+### get_now_utc() -> str
+
+ISO-8601 UTC timestamp for "now" (e.g. `"2026-04-15T12:25:18.723Z"`).
+Useful as a timestamp prefix for automation logs.
+
+### get_editor_process_id() -> int
+
+OS process ID of the running editor. Handy for external tooling that
+wants to attach a debugger or killswitch against this session.
+
+### is_source_control_enabled() -> bool
+
+True when a source-control provider is registered AND currently
+available (configured + reachable).
+
+### get_source_control_provider_name() -> str
+
+Active provider name, e.g. `"Perforce"`, `"Git"`, `"Plastic"`.
+Empty when the module isn't loaded.
+
+### get_asset_source_control_state(asset_path) -> str
+
+One of: `"CheckedOut"` | `"NotCheckedOut"` | `"CheckedOutOther"` |
+`"Added"` | `"Deleted"` | `"Ignored"` | `"NotControlled"` |
+`"Unknown"`. Empty if the asset can't be resolved or SCC is disabled.
+
+Cached state via `EStateCacheUsage::Use` — no network round-trip.
+Call `execute_console_command('Source Control Refresh')` to force a
+fresh query if stale state is suspected.
+
+### check_out_asset(asset_path) -> bool
+
+Synchronous check-out via `FCheckOut`. Returns True only when the
+provider reports success. Blocks briefly on network round-trip for
+remote providers — use sparingly in tight loops.
+
+### get_engine_directory() -> str
+
+Absolute path to the engine installation's `Engine/` directory
+(e.g. `<ue-install-root>/Engine/`).
+
+### get_project_content_directory() -> str
+
+Absolute path to the project's `Content/` directory.
+
+### get_project_intermediate_directory() -> str
+
+Absolute path to `Intermediate/` — transient build outputs, asset
+cache, shader cache live here.
+
+### get_project_plugins_directory() -> str
+
+Absolute path to the project's `Plugins/` directory. Engine-side
+plugins (e.g. those bundled with UE) live under
+`get_engine_directory() + 'Plugins/'`, not here.
+
+### get_editor_world_name() -> str
+
+Short name of the current editor world (e.g. `"DefaultMap"`). Empty
+when no world is open. Cheaper than `get_current_level_path()` when
+you only need the leaf.
+
+### is_editor_world_dirty() -> bool
+
+True when the persistent level's package has unsaved changes.
+
+### get_loaded_level_count() -> int
+
+Count of levels currently loaded — persistent level plus any loaded
+sublevels. On World Partition maps this does NOT include WP cells.
+
+### get_current_world_actor_count() -> int
+
+Total actor count across every loaded level. Complements
+`get_persistent_level_actor_count` (which excludes sublevels).
+
+### get_editor_build_date() -> str
+
+Compile-time build date of the running editor binary
+(e.g. `"Nov 20 2025"`). Useful for bug reports — different engine
+installs may behave differently.
+
+### get_engine_changelist() -> int
+
+Perforce CL (or repo hash) the engine binary was built from. `0`
+when unknown (e.g. local source build without SCC metadata).
+
+### is_engine_installed() -> bool
+
+True when the engine was produced by Epic's installer / Launcher
+(detected via `Engine/Build/InstalledBuild.txt`). False for
+source-built engines.
+
+### is_unattended_mode() -> bool
+
+True when the editor was launched with `-Unattended` (automation
+/ CI), False for interactive sessions. Use to gate UI-producing
+helpers (toasts, modals) that should no-op in CI.
+
+---
+
+## Asset Control
+
+### open_asset(asset_path) -> bool
+
+Open the appropriate asset editor. Accepts either a full object path (`/Game/Foo/Bar.Bar`) or a bare package path (`/Game/Foo/Bar`).
+
+Path handling: bare package paths are auto-normalized to `<path>.<leaf>` before `LoadObject`, so the inner asset is loaded instead of the `UPackage` wrapper. If a `UPackage` is still returned (edge cases), the library scans its inner objects and returns the one whose name matches the package leaf, else the first `IsAsset()` child.
+
+> **Historical bug (fixed):** prior to the normalization pass, passing a bare package path (e.g. `/Game/Foo/Bar`) loaded the `UPackage` itself, and the Asset Editor Subsystem opened the Generic "Package" editor instead of the asset's dedicated editor (Curve Editor, BP Editor, etc.). Now both forms open the correct editor.
+
+Applies to every `BridgeEditorImpl::LoadAssetFromPath` caller (`open_asset`, `save_asset`, `reload_asset`, `sync_content_browser_to_assets`, etc.).
+
+Cost: single `FindObject`/`LoadObject` + at most one `ForEachObjectWithOuter` scan of the package (typically 1–5 inners). GameThread.
+
+Output footprint: tiny — single bool.
+
+### close_all_asset_editors() -> bool
+
+### save_asset(asset_path) -> bool
+
+### save_all_dirty_assets(include_maps) -> bool
+
+Save all dirty packages. Returns True if the save attempt finished without user cancel.
+
+### save_current_level() -> bool
+
+### reload_asset(asset_path) -> bool
+
+---
+
+## Level / Map Control
+
+### load_level(level_path, prompt_save_changes) -> bool
+
+Load a map into the editor. `level_path` is a package path like `/Game/Maps/MyLevel`. If `prompt_save_changes` is True and there are unsaved map changes, the user is prompted; if False, unsaved changes are discarded silently.
+
+```python
+unreal.UnrealBridgeEditorLibrary.load_level('/Game/Maps/TestLevel', True)
+```
+
+### create_new_level(save_existing) -> bool
+
+Create a new empty level and make it the current editor world. If `save_existing` is True, unsaved map changes prompt for save first; cancel returns False.
+
+```python
+unreal.UnrealBridgeEditorLibrary.create_new_level(True)
+```
+
+---
+
+## PIE
+
+### start_pie() -> bool
+
+### stop_pie() -> bool
+
+### pause_pie(paused) -> bool
+
+### start_simulate() -> bool
+
+Start "Simulate in Editor" — spins up the play world but skips player
+controller spawn / pawn possession. Useful for observing AI, Sequencer,
+or physics without stealing input focus. Fails (returns False) if a
+play session is already running; stop it first.
+
+```python
+unreal.UnrealBridgeEditorLibrary.start_simulate()
+# ... observe ...
+unreal.UnrealBridgeEditorLibrary.stop_pie()   # same StopPIE works
+```
+
+### is_simulating() -> bool
+
+True only during a Simulate-in-Editor session. Note that `is_in_pie()`
+also returns True during Simulate — use `is_simulating()` to distinguish.
+
+### get_pie_net_mode() -> str
+
+Network mode of the current PIE/Simulate world, one of:
+`"Standalone"` | `"DedicatedServer"` | `"ListenServer"` | `"Client"`.
+Returns `""` when no play session is running.
+
+### get_pie_world_time() -> float
+
+Seconds since BeginPlay on the PIE/Simulate world. Returns `-1.0` when
+no play session is running. Time freezes while PIE is paused (mirrors
+`UWorld::GetTimeSeconds`), so it's suitable for scripting "wait 2
+seconds of in-game time" delays that respect pause.
+
+```python
+t0 = unreal.UnrealBridgeEditorLibrary.get_pie_world_time()
+# ... run some gameplay ...
+elapsed = unreal.UnrealBridgeEditorLibrary.get_pie_world_time() - t0
+```
+
+---
+
+## Undo / Redo
+
+### undo() -> bool
+
+### redo() -> bool
+
+---
+
+## Console / CVar
+
+### execute_console_command(command) -> str
+
+Run a console command. Returns captured `GLog` output (best-effort — some commands print only to the viewport HUD).
+
+```python
+out = unreal.UnrealBridgeEditorLibrary.execute_console_command('stat fps')
+print(out)
+```
+
+### get_cvar(name) -> str
+
+### set_cvar(name, value) -> bool
+
+### list_cvars(keyword) -> list[str]
+
+Search CVars by substring. Returns `"Name = Value"` entries.
+
+---
+
+## Utility
+
+### fixup_redirectors(paths) -> int
+
+Fix up object redirectors under the given content paths (e.g. `/Game/Foo`). Re-saves referencers to point at the destination and deletes the redirector. Returns the number of redirectors processed.
+
+```python
+n = unreal.UnrealBridgeEditorLibrary.fixup_redirectors(['/Game'])
+```
+
+### get_dirty_package_names() -> list[str]
+
+Package names of all currently-dirty packages in `/Game/` and plugin content mounts (`/Script/` and `/Temp/` are skipped). Useful for "what will be saved next?" style prompts.
+
+```python
+dirty = unreal.UnrealBridgeEditorLibrary.get_dirty_package_names()
+print('\n'.join(dirty))
+```
+
+### is_asset_dirty(asset_path) -> bool
+
+True if the asset's package has unsaved modifications.
+
+### mark_asset_dirty(asset_path) -> bool
+
+Mark the asset's package dirty — useful after direct C++/Python mutations that didn't already notify the package.
+
+### is_asset_editor_open(asset_path) -> bool
+
+True if an asset editor tab is currently open for this asset.
+
+```python
+if unreal.UnrealBridgeEditorLibrary.is_asset_editor_open('/Game/BP/BP_Hero'):
+    unreal.UnrealBridgeEditorLibrary.close_all_asset_editors()
+```
+
+### is_asset_loaded(asset_path) -> bool
+
+True if the asset's package is already loaded in memory. Does NOT force-load the asset — useful to probe load state before deciding whether to trigger an expensive load.
+
+```python
+if not unreal.UnrealBridgeEditorLibrary.is_asset_loaded('/Game/BP/BP_Hero.BP_Hero'):
+    print('not loaded — skipping cheap probe')
+```
+
+### close_asset_editor(asset_path) -> bool
+
+Close the editor tab for a single asset. Returns False if no editor was open for that asset.
+
+```python
+unreal.UnrealBridgeEditorLibrary.close_asset_editor('/Game/BP/BP_Hero')
+```
+
+### save_assets(asset_paths) -> int
+
+Save the listed assets silently (no save dialog). Returns the number of packages successfully written. Assets that couldn't be resolved are skipped.
+
+```python
+saved = unreal.UnrealBridgeEditorLibrary.save_assets([
+    '/Game/Data/DT_Weapons',
+    '/Game/BP/BP_Hero',
+])
+```
+
+### compile_blueprints(blueprint_paths) -> list[FBridgeCompileResult]
+
+Compile the listed Blueprints. Returns per-BP success + error summary.
+
+```python
+results = unreal.UnrealBridgeEditorLibrary.compile_blueprints(['/Game/BP/BP_Hero', '/Game/BP/BP_Enemy'])
+for r in results:
+    ok = 'OK' if r.b_success else 'FAIL'
+    print(f'[{ok}] {r.path} {r.error_message}')
+```
+
+### FBridgeCompileResult fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `path` | str | Blueprint path |
+| `b_success` | bool | Compile succeeded |
+| `error_message` | str | Error summary (empty on success) |
+
+---
+
+## Live Coding (C++ hot reload)
+
+Patch recompiled cpp changes into the running editor without restart. The TCP bridge, open assets, PIE state, and viewport camera all survive. **Windows only** — `trigger_live_coding_compile` returns `Status="Unavailable"` on other platforms.
+
+**When Live Coding cannot patch:** adding or removing UFUNCTION / UCLASS / UPROPERTY / USTRUCT members, or changing struct layouts. These still need a full editor restart — use `scripts/rebuild_relaunch.py`.
+
+**Typical flow** (the `hot_reload.py` wrapper bundles all of this):
+
+1. Edit cpp in `Plugin/UnrealBridge/Source/`
+2. Run `sync_plugin.bat` to copy into the project's `Plugins/` dir
+3. Call `trigger_live_coding_compile(True)` via the bridge
+4. Check the returned `Status`
+
+### is_live_coding_enabled() -> bool
+
+True when the LiveCoding module is loaded AND enabled for this session.
+
+### is_live_coding_compiling() -> bool
+
+True while an LC compile is running in the background.
+
+### trigger_live_coding_compile(b_wait_for_completion) -> FBridgeLiveCodingResult
+
+Kick a Live Coding compile. Auto-enables LC for the session if the module is loaded but disabled.
+
+| Param | Type | Notes |
+|-------|------|-------|
+| `b_wait_for_completion` | bool | When True, the engine blocks the game thread (pumps a modal loop) until the compile finishes. False returns immediately with `Status="InProgress"` — poll `is_live_coding_compiling()`. |
+
+FBridgeLiveCodingResult fields (UE Python strips the `b` prefix from bool fields):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `triggered` | bool | Compile request was accepted. False means another LC compile is already in flight or the module isn't ready. |
+| `completed` | bool | Only true when `b_wait_for_completion=True` AND status is `Success` or `NoChanges`. |
+| `status` | str | `Success` / `NoChanges` / `InProgress` / `CompileStillActive` / `NotStarted` / `Failure` / `Cancelled` / `Unavailable`. |
+| `error` | str | Human-readable failure detail. Empty on success. |
+
+```python
+r = unreal.UnrealBridgeEditorLibrary.trigger_live_coding_compile(True)
+print(r.status, r.completed, r.error)
+# Common outcomes:
+#   Success    — new DLL patched in
+#   NoChanges  — nothing to compile
+#   Failure    — cpp doesn't compile (see Output Log)
+#   NotStarted — Live Coding disabled in Editor Preferences
+```
+
+**Don't mix LC compiles with UBT:** running `Build.bat` while the editor is live will try to overwrite a locked DLL and fail. Either use LC *or* full rebuild+relaunch, never both at once.
+
+**Compile-error text is not programmatically accessible** when `Status="Failure"`. UE's `ILiveCodingModule` API only exposes the enum result — the MSVC `error C####` lines only render into the external `LiveCodingConsole.exe` GUI window's in-memory log widget, not to any capturable stream or disk log. Confirmed against UE 5.7 on 2026-04-20 by scanning:
+- `<Project>/Saved/Logs/<Project>.log` — only contains `LogLiveCoding: Error: Live coding failed, please see Live console for more information`.
+- `Engine/Programs/LiveCodingConsole/Saved/Logs/LiveCodingConsole.log` — contains the LC server's session trace but NOT the cl.exe output.
+- `AppData/Local/UnrealBuildTool/Log.txt` — UBT refuses to run while the LC mutex is held (`Unable to build while Live Coding is active`).
+
+When `trigger_live_coding_compile` reports `Failure`, options are:
+1. Look at the LiveCodingConsole GUI window (a separate black window that spawned alongside the editor) for `error C####` lines.
+2. Run `scripts/rebuild_relaunch.py` — the standalone `Build.bat` captures full compiler stdout, at the cost of restarting the editor.
+
+`hot_reload.py` automatically tails the editor log's `LogLiveCoding` entries on failure as a breadcrumb trail, but those only confirm *that* it failed, not *why*.
+
+---
+
+## Bridge call log
+
+Every TCP request to the bridge is captured in a session-local ring buffer (default capacity 500). Use this to answer "what's the bridge being asked to do?", "which `exec` calls take the longest?", or "did that recent failure hit the server at all?" without grepping `Saved/Logs/<Project>.log`.
+
+Captured fields per entry:
+
+| Field | Type | Notes |
+|---|---|---|
+| `request_id` | str | UUID4 sent by `bridge.py` (or `<missing>` for raw clients). |
+| `command` | str | `"exec"` (default) / `"ping"` / `"debug_resume"` / `"gamethread_ping"` / other. |
+| `script_preview` | str | First ~80 chars of the Python script for `exec`; newlines collapsed to spaces. Empty for non-exec commands. |
+| `unix_seconds_utc` | float | Fractional seconds since the Unix epoch — for plotting / time-series. |
+| `total_duration_ms` | float | Wall-clock for the whole HandleClient run (recv → send). |
+| `exec_duration_ms` | float | Time spent inside Python exec (queue wait + run). 0 for non-exec commands. |
+| `success` | bool | The `success` field that went back to the client. |
+| `output_bytes` / `error_bytes` | int32 | Lengths of the response's `output` and `error` strings. |
+| `endpoint` | str | Client `IP:port` from the listener. |
+| `error_preview` | str | First ~200 chars of the error message when `success=false`. |
+
+### get_bridge_call_log(max_entries=100) -> list[FBridgeCallLogEntry]
+
+Newest-last list of recent calls. `max_entries=0` returns everything currently buffered.
+
+```python
+import unreal
+for e in unreal.UnrealBridgeEditorLibrary.get_bridge_call_log(20):
+    print(f"[{e.command:5}] ok={int(e.success)} {e.total_duration_ms:6.1f}ms {e.script_preview!r}")
+```
+
+### get_bridge_call_stats() -> FBridgeCallStats
+
+Aggregates over the buffered entries.
+
+| Field | Type | Notes |
+|---|---|---|
+| `total_calls` | int32 | Number of buffered entries. |
+| `success_count` / `failure_count` | int32 | Bucketed by the `success` field. |
+| `avg_duration_ms` / `min_duration_ms` / `max_duration_ms` / `p95_duration_ms` | float | Total-duration distribution. |
+| `capacity` | int32 | Current ring-buffer size. |
+| `total_dropped` | int32 | Lifetime count of entries evicted because the ring was full. Useful for "did I lose anything between two snapshots?" |
+
+### clear_bridge_call_log() -> int32
+
+Drops every buffered record. Returns how many were dropped. Use before a benchmark to get a clean window.
+
+### get_bridge_call_log_capacity() / set_bridge_call_log_capacity(capacity) -> int32
+
+Capacity is clamped to `[10, 5000]`. Shrinking discards the oldest entries.
+
+**Pitfalls**
+- The current `exec` (the one running this code) is **not** in the log yet — it's appended after the response sends. To see your own call, do `get_bridge_call_log` from a separate `bridge.py exec` invocation.
+- `total_duration_ms` is server-side only and excludes network RTT. For wall-clock-from-the-client, time `bridge.py exec` itself.
+- The ring is in-memory and process-local — restart loses everything. Persist to disk via `bridge.py exec` + `json.dumps` if you need cross-session data.
+
+---
+
+## Signature registry dump
+
+### dump_bridge_signature_registry() -> str (JSON)
+
+Returns a single condensed-JSON string describing every BlueprintCallable UFUNCTION on every `UUnrealBridge*Library` class. Intended as a one-call alternative to paging through the `bridge-*-api.md` docs when an agent needs the complete API surface (parameters, defaults, return types).
+
+```python
+import unreal, json
+data = json.loads(unreal.UnrealBridgeEditorLibrary.dump_bridge_signature_registry())
+print(f"{len(data['libraries'])} libraries, {sum(len(L['functions']) for L in data['libraries'])} UFUNCTIONs")
+# Find every function whose tooltip mentions PIE
+for L in data['libraries']:
+    for f in L['functions']:
+        if 'PIE' in f['tooltip']:
+            print(f"{L['class_name']}.{f['python_name']}")
+```
+
+JSON shape:
+
+```
+{ "generated_utc": "...", "engine_version": "...",
+  "libraries": [
+    { "class_name": "UnrealBridgeEditorLibrary",
+      "python_name": "unreal_bridge_editor_library",
+      "functions": [
+        { "name": "GetBridgeCallLog",
+          "python_name": "get_bridge_call_log",
+          "category": "UnrealBridge|Editor",
+          "tooltip": "...",
+          "params": [
+            { "name": "MaxEntries", "python_name": "max_entries",
+              "type": "int32", "default": "100" },
+            { "name": "ReturnValue", "python_name": "return_value",
+              "type": "TArray", "is_return": true }
+          ] } ] } ] }
+```
+
+**What's covered.** Every BlueprintCallable UFUNCTION whose owning class lives in the `/Script/UnrealBridge` package — i.e. all `UUnrealBridge*Library` classes. Current count: ~688 UFUNCTIONs across 13 libraries.
+
+**What's not covered (yet).**
+- USTRUCT field layouts (return / param types include the struct name, but not its UPROPERTY list).
+- Inherited UFUNCTIONs — `EFieldIteratorFlags::ExcludeSuper` is in effect.
+
+**Pitfalls**
+- `python_name` is computed by inserting `_` at every lower→upper boundary and lowercasing. Matches what `dir(unreal.UUnrealBridgeXxxLibrary)` shows in practice, but is a simpler rule than UE's internal `CamelCaseBreakIterator` — for adjacent uppercase runs (e.g. `UMG`) you get one underscore per character (`u_m_g_library`). If a function's `python_name` doesn't match what `dir()` reports, trust `dir()`.
+- Tooltips are the raw doxygen-style `///` comments. Newlines preserved; no Markdown stripping.
+
+---
+
+## Webhook notifier (scripts/notify.py)
+
+Stand-alone Python notifier — POSTs a payload to a webhook URL with auto-detected Slack / Discord / generic format. Lives at `.claude/skills/unreal-bridge/scripts/notify.py`. No bridge call needed — runs from the host shell so it works whether the editor is up or not.
+
+Typical pattern is "ping me when this long script finishes":
+
+```bash
+python rebuild_relaunch.py
+python notify.py --exit-status $? --title "Editor rebuild" --body "see logs in Saved/Logs/"
+```
+
+**Auto-detection.** URLs containing `hooks.slack.com` → Slack format. URLs containing `discord.com/api/webhooks` (or `discordapp.com`) → Discord. Anything else → a generic JSON envelope `{title, body, status, source, timestamp_utc, fields}` (handy for self-hosted receivers).
+
+**CLI options**
+- `--url <url>` — required, or set `UNREALBRIDGE_WEBHOOK_URL` env var.
+- `--title` / `--body` — content. Pass `--body -` to read body from stdin.
+- `--status success|failure|warning|info` — controls emoji / color where the format supports it. `info` is default.
+- `--exit-status N` — when set, `--status` defaults to `success` (0) or `failure` (non-zero). Pair with `$?`.
+- `--field key=value` — repeatable structured field.
+- `--format auto|slack|discord|generic|raw` — force a shape. `raw` sends `--raw-body` JSON verbatim.
+- `--raw-body <json>` — full custom payload (also accepts `-` for stdin).
+- `--source` — footer / attribution. Default `UnrealBridge@<hostname>`.
+- `--quiet` — suppress success print.
+
+**Exit codes**
+- `0` HTTP 2xx
+- `1` webhook rejected (HTTP 4xx/5xx) — body printed to stderr
+- `2` bad arguments
+
+**Pitfalls**
+- stdlib only (`urllib.request`) — no retry on transient errors. Wrap in shell `until` if your webhook is flaky.
+- Slack / Discord rate limits apply — don't notify per-frame from a hot loop. Once-per-completion is the intended pattern.
+- The default `--source` includes hostname — sensitive deployments should override with a fixed string.

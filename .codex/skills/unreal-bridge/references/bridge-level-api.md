@@ -1,0 +1,1474 @@
+# UnrealBridge Level Library API
+
+Module: `unreal.UnrealBridgeLevelLibrary`
+
+Operates on the editor world. All write operations are wrapped in `FScopedTransaction` (Ctrl+Z undoable).
+
+## Read — Level / Summary
+
+### get_level_summary() -> FBridgeLevelSummary
+
+Return a compact summary of the current editor world.
+
+```python
+s = unreal.UnrealBridgeLevelLibrary.get_level_summary()
+print(f'{s.level_name} [{s.world_type}] actors={s.num_actors} streaming={s.num_streaming_levels} WP={s.b_world_partition}')
+```
+
+### FBridgeLevelSummary fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `level_name` | str | Persistent level name |
+| `level_path` | str | Package path of the persistent level |
+| `num_actors` | int | Total actors in the world |
+| `num_streaming_levels` | int | Number of streaming levels |
+| `world_type` | str | "Editor", "PIE", "Game" |
+| `b_world_partition` | bool | True if this is a World Partition map |
+
+### get_current_level_path() -> str
+
+Return the package path of the persistent level.
+
+### get_streaming_levels() -> list[FBridgeStreamingLevel]
+
+List streaming sublevels with load/visible flags.
+
+### FBridgeStreamingLevel fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `package_name` | str | Sublevel package name |
+| `b_loaded` | bool | Currently loaded |
+| `b_visible` | bool | Currently visible |
+
+### set_streaming_level_loaded(package_name, loaded) -> bool
+
+Request that a streaming sublevel be loaded or unloaded. Matched by
+exact `WorldAssetPackageName` (see `get_streaming_levels`). Returns
+False if no sublevel with that name exists.
+
+### set_streaming_level_visible(package_name, visible) -> bool
+
+Request visibility change. Only meaningful when the sublevel is also
+loaded.
+
+### is_streaming_level_loaded(package_name) -> bool
+
+Quick "is this sublevel resident in memory" check.
+
+### flush_level_streaming() -> bool
+
+Block the game thread until pending load/visibility state changes
+apply. Call after a batch of `set_streaming_level_*` calls when the
+next query needs the new state reflected (e.g. spatial trace against
+freshly-loaded geometry).
+
+**Pitfall:** on maps with no streaming sublevels (e.g. standard single
+persistent level, or WorldPartition-based maps) `get_streaming_levels`
+returns empty and every setter returns False. WorldPartition cells are
+NOT enumerated here — use the WorldPartition APIs in UE Python
+directly.
+
+### get_world_gravity() -> float
+
+Effective vertical gravity in cm/s² from `AWorldSettings::GetGravityZ()`.
+Returns the per-world override when set, otherwise the engine default
+(typically `-980.0`).
+
+### set_world_gravity(gravity, override=True) -> bool
+
+Set `WorldGravityZ` + `bWorldGravitySet`. Passing `override=False`
+stores the value but reverts to the engine default — useful to
+prepare a gravity override without activating it. Wrapped in an undo
+transaction.
+
+### get_kill_z() -> float
+
+World "kill Z" — any actor below this Z is destroyed (UE's pit
+safety). Default on most projects is `-1048575.0`.
+
+### set_kill_z(new_kill_z) -> bool
+
+Set the world kill Z. Undo-captured.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_kill_z(-500.0)   # tighter pit
+unreal.UnrealBridgeLevelLibrary.set_world_gravity(-200.0, True)  # low-g scenario
+```
+
+### get_ground_height_at(x, y, start_height=100000.0) -> float
+
+Downward line-trace (visibility channel) from `(x, y, start_height)`.
+Returns the Z of the first hit in cm, or `-1e6` on miss / no editor
+world. For landscape-based maps this is effectively the terrain
+height at the XY point.
+
+### get_ground_normal_at(x, y, start_height=100000.0) -> Vector or None
+
+Surface normal at the first hit. UE Python bool-plus-outparam: returns
+the `Vector` on success, `None` on miss.
+
+### get_ground_hit_actor(x, y, start_height=100000.0) -> str
+
+Label of the actor under the downward trace. Empty string on miss.
+Use to detect which landscape / static mesh floor an XY is over.
+
+### get_actor_ground_clearance(actor_name, max_distance=10000.0) -> float
+
+Distance in cm from an actor's pivot to the first surface below it
+(the actor is auto-ignored from the trace). Returns `-1.0` on miss or
+missing actor. Editor-world variant of the gameplay-side
+`get_pawn_ground_height`.
+
+```python
+clearance = unreal.UnrealBridgeLevelLibrary.get_actor_ground_clearance('Cube')
+if clearance > 200:
+    unreal.UnrealBridgeLevelLibrary.snap_actor_to_floor('Cube')
+```
+
+**Pitfall:** traces use `ECC_Visibility`. Actors with `NoCollision` or
+non-visibility collision profiles don't register — WorldPartition
+cells that haven't been loaded also return misses.
+
+### get_all_descendants(actor_name) -> list[str]
+
+Flat pre-order list of labels for every actor attached to this actor
+at any depth. Complements the formatted `get_attachment_tree` with
+iteration-friendly output.
+
+### get_actor_siblings(actor_name) -> list[str]
+
+Labels of other actors sharing the same attach-parent (self excluded).
+Empty when the actor has no parent (root-level actors don't share a
+sibling group).
+
+### get_root_attach_parent(actor_name) -> str
+
+Label of the topmost ancestor in the chain. Returns the actor's own
+label when it has no parent. Empty on missing actor.
+
+### get_attachment_depth(actor_name) -> int
+
+Depth in the attachment tree. `0` = no parent, `1` = child of a root,
+etc. Returns `-1` on missing actor.
+
+```python
+for a in unreal.UnrealBridgeLevelLibrary.get_actor_names('', '', ''):
+    d = unreal.UnrealBridgeLevelLibrary.get_attachment_depth(a)
+    if d > 3:
+        print(f'{a}: deeply nested (depth {d})')
+```
+
+### get_actor_vertex_count(actor_name) -> int
+
+LOD 0 vertex count summed over every `UStaticMeshComponent` on the
+actor. Skeletal / Niagara / procedural meshes are skipped — use the
+native UE Python API for those. Returns `-1` for missing actor, `0`
+for actors with no SMCs or empty mesh slots.
+
+### get_actor_triangle_count(actor_name) -> int
+
+LOD 0 triangle count summed over all StaticMeshComponents.
+
+### get_actor_material_slot_count(actor_name) -> int
+
+Total material-slot count across every `UMeshComponent` (static +
+skeletal). Counts slots, not unique materials — a 4-slot mesh with
+all slots pointing at one material contributes 4.
+
+### get_actor_lod_count(actor_name) -> int
+
+Max LOD count across all SMCs (i.e. deepest-authored mesh). Returns
+`0` for actors with no static-mesh data.
+
+```python
+# Flag over-budget actors.
+for a in unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', ''):
+    t = unreal.UnrealBridgeLevelLibrary.get_actor_triangle_count(a)
+    if t > 100_000:
+        print(f'{a}: {t:,} tris — consider LODs')
+```
+
+**Pitfall:** LOD 0 is the most expensive LOD; these numbers are *not*
+what the GPU actually renders at runtime (which depends on distance,
+scalability, and Nanite). Treat as a worst-case budget reference.
+
+### get_all_actor_tags_in_level() -> list[str]
+
+Sorted unique set of every `FName` tag used by any actor in the
+current editor level. Useful to discover available filters before
+calling `find_actors_by_tag` / `count_actors_by_tag`.
+
+### count_actors_by_tag(tag) -> int
+
+Count of actors carrying the given tag. `Name("None")` / empty tag
+returns 0.
+
+### select_actors_by_tag(tag, add_to_selection=False) -> int
+
+Select every actor carrying the tag in the editor viewport. Returns
+the count added. Pass `add_to_selection=True` to keep the current
+selection.
+
+### remove_tag_from_all_actors(tag) -> int
+
+Bulk-remove a tag from every actor in the level that carries it.
+Wrapped in a single undo transaction. Returns the count of actors
+modified.
+
+```python
+# Find-and-delete pattern: tag candidates, inspect, then clean up
+unreal.UnrealBridgeLevelLibrary.add_actor_tag('Cube', unreal.Name('probe'))
+n = unreal.UnrealBridgeLevelLibrary.count_actors_by_tag(unreal.Name('probe'))
+# ...do work...
+unreal.UnrealBridgeLevelLibrary.remove_tag_from_all_actors(unreal.Name('probe'))
+```
+
+### is_actor_of_class(actor_name, class_path) -> bool
+
+True when the actor's class is `class_path` or a subclass. Uses the
+same resolver as `find_actors_by_class` — accepts full paths
+(`/Script/Engine.StaticMeshActor`) or short names (`StaticMeshActor`).
+
+### get_actor_parent_class(actor_name) -> str
+
+Immediate superclass name (e.g. `"StaticMeshActor"`'s parent is
+`"Actor"`). Empty string on missing actor.
+
+### get_actor_class_hierarchy(actor_name) -> list[str]
+
+Full ancestor chain from the actor's class up to `UObject`. Handy for
+deciding which query helper to use without hardcoding class names.
+
+```python
+hier = unreal.UnrealBridgeLevelLibrary.get_actor_class_hierarchy('Cube')
+# ['StaticMeshActor', 'Actor', 'Object']
+```
+
+### find_actors_by_class_and_tag(class_filter, tag) -> list[str]
+
+Labels of actors whose class matches AND whose tags contain `tag`.
+Avoids a double round-trip for class + tag queries.
+
+### rotate_actors(actor_names, delta_rotation) -> int
+
+Add `delta_rotation` to each named actor's world rotation
+(componentwise axis addition, not quaternion composition). Single
+undo transaction.
+
+### scale_actors(actor_names, scale_multiplier) -> int
+
+Multiply each actor's world scale componentwise by `scale_multiplier`
+(e.g. `Vector(2, 2, 2)` doubles uniform scale).
+
+### set_actors_uniform_scale(actor_names, uniform_scale) -> int
+
+Set scale to a uniform value on all three axes.
+
+### mirror_actors(actor_names, axis) -> int
+
+Flip each actor's location AND scale sign on the named axis
+(`"X"`/`"Y"`/`"Z"`, case-insensitive). Unknown axis returns 0.
+
+```python
+# Scripted left-right duplicate
+src = unreal.UnrealBridgeLevelLibrary.duplicate_actors(['Cube'])
+unreal.UnrealBridgeLevelLibrary.mirror_actors(src, 'X')
+```
+
+### move_actors_to_folder(actor_names, folder_path) -> int
+
+Assign a batch of actors to the same World Outliner folder. Empty
+path moves them to the outliner root.
+
+### rename_folder(old_folder, new_folder) -> int
+
+Move every actor whose folder path matches `old_folder` (exact,
+non-recursive) to `new_folder`. Returns count moved.
+
+### dissolve_folder(folder_path) -> int
+
+Move every actor assigned to `folder_path` (exact match) back to the
+outliner root. The folder itself has no persistent state — it
+disappears from the outliner once empty.
+
+### is_folder_empty(folder_path) -> bool
+
+True when no actor is currently assigned to `folder_path` (exact
+match, not recursive).
+
+```python
+# Reorganise: collect test actors into one folder, then tear it down
+unreal.UnrealBridgeLevelLibrary.move_actors_to_folder(probes, 'Probes')
+# ...work...
+unreal.UnrealBridgeLevelLibrary.dissolve_folder('Probes')
+```
+
+### get_actors_in_sublevel(package_name) -> list[str]
+
+Labels of actors living in the named sublevel. `package_name` is the
+level's package (e.g. `"/Game/Maps/Sub_Foo"` or the persistent level
+path). Empty list when the sublevel isn't loaded.
+
+### count_actors_in_sublevel(package_name) -> int
+
+Cheaper than `len(get_actors_in_sublevel(...))` — skips label
+allocation.
+
+### get_actor_level_package_name(actor_name) -> str
+
+Package name of the level that owns the actor. Useful for scoping
+an op to actors in the persistent level only.
+
+### get_persistent_level_actor_count() -> int
+
+Number of actors in the persistent level (excludes sublevels).
+
+### invert_selection() -> int
+
+Flip the selection state of every actor. Returns the count now
+selected after the flip.
+
+### select_all_actors() -> int
+
+Select every actor in the level. Returns total selected.
+
+### select_actors_in_box(min, max, add_to_selection=False) -> int
+
+Select actors whose pivot location falls inside the axis-aligned
+box `[min, max]`.
+
+### select_actors_in_sphere(center, radius, add_to_selection=False) -> int
+
+Select actors whose pivot location lies within `radius` cm of `center`.
+
+```python
+# Group everything in a 20m radius into one folder for quick edit
+unreal.UnrealBridgeLevelLibrary.select_actors_in_sphere(
+    unreal.Vector(0, 0, 0), 2000.0)
+selection = unreal.UnrealBridgeLevelLibrary.get_selected_actors()
+unreal.UnrealBridgeLevelLibrary.move_actors_to_folder(selection, 'NearOrigin')
+```
+
+### get_selection_count() -> int
+
+Cheap count of currently-selected actors — faster than
+`len(get_selected_actors())` when you only need the count.
+
+### get_selection_bounds() -> FBridgeActorBounds
+
+Union of bounds across every selected actor. Zero-bounds when the
+selection is empty or nothing renderable is selected.
+
+### get_selection_centroid() -> Vector
+
+Arithmetic mean of selected actors' pivot locations. Zero vector
+when empty.
+
+### get_selection_class_set() -> list[str]
+
+Sorted unique class short-names present in the selection. Useful
+for auditing "did I accidentally grab a light?"-type questions
+before applying a bulk transform.
+
+```python
+if len(unreal.UnrealBridgeLevelLibrary.get_selection_class_set()) > 1:
+    print('mixed selection — use a filter before the bulk op')
+```
+
+### find_actors_in_cone(origin, direction, half_angle_deg, max_distance, class_filter) -> list[str]
+
+Labels of actors whose pivot falls inside a wedge rooted at `origin`,
+facing `direction`, with half-angle `half_angle_deg` degrees and
+length `max_distance` cm. Not distance-sorted.
+
+### is_actor_in_cone(actor_name, origin, direction, half_angle_deg, max_distance) -> bool
+
+Cheaper variant when the caller already has a candidate name.
+
+### closest_point_on_segment(point, segment_start, segment_end) -> Vector
+
+`FMath::ClosestPointOnSegment` — nearest point on the finite segment
+to an arbitrary point. Useful for "snap to corridor" placement or
+projecting an actor onto a ray.
+
+### distance_from_point_to_segment(point, segment_start, segment_end) -> float
+
+Perpendicular distance (cm) to the finite segment.
+
+```python
+# Does the camera see the cube?
+cam_loc, cam_rot = unreal.UnrealBridgeGameplayLibrary.get_camera_view_point()
+fwd = cam_rot.rotate_vector(unreal.Vector(1, 0, 0))
+if unreal.UnrealBridgeLevelLibrary.is_actor_in_cone(
+        'Cube', cam_loc, fwd, 45.0, 5000.0):
+    print('in FOV')
+```
+
+---
+
+## Read — Actor Queries
+
+### get_actor_count(class_filter) -> int
+
+Count actors passing an optional class filter (short name or full path). Empty string = all.
+
+### get_actor_names(class_filter, tag_filter, name_filter) -> list[str]
+
+Return **labels** (user-visible names). All filters are optional (pass "" to skip). `name_filter` is a case-insensitive substring match on the label.
+
+> ⚠️ **Token cost: MEDIUM–HIGH on populated levels.** No built-in result cap. On World Partition / open-world maps (5k+ actors) an unfiltered call returns thousands of strings. **Always pass at least one filter**, or use `get_actor_count` first to size the sweep.
+
+```python
+names = unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', 'Wall')
+```
+
+### list_actors(class_filter, tag_filter, name_filter, selected_only, max_results) -> list[FBridgeActorBrief]
+
+Detailed list. `max_results=0` = unlimited.
+
+> ⚠️ **Token cost: HIGH.** Each brief carries 6 fields (name, label, class, location, tags, hidden). Multiply by actor count — an unfiltered `max_results=0` on a WP map can return several hundred KB. **Never pass `max_results=0` without a narrowing filter.** Prefer `get_actor_names` (labels only) for discovery, then `get_actor_info` on the specific actor.
+
+```python
+briefs = unreal.UnrealBridgeLevelLibrary.list_actors('', '', '', False, 50)
+for a in briefs:
+    print(f'[{a.class_name}] {a.label} @ {a.location}')
+```
+
+### FBridgeActorBrief fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Internal FName |
+| `label` | str | User-visible label |
+| `class_name` | str | Actor class short name |
+| `location` | Vector | World location |
+| `tags` | list[str] | Actor tags |
+| `b_hidden` | bool | Hidden in editor |
+
+### find_actors_by_class(class_path, max_results) -> list[str]
+
+Return labels of actors matching a class path. Accepts short name or full `/Script/...` path. `max_results=0` = unlimited.
+
+### find_actors_by_tag(tag) -> list[str]
+
+Return labels of actors having the given tag.
+
+> ⚠️ **Token cost: MEDIUM.** No result cap. If the tag is broad (e.g. "Enemy" on hundreds of spawns), the return can grow large. Check `get_actor_count` or use `find_actors_by_class` with `max_results` when scale is unknown.
+
+### find_actors_in_radius(location, radius, class_filter) -> list[FBridgeActorRadiusHit]
+
+Actors within `radius` (cm) of `location`, distance-sorted.
+
+```python
+hits = unreal.UnrealBridgeLevelLibrary.find_actors_in_radius(unreal.Vector(0,0,0), 500.0, '')
+for h in hits:
+    print(f'{h.name} [{h.class_name}] d={h.distance:.1f}')
+```
+
+### FBridgeActorRadiusHit fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Actor label |
+| `class_name` | str | Class short name |
+| `distance` | float | Distance to probe point (cm) |
+
+### get_selected_actors() -> list[str]
+
+Return labels of currently selected actors.
+
+---
+
+## Read — Actor Detail
+
+### get_actor_info(actor_name) -> FBridgeActorInfo
+
+Look up by FName or label. On duplicate labels, first match wins.
+
+```python
+info = unreal.UnrealBridgeLevelLibrary.get_actor_info('BP_Hero_1')
+print(f'{info.label} class={info.class_name} parent={info.attached_to} children={list(info.children)}')
+for c in info.components:
+    print(f'  [{c.class_name}] {c.name} parent={c.attach_parent}')
+```
+
+### FBridgeActorInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Internal FName |
+| `label` | str | User-visible label |
+| `class_name` | str | Actor class short name |
+| `class_path` | str | Full class path |
+| `transform` | FBridgeTransform | World transform |
+| `tags` | list[str] | Actor tags |
+| `attached_to` | str | Parent actor name (empty if detached) |
+| `children` | list[str] | Attached child actor names |
+| `components` | list[FBridgeLevelComponentInfo] | Components |
+| `b_hidden` | bool | Hidden in editor |
+| `b_hidden_in_game` | bool | Hidden at runtime |
+
+### FBridgeTransform fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `location` | Vector | Location |
+| `rotation` | Rotator | Rotation |
+| `scale` | Vector | Scale |
+
+### FBridgeLevelComponentInfo fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | str | Component name |
+| `class_name` | str | Component class |
+| `attach_parent` | str | Parent component name (empty if root/non-scene) |
+| `relative_transform` | FBridgeTransform | Relative transform |
+
+### get_actor_transform(actor_name) -> FBridgeTransform
+
+### get_actor_components(actor_name) -> list[FBridgeLevelComponentInfo]
+
+### get_attachment_tree(actor_name) -> list[str]
+
+Recursive attachment hierarchy as indented lines, one per descendant.
+
+### get_actor_property(actor_name, property_path) -> str
+
+Return the exported-text value of a property. Supports dotted nesting into structs and subobjects (e.g. `RootComponent.RelativeLocation`, `StaticMeshComponent.Mobility`).
+
+---
+
+## Write — Spawn / Destroy / Duplicate
+
+### spawn_actor(class_path, location, rotation) -> str
+
+Spawn an actor. Accepts `/Script/Engine.StaticMeshActor` or Blueprint path `/Game/.../BP_Foo` (`_C` suffix optional). Returns the spawned actor's label, or empty string on failure.
+
+```python
+label = unreal.UnrealBridgeLevelLibrary.spawn_actor(
+    '/Script/Engine.StaticMeshActor',
+    unreal.Vector(0, 0, 100),
+    unreal.Rotator(0, 0, 0),
+)
+```
+
+### destroy_actor(actor_name) -> bool
+
+### destroy_actors(actor_names) -> int
+
+Destroy many actors in a single undo transaction. Returns count destroyed.
+
+### duplicate_actors(actor_names) -> list[str]
+
+Duplicate actors in a single undo transaction. Returns labels of the new copies.
+
+---
+
+## Write — Transform / Hierarchy
+
+### set_actor_transform(actor_name, location, rotation, scale) -> bool
+
+### move_actor(actor_name, delta_location, delta_rotation) -> bool
+
+Apply a delta to the current transform.
+
+### attach_actor(child_name, parent_name, socket_name) -> bool
+
+Attach `child_name` to `parent_name` (optionally at a socket).
+
+### detach_actor(actor_name) -> bool
+
+### set_actor_property(actor_name, property_path, exported_value) -> bool
+
+Set a property from an exported-text value. Dotted path supported. ⚠️ For transient struct fields (e.g. component `RelativeLocation`), prefer `set_actor_transform` / `move_actor` — direct struct writes don't trigger component update notifications.
+
+### invoke_function_on_actor(actor_name, function_name, args_json) -> (result_json, error)
+
+Call a UFunction on a **live actor** (one placed in the level or spawned
+into the editor world) via `ProcessEvent`. Companion to
+`invoke_blueprint_function` — that one spawns a transient instance and
+destroys it; this one targets an actor you already have. Ideal for
+functional-test flows:
+
+```python
+label = LV.spawn_actor(bp + '_C', unreal.Vector(0, 0, 0), unreal.Rotator.ZERO)
+LV.set_actor_property(label, 'Health', '100')
+result_json, err = LV.invoke_function_on_actor(label, 'TakeDamage', '{"Amount": 25}')
+current = LV.get_actor_property(label, 'Health')
+assert current == '75.000000', current
+LV.destroy_actor(label)
+```
+
+**Input / output JSON** follow the same contract as
+`invoke_blueprint_function`:
+- `args_json`: JSON object keyed by parameter name. Empty string = no args.
+- `result_json`: JSON object with out-params / return (return keyed as
+  `"_return"`). On handled failure: `{"error":"..."}`.
+
+**Safety gates.** Rejects non-BlueprintCallable/Pure functions (unless
+user-defined on the actor's BP class) and latent functions — same rules
+as `invoke_blueprint_function`.
+
+**Always-true return.** The bool return is always `true` for handled
+outcomes; Python callers should inspect `result_json` for an `error`
+key rather than rely on the bool (UE's Python binding strips out-params
+when a UFUNCTION returns false).
+
+**Pair with other APIs for full test flows:**
+- `spawn_actor` → set up
+- `set_actor_property` → preconditions
+- `invoke_function_on_actor` → drive behavior
+- `get_actor_property` → assert post-state
+- `destroy_actor` → teardown
+
+---
+
+## Write — Selection / Visibility / Labels
+
+### select_actors(actor_names, add_to_selection) -> bool
+
+Select in the editor viewport. If `add_to_selection` is False, the selection is cleared first.
+
+### deselect_all_actors() -> bool
+
+### set_actor_label(actor_name, new_label) -> bool
+
+### set_actor_hidden_in_game(actor_name, hidden) -> bool
+
+---
+
+## Read — Spatial Queries
+
+### get_actor_bounds(actor_name) -> FBridgeActorBounds
+
+World-space bounds of `actor_name` (all colliding + non-colliding primitives, including child actors). Zero-bounds if the actor has no renderable/collision geometry or is missing.
+
+```python
+b = unreal.UnrealBridgeLevelLibrary.get_actor_bounds('BP_Cube_1')
+print(b.origin, b.box_extent, b.sphere_radius)
+```
+
+### FBridgeActorBounds fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `origin` | Vector | World-space center of the AABB |
+| `box_extent` | Vector | Half-extents on each axis |
+| `sphere_radius` | float | Bounding sphere radius |
+
+### get_actors_in_box(min, max, class_filter) -> list[str]
+
+Labels of actors whose world location lies inside the axis-aligned box `[min, max]`. Pass empty string for `class_filter` to match any class.
+
+```python
+names = unreal.UnrealBridgeLevelLibrary.get_actors_in_box(
+    unreal.Vector(-500,-500,0), unreal.Vector(500,500,500), '')
+```
+
+### find_nearest_actor(location, class_filter) -> str
+
+Label of the actor nearest to `location`, or empty string if none match `class_filter`.
+
+### get_actor_distance(actor_a, actor_b) -> float
+
+Distance between two actors' world locations in cm. Returns `-1.0` if either actor is missing.
+
+### is_actor_selected(actor_name) -> bool
+
+`True` if `actor_name` is currently selected in the editor viewport.
+
+
+### set_actor_hidden_in_editor(actor_name, hidden) -> bool
+
+Toggle editor viewport visibility (SetIsTemporarilyHiddenInEditor). Transaction-wrapped. Cost: O(1) plus lookup.
+
+### add_actor_tag(actor_name, tag) -> bool
+
+Add an FName tag to Actor.Tags. Returns False if already present or actor missing. Transaction-wrapped.
+
+```python
+unreal.UnrealBridgeLevelLibrary.add_actor_tag('BP_Cube_1', 'interactable')
+```
+
+### remove_actor_tag(actor_name, tag) -> bool
+
+Remove an FName tag from Actor.Tags. Returns True only if a tag was removed. Transaction-wrapped.
+
+### get_actor_class_histogram() -> list[str]
+
+Per-class counts across all actors in the editor world, sorted descending. Each line is "Count	ClassName". Cost: O(N) over all actors; small output (one line per distinct class).
+
+```python
+for line in unreal.UnrealBridgeLevelLibrary.get_actor_class_histogram()[:10]:
+    print(line)
+```
+
+### get_actor_materials(actor_name) -> list[str]
+
+Deduplicated material asset paths from the actor's `UMeshComponent`-derived components (static + skeletal + instanced). Empty list if no mesh components. Cost: O(components * material slots); small output. Note: `Landscape` actors have no `UMeshComponent` and return `[]` — use material queries against the landscape component separately if needed.
+
+```python
+unreal.UnrealBridgeLevelLibrary.get_actor_materials('BP_Cube_1')
+# ['/Game/Materials/M_Base.M_Base', ...]
+```
+
+---
+
+## Folder Organization
+
+World Outliner folder paths use `/` as a separator (e.g. `"Enemies/Boss"`). The root is represented as the empty string `""`.
+
+### get_actor_folder(actor_name) -> str
+
+Return the actor's World Outliner folder path, or `""` if the actor is at root (or missing). Cost: O(1) plus lookup.
+
+```python
+unreal.UnrealBridgeLevelLibrary.get_actor_folder('BP_Hero_1')  # "Heroes/Main"
+```
+
+### set_actor_folder(actor_name, folder_path) -> bool
+
+Move an actor to `folder_path`. Pass `""` to move it to the outliner root. Transaction-wrapped (Ctrl+Z undoable). Returns `False` if the actor is missing.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_folder('BP_Cube_1', 'Props/Crates')
+```
+
+### get_actor_folders() -> list[str]
+
+Sorted distinct folder paths used by any actor in the current level. Actors at root (unfoldered) do not contribute a `""` entry. Cost: O(N) over all actors; small output (one line per distinct folder).
+
+> Token cost: LOW — one short string per folder; typical levels have fewer than ~30 folders.
+
+### get_actors_in_folder(folder_path, recursive) -> list[str]
+
+Labels of actors whose folder equals `folder_path`.
+
+- `recursive=False` — exact match only.
+- `recursive=True` — also include actors in sub-folders (`"Foo/Bar"` when querying `"Foo"`).
+- Pass `folder_path=""` for root-level actors; with `recursive=True` and an empty path, every foldered actor is returned (useful for "everything that has been organized").
+
+> Token cost: MEDIUM on large folders. No result cap. Combine with class/name filters via `get_actor_names` then filter in Python if you need finer slicing.
+
+```python
+# Re-parent all actors under "Old/Legacy" to "Archive"
+for label in unreal.UnrealBridgeLevelLibrary.get_actors_in_folder('Old/Legacy', True):
+    unreal.UnrealBridgeLevelLibrary.set_actor_folder(label, 'Archive')
+```
+
+---
+
+## Spatial — Line Trace
+
+### line_trace_first_actor(start, end) -> str
+
+Cast a single line-trace through the editor world against the **Visibility** collision channel (complex collision). Returns the label of the first actor hit, or `""` if nothing was hit or the world is unavailable.
+
+> Cost: O(world-trace). Small output (single string). Useful for picking an actor beneath the viewport camera or probing what an actor would "see" along a vector.
+
+```python
+hit = unreal.UnrealBridgeLevelLibrary.line_trace_first_actor(
+    unreal.Vector(0, 0, 100000),
+    unreal.Vector(0, 0, -100000),
+)
+print(hit)  # e.g. "Landscape"
+```
+
+### multi_line_trace_actors(start, end) -> list[str]
+
+Cast a multi-hit line-trace (visibility channel, complex collision) and return deduplicated actor labels ordered near → far.
+
+> Cost: O(world-trace + hits). Small output. Prefer over looping `line_trace_first_actor` with temporary occluders — this returns the whole penetration set in one call.
+
+```python
+pierced = unreal.UnrealBridgeLevelLibrary.multi_line_trace_actors(
+    unreal.Vector(0, 0, 10000),
+    unreal.Vector(0, 0, -10000),
+)
+# e.g. ['Ceiling', 'Platform_2', 'Landscape']
+```
+
+### sphere_trace_first_actor(start, end, radius) -> str
+
+Sphere sweep (fat ray) against the editor world's visibility channel.
+Catches actors a thin line-trace would miss when they graze the ray —
+useful for cover / line-of-interest detection. Returns the first hit
+actor's label, or empty string.
+
+```python
+hit = unreal.UnrealBridgeLevelLibrary.sphere_trace_first_actor(
+    unreal.Vector(0, 0, 0), unreal.Vector(0, 0, -10000), 50.0)
+```
+
+### multi_sphere_trace_actors(start, end, radius) -> list[str]
+
+Multi-hit sphere sweep. Deduplicated labels ordered near → far.
+
+### box_trace_first_actor(start, end, box_half_extent) -> str
+
+Axis-aligned box sweep (`FQuat::Identity` orientation). `box_half_extent`
+is a `Vector` — the box's half-size on each axis. Returns the first hit
+actor's label, or empty string. For oriented-box sweeps drop to the UE
+Python API directly — this wrapper intentionally keeps the surface flat.
+
+```python
+hit = unreal.UnrealBridgeLevelLibrary.box_trace_first_actor(
+    unreal.Vector(0, 0, 0), unreal.Vector(0, 0, -10000),
+    unreal.Vector(50, 50, 50))
+```
+
+### overlap_sphere_actors(center, radius, class_filter) -> list[str]
+
+Physics-overlap: actors whose collision primitives intersect a sphere at
+`center` with `radius` cm. **Distinct from `find_actors_in_radius`**,
+which tests actor centroids only — overlap catches large actors that
+straddle the sphere even if their pivot is outside.
+
+Results are deduplicated; order follows the query's internal traversal
+(not distance-sorted). Pass `class_filter=""` for no filter.
+
+```python
+nearby = unreal.UnrealBridgeLevelLibrary.overlap_sphere_actors(
+    unreal.Vector(0, 0, 0), 500.0, 'StaticMeshActor')
+```
+
+**Pitfalls (all sweep/overlap queries)**
+
+- Use the *visibility* collision channel — actors with `NoCollision` or
+  non-visibility collision profiles won't be reported.
+- All four wrappers run `bTraceComplex=false` (primitive shapes, not
+  triangle-level). For per-triangle sweeps use the native UE API.
+- `radius` / `box_half_extent` are clamped to ≥ 0 internally; negative
+  values become 0 (degenerates to a line trace).
+
+---
+
+## Bulk transform + level-wide spatial
+
+### snap_actor_to_floor(actor_name, max_distance=10000.0) -> bool
+
+Line-trace downward from the actor's current location for up to
+`max_distance` cm (visibility channel, self-ignored) and set the actor's
+Z to the hit surface. X / Y / rotation / scale untouched. Wrapped in
+an undo transaction.
+
+```python
+unreal.UnrealBridgeLevelLibrary.snap_actor_to_floor('Cube', 5000.0)
+```
+
+Returns False on miss (trace hit nothing), missing actor, or no editor
+world.
+
+### snap_actors_to_grid(actor_names, grid_size) -> int
+
+Snap each actor's world location to a `grid_size` cm grid (applied to
+all three axes). Single undo transaction. Returns the count of actors
+actually moved (existed + non-null).
+
+```python
+cubes = unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', 'Cube')
+unreal.UnrealBridgeLevelLibrary.snap_actors_to_grid(cubes, 100.0)
+```
+
+`grid_size <= 0` returns 0 with no effect.
+
+### offset_actors(actor_names, delta_location) -> int
+
+Add `delta_location` to every named actor's world location. Single undo
+transaction. Returns count offset.
+
+```python
+unreal.UnrealBridgeLevelLibrary.offset_actors(cubes, unreal.Vector(0, 0, 200))
+```
+
+### get_level_bounds() -> FBridgeActorBounds
+
+Union of bounds over every actor in the level (all primitives,
+colliding or not). Returns a zero-bounds struct for empty levels.
+
+```python
+b = unreal.UnrealBridgeLevelLibrary.get_level_bounds()
+print(f'center={b.origin} extent={b.box_extent} r={b.sphere_radius:.1f}')
+```
+
+**Pitfalls**
+
+- WorldPartition / Landscape / infinite-bounds actors inflate the union
+  to absurd values (radius in the billions of cm). Filter those out
+  beforehand by calling `get_actor_names()` with a class filter and
+  computing the union client-side via `get_actor_bounds()` on each.
+- An actor with no primitive components contributes nothing — bounds
+  are skipped when both origin and extent are zero.
+
+---
+
+## Editor visibility grouping
+
+All four helpers toggle the **editor-only** `bHiddenEd` flag (via
+`AActor::SetIsTemporarilyHiddenInEditor`) — they do NOT affect
+`bHiddenInGame` and have zero runtime impact. Mirrors the `H` /
+`Alt+H` hotkeys in the viewport. Every write is one undo transaction.
+
+### isolate_actors(keep_visible) -> int
+
+Hide every level actor that's NOT in `keep_visible`. Returns the count
+of newly-hidden actors (already-hidden actors are skipped, so calling
+again is a no-op). Pair with `show_all_actors()` to restore.
+
+```python
+cubes = unreal.UnrealBridgeLevelLibrary.get_actor_names('StaticMeshActor', '', 'Cube')
+unreal.UnrealBridgeLevelLibrary.isolate_actors(cubes[:1])
+```
+
+### show_all_actors() -> int
+
+Un-hide every currently-hidden actor, including actors that were
+already hidden before `isolate_actors`. Returns the count made visible.
+
+**Pitfall:** this un-hides *all* actors, not just those hidden by the
+most-recent isolate call — including default engine-side invisibles
+(`DefaultPhysicsVolume`, `AbstractNavData-Default`). Prefer an
+`undo()` if you need to restore the exact prior state.
+
+### get_hidden_actor_names() -> list[str]
+
+Labels of actors whose `bHiddenEd` flag is set. Includes engine-created
+background actors; filter those out client-side if needed.
+
+### toggle_actors_hidden(actor_names) -> int
+
+Flip `bHiddenEd` on each named actor. Returns the count successfully
+toggled (missing actor names are skipped silently).
+
+---
+
+## Static mesh + material setters
+
+Complement the read-side `get_actor_materials` / `get_actor_bounds`
+with writers that swap the mesh or override material slots on the
+actor's primary mesh component. All writes use `FScopedTransaction` so
+Ctrl+Z restores the previous state.
+
+### get_actor_mesh(actor_name) -> str
+
+Asset path of the `UStaticMesh` on the actor's first
+`UStaticMeshComponent`. Empty string if the actor has no SMC, the slot
+is empty, or the actor is missing.
+
+### set_actor_mesh(actor_name, mesh_asset_path) -> bool
+
+Swap the mesh on the actor's first `UStaticMeshComponent`. The path
+must resolve to a `UStaticMesh` asset. Returns False on missing actor,
+missing SMC, or failed asset load.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_mesh('Cube', '/Engine/BasicShapes/Sphere')
+```
+
+**Pitfall:** the component's existing material overrides are preserved
+and may index past the new mesh's slot count. Call `reset_actor_materials`
+after if you want the new mesh's defaults.
+
+### set_actor_material(actor_name, material_index, material_asset_path) -> bool
+
+Override a material slot on the actor's first `UMeshComponent` (Static
+or Skeletal). Pass an empty `material_asset_path` to clear that slot's
+override back to the mesh default.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_material(
+    'Cube', 0, '/Engine/BasicShapes/BasicShapeMaterial')
+```
+
+Returns False when the actor / mesh component is missing, the slot
+index is out of range, or the material asset fails to load.
+
+### reset_actor_materials(actor_name) -> int
+
+Clear every overridden material slot across ALL mesh components on the
+actor, restoring the underlying mesh's default materials. Returns the
+count of slots cleared.
+
+---
+
+## Collision + physics control
+
+All four helpers target the actor's primary `UPrimitiveComponent` —
+the root when it's a primitive, otherwise the first primitive
+component found. Every write uses `FScopedTransaction`; `Cmd+Z`
+restores the previous state.
+
+### get_actor_collision_profile(actor_name) -> str
+
+Current collision profile name (e.g. `"BlockAll"`, `"NoCollision"`,
+`"Pawn"`). Empty string when the actor has no primitive component.
+
+### set_actor_collision_profile(actor_name, profile_name) -> bool
+
+Apply a named collision profile. Common presets:
+`"NoCollision"`, `"BlockAll"`, `"BlockAllDynamic"`, `"OverlapAll"`,
+`"Pawn"`, `"PhysicsActor"`, `"Vehicle"`. Unknown profile names are
+accepted by UE and silently behave as `"NoCollision"` — validate
+against your project's `DefaultEngine.ini` collision profiles list
+client-side if precision matters.
+
+### set_actor_simulate_physics(actor_name, simulate) -> bool
+
+Toggle physics simulation on the primary primitive. `simulate=true`
+requires `Movable` mobility; this helper auto-promotes if the
+component was Static/Stationary. The mobility change is captured in
+the transaction, so a single `undo()` reverts both.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_actor_simulate_physics('Cube', True)
+# cube now falls under gravity in PIE
+```
+
+### set_actor_enable_collision(actor_name, enabled) -> bool
+
+Actor-level enable/disable via `AActor::SetActorEnableCollision` —
+cascades to every primitive component on the actor. Use this for a
+quick "ignore me" toggle without changing per-component profiles.
+
+---
+
+## Component add/remove + root query
+
+Editor-time component management. Added components are tracked as
+instance components (survive save/reload). Only instance components
+can be removed — native / CDO / Blueprint-archetype components reject
+removal.
+
+### get_actor_root_component_name(actor_name) -> str
+
+FName of the actor's root `USceneComponent` (e.g. `"StaticMeshComponent0"`).
+Empty string if the actor has no root or is missing.
+
+### add_component_of_class(actor_name, component_class_path) -> str
+
+Instantiate a new component. `component_class_path` must resolve to a
+`UActorComponent`-derived `UClass` — a native class path like
+`/Script/Engine.PointLightComponent` or a Blueprint component class.
+
+The new component is auto-attached to the actor's root (for scene
+components) and registered. Returns the component's FName, or empty
+string on failure.
+
+```python
+comp = unreal.UnrealBridgeLevelLibrary.add_component_of_class(
+    'Cube', '/Script/Engine.PointLightComponent')
+```
+
+### remove_component(actor_name, component_name) -> bool
+
+Remove a named instance component. Returns False if:
+- the actor / component is missing, OR
+- the component is a native/CDO archetype (not in `GetInstanceComponents`).
+
+### set_component_relative_transform(actor_name, component_name, location, rotation, scale) -> bool
+
+Assign all three relative-transform fields on a named scene component.
+Other properties (physics, visibility, ...) untouched. Wrapped in one
+undo transaction.
+
+---
+
+## Components / Sockets
+
+### get_actor_sockets(actor_name) -> list[str]
+
+Enumerate sockets on every `USceneComponent` of the actor. Each line is `"ComponentName:SocketName"`.
+
+> Cost: O(components × sockets). Small output on typical actors. Use to discover valid `socket_name` arguments for `attach_actor` or `get_socket_world_transform`.
+
+```python
+for entry in unreal.UnrealBridgeLevelLibrary.get_actor_sockets('BP_Weapon_1'):
+    print(entry)  # e.g. "Mesh:Muzzle"
+```
+
+### get_socket_world_transform(actor_name, component_name, socket_name) -> FBridgeTransform
+
+World transform of `socket_name` on `component_name`. Returns an identity transform if the actor, component, or socket is missing.
+
+```python
+t = unreal.UnrealBridgeLevelLibrary.get_socket_world_transform(
+    'BP_Character_1', 'Mesh', 'hand_r')
+print(t.location, t.rotation)
+```
+
+### get_component_world_transform(actor_name, component_name) -> FBridgeTransform
+
+World transform of a scene component by name. Returns identity if the component is missing or non-scene. Cost: O(1) plus component lookup.
+
+### set_component_visibility(actor_name, component_name, visible, propagate_to_children) -> bool
+
+Toggle visibility of a scene component. If `propagate_to_children=True`, the change cascades down the attachment tree. Transaction-wrapped. Returns `False` if the component is missing or not a scene component.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_component_visibility(
+    'BP_Hero_1', 'Cape', False, True)
+```
+
+### set_component_mobility(actor_name, component_name, mobility) -> bool
+
+Set a scene component's mobility. `mobility` must be one of `"Static"`, `"Stationary"`, or `"Movable"` (case-insensitive). Transaction-wrapped. Returns `False` if the component is missing, non-scene, or the mobility string is invalid.
+
+> ⚠️ Movable → Static demotions may invalidate baked lighting. Callers should typically re-bake / rebuild lighting after changing lots of actors.
+
+```python
+unreal.UnrealBridgeLevelLibrary.set_component_mobility(
+    'BP_Prop_1', 'StaticMeshComponent', 'Movable')
+```
+
+## Trace — hit detail
+
+All traces run against the **runtime world** (live PIE world when
+Play-in-Editor is active, editor world as fallback). Agents navigating
+inside PIE therefore see dynamic objects (spawned actors, moving
+platforms, destructible walls) that only exist in the PIE copy.
+
+### line_trace_hit_info(start, end) -> (str, float, Vector) or None
+
+Line-trace returning full hit detail: actor label, hit distance (cm)
+along the ray, and world-space impact location. Returns `None` when
+the ray reaches `End` without obstruction.
+
+Far cheaper than probing at multiple distances to find "reach" — one
+call tells you exactly how far a clear corridor extends in a given
+direction.
+
+```python
+Lv = unreal.UnrealBridgeLevelLibrary
+r = Lv.line_trace_hit_info(
+    unreal.Vector(1000, 2000, 150),
+    unreal.Vector(4000, 2000, 150))
+if r is None:
+    print('clear 3000 cm')
+else:
+    label, distance, impact = r
+    print(f'hit {label} at {distance:.0f} cm')
+```
+
+## 3D geometry sensing
+
+Vertical probes and height sampling — what the horizontal trace family
+cannot answer: "how tall is the wall in front of me", "is the floor
+ahead a cliff", "what is the ceiling clearance".
+
+### get_height_at(x, y, z_start, z_end) -> (str, float) or None
+
+Downward trace at arbitrary XY. Casts from `(X, Y, ZStart)` down to
+`(X, Y, ZEnd)`. Returns `(actor_label, ground_z)` on hit, `None` when
+no geometry is below.
+
+```python
+r = Lv.get_height_at(500.0, 1000.0, 2000.0, -500.0)
+if r:
+    label, ground_z = r
+    print(f'ground at z={ground_z:.1f}, actor={label}')
+```
+
+### get_height_profile_along(start_xy, end_xy, sample_count, z_start, z_end) -> (int, Array[float], Array[str])
+
+Sample ground height along a straight XY segment. Returns parallel
+arrays of ground Z values (one per sample, evenly spaced) and actor
+labels hit at each sample. Missed samples get `Z = z_end` and empty
+label. Classic "walkable?" check: feed the pawn's path and look at
+deltas between consecutive heights — big jumps mean cliffs, steep
+rises mean unwalkable slopes.
+
+```python
+count, heights, labels = Lv.get_height_profile_along(
+    unreal.Vector(0, 0, 0), unreal.Vector(2000, 0, 0),
+    10, 1000.0, -500.0)
+for i in range(count):
+    print(f'  sample {i}: z={heights[i]:.1f} actor={labels[i]}')
+```
+
+### measure_ceiling_height(origin, max_up) -> float
+
+Upward trace from `Origin`. Returns the distance (cm) to whatever is
+directly above, clamped to `MaxUp`. Returns `MaxUp` when nothing is
+hit (open sky above). Use to check "can I stand up from crouch here"
+(compare to CrouchedHalfHeight vs full CapsuleHalfHeight) or "can I
+jump this high".
+
+```python
+clearance = Lv.measure_ceiling_height(
+    unreal.Vector(500, 0, 90), 1000.0)
+print(f'ceiling {clearance:.0f} cm above')
+```
+
+### probe_fan_xy(origin, num_rays, max_distance, start_angle_deg, span_deg) -> (int, Array[float], Array[str])
+
+Fan out N rays in the XY plane from a single origin. Replaces the
+"call `line_trace_hit_info` N times from Python" pattern — one bridge
+round-trip instead of N.
+
+- `start_angle_deg`: first ray angle (0 = +X / east, 90 = +Y / north).
+- `span_deg`: total arc swept; 360 = full circle.
+- Returns `(num_rays, distances, actor_labels)`. Each distance is either
+  the hit distance or `max_distance` if clear.
+
+```python
+n, dists, labels = Lv.probe_fan_xy(
+    unreal.Vector(500, 0, 140), 12, 3000.0, 0.0, 360.0)
+for i in range(n):
+    ang = i * 30
+    print(f'  {ang:3d}° → {dists[i]:.0f} cm  actor={labels[i]}')
+```
+
+## NavGraph: persistent exploration topology
+
+An agent-maintained graph of visited locations and corridors between
+them. Lives in a process-global singleton (survives across bridge exec
+calls) and can be serialised to JSON for reuse across sessions. Node
+names are caller-chosen strings. Edges are directed — add both
+directions if traversal is symmetric.
+
+### nav_graph_clear()
+
+Remove all nodes and edges from the in-memory graph.
+
+### nav_graph_add_node(name, location) -> bool
+
+Add or update a node. Returns `True` if this was a new node.
+
+```python
+Lv.nav_graph_add_node('wp_start', unreal.Vector(100, 200, 0))
+```
+
+### nav_graph_add_edge(from_name, to_name, cost) -> bool
+
+Add or update a directed edge with cost (usually distance in cm).
+Returns `False` if either node is unknown.
+
+```python
+Lv.nav_graph_add_edge('wp_start', 'wp_corridor', 500.0)
+Lv.nav_graph_add_edge('wp_corridor', 'wp_start', 500.0)  # symmetric
+```
+
+### nav_graph_list_nodes() -> list[str]
+
+List all node names currently in the graph.
+
+### nav_graph_get_node_location(name) -> Vector or None
+
+Look up a node's location. Returns `None` if unknown.
+
+### nav_graph_shortest_path(from_name, to_name) -> (Array[str], float)
+
+Dijkstra shortest-path. Returns the ordered list of node names
+(inclusive of both endpoints) and total cost. Returns `([], inf)` when
+unreachable.
+
+```python
+path, cost = Lv.nav_graph_shortest_path('wp_start', 'wp_exit')
+print(f'path: {list(path)}  cost={cost:.0f}')
+# path: ['wp_start', 'wp_corridor', 'wp_exit']  cost=1200
+```
+
+### nav_graph_save_json(file_path) -> bool
+
+Serialise the graph to a JSON file at the given absolute path.
+
+### nav_graph_load_json(file_path) -> bool
+
+Load a graph from a JSON file, replacing any in-memory graph.
+
+```python
+Lv.nav_graph_save_json('<absolute-path>/nav_graph.json')
+# ... later ...
+Lv.nav_graph_load_json('<absolute-path>/nav_graph.json')
+```
+
+## Vision: render-to-file capture
+
+Synchronously capture a frame from the runtime world to a PNG file.
+Backed by a transient `ASceneCapture2D` + `UTextureRenderTarget2D`, so
+the capture does not depend on the editor viewport having focus and can
+be issued from any pose.
+
+### capture_ortho_top_down(center, world_size, width, height, file_path, camera_height=5000.0) -> bool
+
+Render a top-down orthographic view centred on `center`, covering
+`world_size` cm horizontally, to a PNG file. The camera is placed
+`camera_height` cm above centre looking straight down. Use this for
+whole-level / maze overviews the agent can reason about visually in
+one shot.
+
+```python
+ok = Lv.capture_ortho_top_down(
+    unreal.Vector(25000, 18000, 0), 8000.0,
+    512, 512,
+    '<absolute-path>/.captures/topdown.png',
+    5000.0)
+```
+
+### capture_from_pose(camera_location, camera_rotation, fov_deg, width, height, file_path) -> bool
+
+Render a perspective view from the given pose to a PNG file.
+`fov_deg = 90` gives a wide FPS-style frame; lower = more zoomed in.
+
+```python
+import math
+fwd = L.get_pawn_forward_vector()
+yaw = math.degrees(math.atan2(fwd.y, fwd.x))
+ok = Lv.capture_from_pose(
+    unreal.Vector(pl.x, pl.y, pl.z + 160),
+    unreal.Rotator(-15, yaw, 0),   # slight downward pitch
+    90.0, 640, 360,
+    '<absolute-path>/.captures/perspective.png')
+```
+
+**Duration semantics for both:** captures are synchronous — the PNG is
+fully written when the function returns. The transient SceneCapture2D
+actor is destroyed immediately after readback.
+
+### capture_anim_pose_grid(anim_path, time, skeletal_mesh_path, views, bone_overlay, per_view_framing, ground_grid, root_trajectory, ground_z, grid_cols, cell_width, cell_height, file_path) -> bool
+
+Render N views of a skeletal mesh posed at a specific time of an anim
+sequence / montage, composited into one PNG grid. Runs in an **isolated
+`FPreviewScene`** with default neutral skylight + directional light —
+the project's level lighting, fog, and stray actors do NOT appear in
+the frame, so output is consistent regardless of what's loaded.
+
+Use this to give an agent a multi-angle view of a single anim frame
+for identifying impact poses, windup beats, recovery ends, etc.
+without clicking the timeline frame-by-frame.
+
+| Param | Meaning |
+|-------|---------|
+| `anim_path` | Soft path to `UAnimSequenceBase` (sequence OR montage) |
+| `time` | Seconds into the anim; clamped to `[0, play_length]` |
+| `skeletal_mesh_path` | Explicit mesh; empty → `USkeleton::GetPreviewMesh()` |
+| `views` | Subset of `"Front" / "Back" / "Side" (right) / "SideLeft" / "ThreeQuarter" / "Top" / "Bottom"`; unknown names skip |
+| `bone_overlay` | Draw colour-coded bone chains + joint dots on each cell. Spine=cyan, L-arm=yellow, R-arm=orange, L-leg=magenta, R-leg=purple |
+| `per_view_framing` | Each view reframes tight on bone bbox; consensus distance across views keeps scale equal. Eliminates dead space on asymmetric poses |
+| `ground_grid` | Project a Z=`ground_z` XY grid (50 cm cells) into each view. Instantly disambiguates airborne vs grounded poses — character clearly floats above the grid when in mid-jump. Axis lines (x=0, y=0) drawn darker |
+| `root_trajectory` | Densely sample pelvis XY across the whole anim (~30 Hz, capped 240 points), flatten to `ground_z`, draw as a bright-green polyline. White tick at the captured time, red marker at the current frame. Tick spacing = velocity profile: even = constant, bunched = slow, spread = fast |
+| `ground_z` | World-space Z of the ground plane. Default 0.0 — UE skeletons author the ref pose with feet at Z=0, so 0 is correct for most rigs |
+| `grid_cols` | Columns in the composite; rows = `ceil(N/cols)` |
+| `cell_width`, `cell_height` | Pixel size of each view cell (e.g. 512) |
+| `file_path` | Output PNG path (parent dirs auto-created) |
+
+```python
+ok = Lv.capture_anim_pose_grid(
+    anim_path='/Game/Animations/Punch_Montage',
+    time=0.35,
+    skeletal_mesh_path='',            # empty → skeleton's preview mesh
+    views=['Front', 'Side', 'ThreeQuarter', 'Top'],
+    bone_overlay=True,                # draw skeleton chains on top
+    per_view_framing=True,            # reframe per view for tight crop
+    ground_grid=True,                 # floor grid at Z=ground_z
+    root_trajectory=True,             # pelvis XY path + current-time marker
+    ground_z=0.0,
+    grid_cols=2, cell_width=512, cell_height=512,
+    file_path='<absolute-path>/.captures/punch_0p35.png')
+```
+
+Output: single 1024×1024 PNG (for 2×2 grid @ 512 cell). Figures against
+a clean grey background (final-color render with three-point preview
+lighting).
+
+**Pose evaluation:** `PlayAnimation(anim, false)` +
+`SetPosition(time, false)` + `TickAnimation(0)` +
+`RefreshBoneTransforms()`. Works for both `UAnimSequence` and
+`UAnimMontage`.
+
+**Framing:**
+- `per_view_framing=False` (default): pelvis-anchored single radius, all
+  views share the same camera distance. Legacy behaviour — symmetric
+  poses centre fine, but a raised arm leaves dead space on the opposite
+  side.
+- `per_view_framing=True`: each view reprojects all bone world positions
+  into its own derived camera basis, finds the tight 2D bbox + mean
+  depth, and chooses its own target + required distance. A consensus
+  (max) distance is then applied across views so character scale stays
+  consistent between cells.
+
+Pelvis fallback candidates: `pelvis` / `Pelvis` / `hips` / `Hips` /
+`spine_01` / `spine` / `root` / `Root`.
+
+**Bone overlay** chains cover UE Mannequin (`upperarm_l`, `spine_01`),
+Mixamo (`LeftArm`), and Naughty Dog (`l_shoulder`, `spinea`,
+`l_upper_leg`) naming. Missing bones degrade gracefully — a chain with
+fewer than 2 resolved bones is dropped. World→pixel projection uses
+`FRotationMatrix(CamRot)` axes so it matches UE's SceneCapture output
+including the implicit up-flip on Top/Bottom views.
+
+**Perf:** ~200 ms for 4 views at 512×512 without overlay; overlay adds
+a few ms for Bresenham drawing (negligible). Cheap enough for on-demand
+analysis, don't loop thousands.
+
+### capture_anim_montage_timeline(anim_path, skeletal_mesh_path, num_time_samples, views, bone_overlay, per_view_framing, ground_grid, root_trajectory, ground_z, cell_width, cell_height, file_path) -> bool
+
+Render the anim's timeline as a `NumTimeSamples × len(Views)` grid — rows
+are evenly spaced time samples, columns are view angles. Motion reads
+left-to-right within a row and top-to-bottom across rows.
+
+**Camera framing is motion-aware.** Before capturing, the function
+evaluates the pose at every sample time to build a union bone AABB
+covering the full timeline. The camera is then fixed at a distance
+that fits that union; so character scale stays consistent across rows
+even when the anim translates the pelvis, and you can directly compare
+silhouettes between frames.
+
+With `per_view_framing=True` the union set is fed through the same
+per-view reframer as `capture_anim_pose_grid`, so each column can zoom
+in on its own aspect of the motion while scale stays locked across the
+whole grid.
+
+| Param | Meaning |
+|-------|---------|
+| `anim_path` | `UAnimSequenceBase` soft path |
+| `skeletal_mesh_path` | Empty → skeleton's preview mesh |
+| `num_time_samples` | Rows. Times = `0, L/(N-1), 2L/(N-1), …, L`. `N=1` → single row at `t=0` |
+| `views` | Column views (same names as `capture_anim_pose_grid`) |
+| `bone_overlay` | Same as `capture_anim_pose_grid` — overlay drawn per cell |
+| `per_view_framing` | Same as `capture_anim_pose_grid` — each column reframes on union bones |
+| `ground_grid` | Floor grid at `ground_z`. Per-view framing automatically extends the bbox to include the grid + trajectory |
+| `root_trajectory` | Pelvis XY path. White ticks mark EACH row's sample time; the current row's time is highlighted red so motion across rows reads at a glance |
+| `ground_z` | World-space Z of the ground plane (default 0.0) |
+| `cell_width`, `cell_height` | Pixel size per cell (e.g. 384) |
+| `file_path` | Output PNG path |
+
+```python
+ok = Lv.capture_anim_montage_timeline(
+    anim_path='/Game/Animations/Attack_Montage',
+    skeletal_mesh_path='',
+    num_time_samples=5,           # 0%, 25%, 50%, 75%, 100%
+    views=['Front', 'Side', 'ThreeQuarter'],
+    bone_overlay=True,
+    per_view_framing=True,
+    ground_grid=True,
+    root_trajectory=True,         # velocity profile visible from tick spacing
+    ground_z=0.0,
+    cell_width=384, cell_height=384,
+    file_path='<absolute-path>/.captures/attack_timeline.png')
+# → PNG is (3 × 384) × (5 × 384) = 1152 × 1920
+```
+
+**Reading the trajectory tick pattern** (the key "what is this motion?"
+cue for an agent):
+- Even tick spacing along the line → constant speed (jog / steady run)
+- Ticks bunched at the **start**, spread at the **end** → accelerating
+  (sprint wind-up, dash)
+- Ticks spread at the **start**, bunched at the **end** → decelerating
+  (run → stop)
+- All ticks clustered at one point → stationary action (attack in place,
+  door push, reload)
+- Two distinct cluster spacings in one trajectory → phase change (run
+  → stop → attack; sprint → brake → swing)
+
+Use this to give an agent a single image from which to identify
+semantic beats (windup, impact frame, recovery end) across the whole
+montage at once. Much cheaper in tokens than uploading N separate
+frame images, and consistent framing makes pose comparison tractable.
+
+**Perf:** ~N × M × 50ms; a 5-sample × 3-view capture ≈ 750 ms. Pose
+evaluation happens once per time sample; camera poses are computed
+once total.
