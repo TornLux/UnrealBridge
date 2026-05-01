@@ -85,6 +85,101 @@ def load_redirects(path: Optional[str] = None) -> Optional[dict]:
     return data
 
 
+def _augment_return_types_from_manifest(return_types: Optional[dict],
+                                          manifest: dict) -> dict:
+    """Merge manifest-derived bridge struct schemas + auto-parsed function return
+    shapes into the (optional) hand-curated return_types config. Hand entries win.
+    """
+    rt = dict(return_types) if return_types else {}
+    type_attrs = dict(rt.get("type_attributes", {}))
+    fn_returns = dict(rt.get("function_returns", {}))
+
+    # Add bridge structs as type_attributes
+    for struct_name, fields in manifest.get("structs", {}).items():
+        if struct_name not in type_attrs:
+            type_attrs[struct_name] = {
+                "valid": list(fields),
+                "_note": "Bridge USTRUCT (auto-extracted from manifest).",
+            }
+
+    # Derive function_returns from each function's `returns` string
+    for lib_name, lib_data in manifest.get("libraries", {}).items():
+        for fn_name, fn_meta in lib_data.get("functions", {}).items():
+            key = f"{lib_name}.{fn_name}"
+            if key in fn_returns:
+                continue  # hand entry wins
+            shape = _parse_return_shape(fn_meta.get("returns", ""))
+            if shape:
+                fn_returns[key] = shape
+
+    rt["type_attributes"] = type_attrs
+    rt["function_returns"] = fn_returns
+    return rt
+
+
+def _parse_return_shape(ret_str: str) -> Optional[dict]:
+    """Convert a manifest `returns` string into a function_returns shape dict.
+
+    Recognized forms:
+      "Array[X]"                     → list[X]
+      "(out_a=Array[X], out_b=...)"  → tuple of element types
+      "BridgeXxx" / "SoftObjectPath" → scalar of that type
+    Anything else (primitives, void, unknown) returns None — no shape tracked.
+    """
+    import re
+    s = (ret_str or "").strip()
+    if not s:
+        return None
+
+    # Strip " or None" / " or null" optionality suffix; remember it for the
+    # shape-misuse detector ("var.attr" on a may_be_none binding warns).
+    may_be_none = False
+    new_s = re.sub(r"\s+or\s+(None|null)\s*$", "", s, flags=re.IGNORECASE).strip()
+    if new_s != s:
+        may_be_none = True
+        s = new_s
+    if not s or s.lower() in ("none", "null"):
+        return None
+
+    # Tuple form
+    if s.startswith("(") and s.endswith(")"):
+        inner = s[1:-1]
+        parts = []
+        # Split on commas at top level (avoid splitting inside Array[...])
+        depth = 0
+        buf = []
+        for ch in inner:
+            if ch in "[(":
+                depth += 1
+            elif ch in "])":
+                depth -= 1
+            if ch == "," and depth == 0:
+                parts.append("".join(buf).strip())
+                buf = []
+            else:
+                buf.append(ch)
+        if buf:
+            parts.append("".join(buf).strip())
+        # Each part: strip "name=" prefix
+        cleaned = []
+        for p in parts:
+            if "=" in p:
+                p = p.split("=", 1)[1].strip()
+            cleaned.append(p)
+        return {"shape": "tuple", "tuple_element_types": cleaned, "may_be_none": may_be_none}
+
+    # Array form
+    m = re.match(r"(?:Array|List|list)\[([^\]]+)\]\s*$", s)
+    if m:
+        return {"shape": "list", "element_type": m.group(1).strip(), "may_be_none": may_be_none}
+
+    # Scalar struct (only useful types we have schemas for)
+    if s.startswith("Bridge") or s in ("SoftObjectPath", "AssetData"):
+        return {"shape": "scalar", "type": s, "may_be_none": may_be_none}
+
+    return None
+
+
 def load_return_types(path: Optional[str] = None) -> Optional[dict]:
     """Read bridge_return_types.json (cached). Returns None if not present."""
     global _RETURN_TYPES_CACHE
@@ -124,6 +219,13 @@ def lint(code: str, manifest: Optional[dict] = None,
     if manifest is None:
         return [], []  # No manifest available — silently skip (preflight is best-effort)
 
+    # Auto-augment return_types from manifest:
+    #  • Add every Bridge USTRUCT to type_attributes (so attribute access on a
+    #    struct binding gets validated against real fields)
+    #  • Derive scalar/list/tuple shape per function from its `returns` string,
+    #    so the var tracker binds correctly without hand-maintained entries
+    return_types = _augment_return_types_from_manifest(return_types, manifest)
+
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -145,6 +247,19 @@ def lint(code: str, manifest: Optional[dict] = None,
     # and warn on attribute access that doesn't match the type's valid set.
     if return_types and (lib_aliases or unreal_aliases):
         warnings.extend(_check_attribute_confusion(
+            tree, unreal_aliases, lib_aliases, return_types,
+        ))
+
+    # Cost hints: warn on calls to known-expensive functions without bounds.
+    # Hard-coded list driven by audit-log evidence; see _COST_HINTS.
+    if lib_aliases or unreal_aliases:
+        warnings.extend(_check_cost_hints(tree, unreal_aliases, lib_aliases))
+
+    # Shape-misuse: subscripting a struct, tuple-unpacking a list, chaining on
+    # a may_be_none binding. Catches the failure class observed in the
+    # SKILL-loaded UDS run (5/5 runtime errors fit this pattern).
+    if return_types and (lib_aliases or unreal_aliases):
+        warnings.extend(_check_shape_misuse(
             tree, unreal_aliases, lib_aliases, return_types,
         ))
 
@@ -190,6 +305,22 @@ def _collect_aliases(tree: ast.AST, libraries: dict, enums: dict):
     lib_aliases: dict = {}
     enum_aliases: dict = {}
 
+    # Build wrapper → library reverse map: "Asset" → "UnrealBridgeAssetLibrary"
+    # so `from unreal_bridge import Asset; Asset.fn(...)` is treated identically
+    # to a `lib = unreal.UnrealBridgeAssetLibrary; lib.fn(...)` raw alias chain.
+    # Without this mapping, ALL preflight checks (errors, redirects, attribute
+    # confusion, cost hints, shape misuse) silently miss wrapper-form calls —
+    # which is dominant when SKILL.md is loaded.
+    wrapper_to_lib = {}
+    for lib_name in libraries.keys():
+        short = lib_name
+        if short.startswith("UnrealBridge"):
+            short = short[len("UnrealBridge"):]
+        if short.endswith("Library"):
+            short = short[:-len("Library")]
+        if short:
+            wrapper_to_lib[short] = lib_name
+
     # Pass 1: import statements (don't depend on prior aliases)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -204,6 +335,13 @@ def _collect_aliases(tree: ast.AST, libraries: dict, enums: dict):
                         lib_aliases[bound] = alias.name
                     elif alias.name in enums:
                         enum_aliases[bound] = alias.name
+            elif node.module == "unreal_bridge":
+                # `from unreal_bridge import Asset [as A]` — bound name → lib_name
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    lib_full = wrapper_to_lib.get(alias.name)
+                    if lib_full:
+                        lib_aliases[bound] = lib_full
 
     # Pass 2: assignments of the form `X = <unreal_alias>.LibName`
     for node in ast.walk(tree):
@@ -345,6 +483,166 @@ def _check_call(node: ast.Call, unreal_aliases: Set[str],
     return ""
 
 
+_COST_HINTS = {
+    # key: "{LibraryName}.{function}" — same form as preflight uses
+    "UnrealBridgeAssetLibrary.list_assets_under_path": {
+        "check": "include_subfolders_truthy",
+        "param": "include_subfolders",
+        "pos": 1,
+        "reason": "Recursive walk under a broad path can return 100k+ entries on real projects.",
+        "advice": "Restrict folder_path to a sub-tree (e.g. '/Game/MyFeature'), or pass include_subfolders=False.",
+    },
+    "UnrealBridgeAssetLibrary.list_assets_under_path_simple": {
+        "check": "always",
+        "reason": "Walks a folder tree without max_results — same scaling cliff as list_assets_under_path.",
+        "advice": "Use search_assets_under_path(folder_path, query, max_results) when you can pre-filter.",
+    },
+    "UnrealBridgeAssetLibrary.search_assets": {
+        "check": "max_results_unbounded",
+        "param": "max_results",
+        "pos": 5,
+        "reason": "max_results=0 / -1 / very large = full asset registry walk (10s+ seconds on real projects).",
+        "advice": "Pass a bound (max_results=100-1000 typical for agent workflows).",
+    },
+    "UnrealBridgeAssetLibrary.search_assets_in_all_content": {
+        "check": "max_results_unbounded",
+        "param": "max_results",
+        "pos": 1,
+        "reason": "Same as search_assets — empty query + unbounded max walks every asset.",
+        "advice": "Bound max_results to 100-1000.",
+    },
+    "UnrealBridgeAssetLibrary.get_derived_classes": {
+        "check": "broad_base_class",
+        "param": "base_classes",
+        "pos": 0,
+        "broad_names": {"Object", "Actor", "ActorComponent", "Component", "Pawn", "SceneComponent"},
+        "reason": "Walking from Object / Actor / Component / Pawn yields thousands of classes (multi-second GT block).",
+        "advice": "Use the most specific base you can. e.g. ACharacter, UStaticMeshComponent, AVolume.",
+    },
+    "UnrealBridgeLevelLibrary.find_actors_by_class": {
+        "check": "max_results_unbounded",
+        "param": "max_results",
+        "pos": 1,
+        "reason": "max_results=-1 is unbounded; open-world / WP maps have 10k+ actors.",
+        "advice": "Set a bound (max_results=50-500).",
+    },
+    "UnrealBridgeBlueprintLibrary.search_blueprint_nodes": {
+        "check": "always",
+        "reason": "Whole-graph node search; large BPs (12k+ nodes) take seconds.",
+        "advice": "Constrain via node_type_filter or scope to a single function/event graph when possible.",
+    },
+}
+
+
+def _check_cost_hints(tree: ast.AST, unreal_aliases: Set[str],
+                      lib_aliases: dict) -> List[str]:
+    """Detect calls to known-expensive functions without bounds and emit warnings.
+    All entries are HARD-CODED for now (see _COST_HINTS); audit-log evidence is
+    used to decide which functions to add. Easy to extend: one entry per call site
+    we observe blowing up in real workflows."""
+    warnings: List[str] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        chain = _attribute_chain(node.func)
+        # Resolve {Library}.{fn} key from either 3-part chain or alias 2-part
+        if len(chain) == 3 and chain[0] in unreal_aliases:
+            lib, fn = chain[1], chain[2]
+        elif len(chain) == 2:
+            lib = lib_aliases.get(chain[0])
+            if lib is None:
+                continue
+            fn = chain[1]
+        else:
+            continue
+        key = f"{lib}.{fn}"
+        hint = _COST_HINTS.get(key)
+        if not hint:
+            continue
+        if not _cost_hint_triggers(node, hint):
+            continue
+        warnings.append(
+            f"preflight L{node.lineno} [WARN]: high-cost call '{key}'.\n"
+            f"  Why:    {hint.get('reason', '')}\n"
+            f"  Advice: {hint.get('advice', '')}"
+        )
+    return warnings
+
+
+def _cost_hint_triggers(node: ast.Call, hint: dict) -> bool:
+    """Decide whether this Call node fires the given cost hint."""
+    check = hint.get("check")
+    if check == "always":
+        return True
+
+    if check == "include_subfolders_truthy":
+        v = _arg_value(node, hint["param"], hint["pos"])
+        # Default-on if the user didn't supply (function has 2 required positional)
+        if v is None:
+            return True
+        return _is_truthy_const(v)
+
+    if check == "max_results_unbounded":
+        v = _arg_value(node, hint["param"], hint["pos"])
+        if v is None:
+            return True  # required arg missing → preflight will error separately, but warn too
+        c = _const_value(v)
+        if c is None:
+            return False  # non-const expression — can't reason; skip
+        if isinstance(c, (int, float)) and (c <= 0 or c >= 100000):
+            return True
+        return False
+
+    if check == "broad_base_class":
+        v = _arg_value(node, hint["param"], hint["pos"])
+        if v is None:
+            return False
+        broad = hint.get("broad_names", set())
+        return _ast_uses_class_name(v, broad)
+
+    return False
+
+
+def _arg_value(node: ast.Call, name: str, pos: int) -> Optional[ast.AST]:
+    """Get the AST node for arg `name` (positional-or-kwarg). Returns None if absent."""
+    if pos < len(node.args):
+        return node.args[pos]
+    for kw in node.keywords:
+        if kw.arg == name:
+            return kw.value
+    return None
+
+
+def _const_value(node: Optional[ast.AST]):
+    """Evaluate a Constant or UnaryOp(USub, Constant) node's literal value."""
+    if isinstance(node, ast.Constant):
+        return node.value
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        if isinstance(node.operand, ast.Constant) and isinstance(node.operand.value, (int, float)):
+            return -node.operand.value
+    return None
+
+
+def _is_truthy_const(node: Optional[ast.AST]) -> bool:
+    c = _const_value(node)
+    if c is None:
+        return False
+    return bool(c)
+
+
+def _ast_uses_class_name(node: ast.AST, names: set) -> bool:
+    """Recursively check if any leaf identifier or string in node matches names.
+    Catches `[unreal.Object.static_class()]`, `unreal.AActor`, `'AActor'` etc."""
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Attribute) and sub.attr in names:
+            return True
+        if isinstance(sub, ast.Name) and sub.id in names:
+            return True
+        if isinstance(sub, ast.Constant) and isinstance(sub.value, str) and sub.value in names:
+            return True
+    return False
+
+
 def _check_redirects(tree: ast.AST, unreal_aliases: Set[str], redirects: dict) -> List[str]:
     """Detect known raw-unreal.* fallback patterns and emit redirect warnings.
 
@@ -449,6 +747,129 @@ def _format_redirect(line: int, found: str, entry: dict) -> str:
     return msg
 
 
+def _check_shape_misuse(tree: ast.AST, unreal_aliases: Set[str],
+                          lib_aliases: dict, return_types: dict) -> List[str]:
+    """Detect three return-shape misuse patterns observed in the SKILL-loaded run:
+
+      A) `a, b = func()` when func returns list/scalar (not tuple) — wrong arity
+      B) `var[N]` subscript on a scalar struct binding — struct isn't sliceable
+      C) `var.attr` on a may_be_none binding — chains crash if func returned None
+
+    Each pattern emits a [WARN] with the failing call's known return shape and a
+    concrete fix. Detection is conservative (false negatives possible if return
+    shape isn't in manifest); false positives possible on (C) when the agent
+    DID guard with `if var is not None`, but warning-only is fine — agent ignores
+    if they're sure it's safe.
+    """
+    fn_returns = return_types.get("function_returns", {})
+    warnings: List[str] = []
+
+    def _resolve_call_to_function_key(call: ast.Call):
+        chain = _attribute_chain(call.func)
+        if len(chain) == 3 and chain[0] in unreal_aliases:
+            return f"{chain[1]}.{chain[2]}"
+        if len(chain) == 2:
+            lib = lib_aliases.get(chain[0])
+            if lib:
+                return f"{lib}.{chain[1]}"
+        return None
+
+    # Pass 1: track scalar / list / tuple bindings + may_be_none flag
+    var_meta: dict = {}  # name → dict(shape_kind, type_or_elements, may_be_none, fn_key)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if not isinstance(node.value, ast.Call):
+                continue
+            fn_key = _resolve_call_to_function_key(node.value)
+            if not fn_key or fn_key not in fn_returns:
+                continue
+            shape = fn_returns[fn_key]
+            kind = shape.get("shape")
+            may_be_none = bool(shape.get("may_be_none"))
+
+            # ── Pattern A: tuple-unpack arity check ──
+            if isinstance(target, (ast.Tuple, ast.List)):
+                target_n = len(target.elts)
+                if kind == "list":
+                    warnings.append(
+                        f"preflight L{node.lineno} [WARN]: '{fn_key}' returns "
+                        f"Array[{shape.get('element_type','?')}], not a tuple — "
+                        f"`a, b = ...` will iterate the list and fail unless its "
+                        f"length is exactly {target_n}.\n"
+                        f"  Use:    var = {fn_key.split('.')[-1]}(...); for x in var: ...\n"
+                        f"  Or:     [a, b] = ... only if you've verified len == {target_n}"
+                    )
+                elif kind == "scalar":
+                    warnings.append(
+                        f"preflight L{node.lineno} [WARN]: '{fn_key}' returns a single "
+                        f"{shape.get('type','?')} struct, not a tuple — destructuring "
+                        f"`a, b = ...` will fail.\n"
+                        f"  Use: var = {fn_key.split('.')[-1]}(...); var.field_name"
+                    )
+                elif kind == "tuple":
+                    expected = len(shape.get("tuple_element_types", []))
+                    if expected and target_n != expected:
+                        warnings.append(
+                            f"preflight L{node.lineno} [WARN]: '{fn_key}' returns a "
+                            f"{expected}-tuple but you unpack into {target_n} names."
+                        )
+                continue
+
+            # Single-name binding
+            if not isinstance(target, ast.Name):
+                continue
+            var_meta[target.id] = {
+                "kind": kind,
+                "shape": shape,
+                "may_be_none": may_be_none,
+                "fn_key": fn_key,
+            }
+
+    if not var_meta:
+        return warnings
+
+    # Pass 2: walk all uses of tracked vars; check Subscript and may_be_none chains
+    seen = set()
+    for node in ast.walk(tree):
+        # ── Pattern B: subscript on a scalar struct ──
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            meta = var_meta.get(node.value.id)
+            if meta and meta["kind"] == "scalar":
+                key = ("subscript", node.lineno, node.value.id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                type_str = meta["shape"].get("type", "?")
+                warnings.append(
+                    f"preflight L{node.lineno} [WARN]: '{node.value.id}' is a "
+                    f"{type_str} struct (from {meta['fn_key']}), not subscriptable.\n"
+                    f"  Slicing `{node.value.id}[...]` will fail. Access fields by "
+                    f"name: {node.value.id}.<field_name>"
+                )
+            continue
+
+        # ── Pattern C: attribute chain on may_be_none binding ──
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            meta = var_meta.get(node.value.id)
+            if meta and meta["may_be_none"]:
+                key = ("none", node.lineno, node.value.id, node.attr)
+                if key in seen:
+                    continue
+                seen.add(key)
+                warnings.append(
+                    f"preflight L{node.lineno} [WARN]: '{node.value.id}' may be None "
+                    f"({meta['fn_key']} returns 'X or None'). Accessing .{node.attr} "
+                    f"will crash on the None case.\n"
+                    f"  Guard: if {node.value.id} is not None: ... or "
+                    f"`if {node.value.id}:` before the access."
+                )
+            continue
+
+    return warnings
+
+
 def _check_attribute_confusion(tree: ast.AST, unreal_aliases: Set[str],
                                 lib_aliases: dict, return_types: dict) -> List[str]:
     """Track variables bound to bridge call results, then warn on attribute
@@ -506,6 +927,10 @@ def _check_attribute_confusion(tree: ast.AST, unreal_aliases: Set[str],
                 elif shape.get("shape") == "tuple":
                     # var is a tuple — agent will index/unpack it
                     var_types[target.id] = ("tuple", shape.get("tuple_element_types", []))
+                elif shape.get("shape") == "scalar":
+                    # var is a single struct (e.g. BridgeBlueprintSummary) —
+                    # attribute access goes through type_attributes validation
+                    var_types[target.id] = ("scalar", shape.get("type"))
             elif isinstance(target, (ast.Tuple, ast.List)):
                 # a, b = bridge_call() — each name binds to one tuple element
                 if shape.get("shape") == "tuple":

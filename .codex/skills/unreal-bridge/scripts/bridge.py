@@ -174,6 +174,35 @@ def _get_audit_logger(log_path: str) -> logging.Logger:
     return logger
 
 
+_JSON_COMPACT_PREAMBLE = '''import json as __ub_json, os as __ub_os_for_json
+# UE Python interpreter is persistent across exec calls. If we re-patched on
+# every exec, second-and-later runs would chain wrappers (each capturing the
+# previous patch as "orig") → infinite recursion. The marker makes patching
+# idempotent: capture the TRUE original once, patch once, no-op forever after.
+if not __ub_os_for_json.environ.get("UNREAL_BRIDGE_NO_JSON_COMPACT") and not getattr(__ub_json, "__ub_patched_marker__", False):
+    __ub_json_orig_dumps = __ub_json.dumps
+    __ub_json_orig_dump = __ub_json.dump
+
+    def __ub_json_dumps(__ub_obj, *__ub_a, **__ub_kw):
+        """Force-compact json.dumps. Strips indent (token waste), defaults to
+        (',', ':') separators. Behaviorally identical for downstream parsers;
+        saves 30-50% tokens on agent print(json.dumps(...)) calls."""
+        __ub_kw.pop("indent", None)
+        if "separators" not in __ub_kw:
+            __ub_kw["separators"] = (",", ":")
+        return __ub_json_orig_dumps(__ub_obj, *__ub_a, **__ub_kw)
+
+    def __ub_json_dump(__ub_obj, __ub_fp, *__ub_a, **__ub_kw):
+        __ub_kw.pop("indent", None)
+        if "separators" not in __ub_kw:
+            __ub_kw["separators"] = (",", ":")
+        return __ub_json_orig_dump(__ub_obj, __ub_fp, *__ub_a, **__ub_kw)
+
+    __ub_json.dumps = __ub_json_dumps
+    __ub_json.dump = __ub_json_dump
+    __ub_json.__ub_patched_marker__ = True
+'''
+
 _ATTR_ENRICH_PREAMBLE = '''import sys as __ub_sys, re as __ub_re, difflib as __ub_difflib
 
 def __ub_to_snake(__ub_n):
@@ -348,7 +377,7 @@ def _wrap_for_attr_enrichment(user_code: str) -> str:
     # must be at module top before any other statement). Detect minimally.
     if user_code.lstrip().startswith("from __future__"):
         return user_code
-    return f"{_ATTR_ENRICH_PREAMBLE}\ntry:\n{body}\n{_ATTR_ENRICH_HANDLER}"
+    return f"{_JSON_COMPACT_PREAMBLE}\n{_ATTR_ENRICH_PREAMBLE}\ntry:\n{body}\n{_ATTR_ENRICH_HANDLER}"
 
 
 def _preflight_or_skip(code: str) -> "tuple[list[str], list[str]]":

@@ -131,9 +131,13 @@ def _parse_return_shape(ret_str: str) -> Optional[dict]:
     if not s:
         return None
 
-    # Strip " or None" / " or null" optionality suffix — agent may still hit
-    # NoneType.attr at runtime but for shape tracking we treat as the named type.
-    s = re.sub(r"\s+or\s+(None|null)\s*$", "", s, flags=re.IGNORECASE).strip()
+    # Strip " or None" / " or null" optionality suffix; remember it for the
+    # shape-misuse detector ("var.attr" on a may_be_none binding warns).
+    may_be_none = False
+    new_s = re.sub(r"\s+or\s+(None|null)\s*$", "", s, flags=re.IGNORECASE).strip()
+    if new_s != s:
+        may_be_none = True
+        s = new_s
     if not s or s.lower() in ("none", "null"):
         return None
 
@@ -162,16 +166,16 @@ def _parse_return_shape(ret_str: str) -> Optional[dict]:
             if "=" in p:
                 p = p.split("=", 1)[1].strip()
             cleaned.append(p)
-        return {"shape": "tuple", "tuple_element_types": cleaned}
+        return {"shape": "tuple", "tuple_element_types": cleaned, "may_be_none": may_be_none}
 
     # Array form
     m = re.match(r"(?:Array|List|list)\[([^\]]+)\]\s*$", s)
     if m:
-        return {"shape": "list", "element_type": m.group(1).strip()}
+        return {"shape": "list", "element_type": m.group(1).strip(), "may_be_none": may_be_none}
 
     # Scalar struct (only useful types we have schemas for)
     if s.startswith("Bridge") or s in ("SoftObjectPath", "AssetData"):
-        return {"shape": "scalar", "type": s}
+        return {"shape": "scalar", "type": s, "may_be_none": may_be_none}
 
     return None
 
@@ -251,6 +255,14 @@ def lint(code: str, manifest: Optional[dict] = None,
     if lib_aliases or unreal_aliases:
         warnings.extend(_check_cost_hints(tree, unreal_aliases, lib_aliases))
 
+    # Shape-misuse: subscripting a struct, tuple-unpacking a list, chaining on
+    # a may_be_none binding. Catches the failure class observed in the
+    # SKILL-loaded UDS run (5/5 runtime errors fit this pattern).
+    if return_types and (lib_aliases or unreal_aliases):
+        warnings.extend(_check_shape_misuse(
+            tree, unreal_aliases, lib_aliases, return_types,
+        ))
+
     # Bridge-call validation only runs when bridge libraries are referenced.
     if not (unreal_aliases or lib_aliases or enum_aliases):
         return [], warnings
@@ -293,6 +305,22 @@ def _collect_aliases(tree: ast.AST, libraries: dict, enums: dict):
     lib_aliases: dict = {}
     enum_aliases: dict = {}
 
+    # Build wrapper → library reverse map: "Asset" → "UnrealBridgeAssetLibrary"
+    # so `from unreal_bridge import Asset; Asset.fn(...)` is treated identically
+    # to a `lib = unreal.UnrealBridgeAssetLibrary; lib.fn(...)` raw alias chain.
+    # Without this mapping, ALL preflight checks (errors, redirects, attribute
+    # confusion, cost hints, shape misuse) silently miss wrapper-form calls —
+    # which is dominant when SKILL.md is loaded.
+    wrapper_to_lib = {}
+    for lib_name in libraries.keys():
+        short = lib_name
+        if short.startswith("UnrealBridge"):
+            short = short[len("UnrealBridge"):]
+        if short.endswith("Library"):
+            short = short[:-len("Library")]
+        if short:
+            wrapper_to_lib[short] = lib_name
+
     # Pass 1: import statements (don't depend on prior aliases)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -307,6 +335,13 @@ def _collect_aliases(tree: ast.AST, libraries: dict, enums: dict):
                         lib_aliases[bound] = alias.name
                     elif alias.name in enums:
                         enum_aliases[bound] = alias.name
+            elif node.module == "unreal_bridge":
+                # `from unreal_bridge import Asset [as A]` — bound name → lib_name
+                for alias in node.names:
+                    bound = alias.asname or alias.name
+                    lib_full = wrapper_to_lib.get(alias.name)
+                    if lib_full:
+                        lib_aliases[bound] = lib_full
 
     # Pass 2: assignments of the form `X = <unreal_alias>.LibName`
     for node in ast.walk(tree):
@@ -710,6 +745,129 @@ def _format_redirect(line: int, found: str, entry: dict) -> str:
     if reason:
         msg += f"\n  Why:     {reason}"
     return msg
+
+
+def _check_shape_misuse(tree: ast.AST, unreal_aliases: Set[str],
+                          lib_aliases: dict, return_types: dict) -> List[str]:
+    """Detect three return-shape misuse patterns observed in the SKILL-loaded run:
+
+      A) `a, b = func()` when func returns list/scalar (not tuple) — wrong arity
+      B) `var[N]` subscript on a scalar struct binding — struct isn't sliceable
+      C) `var.attr` on a may_be_none binding — chains crash if func returned None
+
+    Each pattern emits a [WARN] with the failing call's known return shape and a
+    concrete fix. Detection is conservative (false negatives possible if return
+    shape isn't in manifest); false positives possible on (C) when the agent
+    DID guard with `if var is not None`, but warning-only is fine — agent ignores
+    if they're sure it's safe.
+    """
+    fn_returns = return_types.get("function_returns", {})
+    warnings: List[str] = []
+
+    def _resolve_call_to_function_key(call: ast.Call):
+        chain = _attribute_chain(call.func)
+        if len(chain) == 3 and chain[0] in unreal_aliases:
+            return f"{chain[1]}.{chain[2]}"
+        if len(chain) == 2:
+            lib = lib_aliases.get(chain[0])
+            if lib:
+                return f"{lib}.{chain[1]}"
+        return None
+
+    # Pass 1: track scalar / list / tuple bindings + may_be_none flag
+    var_meta: dict = {}  # name → dict(shape_kind, type_or_elements, may_be_none, fn_key)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if not isinstance(node.value, ast.Call):
+                continue
+            fn_key = _resolve_call_to_function_key(node.value)
+            if not fn_key or fn_key not in fn_returns:
+                continue
+            shape = fn_returns[fn_key]
+            kind = shape.get("shape")
+            may_be_none = bool(shape.get("may_be_none"))
+
+            # ── Pattern A: tuple-unpack arity check ──
+            if isinstance(target, (ast.Tuple, ast.List)):
+                target_n = len(target.elts)
+                if kind == "list":
+                    warnings.append(
+                        f"preflight L{node.lineno} [WARN]: '{fn_key}' returns "
+                        f"Array[{shape.get('element_type','?')}], not a tuple — "
+                        f"`a, b = ...` will iterate the list and fail unless its "
+                        f"length is exactly {target_n}.\n"
+                        f"  Use:    var = {fn_key.split('.')[-1]}(...); for x in var: ...\n"
+                        f"  Or:     [a, b] = ... only if you've verified len == {target_n}"
+                    )
+                elif kind == "scalar":
+                    warnings.append(
+                        f"preflight L{node.lineno} [WARN]: '{fn_key}' returns a single "
+                        f"{shape.get('type','?')} struct, not a tuple — destructuring "
+                        f"`a, b = ...` will fail.\n"
+                        f"  Use: var = {fn_key.split('.')[-1]}(...); var.field_name"
+                    )
+                elif kind == "tuple":
+                    expected = len(shape.get("tuple_element_types", []))
+                    if expected and target_n != expected:
+                        warnings.append(
+                            f"preflight L{node.lineno} [WARN]: '{fn_key}' returns a "
+                            f"{expected}-tuple but you unpack into {target_n} names."
+                        )
+                continue
+
+            # Single-name binding
+            if not isinstance(target, ast.Name):
+                continue
+            var_meta[target.id] = {
+                "kind": kind,
+                "shape": shape,
+                "may_be_none": may_be_none,
+                "fn_key": fn_key,
+            }
+
+    if not var_meta:
+        return warnings
+
+    # Pass 2: walk all uses of tracked vars; check Subscript and may_be_none chains
+    seen = set()
+    for node in ast.walk(tree):
+        # ── Pattern B: subscript on a scalar struct ──
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name):
+            meta = var_meta.get(node.value.id)
+            if meta and meta["kind"] == "scalar":
+                key = ("subscript", node.lineno, node.value.id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                type_str = meta["shape"].get("type", "?")
+                warnings.append(
+                    f"preflight L{node.lineno} [WARN]: '{node.value.id}' is a "
+                    f"{type_str} struct (from {meta['fn_key']}), not subscriptable.\n"
+                    f"  Slicing `{node.value.id}[...]` will fail. Access fields by "
+                    f"name: {node.value.id}.<field_name>"
+                )
+            continue
+
+        # ── Pattern C: attribute chain on may_be_none binding ──
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            meta = var_meta.get(node.value.id)
+            if meta and meta["may_be_none"]:
+                key = ("none", node.lineno, node.value.id, node.attr)
+                if key in seen:
+                    continue
+                seen.add(key)
+                warnings.append(
+                    f"preflight L{node.lineno} [WARN]: '{node.value.id}' may be None "
+                    f"({meta['fn_key']} returns 'X or None'). Accessing .{node.attr} "
+                    f"will crash on the None case.\n"
+                    f"  Guard: if {node.value.id} is not None: ... or "
+                    f"`if {node.value.id}:` before the access."
+                )
+            continue
+
+    return warnings
 
 
 def _check_attribute_confusion(tree: ast.AST, unreal_aliases: Set[str],
