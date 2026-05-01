@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-05-01T08:21:54+00:00",
+  "generated_at": "2026-05-01T11:07:41+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -12149,6 +12149,18 @@
           ],
           "returns": "(out_actor_label=str, out_distance=float, out_impact_location=Vector) or None"
         },
+        "list_actor_properties": {
+          "doc": "X.list_actor_properties(actor_name) -> Array[BridgePropertyInfo]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "actor_name",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgePropertyInfo]"
+        },
         "list_actors": {
           "doc": "X.list_actors(class_filter, tag_filter, name_filter, selected_only, max_results) -> Array[BridgeActorBrief]",
           "params": [
@@ -12184,6 +12196,18 @@
             }
           ],
           "returns": "Array[BridgeActorBrief]"
+        },
+        "list_class_properties": {
+          "doc": "X.list_class_properties(class_path) -> Array[BridgePropertyInfo]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "class_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgePropertyInfo]"
         },
         "measure_ceiling_height": {
           "doc": "X.measure_ceiling_height(origin, max_up) -> float",
