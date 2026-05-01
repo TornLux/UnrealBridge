@@ -1,0 +1,68 @@
+{
+  "_doc": "Curated raw-unreal.* → bridge-equivalent map. Each entry causes preflight to emit a warning (NOT a rejection) when the raw pattern appears, with the bridge-equivalent code shown inline. Driven by audit-log evidence: only patterns observed in real agent runs go in here. Add more as new fallbacks surface in exec.log.",
+  "redirects": [
+    {
+      "id": "asset_registry_get_assets",
+      "match_type": "asset_registry_method",
+      "method": "get_assets",
+      "bridge_replacement": "from unreal_bridge import Asset\nAsset.search_assets(query=..., scope=unreal.BridgeAssetSearchScope.ALL_ASSETS, class_filter=..., case_sensitive=False, whole_word=False, max_results=..., min_characters=1, custom_package_path='')\n# OR for path-restricted listing:\nAsset.list_assets_under_path(folder_path=..., include_subfolders=True)",
+      "reason": "Raw asset registry walks bypass preflight, audit logging, and have no token-cost guard — bridge wrappers do all three. ALL_ASSETS scope catches plugin assets PROJECT scope misses."
+    },
+    {
+      "id": "asset_registry_get_assets_by_path",
+      "match_type": "asset_registry_method",
+      "method": "get_assets_by_path",
+      "bridge_replacement": "from unreal_bridge import Asset\nAsset.list_assets_under_path(folder_path=..., include_subfolders=...)",
+      "reason": "Direct bridge equivalent. Returns paths instead of AssetData objects, so no .asset_class_path attribute confusion."
+    },
+    {
+      "id": "asset_registry_get_assets_by_class",
+      "match_type": "asset_registry_method",
+      "method": "get_assets_by_class",
+      "bridge_replacement": "from unreal_bridge import Asset\nAsset.search_assets(query='', scope=unreal.BridgeAssetSearchScope.ALL_ASSETS, class_filter='Blueprint', case_sensitive=False, whole_word=False, max_results=-1, min_characters=0, custom_package_path='')",
+      "reason": "search_assets with class_filter is the bridge-canonical way; works across plugin mounts where /Game-only walks miss assets."
+    },
+    {
+      "id": "asset_registry_get_referencers",
+      "match_type": "asset_registry_method",
+      "method": "get_referencers",
+      "bridge_replacement": "from unreal_bridge import Asset\nrefs = Asset.get_package_referencers(package_name=..., hard_only=True)\n# OR for both deps + refs in one call:\ndeps, refs = Asset.get_asset_references(asset_path=...)",
+      "reason": "Bridge wrapper takes a package name string instead of AssetIdentifier struct — much less ceremony."
+    },
+    {
+      "id": "asset_registry_get_dependencies",
+      "match_type": "asset_registry_method",
+      "method": "get_dependencies",
+      "bridge_replacement": "from unreal_bridge import Asset\ndeps = Asset.get_package_dependencies(package_name=..., hard_only=True)\n# OR for both deps + refs in one call:\ndeps, refs = Asset.get_asset_references(asset_path=...)",
+      "reason": "Same as get_referencers — string in, list out, no AssetIdentifier dance."
+    },
+    {
+      "id": "asset_registry_helpers_get_referencers",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.AssetRegistryHelpers.get_referencers",
+      "bridge_replacement": "from unreal_bridge import Asset\nAsset.get_package_referencers(package_name=..., hard_only=True)",
+      "reason": "Static-form variant of the chained call. Same redirect."
+    },
+    {
+      "id": "asset_registry_helpers_get_dependencies",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.AssetRegistryHelpers.get_dependencies",
+      "bridge_replacement": "from unreal_bridge import Asset\nAsset.get_package_dependencies(package_name=..., hard_only=True)",
+      "reason": "Static-form variant. Same redirect."
+    },
+    {
+      "id": "gameplay_statics_get_all_actors_of_class",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.GameplayStatics.get_all_actors_of_class",
+      "bridge_replacement": "from unreal_bridge import Level\nactor_paths = Level.find_actors_by_class(class_path=..., max_results=-1)",
+      "reason": "Bridge returns actor paths (strings), avoiding the result-type confusion that hitting raw UObject lists triggers."
+    },
+    {
+      "id": "gameplay_statics_get_all_actors_with_tag",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.GameplayStatics.get_all_actors_with_tag",
+      "bridge_replacement": "from unreal_bridge import Level\nactor_paths = Level.find_actors_by_tag(tag=...)",
+      "reason": "Tag-based actor lookup; bridge returns paths."
+    }
+  ]
+}

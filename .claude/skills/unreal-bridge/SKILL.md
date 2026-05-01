@@ -29,8 +29,11 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | Command | Example | Purpose |
 |---------|---------|---------|
 | `ping` | `bridge.py ping` | Check UE connection (TCP-only, doesn't touch GameThread) |
-| `exec` | `bridge.py exec "print('hi')"` | Execute inline Python |
-| `exec-file` | `bridge.py exec-file script.py` | Execute a .py file |
+| `exec` | `bridge.py exec "print('hi')"` | Execute a single inline statement |
+| `exec --stdin` | `bridge.py exec --stdin <<EOF ... EOF` | Execute multi-line script from stdin (no temp file) |
+| `exec-file` | `bridge.py exec-file script.py` | Execute a .py file (use when you'll iterate or keep) |
+| `preflight` | `bridge.py preflight script.py` | Lint a script for bridge-call errors WITHOUT sending to UE |
+| `suggest` | `bridge.py suggest AssetRegistry` | Look up the bridge equivalent for a raw `unreal.*` fallback pattern |
 | `gamethread-ping` | `bridge.py gamethread-ping` | Probe GameThread liveness (bypasses exec queue) |
 | `resume` | `bridge.py resume` | Unstick a paused BP breakpoint (bypasses exec queue) |
 | `list-editors` | `bridge.py list-editors` | Send a discovery probe; print every editor that responded |
@@ -46,6 +49,7 @@ Discovery is automatic — the common case needs no flags. Overrides (all option
 | `--discovery-group=host:port` | `UNREAL_BRIDGE_DISCOVERY_GROUP` | Override the multicast group |
 | `--timeout=<s>` | — | Per-request TCP timeout (default: 30s) |
 | `--json` | — | Machine-readable output |
+| `--no-preflight` | — | Disable AST preflight before send (rare; preflight is on by default) |
 
 ### Multi-editor disambiguation
 
@@ -65,45 +69,137 @@ Discovery uses UDP multicast; some firewalls / VPNs / tightly-segmented networks
 
 ## Workflow
 
-1. **Always ping first** to verify the editor is reachable
-2. Use `exec` for short queries, write a temp `.py` + `exec-file` for multi-line scripts
-3. Use `--json` when you need to parse structured results
-4. stdout = output, stderr = errors. Exit code 0 = success, 1 = error
-5. **All temporary files (`.py` scripts, intermediate data, etc.) MUST be placed in the project root's `temp/` folder, NOT inside the skill directory.**
+1. **Always ping first** to verify the editor is reachable.
+2. Pick the right execution mode (see decision tree below) — `exec --stdin` is the default for anything multi-line.
+3. Use `--json` when you need to parse structured results.
+4. stdout = output, stderr = errors. Exit codes: `0`=success, `1`=transport/runtime error, `2`=bad CLI args, `3`=AST preflight rejected the script before send.
 
-## API References
+### Execution modes — decision tree
 
-**Before writing UE Python code, Read the relevant reference file to find available APIs.** Do not guess API signatures — look them up first.
+There are four distinct surfaces. Pick by **how the script is shaped** and **whether you'll run it more than once**:
 
-### Signature verification (mandatory)
+```
+Want to execute Python in UE? Answer in order:
 
-Hallucinated parameter lists waste large numbers of bridge round-trips. Enforce these rules for every `unreal.UnrealBridge*Library.*` call:
+1. Single statement / single API call?
+   → bridge.py exec "<code>"
 
-1. **Look up before you call.** For any bridge function with >2 parameters, or any function you have not called in this session, `Grep` / `Read` the relevant `references/bridge-*-api.md` for its signature before issuing the `exec`.
-2. **If the reference doesn't list it,** read the `UFUNCTION` declaration in `Plugin/UnrealBridge/Source/UnrealBridge/Public/UnrealBridge*Library.h` — that is the ground truth. Do not infer from the function name.
-3. **On the first `TypeError` / `AttributeError`, stop.** Do not append another positional arg and retry. Re-read the signature, fix the call, then retry once. Repeated blind retries are the failure mode this rule exists to prevent.
-4. **Prefer one well-formed script over speculative probes.** Write the full sequence in a temp `.py` and use `exec-file` rather than chaining guessy `exec` calls.
-5. **If a reference doc contradicts the header,** trust the header and update the doc in the same change.
+2. Multi-step logic, one-shot, throwaway?
+   → bridge.py exec --stdin <<'EOF' ... EOF       ← DEFAULT for any >1-line script
+     (or: bridge.py exec - <<'EOF' ... EOF — `-` is shorthand for --stdin)
 
-### Execution discipline (mandatory)
+3. Multi-step logic, you'll iterate / debug / rerun multiple times?
+   → Write to temp/<name>.py + bridge.py exec-file temp/<name>.py
+     (temp/ is NOT auto-cleaned; tidy when you finish a debugging session)
 
-Every task executed through this skill MUST follow these principles — no exceptions:
+4. Deliverable script (demo reproduction, long-term asset, user wants to keep)?
+   → Write to a project location (NOT temp/ — temp/ is conventionally ephemeral),
+     then bridge.py exec-file <path>
+```
 
-1. **`exec-file` by default.** Whenever a task needs more than one bridge call, write a `.py` file and use `exec-file`. A single `exec-file` round-trip replaces N chained `exec` calls and collapses N result blobs into one. Only use inline `exec` for a genuinely single one-liner (e.g. `ping`, a single property read).
-2. **Minimum tokens, maximum efficiency.** Before any bridge call, ask: "Can I batch this with the next call?" If yes, batch. Do not print large intermediate dumps — print only what you need to make the next decision (GUIDs, booleans, counts). Use `json.dumps` to keep structured output compact.
-3. **Read the reference first.** Always `Read`/`Grep` the relevant `references/bridge-*-api.md` (or the C++ header) before invoking a function whose signature is not already confirmed in this session. Reading a doc is cheaper than a failed round-trip.
-4. **No API hallucination, no parameter guessing.** Never invent function names, parameter names, parameter order, or parameter counts. If you are not certain of a signature, look it up. A guessed call that errors burns a full round-trip and often leaks a long traceback into context.
-5. **Stop on the first signature error.** `TypeError` / `AttributeError` means your assumption is wrong. Do not retry with another guess — re-read the signature, then issue one corrected call.
-6. **Never bail to raw `unreal.*` when an `UnrealBridge*Library` wrapper exists.** If a bridge call returns empty / errors / "feels wrong", the failure is almost always in your **parameters** (wrong scope, wrong path, wrong filter), not in the wrapper. Re-read the reference and fix the call. Falling back to `unreal.AssetRegistryHelpers` / `unreal.EditorAssetLibrary` / `unreal.EditorUtilityLibrary` / `unreal.SystemLibrary` to "do it yourself" bypasses the documented surface, hides the real bug, and burns far more round-trips walking large registries than the bridge call would have. If you genuinely believe no bridge function covers your case, **ask the user before reaching for raw `unreal.*`** — the answer is often "use this other bridge function I forgot to list."
+Mode 2 (`--stdin`) is the **new default for anything multi-line**. It eliminates the per-script temp-file accumulation that the previous "always exec-file" guidance produced.
 
-### Common antipatterns (each cost real round-trips in practice)
+#### Paradigm: Multi-step one-shot (the 80% case)
 
-| Symptom | Wrong reflex | Right move |
-|---------|--------------|------------|
-| `TypeError: required argument 'X' (pos N) not found` | Append `False` / `0` / `''` and retry | Stop, `Read` the `references/bridge-*-api.md` row, write **one** corrected call |
-| `AttributeError: type object 'BridgeXxxScope' has no attribute 'YYY'` | Try another guessed enum name | Read the enum table in the reference doc — never invent enum members |
-| Bridge call returns `[]` / `None` for an asset/actor/BP you know exists | Drop to `unreal.AssetRegistryHelpers.get_assets_by_path` and walk it | Suspect your scope/filter first. For asset name lookup the default is `search_assets_in_all_content(name, max_results)` with `ALL_ASSETS` scope (plugins live outside `/Game`) |
-| Want to do a multi-step BP edit (spawn + connect + position) | Chain 3 `exec` calls inline | Write a `.py` in the project's `temp/` and use `exec-file` once |
+```bash
+python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" exec --stdin <<'EOF'
+import unreal
+from unreal_bridge import Asset, Level
+paths, _ = Asset.search_assets_in_all_content(query="Hero", max_results=5)
+for p in paths:
+    print(str(p))
+EOF
+```
+
+#### Paradigm: Iterate-and-rerun (when you'll edit + run again)
+
+```bash
+# Write temp/inspect_hero.py first, then:
+python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" exec-file temp/inspect_hero.py
+# Edit the file & rerun freely. Clean it up when you're done.
+```
+
+#### Paradigm: Deliverable (kept long-term)
+
+```bash
+# Write to a project-appropriate location, e.g. scripts/build_demo.py — NOT temp/.
+python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" exec-file scripts/build_demo.py
+```
+
+## API surface — use the wrapper module first
+
+Two ways to call bridge functions:
+
+**Preferred: `unreal_bridge` wrapper module** (auto-loaded inside UE Python, kwargs-only):
+
+```python
+from unreal_bridge import Asset, Level, Blueprint, Editor, Anim, Material, ...
+paths, _ = Asset.search_assets_in_all_content(query="Hero", max_results=20)
+info = Level.get_actor_info(actor_path="/Persistent/Player")
+```
+
+The wrapper has 14 classes (one per `UnrealBridge*Library`) with kwargs-only signatures — calling with positional args raises a `TypeError` immediately at the Python layer, before any bridge round-trip. **This is the structural fix for positional-arg-order hallucinations.** Regenerate after C++ header changes via `python tools/gen_manifest.py`.
+
+**Fallback: raw `unreal.UnrealBridge*Library.foo(...)`** (still supported; AST preflight catches errors before send).
+
+## AST preflight (automatic, on by default)
+
+Every `exec` / `exec --stdin` / `exec-file` call runs an AST preflight in the bridge client BEFORE sending the script to UE. Preflight reads `scripts/bridge_manifest.json` (auto-generated from UE reflection) and rejects the call locally — exit code 3, no UE round-trip — when:
+
+- Function name doesn't exist on the named library (with did-you-mean candidates)
+- Library name unknown (with did-you-mean)
+- Required args missing (with full signature shown)
+- Unknown kwarg name (with did-you-mean + signature)
+- Same param given both positionally and by kwarg
+- `unreal.BridgeXxx.YYY` enum member doesn't exist (with valid members listed)
+
+What this means for you: **structural call errors are caught before they cost a round-trip, and the rejection message contains the right signature**. There's no "guess and retry" loop for these cases — you get the answer in the first error.
+
+To preview without sending: `bridge.py preflight script.py`. To bypass (rare; debugging the preflight itself, or running deliberately weird code): `bridge.py --no-preflight exec ...`.
+
+Type validation is NOT done by preflight (the manifest doesn't carry param types). Wrong asset paths, wrong enum scopes for context, etc. still surface only at runtime — references prose still matters for those.
+
+## Reference docs (for semantics, not signatures)
+
+Signatures are now mechanically enforced. **References still carry the things preflight can't**: token-cost warnings, scope traps (PROJECT vs ALL_ASSETS for plugin assets), workflow patterns (auto_layout three-step), known limitations.
+
+Use references to answer "**how should I use this?**" — not "**what's the signature?**" (the wrapper / preflight has the signature).
+
+### Common semantic traps (preflight does NOT catch these)
+
+| Symptom | What's actually wrong | Right move |
+|---------|----------------------|------------|
+| Bridge call returns `[]` / `None` for an asset you know exists | Wrong scope: `PROJECT` only covers `/Game`, plugin assets need `ALL_ASSETS` | Use `Asset.search_assets_in_all_content(query, max_results)` (defaults to `ALL_ASSETS`) |
+| `get_derived_classes` is hanging / returning massive results | Passed `UObject` / `AActor` / `UActorComponent` as base — walks the entire class tree | Narrow to the most specific base you care about |
+| Multi-step BP edit feels chatty | Chaining 3 inline `exec` calls instead of batching | Write to `temp/X.py` + `exec-file` once (Mode 3) or use `--stdin` heredoc (Mode 2) |
+| Pawn movement script freezes the editor | Used `time.sleep` inside a single `exec` (blocks GameThread) | See `references/bridge-gameplay-api.md` "Pattern: chase a target" — use `register_runtime_timer` instead |
+
+### Never silently bail to raw `unreal.*` when a bridge wrapper exists
+
+If a bridge call returns empty / errors / "feels wrong", suspect **your parameters** (wrong scope, path, filter), not the wrapper. Falling back to `unreal.AssetRegistryHelpers` / `unreal.EditorAssetLibrary` / `unreal.SystemLibrary` to "do it yourself" bypasses the documented surface, hides the real bug, and often walks 100k–2M registry entries the bridge call would have skipped.
+
+**The bridge enforces this automatically:** AST preflight prints a `[WARN]` whenever it spots a known raw-fallback pattern (e.g. `unreal.AssetRegistryHelpers.get_asset_registry().get_assets_by_path(...)`) and shows the bridge equivalent inline. The script still runs (warning, not error), but if you see one of these warnings on a call you wrote, switch to the suggested bridge form on the next iteration.
+
+**To look up a replacement before writing a call:**
+
+```bash
+python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" suggest AssetRegistry      # filter
+python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" suggest                    # list all
+```
+
+Each result includes the exact bridge call with kwargs and a one-line "why". Patterns currently mapped (auto-extends as new fallbacks surface in `Saved/UnrealBridge/exec.log`):
+
+| Raw pattern | Bridge equivalent |
+|---|---|
+| `ar = unreal.AssetRegistryHelpers.get_asset_registry(); ar.get_assets_by_path(...)` | `Asset.list_assets_under_path(folder_path=..., include_subfolders=...)` |
+| `ar.get_referencers(...)` / `unreal.AssetRegistryHelpers.get_referencers(...)` | `Asset.get_package_referencers(package_name=..., hard_only=...)` |
+| `ar.get_dependencies(...)` / `unreal.AssetRegistryHelpers.get_dependencies(...)` | `Asset.get_package_dependencies(package_name=..., hard_only=...)` |
+| `unreal.GameplayStatics.get_all_actors_of_class(...)` | `Level.find_actors_by_class(class_path=..., max_results=-1)` |
+| `unreal.GameplayStatics.get_all_actors_with_tag(...)` | `Level.find_actors_by_tag(tag=...)` |
+
+If you genuinely believe no bridge function covers your case, **ask the user before reaching for raw `unreal.*`** — the answer is often "use this other bridge function I forgot to list."
+
+### Reference index — read these for usage / traps / workflow patterns
 
 | Topic | Reference file | When to read |
 |-------|---------------|--------------|
