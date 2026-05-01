@@ -4,12 +4,21 @@ UnrealBridge CLI — execute Python in a running Unreal Editor over a TCP bridge
 
 Usage:
     python bridge.py ping                          # Check connection
-    python bridge.py exec "print('hello')"         # Execute inline code
-    python bridge.py exec-file script.py           # Execute a file
+    python bridge.py exec "print('hello')"         # Execute inline code (single statement)
+    python bridge.py exec --stdin <<'EOF'          # Multi-step, one-shot, no disk file
+    import unreal
+    print(unreal.SystemLibrary.get_project_directory())
+    EOF
+    python bridge.py exec -                        # `-` is shorthand for --stdin
+    python bridge.py exec-file script.py           # Multi-step, will iterate / keep on disk
     python bridge.py exec "code" --json            # Machine-readable output
 
 The client auto-discovers the editor via UDP multicast (239.255.42.99:9876)
 — zero config for the common case of one editor running on the local host.
+
+Every exec / exec-file invocation is recorded as one JSONL line in the project's
+Saved/UnrealBridge/exec.log (ring-buffered, 5 MB × 3 backups = 20 MB hard cap).
+Useful for post-hoc audit and failure-mode analysis.
 
 Discovery overrides (rarely needed):
     --project=<name|path>      Pick one of multiple running editors
@@ -28,12 +37,15 @@ Protocol: length-prefixed JSON over TCP
 """
 
 import argparse
+import datetime
 import json
+import logging
 import os
 import socket
 import struct
 import sys
 import uuid
+from logging.handlers import RotatingFileHandler
 
 try:
     from bridge_discovery import (
@@ -64,24 +76,32 @@ except ImportError:
 
 DEFAULT_TIMEOUT = 30
 
+AUDIT_LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 MB per file
+AUDIT_LOG_BACKUPS = 3                    # 4 files total (1 active + 3 backups) = 20 MB hard cap
+AUDIT_LOG_NAME = "exec.log"
 
-# ── Resolution: turn CLI args into a (host, port, token) triple ─────────────
 
-def resolve_target(args) -> "tuple[str, int, str | None]":
+# ── Resolution: turn CLI args into a (host, port, token, project_path) tuple ─
+
+def resolve_target(args) -> "tuple[str, int, str | None, str | None]":
     """Figure out which editor to talk to.
+
+    Returns (host, port, token, project_path). project_path is the .uproject
+    file path when discovery succeeded — used to locate the per-project audit
+    log under Saved/UnrealBridge/. None when --endpoint skipped discovery.
 
     Precedence:
       1. --endpoint=host:port (or UNREAL_BRIDGE_ENDPOINT)
       2. UDP multicast discovery, filtered by --project (or UNREAL_BRIDGE_PROJECT)
     """
-    # 1. Explicit endpoint — no discovery.
+    # 1. Explicit endpoint — no discovery, no project_path.
     endpoint_str = getattr(args, "endpoint", None) or os.environ.get("UNREAL_BRIDGE_ENDPOINT")
     if endpoint_str:
         if ":" not in endpoint_str:
             raise SystemExit(f"--endpoint must be host:port (got {endpoint_str!r})")
         host, port_s = endpoint_str.rsplit(":", 1)
         token = getattr(args, "token", None) or os.environ.get("UNREAL_BRIDGE_TOKEN")
-        return host, int(port_s), token
+        return host, int(port_s), token, None
 
     # 2. Discovery.
     project = getattr(args, "project", None) or os.environ.get("UNREAL_BRIDGE_PROJECT") or "*"
@@ -102,9 +122,100 @@ def resolve_target(args) -> "tuple[str, int, str | None]":
         ep = select(eps, project_filter=project if project != "*" else None)
         token = load_token(ep, explicit_token=getattr(args, "token", None)
                            or os.environ.get("UNREAL_BRIDGE_TOKEN"))
-        return ep.host, ep.port, token
+        return ep.host, ep.port, token, ep.project_path or None
     except DiscoveryError as e:
         raise SystemExit(f"discovery: {e}")
+
+
+# ── Audit log: ring-buffered JSONL of every exec attempt ────────────────────
+
+_AUDIT_LOGGER_CACHE: "dict[str, logging.Logger]" = {}
+
+
+def _audit_log_path(project_path: "str | None") -> "str | None":
+    """Resolve the audit-log target path.
+
+    Priority: UNREAL_BRIDGE_AUDIT_LOG env override → <project>/Saved/UnrealBridge/exec.log
+    → None (disabled) when neither is available (e.g. --endpoint without env override).
+    """
+    override = os.environ.get("UNREAL_BRIDGE_AUDIT_LOG")
+    if override:
+        return override
+    if project_path:
+        saved_dir = os.path.join(os.path.dirname(project_path), "Saved", "UnrealBridge")
+        return os.path.join(saved_dir, AUDIT_LOG_NAME)
+    return None
+
+
+def _get_audit_logger(log_path: str) -> logging.Logger:
+    """Lazily build a RotatingFileHandler-backed logger for the given path.
+
+    Multiple bridge.py invocations can race on rotation (RotatingFileHandler
+    is not process-safe). For a single-user/single-machine workflow the worst
+    case is one log entry lost during the rotation window — acceptable.
+    """
+    cached = _AUDIT_LOGGER_CACHE.get(log_path)
+    if cached is not None:
+        return cached
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    logger = logging.getLogger(f"unreal_bridge.audit.{log_path}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    if not logger.handlers:
+        handler = RotatingFileHandler(
+            log_path,
+            maxBytes=AUDIT_LOG_MAX_BYTES,
+            backupCount=AUDIT_LOG_BACKUPS,
+            encoding="utf-8",
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger.addHandler(handler)
+    _AUDIT_LOGGER_CACHE[log_path] = logger
+    return logger
+
+
+def _preflight_or_skip(code: str) -> "tuple[list[str], list[str]]":
+    """Run AST preflight on `code`. Returns (errors, warnings).
+
+    Best-effort: if bridge_preflight or its manifest is missing, returns
+    ([], []) so the call proceeds normally — preflight is additive, not
+    load-bearing.
+    """
+    try:
+        from bridge_preflight import lint  # local import keeps cold-start cheap
+    except ImportError:
+        return [], []
+    try:
+        return lint(code)
+    except Exception:
+        return [], []
+
+
+def _audit(project_path: "str | None", mode: str, src: "str | None",
+           code: str, ok: bool, err: "str | None") -> None:
+    """Best-effort audit log of one exec attempt. Never raises."""
+    log_path = _audit_log_path(project_path)
+    if not log_path:
+        return
+    try:
+        entry = {
+            "ts": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="milliseconds"),
+            "pid": os.getpid(),
+            "mode": mode,
+            "src": src,
+            "size": len(code.encode("utf-8")),
+            "ok": ok,
+            "err": err,
+            "script": code,
+        }
+        line = json.dumps(entry, ensure_ascii=False)
+        _get_audit_logger(log_path).info(line)
+    except OSError:
+        # Log directory unwritable / disk full / etc — don't break the call.
+        pass
+    except Exception:
+        # Any other audit-side failure is non-fatal.
+        pass
 
 
 # ── Wire protocol helpers ─────────────────────────────────────────────────
@@ -144,7 +255,7 @@ def _recv_all(sock: socket.socket, num_bytes: int) -> bytes:
 # ── Commands ────────────────────────────────────────────────────────────
 
 def cmd_ping(args):
-    host, port, token = resolve_target(args)
+    host, port, token, _project_path = resolve_target(args)
     try:
         payload = {"id": str(uuid.uuid4()), "command": "ping"}
         resp = send_request(host, port, payload, args.timeout, token=token)
@@ -184,7 +295,7 @@ def cmd_ping(args):
 
 def cmd_gt_ping(args):
     """Probe whether the UE GameThread is responsive."""
-    host, port, token = resolve_target(args)
+    host, port, token, _project_path = resolve_target(args)
     payload = {
         "id": str(uuid.uuid4()),
         "command": "gamethread_ping",
@@ -215,7 +326,7 @@ def cmd_gt_ping(args):
 
 
 def cmd_resume(args):
-    host, port, token = resolve_target(args)
+    host, port, token, _project_path = resolve_target(args)
     try:
         payload = {"id": str(uuid.uuid4()), "command": "debug_resume"}
         resp = send_request(host, port, payload, args.timeout, token=token)
@@ -262,7 +373,7 @@ def cmd_wait_compile(args):
         " 'ql': str(r.quality_level), 'err': str(r.error)}))\n"
     )
 
-    host, port, token = resolve_target(args)
+    host, port, token, _project_path = resolve_target(args)
     last = None
     while _time.time() < deadline:
         payload = {"id": str(uuid.uuid4()), "script": code, "timeout": 5}
@@ -322,7 +433,21 @@ def cmd_wait_compile(args):
 
 
 def cmd_exec(args):
-    return _execute(args, args.code)
+    # Three input modes: positional code arg, --stdin flag, or `-` shorthand.
+    use_stdin = args.stdin or args.code == "-"
+    if use_stdin:
+        if args.code is not None and args.code != "-":
+            print("ERROR: cannot pass both a code argument and --stdin", file=sys.stderr)
+            return 2
+        code = sys.stdin.read()
+        if not code.strip():
+            print("ERROR: --stdin given but stdin was empty", file=sys.stderr)
+            return 2
+        return _execute(args, code, mode="stdin", src=None)
+    if args.code is None:
+        print("ERROR: provide a code argument or use --stdin", file=sys.stderr)
+        return 2
+    return _execute(args, args.code, mode="exec", src=None)
 
 
 def cmd_exec_file(args):
@@ -336,7 +461,82 @@ def cmd_exec_file(args):
         print(f"ERROR: Cannot read file: {e}", file=sys.stderr)
         return 1
 
-    return _execute(args, code)
+    return _execute(args, code, mode="exec-file", src=args.file)
+
+
+def cmd_suggest(args):
+    """Look up bridge equivalents for raw unreal.* fallback patterns."""
+    try:
+        from bridge_preflight import load_redirects
+    except ImportError:
+        print("ERROR: bridge_preflight unavailable", file=sys.stderr)
+        return 2
+    redirects = load_redirects()
+    if not redirects:
+        print("ERROR: bridge_redirects.json not found", file=sys.stderr)
+        return 2
+    entries = redirects.get("redirects", [])
+
+    needle = (args.pattern or "").lower().strip()
+    matches = []
+    for e in entries:
+        # A direct_call entry has raw_pattern; an asset_registry_method entry
+        # has method. Match either against the needle (or list everything if no needle).
+        haystacks = []
+        if e.get("raw_pattern"):
+            haystacks.append(e["raw_pattern"])
+        if e.get("method"):
+            haystacks.append(f"AssetRegistryHelpers.{e['method']}")
+        haystack_str = " ".join(haystacks).lower()
+        if not needle or needle in haystack_str:
+            matches.append((haystacks, e))
+
+    if args.json:
+        print(json.dumps({"matches": [e for _, e in matches]}, ensure_ascii=False, indent=2))
+        return 0
+
+    if not matches:
+        print(f"No redirect matches '{args.pattern}'.\n"
+              f"List everything with: bridge.py suggest")
+        return 1
+
+    for haystacks, e in matches:
+        primary = haystacks[0] if haystacks else "(unknown)"
+        print(f"-- {primary} --")
+        bridge = e.get("bridge_replacement", "")
+        for line in bridge.splitlines():
+            print(f"  {line}")
+        reason = e.get("reason", "")
+        if reason:
+            print(f"  why: {reason}")
+        print()
+    return 0
+
+
+def cmd_preflight(args):
+    """Lint a script standalone — never touches the network."""
+    if args.file == "-":
+        code = sys.stdin.read()
+    else:
+        try:
+            with open(args.file, "r", encoding="utf-8") as f:
+                code = f.read()
+        except OSError as e:
+            print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
+            return 2
+    errs = _preflight_or_skip(code)
+    if not errs:
+        if args.json:
+            print(json.dumps({"ok": True, "errors": []}))
+        else:
+            print("preflight: clean")
+        return 0
+    if args.json:
+        print(json.dumps({"ok": False, "errors": errs}, ensure_ascii=False))
+    else:
+        for e in errs:
+            print(e, file=sys.stderr)
+    return 1
 
 
 def cmd_list_editors(args):
@@ -368,8 +568,25 @@ def cmd_list_editors(args):
     return 0
 
 
-def _execute(args, code: str) -> int:
-    host, port, token = resolve_target(args)
+def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> int:
+    # AST preflight: catch bridge-call errors locally before any UE round-trip.
+    # Warnings are printed but don't block. Errors short-circuit with exit 3.
+    if not getattr(args, "no_preflight", False):
+        errs, warns = _preflight_or_skip(code)
+        for w in warns:
+            print(w, file=sys.stderr)
+        if errs:
+            for e in errs:
+                print(e, file=sys.stderr)
+            try:
+                _, _, _, proj = resolve_target(args)
+            except SystemExit:
+                proj = None
+            _audit(proj, mode, src, code, ok=False,
+                   err=f"preflight: {len(errs)} error(s); first: {errs[0].splitlines()[0]}")
+            return 3  # 3 = preflight rejection (distinct from 1 = transport, 2 = arg)
+
+    host, port, token, project_path = resolve_target(args)
 
     payload = {
         "id": str(uuid.uuid4()),
@@ -388,12 +605,14 @@ def _execute(args, code: str) -> int:
             print(json.dumps({"success": False, "error": msg}))
         else:
             print(f"ERROR: {msg}", file=sys.stderr)
+        _audit(project_path, mode, src, code, ok=False, err=f"transport: {msg}")
         return 1
     except Exception as e:
         if args.json:
             print(json.dumps({"success": False, "error": str(e)}))
         else:
             print(f"ERROR: {e}", file=sys.stderr)
+        _audit(project_path, mode, src, code, ok=False, err=f"transport: {e}")
         return 1
 
     if args.json:
@@ -407,7 +626,10 @@ def _execute(args, code: str) -> int:
         if error:
             print(error, file=sys.stderr, end="" if error.endswith("\n") else "\n")
 
-    return 0 if resp.get("success") else 1
+    ok = bool(resp.get("success"))
+    _audit(project_path, mode, src, code,
+           ok=ok, err=(resp.get("error") or None) if not ok else None)
+    return 0 if ok else 1
 
 
 # ── CLI plumbing ────────────────────────────────────────────────────────
@@ -457,14 +679,34 @@ def main():
         action="store_true",
         help="Output in JSON format (machine-readable)",
     )
+    parser.add_argument(
+        "--no-preflight",
+        action="store_true",
+        help="Skip the AST preflight that validates unreal.UnrealBridge*Library "
+             "calls against the manifest before sending. Use only when you "
+             "intentionally want to bypass the contract (rare).",
+    )
     _add_common_args(parser)
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("ping", help="Check if UE is connected")
 
-    exec_parser = subparsers.add_parser("exec", help="Execute inline Python code")
-    exec_parser.add_argument("code", help="Python code to execute")
+    exec_parser = subparsers.add_parser(
+        "exec",
+        help="Execute Python code (positional arg, --stdin, or `-` for stdin)",
+    )
+    exec_parser.add_argument(
+        "code",
+        nargs="?",
+        help="Python code to execute. Pass `-` (or use --stdin) to read from stdin instead.",
+    )
+    exec_parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="Read the script body from stdin (use for multi-line one-shot scripts; "
+             "avoids creating a temp .py file).",
+    )
 
     execfile_parser = subparsers.add_parser(
         "exec-file", help="Execute a Python script file"
@@ -490,6 +732,26 @@ def main():
     subparsers.add_parser(
         "list-editors",
         help="Send a discovery probe and list every editor that answered",
+    )
+
+    pf_parser = subparsers.add_parser(
+        "preflight",
+        help="Lint a script for bridge-call errors WITHOUT sending it to UE",
+    )
+    pf_parser.add_argument(
+        "file",
+        help="Path to .py file (or `-` to read script from stdin).",
+    )
+
+    sg_parser = subparsers.add_parser(
+        "suggest",
+        help="Look up the bridge equivalent for a raw unreal.* fallback pattern",
+    )
+    sg_parser.add_argument(
+        "pattern",
+        nargs="?",
+        help="Substring of a raw pattern (e.g. 'AssetRegistry', 'GameplayStatics'). "
+             "Omit to list every redirect.",
     )
 
     wc_parser = subparsers.add_parser(
@@ -526,6 +788,10 @@ def main():
         sys.exit(cmd_wait_compile(args))
     elif args.command == "list-editors":
         sys.exit(cmd_list_editors(args))
+    elif args.command == "preflight":
+        sys.exit(cmd_preflight(args))
+    elif args.command == "suggest":
+        sys.exit(cmd_suggest(args))
 
 
 if __name__ == "__main__":

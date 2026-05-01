@@ -1,0 +1,73 @@
+{
+  "_doc": "Curated map of bridge-function return shapes for the variable-type tracker in bridge_preflight.py. Drives 'attribute confusion' warnings (e.g. agent does paths[0].asset_class_path but paths[0] is a str). Two parts: function_returns (per-function shape) and type_attributes (valid attrs per UE type). Add entries based on audit-log failure patterns — keep narrow, not exhaustive.",
+  "function_returns": {
+    "UnrealBridgeAssetLibrary.list_assets_under_path": {
+      "shape": "list",
+      "element_type": "str"
+    },
+    "UnrealBridgeAssetLibrary.list_assets_in_path": {
+      "shape": "list",
+      "element_type": "str"
+    },
+    "UnrealBridgeAssetLibrary.search_assets_in_all_content": {
+      "shape": "tuple",
+      "tuple_element_types": ["list[SoftObjectPath]", "list[str]"]
+    },
+    "UnrealBridgeAssetLibrary.search_assets": {
+      "shape": "tuple",
+      "tuple_element_types": ["list[SoftObjectPath]", "list[str]"]
+    },
+    "UnrealBridgeAssetLibrary.search_assets_under_path": {
+      "shape": "tuple",
+      "tuple_element_types": ["list[SoftObjectPath]", "list[str]"]
+    },
+    "UnrealBridgeAssetLibrary.get_package_referencers": {
+      "shape": "list",
+      "element_type": "str"
+    },
+    "UnrealBridgeAssetLibrary.get_package_dependencies": {
+      "shape": "list",
+      "element_type": "str"
+    },
+    "UnrealBridgeAssetLibrary.get_asset_references": {
+      "shape": "tuple",
+      "tuple_element_types": ["list[SoftObjectPath]", "list[SoftObjectPath]"]
+    },
+    "UnrealBridgeAssetLibrary.get_asset_class_paths_batch": {
+      "shape": "list",
+      "element_type": "str"
+    },
+    "UnrealBridgeLevelLibrary.find_actors_by_class": {
+      "shape": "list",
+      "element_type": "str"
+    },
+    "UnrealBridgeLevelLibrary.find_actors_by_tag": {
+      "shape": "list",
+      "element_type": "str"
+    }
+  },
+  "type_attributes": {
+    "str": {
+      "valid": [],
+      "_note": "str is a Python string. NO UE-object attributes are valid. Any .x access is wrong unless x is a builtin string method (split, strip, startswith, ...). Such builtins are ignored by the detector."
+    },
+    "SoftObjectPath": {
+      "valid": ["asset_path_string", "package_name", "asset_name", "sub_path_string"],
+      "_note": "UE FSoftObjectPath. Common confusion: agent thinks it has AssetData fields like asset_class_path."
+    },
+    "AssetData": {
+      "valid": ["asset_class_path", "package_name", "asset_name", "object_path", "package_path", "tags_and_values"],
+      "_note": "UE FAssetData (returned by asset registry, not by bridge in most cases)."
+    }
+  },
+  "string_builtin_methods": [
+    "split", "rsplit", "strip", "lstrip", "rstrip", "startswith", "endswith",
+    "lower", "upper", "title", "capitalize", "swapcase", "casefold",
+    "find", "rfind", "index", "rindex", "count", "replace", "translate",
+    "format", "format_map", "join", "encode", "decode",
+    "isalpha", "isdigit", "isnumeric", "isalnum", "isspace", "islower", "isupper",
+    "isascii", "isidentifier", "isprintable", "istitle", "isdecimal",
+    "center", "ljust", "rjust", "zfill", "expandtabs", "splitlines",
+    "partition", "rpartition", "removeprefix", "removesuffix", "maketrans"
+  ]
+}
