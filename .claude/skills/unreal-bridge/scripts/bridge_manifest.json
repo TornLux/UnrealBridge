@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-05-01T11:07:41+00:00",
+  "generated_at": "2026-05-01T13:11:14+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -15334,5 +15334,1327 @@
     }
   },
   "project_path": "G:/UEProjects/GameplayLocomotion/GameplayLocomotion.uproject",
+  "structs": {
+    "BridgeAbilityCooldownInfo": [
+      "ability_class_name",
+      "cooldown_duration",
+      "cooldown_tags",
+      "found",
+      "on_cooldown",
+      "time_remaining"
+    ],
+    "BridgeAbilityTagRequirements": [
+      "ability_class_name",
+      "activation_blocked_tags",
+      "activation_owned_tags",
+      "activation_required_tags",
+      "block_abilities_with_tag",
+      "cancel_abilities_with_tag",
+      "source_blocked_tags",
+      "source_required_tags",
+      "target_blocked_tags",
+      "target_required_tags"
+    ],
+    "BridgeAbilityTriggerInfo": [
+      "trigger_source",
+      "trigger_tag"
+    ],
+    "BridgeActiveAbilityInfo": [
+      "ability_class_name",
+      "active_count",
+      "input_id",
+      "level"
+    ],
+    "BridgeActiveEffectInfo": [
+      "duration",
+      "dynamic_granted_tags",
+      "effect_class_name",
+      "period_seconds",
+      "stack_count",
+      "time_remaining"
+    ],
+    "BridgeActorAbilitySystemInfo": [
+      "active_effect_count",
+      "actor_name",
+      "attribute_set_classes",
+      "found",
+      "granted_abilities",
+      "owned_tags"
+    ],
+    "BridgeActorBounds": [
+      "box_extent",
+      "origin",
+      "sphere_radius"
+    ],
+    "BridgeActorBrief": [
+      "class_name",
+      "hidden",
+      "label",
+      "location",
+      "name",
+      "tags"
+    ],
+    "BridgeActorInfo": [
+      "attached_to",
+      "children",
+      "class_name",
+      "class_path",
+      "components",
+      "hidden",
+      "hidden_in_game",
+      "label",
+      "name",
+      "tags",
+      "transform"
+    ],
+    "BridgeActorRadiusHit": [
+      "class_name",
+      "distance",
+      "name"
+    ],
+    "BridgeAddExpressionResult": [
+      "error",
+      "guid",
+      "resolved_class",
+      "success"
+    ],
+    "BridgeAnimBlueprintInfo": [
+      "implemented_interfaces",
+      "is_template",
+      "name",
+      "num_linked_layers",
+      "num_slots",
+      "num_state_machines",
+      "parent_class",
+      "preview_skeletal_mesh",
+      "target_skeleton"
+    ],
+    "BridgeAnimCurveInfo": [
+      "curve_name",
+      "num_keys"
+    ],
+    "BridgeAnimGraphNodeInfo": [
+      "connections",
+      "detail",
+      "node_index",
+      "node_title",
+      "node_type"
+    ],
+    "BridgeAnimGraphSummary": [
+      "kind",
+      "name",
+      "num_nodes",
+      "parent_graph_name"
+    ],
+    "BridgeAnimLayerInfo": [
+      "implementing_class",
+      "interface_name",
+      "layer_name"
+    ],
+    "BridgeAnimLayoutResult": [
+      "bounds_height",
+      "bounds_width",
+      "layer_count",
+      "nodes_positioned",
+      "succeeded",
+      "warnings"
+    ],
+    "BridgeAnimNodeConnection": [
+      "source_pin",
+      "target_node_index",
+      "target_pin"
+    ],
+    "BridgeAnimNotifyInfo": [
+      "duration",
+      "notify_name",
+      "notify_type",
+      "trigger_time"
+    ],
+    "BridgeAnimSequenceInfo": [
+      "curves",
+      "frame_rate",
+      "has_root_motion",
+      "name",
+      "notifies",
+      "num_frames",
+      "play_length",
+      "rate_scale",
+      "skeleton_name"
+    ],
+    "BridgeAnimSlotInfo": [
+      "graph_name",
+      "node_title",
+      "slot_name"
+    ],
+    "BridgeAnimState": [
+      "is_conduit",
+      "is_default",
+      "name"
+    ],
+    "BridgeAnimSyncMarker": [
+      "marker_name",
+      "time",
+      "track_index"
+    ],
+    "BridgeAnimTransition": [
+      "bidirectional",
+      "crossfade_duration",
+      "from_state",
+      "priority_order",
+      "to_state"
+    ],
+    "BridgeAssetInfo": [
+      "asset_name",
+      "class_path",
+      "disk_size",
+      "found",
+      "is_redirector",
+      "package_name",
+      "tags"
+    ],
+    "BridgeAssetTag": [
+      "key",
+      "value"
+    ],
+    "BridgeAttributeInfo": [
+      "base_value",
+      "name",
+      "type"
+    ],
+    "BridgeAttributeSetInfo": [
+      "attributes",
+      "name",
+      "parent_class_name"
+    ],
+    "BridgeAttributeValue": [
+      "attribute_name",
+      "base_value",
+      "current_value",
+      "found"
+    ],
+    "BridgeBlendProfileEntry": [
+      "blend_scale",
+      "bone_name"
+    ],
+    "BridgeBlendProfileInfo": [
+      "mode",
+      "name",
+      "num_entries"
+    ],
+    "BridgeBlendSpaceAxis": [
+      "grid_divisions",
+      "max",
+      "min",
+      "name"
+    ],
+    "BridgeBlendSpaceInfo": [
+      "axes",
+      "name",
+      "num_axes",
+      "samples",
+      "skeleton_name"
+    ],
+    "BridgeBlendSpaceSample": [
+      "animation_name",
+      "rate_scale",
+      "sample_value"
+    ],
+    "BridgeBlueprintOverview": [
+      "blueprint_name",
+      "blueprint_type",
+      "components",
+      "event_dispatchers",
+      "functions",
+      "graph_names",
+      "interfaces",
+      "parent_class",
+      "variables"
+    ],
+    "BridgeBlueprintSummary": [
+      "blueprint_type",
+      "component_count",
+      "event_dispatchers",
+      "events_handled",
+      "function_count",
+      "instance_editable_count",
+      "interfaces",
+      "key_referenced_assets",
+      "key_referenced_classes",
+      "macro_count",
+      "name",
+      "parent_class",
+      "parent_class_path",
+      "path",
+      "public_functions",
+      "replicated_variable_count",
+      "timeline_count",
+      "total_node_count",
+      "variable_categories",
+      "variable_count"
+    ],
+    "BridgeBoneInfo": [
+      "bone_index",
+      "bone_name",
+      "parent_index",
+      "parent_name"
+    ],
+    "BridgeBreakpointHit": [
+      "blueprint_path",
+      "function_name",
+      "graph_name",
+      "has_hit",
+      "hit_time",
+      "node_guid",
+      "node_title",
+      "self_path",
+      "values"
+    ],
+    "BridgeBreakpointHitValue": [
+      "kind",
+      "name",
+      "type",
+      "value"
+    ],
+    "BridgeBreakpointInfo": [
+      "enabled",
+      "graph_name",
+      "node_guid",
+      "node_title"
+    ],
+    "BridgeCallEdge": [
+      "target_class",
+      "target_kind",
+      "target_name"
+    ],
+    "BridgeCallLogEntry": [
+      "command",
+      "endpoint",
+      "error_bytes",
+      "error_preview",
+      "exec_duration_ms",
+      "output_bytes",
+      "request_id",
+      "script_preview",
+      "success",
+      "total_duration_ms",
+      "unix_seconds_utc"
+    ],
+    "BridgeCallStats": [
+      "avg_duration_ms",
+      "capacity",
+      "failure_count",
+      "max_duration_ms",
+      "min_duration_ms",
+      "p95_duration_ms",
+      "success_count",
+      "total_calls",
+      "total_dropped"
+    ],
+    "BridgeCdoOverride": [
+      "blueprint_path",
+      "child_value",
+      "parent_value",
+      "variable_name"
+    ],
+    "BridgeChannelCaptureResult": [
+      "base64",
+      "channel",
+      "depth_max",
+      "depth_min",
+      "error",
+      "file_path",
+      "format",
+      "height",
+      "success",
+      "width"
+    ],
+    "BridgeClassInfo": [
+      "class_name",
+      "class_path",
+      "is_native"
+    ],
+    "BridgeCompileMessage": [
+      "message",
+      "node_guid",
+      "severity"
+    ],
+    "BridgeCompileResult": [
+      "error_message",
+      "path",
+      "success"
+    ],
+    "BridgeComponentInfo": [
+      "component_class",
+      "is_inherited",
+      "is_root",
+      "name",
+      "parent_name"
+    ],
+    "BridgeComponentSummary": [
+      "component_class",
+      "name",
+      "parent_name"
+    ],
+    "BridgeCreateAssetResult": [
+      "error",
+      "path",
+      "success"
+    ],
+    "BridgeCurveInfo": [
+      "channel_names",
+      "class_name",
+      "name",
+      "num_keys_per_channel",
+      "post_infinity_extrap",
+      "pre_infinity_extrap"
+    ],
+    "BridgeCurveTableInfo": [
+      "curve_table_mode",
+      "name",
+      "num_keys_per_row",
+      "row_names"
+    ],
+    "BridgeDataTableColumn": [
+      "inner_type_name",
+      "name",
+      "type_name"
+    ],
+    "BridgeDataTableInfo": [
+      "column_names",
+      "name",
+      "num_rows",
+      "row_struct_name",
+      "rows"
+    ],
+    "BridgeDataTableRow": [
+      "fields",
+      "row_name"
+    ],
+    "BridgeDebugPrintSite": [
+      "blueprint_path",
+      "function_name",
+      "graph_name",
+      "graph_type",
+      "has_connected_input",
+      "node_guid",
+      "node_title",
+      "string_literal"
+    ],
+    "BridgeEditorFocusState": [
+      "blueprint_path",
+      "focused_graph_name",
+      "focused_graph_type",
+      "open_blueprint_paths",
+      "selected_nodes"
+    ],
+    "BridgeEditorState": [
+      "current_level_path",
+      "engine_version",
+      "is_paused",
+      "is_pie",
+      "num_content_browser_selection",
+      "num_opened_assets",
+      "num_selected_actors",
+      "project_name"
+    ],
+    "BridgeEventDispatcherInfo": [
+      "name",
+      "params"
+    ],
+    "BridgeExecConnection": [
+      "pin_name",
+      "target_step_index"
+    ],
+    "BridgeExecStep": [
+      "detail",
+      "exec_outputs",
+      "node_title",
+      "node_type",
+      "step_index"
+    ],
+    "BridgeExpressionPropSet": [
+      "name",
+      "value"
+    ],
+    "BridgeFrameTiming": [
+      "delta_seconds",
+      "fps",
+      "frame_ms",
+      "frame_number",
+      "game_thread_ms",
+      "gpu_ms",
+      "render_thread_ms",
+      "rhi_ms",
+      "smoothed"
+    ],
+    "BridgeFunctionInfo": [
+      "access",
+      "category",
+      "description",
+      "is_pure",
+      "is_static",
+      "kind",
+      "name",
+      "params"
+    ],
+    "BridgeFunctionParam": [
+      "default_value",
+      "is_const",
+      "is_output",
+      "is_reference",
+      "name",
+      "type"
+    ],
+    "BridgeFunctionSemantics": [
+      "access",
+      "calls_functions",
+      "comment_blocks",
+      "description",
+      "exec_outline",
+      "fires_dispatchers",
+      "has_branches",
+      "has_loops",
+      "is_override",
+      "is_pure",
+      "kind",
+      "name",
+      "node_count",
+      "params",
+      "reads_variables",
+      "spawns_classes",
+      "writes_variables"
+    ],
+    "BridgeFunctionSignature": [
+      "category",
+      "found",
+      "function_name",
+      "is_blueprint_callable",
+      "is_blueprint_pure",
+      "is_const",
+      "is_latent",
+      "is_native",
+      "is_pure",
+      "is_static",
+      "owning_class",
+      "owning_class_path",
+      "parameters",
+      "tooltip"
+    ],
+    "BridgeFunctionSummary": [
+      "kind",
+      "name",
+      "signature"
+    ],
+    "BridgeGEComponentInfo": [
+      "class_name",
+      "tags"
+    ],
+    "BridgeGEModifierInfo": [
+      "attribute",
+      "magnitude",
+      "magnitude_source",
+      "mod_op"
+    ],
+    "BridgeGameplayAbilityInfo": [
+      "ability_tags",
+      "cooldown_gameplay_effect_class",
+      "cost_gameplay_effect_class",
+      "instancing_policy",
+      "name",
+      "net_execution_policy",
+      "parent_class_name"
+    ],
+    "BridgeGameplayEffectInfo": [
+      "components",
+      "duration_policy",
+      "duration_seconds",
+      "modifiers",
+      "name",
+      "parent_class_name",
+      "period_seconds",
+      "stack_limit_count",
+      "stacking_type"
+    ],
+    "BridgeGlobalReference": [
+      "blueprint_path",
+      "graph_name",
+      "graph_type",
+      "kind",
+      "node_guid",
+      "node_title"
+    ],
+    "BridgeGrantedAbilityInfo": [
+      "ability_class_name",
+      "input_id",
+      "is_active",
+      "level"
+    ],
+    "BridgeGraphDiff": [
+      "added_nodes",
+      "added_wires",
+      "removed_nodes",
+      "removed_wires"
+    ],
+    "BridgeGraphDiffNode": [
+      "node_class",
+      "node_guid",
+      "title"
+    ],
+    "BridgeGraphDiffWire": [
+      "dst_node_guid",
+      "dst_pin_name",
+      "src_node_guid",
+      "src_pin_name"
+    ],
+    "BridgeGraphInfo": [
+      "graph_type",
+      "name"
+    ],
+    "BridgeGraphOpResult": [
+      "index",
+      "message",
+      "new_node_guid",
+      "op",
+      "success"
+    ],
+    "BridgeHandlerDetail": [
+      "created_at",
+      "error_policy",
+      "remaining_calls",
+      "script",
+      "summary",
+      "throttle_ms"
+    ],
+    "BridgeHandlerStats": [
+      "calls",
+      "error_count",
+      "last_error",
+      "last_fire_time_seconds",
+      "max_microseconds",
+      "total_microseconds"
+    ],
+    "BridgeHandlerSummary": [
+      "description",
+      "handler_id",
+      "lifetime",
+      "paused",
+      "scope",
+      "script_path",
+      "stats",
+      "subject_path",
+      "tags",
+      "task_name",
+      "trigger_summary"
+    ],
+    "BridgeInterfaceInfo": [
+      "functions",
+      "interface_name",
+      "interface_path",
+      "is_blueprint_implemented"
+    ],
+    "BridgeLayoutResult": [
+      "bounds_height",
+      "bounds_width",
+      "layer_count",
+      "nodes_positioned",
+      "succeeded",
+      "warnings"
+    ],
+    "BridgeLevelComponentInfo": [
+      "attach_parent",
+      "class_name",
+      "name",
+      "relative_transform"
+    ],
+    "BridgeLevelSummary": [
+      "level_name",
+      "level_path",
+      "num_actors",
+      "num_streaming_levels",
+      "world_partition",
+      "world_type"
+    ],
+    "BridgeLintIssue": [
+      "code",
+      "function_name",
+      "graph_name",
+      "message",
+      "node_guid",
+      "severity",
+      "variable_name"
+    ],
+    "BridgeLiveCodingResult": [
+      "completed",
+      "error",
+      "status",
+      "triggered"
+    ],
+    "BridgeMIParamResult": [
+      "applied",
+      "skipped",
+      "success"
+    ],
+    "BridgeMIParamSet": [
+      "name",
+      "type",
+      "value"
+    ],
+    "BridgeMPCScalarParam": [
+      "default_value",
+      "id",
+      "name"
+    ],
+    "BridgeMPCVectorParam": [
+      "default_value",
+      "id",
+      "name"
+    ],
+    "BridgeMaterialAnalysis": [
+      "compile_errors",
+      "expression_count",
+      "findings",
+      "found",
+      "instruction_budget",
+      "material_domain",
+      "max_instructions",
+      "path",
+      "sampler_budget",
+      "sampler_count",
+      "shader_stats_ready",
+      "shading_models"
+    ],
+    "BridgeMaterialAutoFixResult": [
+      "findings_fixed",
+      "log",
+      "nodes_added",
+      "nodes_removed",
+      "properties_changed",
+      "skipped_fixes",
+      "success"
+    ],
+    "BridgeMaterialFinding": [
+      "detail",
+      "expression_class",
+      "expression_guid",
+      "message",
+      "rule_id",
+      "severity"
+    ],
+    "BridgeMaterialFunctionInfo": [
+      "description",
+      "expose_to_library",
+      "found",
+      "inputs",
+      "library_category",
+      "name",
+      "num_expressions",
+      "outputs",
+      "path"
+    ],
+    "BridgeMaterialFunctionPort": [
+      "default_value",
+      "description",
+      "name",
+      "port_type",
+      "sort_priority",
+      "use_preview_value_as_default"
+    ],
+    "BridgeMaterialFunctionSummary": [
+      "description",
+      "expose_to_library",
+      "library_category",
+      "name",
+      "path"
+    ],
+    "BridgeMaterialGraph": [
+      "connections",
+      "found",
+      "is_material_function",
+      "nodes",
+      "output_connections",
+      "path"
+    ],
+    "BridgeMaterialGraphConnection": [
+      "dst_guid",
+      "dst_input_index",
+      "dst_input_name",
+      "dst_property_name",
+      "src_guid",
+      "src_output_index",
+      "src_output_name"
+    ],
+    "BridgeMaterialGraphNode": [
+      "caption",
+      "class_name",
+      "desc",
+      "guid",
+      "input_names",
+      "key_properties",
+      "output_names",
+      "x",
+      "y"
+    ],
+    "BridgeMaterialGraphOp": [
+      "class_name",
+      "color",
+      "dst_input",
+      "dst_ref",
+      "height",
+      "op",
+      "property_",
+      "src_output",
+      "src_ref",
+      "text",
+      "value",
+      "width",
+      "x",
+      "y"
+    ],
+    "BridgeMaterialGraphOpResult": [
+      "error",
+      "failed_at_index",
+      "guids",
+      "ops_applied",
+      "success"
+    ],
+    "BridgeMaterialInfo": [
+      "base_path",
+      "blend_mode",
+      "found",
+      "is_material_instance",
+      "material_domain",
+      "name",
+      "num_expressions",
+      "num_function_calls",
+      "parent_path",
+      "path",
+      "scalar_parameters",
+      "shading_models",
+      "static_switch_parameters",
+      "subsurface_profile_path",
+      "texture_parameters",
+      "two_sided",
+      "usage_flags",
+      "use_material_attributes",
+      "vector_parameters"
+    ],
+    "BridgeMaterialInstanceChain": [
+      "found",
+      "layers",
+      "path"
+    ],
+    "BridgeMaterialInstanceInfo": [
+      "name",
+      "parameters",
+      "parent_name",
+      "parent_path"
+    ],
+    "BridgeMaterialInstanceLayer": [
+      "is_base_material",
+      "name",
+      "override_parameters",
+      "path"
+    ],
+    "BridgeMaterialParam": [
+      "name",
+      "param_type",
+      "value"
+    ],
+    "BridgeMaterialParamDefault": [
+      "guid",
+      "name",
+      "param_type",
+      "value"
+    ],
+    "BridgeMaterialParameterCollectionInfo": [
+      "found",
+      "name",
+      "path",
+      "scalar_parameters",
+      "vector_parameters"
+    ],
+    "BridgeMaterialShaderStat": [
+      "extra_statistics",
+      "instruction_count",
+      "shader_description",
+      "shader_type"
+    ],
+    "BridgeMaterialStats": [
+      "compile_errors",
+      "feature_level",
+      "found",
+      "path",
+      "quality_level",
+      "shader_map_ready",
+      "shaders",
+      "virtual_texture_stack_count"
+    ],
+    "BridgeMemoryStats": [
+      "available_physical_mb",
+      "available_virtual_mb",
+      "peak_used_physical_mb",
+      "peak_used_virtual_mb",
+      "total_physical_mb",
+      "used_physical_mb",
+      "used_virtual_mb"
+    ],
+    "BridgeMeshLODStats": [
+      "lod_index",
+      "material_indices",
+      "triangle_count",
+      "vertex_count"
+    ],
+    "BridgeMontageInfo": [
+      "blend_in_time",
+      "blend_out_time",
+      "enable_auto_blend_out",
+      "name",
+      "notifies",
+      "play_length",
+      "sections",
+      "skeleton_name",
+      "slot_name"
+    ],
+    "BridgeMontageSectionInfo": [
+      "next_section_name",
+      "section_name",
+      "start_time"
+    ],
+    "BridgeMontageSlotSegment": [
+      "anim_end_time",
+      "anim_play_rate",
+      "anim_reference_path",
+      "anim_start_time",
+      "looping_count",
+      "slot_name",
+      "start_pos"
+    ],
+    "BridgeNodeCoverageEntry": [
+      "graph_name",
+      "hit_count",
+      "last_hit_time",
+      "node_guid",
+      "node_title"
+    ],
+    "BridgeNodeDescription": [
+      "comment",
+      "delegate_name",
+      "enabled_state",
+      "exec_out_count",
+      "height",
+      "is_const",
+      "is_pure",
+      "literal_value",
+      "macro_graph",
+      "node_class",
+      "node_guid",
+      "node_type",
+      "pins",
+      "pos_x",
+      "pos_y",
+      "struct_type",
+      "target_class",
+      "target_name",
+      "title",
+      "variable_name",
+      "variable_scope",
+      "variable_type",
+      "width"
+    ],
+    "BridgeNodeInfo": [
+      "comment",
+      "node_guid",
+      "node_type",
+      "target_class",
+      "title",
+      "variable_name"
+    ],
+    "BridgeNodeLayout": [
+      "bottom_left",
+      "bottom_right",
+      "center",
+      "effective_height",
+      "effective_width",
+      "estimated_height",
+      "estimated_width",
+      "is_comment_box",
+      "pos_x",
+      "pos_y",
+      "size_is_authoritative",
+      "stored_height",
+      "stored_width",
+      "top_left",
+      "top_right"
+    ],
+    "BridgeNodeSearchResult": [
+      "detail",
+      "graph_name",
+      "graph_type",
+      "node_title",
+      "node_type"
+    ],
+    "BridgeNodeSizeEstimate": [
+      "height",
+      "input_pin_count",
+      "kind",
+      "notes",
+      "output_pin_count",
+      "resolved",
+      "width"
+    ],
+    "BridgeOpenedAsset": [
+      "class_name",
+      "is_dirty",
+      "path"
+    ],
+    "BridgePerfSnapshot": [
+      "capture_time_utc",
+      "engine_version",
+      "memory",
+      "render",
+      "timing",
+      "u_objects",
+      "was_in_pie"
+    ],
+    "BridgePinConnection": [
+      "is_exec",
+      "source_node_index",
+      "source_pin_name",
+      "target_node_index",
+      "target_pin_name"
+    ],
+    "BridgePinInfo": [
+      "category",
+      "container_kind",
+      "default_value",
+      "direction",
+      "display_name",
+      "has_default_object",
+      "is_array",
+      "is_connected",
+      "is_const",
+      "is_exec",
+      "is_hidden",
+      "is_map",
+      "is_reference",
+      "is_self_pin",
+      "is_set",
+      "link_count",
+      "linked_to",
+      "map_value_category",
+      "map_value_sub_category",
+      "map_value_sub_category_object_path",
+      "map_value_type",
+      "name",
+      "sub_category",
+      "sub_category_object_path",
+      "type"
+    ],
+    "BridgePinLayout": [
+      "direction",
+      "direction_index",
+      "is_estimated",
+      "is_exec",
+      "is_hidden",
+      "local_offset",
+      "name",
+      "position"
+    ],
+    "BridgePostProcessBlendable": [
+      "material_path",
+      "weight"
+    ],
+    "BridgePostProcessVolumeInfo": [
+      "actor_label",
+      "actor_name",
+      "blend_weight",
+      "blendables",
+      "enabled",
+      "priority",
+      "unbound"
+    ],
+    "BridgePropertyInfo": [
+      "category",
+      "editable",
+      "is_component",
+      "name",
+      "read_only",
+      "transient",
+      "type_name"
+    ],
+    "BridgePropertyValue": [
+      "category",
+      "name",
+      "type",
+      "value"
+    ],
+    "BridgeReference": [
+      "graph_name",
+      "graph_type",
+      "kind",
+      "node_guid",
+      "node_title"
+    ],
+    "BridgeRenameReport": [
+      "message",
+      "success",
+      "updated_blueprints",
+      "updated_node_count"
+    ],
+    "BridgeRenderCounters": [
+      "draw_calls",
+      "num_gpus",
+      "primitives_drawn"
+    ],
+    "BridgeRenderedNode": [
+      "graph_position",
+      "is_live",
+      "node_guid",
+      "pins",
+      "size",
+      "title"
+    ],
+    "BridgeRenderedPin": [
+      "direction",
+      "direction_index",
+      "graph_position",
+      "is_exec",
+      "is_hidden",
+      "name",
+      "node_offset"
+    ],
+    "BridgeReplaceNodeReport": [
+      "dropped_pins",
+      "message",
+      "new_node_guid",
+      "reconnected_pins",
+      "success"
+    ],
+    "BridgeRichCurveKey": [
+      "arrive_tangent",
+      "arrive_tangent_weight",
+      "interp_mode",
+      "leave_tangent",
+      "leave_tangent_weight",
+      "tangent_mode",
+      "tangent_weight_mode",
+      "time",
+      "value"
+    ],
+    "BridgeScreenshotResult": [
+      "base64",
+      "error",
+      "file_path",
+      "height",
+      "source",
+      "success",
+      "width"
+    ],
+    "BridgeSelectedNode": [
+      "node_class",
+      "node_guid",
+      "title"
+    ],
+    "BridgeShaderCompileStatus": [
+      "error",
+      "feature_level",
+      "found",
+      "pending_assets_global",
+      "quality_level",
+      "shader_map_ready"
+    ],
+    "BridgeShaderSnippet": [
+      "description",
+      "instruction_estimate",
+      "min_feature_level",
+      "name",
+      "signature",
+      "source"
+    ],
+    "BridgeSkeletalMeshInfo": [
+      "asset_path",
+      "bounds_extent",
+      "bounds_origin",
+      "bounds_sphere_radius",
+      "found",
+      "lod_stats",
+      "material_asset_paths",
+      "material_slot_names",
+      "num_bones",
+      "num_lo_ds",
+      "num_morph_targets",
+      "num_sockets",
+      "physics_asset_path",
+      "skeleton_path",
+      "socket_names"
+    ],
+    "BridgeSocketInfo": [
+      "parent_bone_name",
+      "relative_location",
+      "relative_rotation",
+      "relative_scale",
+      "socket_name"
+    ],
+    "BridgeSoundInfo": [
+      "asset_path",
+      "compressed_data_bytes",
+      "duration_seconds",
+      "found",
+      "looping",
+      "num_channels",
+      "sample_rate",
+      "sound_kind"
+    ],
+    "BridgeSpawnableAction": [
+      "category",
+      "key",
+      "keywords",
+      "node_type",
+      "owning_class",
+      "owning_class_path",
+      "title",
+      "tooltip"
+    ],
+    "BridgeStateMachineInfo": [
+      "name",
+      "states",
+      "transitions"
+    ],
+    "BridgeStaticMeshInfo": [
+      "asset_path",
+      "bounds_extent",
+      "bounds_origin",
+      "bounds_sphere_radius",
+      "found",
+      "has_collision",
+      "has_nanite_data",
+      "lod_stats",
+      "material_asset_paths",
+      "material_slot_names",
+      "num_lo_ds",
+      "num_sockets",
+      "num_uv_channels",
+      "socket_names"
+    ],
+    "BridgeStreamingLevel": [
+      "loaded",
+      "package_name",
+      "visible"
+    ],
+    "BridgeTagReference": [
+      "asset_class",
+      "asset_path",
+      "context",
+      "location",
+      "matched_tag"
+    ],
+    "BridgeTagReferenceReport": [
+      "assets_matched",
+      "assets_scanned",
+      "match_exact",
+      "reference_count",
+      "references",
+      "scan_duration_ms",
+      "tag_query",
+      "truncated"
+    ],
+    "BridgeTextureInfo": [
+      "asset_path",
+      "compression_settings",
+      "found",
+      "height",
+      "lod_group",
+      "never_stream",
+      "num_mips",
+      "pixel_format",
+      "resource_size_bytes",
+      "srgb",
+      "width"
+    ],
+    "BridgeTimelineInfo": [
+      "auto_play",
+      "length",
+      "loop",
+      "name",
+      "replicated",
+      "tracks"
+    ],
+    "BridgeTimelineTrack": [
+      "track_name",
+      "track_type"
+    ],
+    "BridgeTransform": [
+      "location",
+      "rotation",
+      "scale"
+    ],
+    "BridgeUObjectClassCount": [
+      "class_name",
+      "count"
+    ],
+    "BridgeUObjectStats": [
+      "top_classes",
+      "total_objects",
+      "unique_classes"
+    ],
+    "BridgeVariableInfo": [
+      "blueprint_read_only",
+      "category",
+      "default_value",
+      "description",
+      "instance_editable",
+      "name",
+      "replication_condition",
+      "type"
+    ],
+    "BridgeVariableSummary": [
+      "name",
+      "type"
+    ],
+    "BridgeViewportCamera": [
+      "fov",
+      "location",
+      "rotation"
+    ],
+    "BridgeVirtualBoneInfo": [
+      "source_bone_name",
+      "target_bone_name",
+      "virtual_bone_name"
+    ],
+    "BridgeWidgetAnimTrack": [
+      "display_name",
+      "track_type",
+      "widget_name"
+    ],
+    "BridgeWidgetAnimationInfo": [
+      "duration",
+      "name",
+      "tracks"
+    ],
+    "BridgeWidgetBindingInfo": [
+      "function_name",
+      "kind",
+      "property_name",
+      "widget_name"
+    ],
+    "BridgeWidgetEventInfo": [
+      "event_name",
+      "handler_name",
+      "widget_name"
+    ],
+    "BridgeWidgetInfo": [
+      "is_variable",
+      "name",
+      "parent_name",
+      "slot_type",
+      "visibility",
+      "widget_class"
+    ],
+    "BridgeWidgetPropertyValue": [
+      "name",
+      "type",
+      "value"
+    ]
+  },
   "ue_version": "5.7.1-48512491+++UE5+Release-5.7"
 }

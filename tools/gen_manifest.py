@@ -98,13 +98,58 @@ def _build_manifest_in_ue() -> dict:
         if members:
             enums[name] = members
 
+    structs = _collect_struct_fields(enums)
+
     return {
         "generated_at": _utc_now(),
         "ue_version": _ue_version_string(),
         "project_path": _project_path(),
         "libraries": libraries,
         "enums": enums,
+        "structs": structs,
     }
+
+
+# Inherited method set on every UE Python USTRUCT (FStructBase). Keep in sync if
+# UE adds new wrapper methods — easy to spot: `dir(unreal.Vector)` and subtract
+# the Vector-specific fields. None of these are bridge-struct fields.
+_USTRUCT_INHERITED_METHODS = {
+    "assign", "cast", "copy", "export_text", "get_editor_property",
+    "import_text", "set_editor_properties", "set_editor_property",
+    "static_struct", "to_tuple",
+}
+
+
+def _collect_struct_fields(enums: dict) -> dict:
+    """For every `unreal.Bridge*` USTRUCT, list its field names by subtracting the
+    inherited UE Python wrapper methods from `dir(cls)`. Used by preflight to
+    catch attribute-confusion errors on bridge struct returns (e.g. agent does
+    `summary.parent_class_name` when the field is `parent_class_path`)."""
+    structs = {}
+    struct_base = getattr(unreal, "StructBase", None)
+    if struct_base is None:
+        return structs
+    for name in sorted(dir(unreal)):
+        if not name.startswith("Bridge"):
+            continue
+        if name in enums:
+            continue  # Bridge enums share the prefix; skip them
+        cls = getattr(unreal, name, None)
+        if cls is None or not isinstance(cls, type):
+            continue
+        try:
+            if not issubclass(cls, struct_base):
+                continue
+        except TypeError:
+            continue
+        # Field names = direct attributes minus inherited methods
+        fields = sorted([
+            a for a in dir(cls)
+            if not a.startswith("_") and a not in _USTRUCT_INHERITED_METHODS
+        ])
+        if fields:
+            structs[name] = fields
+    return structs
 
 
 def _project_path() -> str:
