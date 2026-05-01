@@ -187,6 +187,41 @@ struct FBridgeActorRadiusHit
 	float Distance = 0.f;
 };
 
+// ─── Property descriptor (for list_*_properties discovery) ──
+USTRUCT(BlueprintType)
+struct FBridgePropertyInfo
+{
+	GENERATED_BODY()
+
+	/** Property name as it appears in `get_actor_property` PropertyPath. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Name;
+
+	/** C++ type string (e.g. "float", "FVector", "TArray<UStaticMesh*>"). */
+	UPROPERTY(BlueprintReadOnly)
+	FString TypeName;
+
+	/** UPROPERTY(meta=(Category="...")) value, empty if none. */
+	UPROPERTY(BlueprintReadOnly)
+	FString Category;
+
+	/** True for EditAnywhere / EditDefaultsOnly / EditInstanceOnly. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bEditable = false;
+
+	/** True for BlueprintReadOnly / non-Edit. */
+	UPROPERTY(BlueprintReadOnly)
+	bool bReadOnly = false;
+
+	/** True for transient (not serialized). */
+	UPROPERTY(BlueprintReadOnly)
+	bool bTransient = false;
+
+	/** True for component subobjects (RootComponent, named SCS components). */
+	UPROPERTY(BlueprintReadOnly)
+	bool bIsComponent = false;
+};
+
 /**
  * Level / actor introspection via UnrealBridge. Operates on the editor world.
  */
@@ -340,6 +375,35 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
 	static bool SetActorProperty(const FString& ActorName, const FString& PropertyPath, const FString& ExportedValue);
+
+	/**
+	 * Enumerate the readable properties on a live actor's class. Use this BEFORE
+	 * `get_actor_property` when you don't already know the property name —
+	 * eliminates the `<UClass>.attribute_name` guessing that drives most UE-engine
+	 * API hallucinations.
+	 *
+	 * Returns one entry per UPROPERTY on the actor's class hierarchy: name, C++
+	 * type, Category meta, edit/readonly/transient/component flags. Property
+	 * names match what `get_actor_property` accepts as the first segment of
+	 * its PropertyPath. To discover nested properties (e.g. fields of a struct
+	 * or properties of a sub-component), call again with the full nested class
+	 * path via `list_class_properties`.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FBridgePropertyInfo> ListActorProperties(const FString& ActorName);
+
+	/**
+	 * Enumerate the properties on a UClass / Blueprint class — same shape as
+	 * `list_actor_properties` but doesn't need a live actor instance. Useful
+	 * for "what could I read on a SkyAtmosphere actor before spawning one?"
+	 * or for inspecting a Blueprint's CDO surface.
+	 *
+	 * @param ClassPath  Native class ("/Script/Engine.SkyAtmosphere"),
+	 *                   Blueprint asset path ("/Game/Foo/BP_Bar" — `_C` suffix
+	 *                   optional), or struct path ("/Script/CoreUObject.Vector").
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Level")
+	static TArray<FBridgePropertyInfo> ListClassProperties(const FString& ClassPath);
 
 	/**
 	 * Call a UFunction on a LIVE actor (spawned into the editor world or placed

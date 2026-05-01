@@ -174,6 +174,183 @@ def _get_audit_logger(log_path: str) -> logging.Logger:
     return logger
 
 
+_ATTR_ENRICH_PREAMBLE = '''import sys as __ub_sys, re as __ub_re, difflib as __ub_difflib
+
+def __ub_to_snake(__ub_n):
+    """PascalCase / 'Display Name' / 'Slash/Sep' -> snake_case. Handles all 3 forms
+    of UPROPERTY names UE exposes: native PascalCase ('UserFriendlyName'), BP-variable
+    display names with spaces ('User Friendly Name'), and slash-separated ('Thunder/Lightning').
+    Order matters: PascalCase boundaries FIRST (or splits won't trigger after we've already
+    inserted underscores from spaces), THEN collapse all separators to single underscore."""
+    __ub_s1 = __ub_re.sub(r"(.)([A-Z][a-z]+)", r"\\1_\\2", __ub_n)
+    __ub_s2 = __ub_re.sub(r"([a-z0-9])([A-Z])", r"\\1_\\2", __ub_s1)
+    __ub_s3 = __ub_re.sub(r"[\\s/\\-_]+", "_", __ub_s2)
+    return __ub_s3.strip("_").lower()
+
+def __ub_resolve_for_enrich(__ub_exc):
+    """Resolve (cls_name, cls_path_or_empty, methods_list, uprops_list) from the failing
+    AttributeError. Prefers exc.obj (Python 3.10+, gives the ACTUAL class via obj.get_class()
+    — critical for BP child classes whose parent is the only class on `unreal` module);
+    falls back to parsing the exception message."""
+    __ub_obj = getattr(__ub_exc, "obj", None)
+    __ub_bad = getattr(__ub_exc, "name", None)
+    try:
+        import unreal as __ub_unreal
+    except Exception:
+        return None, None, "", "", [], []
+
+    __ub_cls_name = ""
+    __ub_cls_path = ""
+    __ub_dir_target = None
+
+    # Path A: Python 3.10+ — exc.obj is the live object/class/module
+    if __ub_obj is not None and __ub_bad is not None:
+        # Resolve the *actual* UClass via obj.get_class() — handles BP child classes
+        # where type(obj) only sees the closest Python-bound ancestor.
+        try:
+            if hasattr(__ub_obj, "get_class") and not isinstance(__ub_obj, type):
+                __ub_ue_cls = __ub_obj.get_class()
+                __ub_cls_path = str(__ub_ue_cls.get_path_name())
+                # Use the class name from the actual class (e.g. "UDS_Weather_Settings_C"),
+                # falling back to type() name when get_name unavailable.
+                __ub_cls_name = str(__ub_ue_cls.get_name()) if hasattr(__ub_ue_cls, "get_name") else type(__ub_obj).__name__
+            elif hasattr(__ub_obj, "static_class"):
+                # Class-level access (`unreal.X.Y`) where obj IS the class
+                __ub_ue_cls = __ub_obj.static_class()
+                __ub_cls_path = str(__ub_ue_cls.get_path_name())
+                __ub_cls_name = __ub_obj.__name__ if hasattr(__ub_obj, "__name__") else type(__ub_obj).__name__
+            else:
+                __ub_cls_name = type(__ub_obj).__name__ if not isinstance(__ub_obj, type) else __ub_obj.__name__
+        except Exception:
+            __ub_cls_name = type(__ub_obj).__name__ if not isinstance(__ub_obj, type) else __ub_obj.__name__
+
+        # dir() target rules:
+        #   instance:   type(obj)   — gives bound methods
+        #   class:      obj         — gives static methods
+        #   module:     obj         — gives the module's top-level names (the 10k+ unreal classes)
+        import types as __ub_types
+        if isinstance(__ub_obj, __ub_types.ModuleType):
+            __ub_dir_target = __ub_obj
+        elif isinstance(__ub_obj, type):
+            __ub_dir_target = __ub_obj
+        else:
+            __ub_dir_target = type(__ub_obj)
+        if __ub_obj is __ub_unreal:
+            __ub_cls_name = "unreal"
+
+    # Path B: parse the message (Python <3.10 or non-standard exception)
+    if not __ub_cls_name:
+        __ub_msg = str(__ub_exc)
+        __ub_m = (__ub_re.match(r"\\\'(\\w+)\\\' object has no attribute \\\'(\\w+)\\\'", __ub_msg)
+                  or __ub_re.match(r"type object \\\'(\\w+)\\\' has no attribute \\\'(\\w+)\\\'", __ub_msg)
+                  or __ub_re.match(r"module \\\'(\\w+)\\\' has no attribute \\\'(\\w+)\\\'", __ub_msg))
+        if not __ub_m:
+            return None, None, "", "", [], []
+        __ub_cls_name, __ub_bad = __ub_m.group(1), __ub_m.group(2)
+        if __ub_cls_name == "unreal":
+            __ub_dir_target = __ub_unreal
+        else:
+            __ub_dir_target = getattr(__ub_unreal, __ub_cls_name, None)
+            if __ub_dir_target is not None and hasattr(__ub_dir_target, "static_class"):
+                try:
+                    __ub_cls_path = str(__ub_dir_target.static_class().get_path_name())
+                except Exception:
+                    pass
+        if __ub_dir_target is None:
+            return None, None, "", "", [], []
+
+    # Stage: Python-bound methods (snake_case from dir())
+    try:
+        __ub_methods = sorted([__ub_a for __ub_a in dir(__ub_dir_target) if not __ub_a.startswith("_")])
+    except Exception:
+        __ub_methods = []
+
+    # Stage: UPROPERTYs via reflection (PascalCase) — uses bridge function we already shipped
+    __ub_uprops = []
+    if __ub_cls_path and __ub_cls_name != "unreal":
+        try:
+            __ub_pinfos = __ub_unreal.UnrealBridgeLevelLibrary.list_class_properties(__ub_cls_path)
+            __ub_uprops = [str(__ub_p.name) for __ub_p in __ub_pinfos]
+        except Exception:
+            pass
+
+    return __ub_bad, __ub_cls_name, __ub_cls_path, __ub_methods, __ub_uprops
+
+def __ub_enrich_attr(__ub_exc):
+    """Build the enriched AttributeError message. Returns enriched string, or None."""
+    __ub_resolved = __ub_resolve_for_enrich(__ub_exc)
+    if __ub_resolved is None or len(__ub_resolved) != 5:
+        return None
+    __ub_bad, __ub_cls_name, __ub_cls_path, __ub_methods, __ub_uprops = __ub_resolved
+    if not (__ub_methods or __ub_uprops):
+        return None
+
+    __ub_msg = str(__ub_exc)
+    __ub_lines = [__ub_msg]
+
+    # Snake/Pascal mismatch — the high-value detection (UE UPROPERTY name vs Python attr guess)
+    __ub_snake_to_pascal = {__ub_to_snake(__ub_p): __ub_p for __ub_p in __ub_uprops}
+    __ub_pascal_match = __ub_snake_to_pascal.get(__ub_bad) if __ub_bad else None
+
+    __ub_combined = sorted(set(__ub_methods + __ub_uprops))
+    __ub_sugg = __ub_difflib.get_close_matches(__ub_bad, __ub_combined, n=3, cutoff=0.4) if __ub_bad else []
+
+    if __ub_pascal_match:
+        __ub_lines.append(f"  >> '{__ub_bad}' looks like snake_case. The actual UPROPERTY name is '{__ub_pascal_match}'.")
+        __ub_lines.append(f"     For a UE asset:  obj.get_editor_property('{__ub_pascal_match}')")
+        __ub_lines.append(f"     For a placed actor: Level.get_actor_property(actor_name='...', property_path='{__ub_pascal_match}')")
+        if __ub_cls_path:
+            __ub_lines.append(f"     All UPROPERTYs: Level.list_class_properties(class_path='{__ub_cls_path}')")
+    elif __ub_sugg:
+        __ub_lines.append(f"  did you mean: {__ub_sugg}")
+
+    if __ub_methods:
+        if len(__ub_methods) > 20:
+            __ub_lines.append(f"  Python-bound methods on {__ub_cls_name} ({len(__ub_methods)} total, first 20): {__ub_methods[:20]}")
+        else:
+            __ub_lines.append(f"  Python-bound methods on {__ub_cls_name}: {__ub_methods}")
+    if __ub_uprops:
+        if len(__ub_uprops) > 30:
+            __ub_lines.append(f"  UPROPERTYs on {__ub_cls_name} (PascalCase, {len(__ub_uprops)} total, first 30): {__ub_uprops[:30]}")
+        else:
+            __ub_lines.append(f"  UPROPERTYs on {__ub_cls_name} (PascalCase): {__ub_uprops}")
+    return "\\n".join(__ub_lines)
+'''
+
+_ATTR_ENRICH_HANDLER = '''
+except AttributeError as __ub_e:
+    __ub_enriched = __ub_enrich_attr(__ub_e)
+    if __ub_enriched:
+        raise AttributeError(__ub_enriched).with_traceback(__ub_e.__traceback__) from None
+    raise
+'''
+
+
+def _wrap_for_attr_enrichment(user_code: str) -> str:
+    """Wrap user code in try/except AttributeError to enrich 'has no attribute' errors
+    with valid-attrs + did-you-mean. Best-effort: if wrapping fails (or env opt-out),
+    return user_code unchanged.
+
+    User code runs at module level (inside try), so top-level vars persist into UE
+    Python's globals across exec calls — same semantics as before.
+    """
+    if os.environ.get("UNREAL_BRIDGE_NO_ATTR_ENRICH"):
+        return user_code
+    # Indent every non-blank line by 4 spaces so it sits cleanly inside `try:`.
+    indented = []
+    for line in user_code.splitlines():
+        if line.strip():
+            indented.append("    " + line)
+        else:
+            indented.append(line)
+    body = "\n".join(indented)
+    # Note: we do NOT wrap if user code contains unindented future imports (they
+    # must be at module top before any other statement). Detect minimally.
+    if user_code.lstrip().startswith("from __future__"):
+        return user_code
+    return f"{_ATTR_ENRICH_PREAMBLE}\ntry:\n{body}\n{_ATTR_ENRICH_HANDLER}"
+
+
 def _preflight_or_skip(code: str) -> "tuple[list[str], list[str]]":
     """Run AST preflight on `code`. Returns (errors, warnings).
 
@@ -588,9 +765,15 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
 
     host, port, token, project_path = resolve_target(args)
 
+    # Wrap user code so AttributeError messages get enriched with valid-attrs
+    # + did-you-mean before reaching the agent's stderr. UE engine API has
+    # 1000s of types; agent attribute hallucinations are unavoidable, but the
+    # cost can be one round-trip → instant fix instead of N guesses.
+    wrapped = _wrap_for_attr_enrichment(code)
+
     payload = {
         "id": str(uuid.uuid4()),
-        "script": code,
+        "script": wrapped,
         "timeout": args.timeout,
     }
 

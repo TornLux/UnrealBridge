@@ -174,6 +174,26 @@ Use references to answer "**how should I use this?**" — not "**what's the sign
 | Multi-step BP edit feels chatty | Chaining 3 inline `exec` calls instead of batching | Write to `temp/X.py` + `exec-file` once (Mode 3) or use `--stdin` heredoc (Mode 2) |
 | Pawn movement script freezes the editor | Used `time.sleep` inside a single `exec` (blocks GameThread) | See `references/bridge-gameplay-api.md` "Pattern: chase a target" — use `register_runtime_timer` instead |
 
+### Reading UE object attributes — use the bridge, never `<obj>.<attr>`
+
+UE engine API has thousands of UCLASSes and a 50–100 MB Python stub; guessing attribute names on a UE object reference is the **#1 source of remaining hallucinations**. The bridge has a generic property pipeline that sidesteps the whole problem:
+
+```python
+from unreal_bridge import Level
+# Discover what's readable (NEVER guess attribute names — list first)
+props = Level.list_actor_properties(actor_name='/Persistent/MyActor')
+# OR before spawning, ask the class:
+props = Level.list_class_properties(class_path='/Script/Engine.SkyAtmosphere')
+# props is List[BridgePropertyInfo] with .name, .type_name, .category, .b_editable, .b_is_component
+# Then read by name (dotted path supports nesting):
+intensity = Level.get_actor_property(actor_name='/Persistent/MyActor',
+                                     property_path='Intensity')
+loc = Level.get_actor_property(actor_name='/Persistent/MyActor',
+                               property_path='RootComponent.RelativeLocation')
+```
+
+If you find yourself typing `<some_var>.attribute_name` on a UE object that came from `unreal.*`, **stop** — list the properties first via the bridge. AttributeError on UE objects DOES come back enriched (the bridge appends did-you-mean + valid-attrs to every `'X' object has no attribute 'Y'` error), but a single `list_*_properties` call costs the same and gives you the full surface up-front.
+
 ### Never silently bail to raw `unreal.*` when a bridge wrapper exists
 
 If a bridge call returns empty / errors / "feels wrong", suspect **your parameters** (wrong scope, path, filter), not the wrapper. Falling back to `unreal.AssetRegistryHelpers` / `unreal.EditorAssetLibrary` / `unreal.SystemLibrary` to "do it yourself" bypasses the documented surface, hides the real bug, and often walks 100k–2M registry entries the bridge call would have skipped.

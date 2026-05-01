@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-01T08:21:54+00:00'
+_GENERATED_AT = '2026-05-01T11:07:41+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -3390,9 +3390,19 @@ class Level:
         return unreal.UnrealBridgeLevelLibrary.line_trace_hit_info(start, end)
 
     @staticmethod
+    def list_actor_properties(*, actor_name):
+        """X.list_actor_properties(actor_name) -> Array[BridgePropertyInfo]"""
+        return unreal.UnrealBridgeLevelLibrary.list_actor_properties(actor_name)
+
+    @staticmethod
     def list_actors(*, class_filter, tag_filter, name_filter, selected_only, max_results):
         """X.list_actors(class_filter, tag_filter, name_filter, selected_only, max_results) -> Array[BridgeActorBrief]"""
         return unreal.UnrealBridgeLevelLibrary.list_actors(class_filter, tag_filter, name_filter, selected_only, max_results)
+
+    @staticmethod
+    def list_class_properties(*, class_path):
+        """X.list_class_properties(class_path) -> Array[BridgePropertyInfo]"""
+        return unreal.UnrealBridgeLevelLibrary.list_class_properties(class_path)
 
     @staticmethod
     def measure_ceiling_height(*, origin, max_up):

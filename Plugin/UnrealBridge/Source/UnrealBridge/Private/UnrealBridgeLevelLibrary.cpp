@@ -931,6 +931,111 @@ bool UUnrealBridgeLevelLibrary::SetActorProperty(const FString& ActorName, const
 	return true;
 }
 
+// ─── Property discovery ─────────────────────────────────────
+
+namespace BridgeLevelImpl
+{
+	UClass* ResolveClass(const FString& ClassPath)
+	{
+		if (ClassPath.IsEmpty())
+		{
+			return nullptr;
+		}
+
+		// Direct lookup (handles native class paths like "/Script/Engine.Actor"
+		// and BP class paths like "/Game/Foo/BP_Bar.BP_Bar_C").
+		if (UClass* Found = FindObject<UClass>(nullptr, *ClassPath))
+		{
+			return Found;
+		}
+
+		// BP asset path without "_C" suffix → load and use generated class.
+		if (UObject* Asset = StaticLoadObject(UObject::StaticClass(), nullptr, *ClassPath))
+		{
+			if (UBlueprint* BP = Cast<UBlueprint>(Asset))
+			{
+				return BP->GeneratedClass;
+			}
+			if (UClass* C = Cast<UClass>(Asset))
+			{
+				return C;
+			}
+		}
+
+		// Try loading the "_C" suffix form for BP classes referenced bare.
+		FString WithSuffix = ClassPath;
+		if (!ClassPath.EndsWith(TEXT("_C")))
+		{
+			WithSuffix = ClassPath + TEXT("_C");
+			if (UClass* Found = FindObject<UClass>(nullptr, *WithSuffix))
+			{
+				return Found;
+			}
+		}
+		return nullptr;
+	}
+
+	void FillPropertyInfos(UClass* Cls, TArray<FBridgePropertyInfo>& Out)
+	{
+		if (!Cls)
+		{
+			return;
+		}
+		for (TFieldIterator<FProperty> It(Cls); It; ++It)
+		{
+			FProperty* P = *It;
+			if (!P)
+			{
+				continue;
+			}
+			FBridgePropertyInfo Info;
+			Info.Name = P->GetName();
+			Info.TypeName = P->GetCPPType();
+			Info.Category = P->GetMetaData(TEXT("Category"));
+			Info.bEditable = P->HasAnyPropertyFlags(CPF_Edit);
+			Info.bReadOnly = P->HasAnyPropertyFlags(CPF_BlueprintReadOnly)
+				|| (!P->HasAnyPropertyFlags(CPF_Edit) && P->HasAnyPropertyFlags(CPF_BlueprintVisible));
+			Info.bTransient = P->HasAnyPropertyFlags(CPF_Transient);
+
+			// Component detection: an FObjectProperty whose property class is
+			// USceneComponent (or subclass) AND marked with CPF_InstancedReference.
+			if (FObjectProperty* ObjP = CastField<FObjectProperty>(P))
+			{
+				if (ObjP->PropertyClass && ObjP->PropertyClass->IsChildOf(UActorComponent::StaticClass()))
+				{
+					Info.bIsComponent = true;
+				}
+			}
+			Out.Add(Info);
+		}
+	}
+}
+
+TArray<FBridgePropertyInfo> UUnrealBridgeLevelLibrary::ListActorProperties(const FString& ActorName)
+{
+	TArray<FBridgePropertyInfo> Result;
+	AActor* Actor = BridgeLevelImpl::FindActor(BridgeLevelImpl::GetEditorWorld(), ActorName);
+	if (!Actor)
+	{
+		return Result;
+	}
+	BridgeLevelImpl::FillPropertyInfos(Actor->GetClass(), Result);
+	return Result;
+}
+
+TArray<FBridgePropertyInfo> UUnrealBridgeLevelLibrary::ListClassProperties(const FString& ClassPath)
+{
+	TArray<FBridgePropertyInfo> Result;
+	UClass* Cls = BridgeLevelImpl::ResolveClass(ClassPath);
+	if (!Cls)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: ListClassProperties — class '%s' not found"), *ClassPath);
+		return Result;
+	}
+	BridgeLevelImpl::FillPropertyInfos(Cls, Result);
+	return Result;
+}
+
 // ─── Actor-targeted function invocation (functional-test driver) ──
 
 bool UUnrealBridgeLevelLibrary::InvokeFunctionOnActor(
