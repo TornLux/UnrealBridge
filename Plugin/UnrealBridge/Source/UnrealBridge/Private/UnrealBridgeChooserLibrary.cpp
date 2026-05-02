@@ -511,6 +511,43 @@ bool UUnrealBridgeChooserLibrary::SetChooserFallbackAsset(const FString& Chooser
 	return true;
 }
 
+bool UUnrealBridgeChooserLibrary::SetChooserContextObjectClass(const FString& ChooserTablePath, const FString& ContextClassPath, const FString& Direction)
+{
+	using namespace BridgeChooserImpl;
+	UChooserTable* CHT = LoadCHT(ChooserTablePath);
+	if (!CHT) return false;
+
+	UClass* ContextClass = LoadObject<UClass>(nullptr, *ContextClassPath);
+	if (!ContextClass)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SetChooserContextObjectClass cannot load class '%s'"), *ContextClassPath);
+		return false;
+	}
+
+	EContextObjectDirection Dir = EContextObjectDirection::ReadWrite;
+	const FString D = Direction.ToLower();
+	if      (D == TEXT("read")  || D == TEXT("input"))                 Dir = EContextObjectDirection::Read;
+	else if (D == TEXT("write") || D == TEXT("output"))                Dir = EContextObjectDirection::Write;
+	else if (D == TEXT("readwrite") || D == TEXT("input/output") || D.IsEmpty()) Dir = EContextObjectDirection::ReadWrite;
+	else
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SetChooserContextObjectClass invalid Direction '%s' — expected Read / Write / ReadWrite"), *Direction);
+		return false;
+	}
+
+	const FScopedTransaction Tx(LOCTEXT("CHTSetContext", "Set Chooser Context Object Class"));
+	CHT->Modify();
+	CHT->ContextData.Reset();
+	FInstancedStruct New;
+	New.InitializeAs(FContextObjectTypeClass::StaticStruct());
+	FContextObjectTypeClass& Entry = New.GetMutable<FContextObjectTypeClass>();
+	Entry.Class = ContextClass;
+	Entry.Direction = Dir;
+	CHT->ContextData.Add(MoveTemp(New));
+	CHT->MarkPackageDirty();
+	return true;
+}
+
 bool UUnrealBridgeChooserLibrary::ClearChooserFallback(const FString& ChooserTablePath)
 {
 	using namespace BridgeChooserImpl;

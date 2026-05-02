@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-05-02T10:49:43+00:00",
+  "generated_at": "2026-05-02T13:51:37+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -6657,6 +6657,30 @@
               "default": null,
               "has_default": false,
               "name": "disabled",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_context_object_class": {
+          "doc": "X.set_chooser_context_object_class(chooser_table_path, context_class_path, direction) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_class_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "direction",
               "type": ""
             }
           ],

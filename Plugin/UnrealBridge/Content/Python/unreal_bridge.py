@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-02T10:49:43+00:00'
+_GENERATED_AT = '2026-05-02T13:51:37+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -1388,6 +1388,11 @@ class Chooser:
     def set_chooser_column_disabled(*, chooser_table_path, column_index, disabled):
         """X.set_chooser_column_disabled(chooser_table_path, column_index, disabled) -> bool"""
         return unreal.UnrealBridgeChooserLibrary.set_chooser_column_disabled(chooser_table_path, column_index, disabled)
+
+    @staticmethod
+    def set_chooser_context_object_class(*, chooser_table_path, context_class_path, direction):
+        """X.set_chooser_context_object_class(chooser_table_path, context_class_path, direction) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_context_object_class(chooser_table_path, context_class_path, direction)
 
     @staticmethod
     def set_chooser_fallback_asset(*, chooser_table_path, asset_path):

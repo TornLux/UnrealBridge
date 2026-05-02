@@ -177,6 +177,25 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
 	static bool ClearChooserFallback(const FString& ChooserTablePath);
 
+	// ── Context schema ──
+
+	/**
+	 * Set the chooser's `ContextData` to a single FContextObjectTypeClass binding.
+	 * Without this, the editor's column-binding widget shows "NoPropertyBound" because
+	 * it has no schema to resolve the binding chain (e.g. "Speed2D") against, even
+	 * though runtime evaluation works fine when a matching object is passed in.
+	 *
+	 * @param ContextClassPath  Full class path, e.g. "/Game/Blueprints/SandboxCharacter_CMC_ABP.SandboxCharacter_CMC_ABP_C".
+	 * @param Direction         "Read" / "Write" / "ReadWrite" (case-insensitive). ReadWrite is the typical default.
+	 *
+	 * Replaces any existing ContextData. Multi-context choosers (where ContextData has
+	 * multiple entries for different parameter slots) need a richer setter — for those,
+	 * read+modify ContextData via raw set_editor_property until a future bridge call
+	 * lands.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
+	static bool SetChooserContextObjectClass(const FString& ChooserTablePath, const FString& ContextClassPath, const FString& Direction);
+
 	// ── Column writes (typed) ──
 
 	/**
