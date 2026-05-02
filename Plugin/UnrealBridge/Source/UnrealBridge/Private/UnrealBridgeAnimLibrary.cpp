@@ -213,6 +213,7 @@ TArray<FBridgeAnimGraphNodeInfo> UUnrealBridgeAnimLibrary::GetAnimGraphNodes(con
 
 		FBridgeAnimGraphNodeInfo Info;
 		Info.NodeIndex = i;
+		Info.NodeGuid = Node->NodeGuid.ToString(EGuidFormats::Digits);
 		Info.NodeTitle = BridgeAnimImpl::GetNodeTitleSource(Node);
 		Info.NodeType = Node->GetClass()->GetName();
 
@@ -338,6 +339,47 @@ TArray<FBridgeAnimSlotInfo> UUnrealBridgeAnimLibrary::GetAnimSlots(const FString
 
 // ─── GetAnimNodeDetails ─────────────────────────────────────
 
+// Forward decls — actual definitions live later in the BridgeAnimWriteImpl namespace block.
+namespace BridgeAnimWriteImpl
+{
+	UEdGraph* FindAnyGraphByName(UAnimBlueprint* ABP, const FString& GraphName);
+	UEdGraphNode* FindNodeByGuid(UEdGraph* Graph, const FString& NodeGuid);
+}
+
+namespace BridgeAnimImpl
+{
+	/** Dump non-default UPROPERTY values on the FAnimNode struct backing an UAnimGraphNode_Base. */
+	void DumpAnimNodeProperties(UAnimGraphNode_Base* AnimNode, TArray<FString>& Out)
+	{
+		FAnimNode_Base* FNode = AnimNode ? AnimNode->GetFNode() : nullptr;
+		UScriptStruct* NodeStruct = AnimNode ? AnimNode->GetFNodeType() : nullptr;
+		if (!FNode || !NodeStruct) return;
+
+		TArray<uint8> DefaultData;
+		DefaultData.SetNumZeroed(NodeStruct->GetStructureSize());
+		NodeStruct->InitializeStruct(DefaultData.GetData());
+
+		for (TFieldIterator<FProperty> It(NodeStruct); It; ++It)
+		{
+			FProperty* Prop = *It;
+			if (!Prop || Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
+
+			void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(FNode);
+			void* DefaultPtr = Prop->ContainerPtrToValuePtr<void>(DefaultData.GetData());
+
+			if (!Prop->Identical(ValuePtr, DefaultPtr))
+			{
+				FString ExportedValue;
+				Prop->ExportTextItem_Direct(ExportedValue, ValuePtr, DefaultPtr, nullptr, PPF_None);
+				Out.Add(FString::Printf(TEXT("%s (%s) = %s"),
+					*Prop->GetName(), *Prop->GetCPPType(), *ExportedValue));
+			}
+		}
+
+		NodeStruct->DestroyStruct(DefaultData.GetData());
+	}
+}
+
 TArray<FString> UUnrealBridgeAnimLibrary::GetAnimNodeDetails(
 	const FString& AnimBlueprintPath, int32 NodeIndex)
 {
@@ -363,34 +405,43 @@ TArray<FString> UUnrealBridgeAnimLibrary::GetAnimNodeDetails(
 		return Result;
 	}
 
-	// Get internal FAnimNode and dump non-default properties
-	FAnimNode_Base* FNode = AnimNode->GetFNode();
-	UScriptStruct* NodeStruct = AnimNode->GetFNodeType();
-	if (!FNode || !NodeStruct) return Result;
+	BridgeAnimImpl::DumpAnimNodeProperties(AnimNode, Result);
+	return Result;
+}
 
-	// Create CDO-equivalent from struct defaults
-	TArray<uint8> DefaultData;
-	DefaultData.SetNumZeroed(NodeStruct->GetStructureSize());
-	NodeStruct->InitializeStruct(DefaultData.GetData());
+TArray<FString> UUnrealBridgeAnimLibrary::GetAnimNodeDetailsByGuid(
+	const FString& AnimBlueprintPath, const FString& GraphName, const FString& NodeGuid)
+{
+	TArray<FString> Result;
 
-	for (TFieldIterator<FProperty> It(NodeStruct); It; ++It)
+	UAnimBlueprint* ABP = BridgeAnimImpl::LoadABP(AnimBlueprintPath);
+	if (!ABP) return Result;
+
+	UEdGraph* Graph = BridgeAnimWriteImpl::FindAnyGraphByName(ABP, GraphName);
+	if (!Graph)
 	{
-		FProperty* Prop = *It;
-		if (!Prop || Prop->HasAnyPropertyFlags(CPF_Transient | CPF_Deprecated)) continue;
-
-		void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(FNode);
-		void* DefaultPtr = Prop->ContainerPtrToValuePtr<void>(DefaultData.GetData());
-
-		if (!Prop->Identical(ValuePtr, DefaultPtr))
-		{
-			FString ExportedValue;
-			Prop->ExportTextItem_Direct(ExportedValue, ValuePtr, DefaultPtr, nullptr, PPF_None);
-			Result.Add(FString::Printf(TEXT("%s (%s) = %s"),
-				*Prop->GetName(), *Prop->GetCPPType(), *ExportedValue));
-		}
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetAnimNodeDetailsByGuid graph '%s' not found in '%s'"),
+			*GraphName, *AnimBlueprintPath);
+		return Result;
 	}
 
-	NodeStruct->DestroyStruct(DefaultData.GetData());
+	UEdGraphNode* Node = BridgeAnimWriteImpl::FindNodeByGuid(Graph, NodeGuid);
+	if (!Node)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetAnimNodeDetailsByGuid node guid '%s' not found in graph '%s'"),
+			*NodeGuid, *GraphName);
+		return Result;
+	}
+
+	UAnimGraphNode_Base* AnimNode = Cast<UAnimGraphNode_Base>(Node);
+	if (!AnimNode)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: GetAnimNodeDetailsByGuid node '%s' is %s, not an AnimGraphNode"),
+			*NodeGuid, *Node->GetClass()->GetName());
+		return Result;
+	}
+
+	BridgeAnimImpl::DumpAnimNodeProperties(AnimNode, Result);
 	return Result;
 }
 

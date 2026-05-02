@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-02T09:56:21+00:00'
+_GENERATED_AT = '2026-05-02T10:49:43+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -161,6 +161,11 @@ class Anim:
     def get_anim_node_details(*, anim_blueprint_path, node_index):
         """X.get_anim_node_details(anim_blueprint_path, node_index) -> Array[str]"""
         return unreal.UnrealBridgeAnimLibrary.get_anim_node_details(anim_blueprint_path, node_index)
+
+    @staticmethod
+    def get_anim_node_details_by_guid(*, anim_blueprint_path, graph_name, node_guid):
+        """X.get_anim_node_details_by_guid(anim_blueprint_path, graph_name, node_guid) -> Array[str]"""
+        return unreal.UnrealBridgeAnimLibrary.get_anim_node_details_by_guid(anim_blueprint_path, graph_name, node_guid)
 
     @staticmethod
     def get_anim_sequence_info(*, sequence_path):
@@ -1318,6 +1323,11 @@ class Chooser:
     def clear_chooser_row_result(*, chooser_table_path, row_index):
         """X.clear_chooser_row_result(chooser_table_path, row_index) -> bool"""
         return unreal.UnrealBridgeChooserLibrary.clear_chooser_row_result(chooser_table_path, row_index)
+
+    @staticmethod
+    def evaluate_chooser_multi_with_context_object(*, chooser_table_path, context_object_path):
+        """X.evaluate_chooser_multi_with_context_object(chooser_table_path, context_object_path) -> Array[BridgeCHTRowResult]"""
+        return unreal.UnrealBridgeChooserLibrary.evaluate_chooser_multi_with_context_object(chooser_table_path, context_object_path)
 
     @staticmethod
     def evaluate_chooser_with_context_object(*, chooser_table_path, context_object_path):

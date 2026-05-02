@@ -84,6 +84,10 @@ struct FBridgeAnimGraphNodeInfo
 	UPROPERTY(BlueprintReadOnly)
 	int32 NodeIndex = 0;
 
+	/** Stable address: stringified NodeGuid (Digits form). Use with `get_anim_node_details_by_guid` and the rest of the GUID-based write API — index drifts on graph mutation, GUID does not. */
+	UPROPERTY(BlueprintReadOnly)
+	FString NodeGuid;
+
 	UPROPERTY(BlueprintReadOnly)
 	FString NodeTitle;
 
@@ -566,9 +570,23 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static TArray<FBridgeAnimSlotInfo> GetAnimSlots(const FString& AnimBlueprintPath);
 
-	/** Get non-default properties of a specific anim graph node by its NodeIndex (as returned by GetAnimGraphNodes). */
+	/** Get non-default properties of a specific anim graph node by its NodeIndex (as returned by GetAnimGraphNodes). LIMITED to the top-level AnimGraph; for state interiors / transition rules / nested function graphs use GetAnimNodeDetailsByGuid. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
 	static TArray<FString> GetAnimNodeDetails(const FString& AnimBlueprintPath, int32 NodeIndex);
+
+	/**
+	 * Get non-default properties of an anim graph node by its NodeGuid + GraphName.
+	 * Stable across graph mutations (unlike NodeIndex), and works on ANY graph in the
+	 * ABP — top-level AnimGraph, state-machine interiors, state BoundGraphs,
+	 * transition-rule graphs, nested function graphs.
+	 *
+	 * @param GraphName  Graph name as listed by ListAnimGraphs (use "AnimGraph" for the top-level).
+	 * @param NodeGuid   Stringified guid (Digits form) — surfaced in FBridgeAnimGraphNodeInfo.NodeGuid
+	 *                   and as the return of FindAnimGraphNodeByClass.
+	 * @return list of "PropName (CPPType) = T3DValue" lines for non-default properties.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")
+	static TArray<FString> GetAnimNodeDetailsByGuid(const FString& AnimBlueprintPath, const FString& GraphName, const FString& NodeGuid);
 
 	/** Get curves referenced in the AnimGraph. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Animation")

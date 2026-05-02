@@ -243,6 +243,20 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
 	static FBridgeCHTEvaluation EvaluateChooserWithContextObject(const FString& ChooserTablePath, const FString& ContextObjectPath);
 
+	/**
+	 * Multi-result variant. Many AnimBP-driven choosers (e.g. GASP's
+	 * `CHT_PoseSearchDatabases`) feed their full output array to a downstream
+	 * node — `MotionMatchingAnimNodeLibrary::SetDatabasesToSearch` takes
+	 * `Array<PoseSearchDatabase>`, not a single one. The single-result
+	 * `EvaluateChooserWithContextObject` only returns the first hit; this
+	 * variant collects every row whose filters pass.
+	 *
+	 * Same context-object semantics: pass an empty path to fire the chooser
+	 * with no context (default-only filtering).
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
+	static TArray<FBridgeCHTRowResult> EvaluateChooserMultiWithContextObject(const FString& ChooserTablePath, const FString& ContextObjectPath);
+
 	/** List every potential row result + fallback as paths — useful for "what could this CHT possibly return?" without filter inputs. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
 	static TArray<FBridgeCHTRowResult> ListPossibleResults(const FString& ChooserTablePath);

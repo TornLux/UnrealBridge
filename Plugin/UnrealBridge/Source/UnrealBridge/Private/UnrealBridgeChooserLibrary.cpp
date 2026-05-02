@@ -849,6 +849,44 @@ FBridgeCHTEvaluation UUnrealBridgeChooserLibrary::EvaluateChooserWithContextObje
 	return Out;
 }
 
+TArray<FBridgeCHTRowResult> UUnrealBridgeChooserLibrary::EvaluateChooserMultiWithContextObject(const FString& ChooserTablePath, const FString& ContextObjectPath)
+{
+	using namespace BridgeChooserImpl;
+	TArray<FBridgeCHTRowResult> Out;
+
+	UChooserTable* CHT = LoadCHT(ChooserTablePath);
+	if (!CHT) return Out;
+
+	UObject* ContextObj = ContextObjectPath.IsEmpty() ? nullptr : LoadObject<UObject>(nullptr, *ContextObjectPath);
+
+	FChooserEvaluationContext Context;
+	if (ContextObj)
+	{
+		Context.AddObjectParam(ContextObj);
+	}
+
+	auto Cb = FObjectChooserBase::FObjectChooserIteratorCallback::CreateLambda(
+		[&Out](UObject* Obj) -> FObjectChooserBase::EIteratorStatus
+		{
+			FBridgeCHTRowResult R;
+			if (Obj)
+			{
+				R.Kind = Obj->GetClass()->GetName();
+				R.ResultPath = Obj->GetPathName();
+			}
+			else
+			{
+				R.Kind = TEXT("None");
+			}
+			Out.Add(R);
+			// Continue tells the chooser machinery to keep walking — we want every passing row.
+			return FObjectChooserBase::EIteratorStatus::Continue;
+		});
+
+	UChooserTable::EvaluateChooser(Context, CHT, Cb);
+	return Out;
+}
+
 TArray<FBridgeCHTRowResult> UUnrealBridgeChooserLibrary::ListPossibleResults(const FString& ChooserTablePath)
 {
 	using namespace BridgeChooserImpl;

@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-05-02T09:56:21+00:00",
+  "generated_at": "2026-05-02T10:49:43+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -840,6 +840,30 @@
               "default": null,
               "has_default": false,
               "name": "node_index",
+              "type": ""
+            }
+          ],
+          "returns": "Array[str]"
+        },
+        "get_anim_node_details_by_guid": {
+          "doc": "X.get_anim_node_details_by_guid(anim_blueprint_path, graph_name, node_guid) -> Array[str]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "anim_blueprint_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_guid",
               "type": ""
             }
           ],
@@ -6403,6 +6427,24 @@
             }
           ],
           "returns": "bool"
+        },
+        "evaluate_chooser_multi_with_context_object": {
+          "doc": "X.evaluate_chooser_multi_with_context_object(chooser_table_path, context_object_path) -> Array[BridgeCHTRowResult]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_object_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgeCHTRowResult]"
         },
         "evaluate_chooser_with_context_object": {
           "doc": "X.evaluate_chooser_with_context_object(chooser_table_path, context_object_path) -> BridgeCHTEvaluation",
@@ -16452,6 +16494,7 @@
     "BridgeAnimGraphNodeInfo": [
       "connections",
       "detail",
+      "node_guid",
       "node_index",
       "node_title",
       "node_type"
