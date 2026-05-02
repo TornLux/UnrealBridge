@@ -185,9 +185,26 @@ namespace BridgeChooserImpl
 		return S.StartsWith(TEXT("Output"));
 	}
 
-	void DirtyAndScope(UChooserTable* CHT, const FText& Why)
+	/**
+	 * Finalize a chooser write. ALWAYS call this at the end of any UFUNCTION that
+	 * mutates ContextData / ColumnsStructs / ResultsStructs / DisabledRows /
+	 * FallbackResult. Without it, the editor's binding-resolution widget keeps
+	 * stale FCompiledBinding caches and shows NoPropertyBound on perfectly valid
+	 * data — runtime works, editor lies. Three steps:
+	 *   1. Compile(true) — recurses into every column/result and resolves binding
+	 *      chains against current ContextData (populates FCompiledBinding).
+	 *   2. PostEditChangeProperty(nullptr) — broadcasts OnContextClassChanged +
+	 *      OnOutputObjectTypeChanged so detail widgets refresh.
+	 *   3. MarkPackageDirty so the asset gets saved.
+	 *
+	 * Replaces the old "CHT->MarkPackageDirty();" tail call on every write op.
+	 */
+	void FinishChooserWrite(UChooserTable* CHT)
 	{
-		CHT->Modify();
+		if (!CHT) return;
+		CHT->Compile(true);
+		FPropertyChangedEvent Event(nullptr);
+		CHT->PostEditChangeProperty(Event);
 		CHT->MarkPackageDirty();
 	}
 }
@@ -377,7 +394,7 @@ int32 UUnrealBridgeChooserLibrary::InsertChooserRow(const FString& ChooserTableP
 	const FScopedTransaction Tx(LOCTEXT("AddChooserRow", "Add Chooser Row"));
 	CHT->Modify();
 	InsertRowAt(CHT, InsertAt);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return InsertAt;
 }
 
@@ -390,7 +407,7 @@ bool UUnrealBridgeChooserLibrary::RemoveChooserRow(const FString& ChooserTablePa
 	const FScopedTransaction Tx(LOCTEXT("RemoveChooserRow", "Remove Chooser Row"));
 	CHT->Modify();
 	const bool bOK = RemoveRowAt(CHT, RowIndex);
-	if (bOK) CHT->MarkPackageDirty();
+	if (bOK) FinishChooserWrite(CHT);
 	return bOK;
 }
 
@@ -406,7 +423,7 @@ bool UUnrealBridgeChooserLibrary::SetChooserRowDisabled(const FString& ChooserTa
 	CHT->Modify();
 	while (CHT->DisabledRows.Num() <= RowIndex) CHT->DisabledRows.Add(false);
 	CHT->DisabledRows[RowIndex] = bDisabled;
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 #else
 	return false;
@@ -427,7 +444,7 @@ namespace BridgeChooserImpl
 		New.InitializeAs(TChooserStruct::StaticStruct());
 		Configure(New.GetMutable<TChooserStruct>());
 		CHT->ResultsStructs[RowIndex] = MoveTemp(New);
-		CHT->MarkPackageDirty();
+		FinishChooserWrite(CHT);
 		return true;
 #else
 		return false;
@@ -486,7 +503,7 @@ bool UUnrealBridgeChooserLibrary::ClearChooserRowResult(const FString& ChooserTa
 	const FScopedTransaction Tx(LOCTEXT("ChooserRowClear", "Clear Chooser Row Result"));
 	CHT->Modify();
 	CHT->ResultsStructs[RowIndex].Reset();
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 #else
 	return false;
@@ -507,7 +524,7 @@ bool UUnrealBridgeChooserLibrary::SetChooserFallbackAsset(const FString& Chooser
 	CHT->Modify();
 	CHT->FallbackResult.InitializeAs(FAssetChooser::StaticStruct());
 	CHT->FallbackResult.GetMutable<FAssetChooser>().Asset = Asset;
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 }
 
@@ -544,17 +561,7 @@ bool UUnrealBridgeChooserLibrary::SetChooserContextObjectClass(const FString& Ch
 	Entry.Class = ContextClass;
 	Entry.Direction = Dir;
 	CHT->ContextData.Add(MoveTemp(New));
-
-	// Trigger compile + editor refresh:
-	// 1. Compile(true) recurses into every column/result and resolves binding chains
-	//    against the new ContextClass — without this, FCompiledBinding stays null.
-	// 2. PostEditChangeProperty with a null-Property event broadcasts OnContextClassChanged,
-	//    which refreshes ChooserEditor's binding widgets so they stop showing 'NoPropertyBound'.
-	CHT->Compile(true);
-	FPropertyChangedEvent Event(nullptr);
-	CHT->PostEditChangeProperty(Event);
-
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 }
 
@@ -577,7 +584,7 @@ bool UUnrealBridgeChooserLibrary::ClearChooserFallback(const FString& ChooserTab
 	const FScopedTransaction Tx(LOCTEXT("ChooserFallbackClear", "Clear Chooser Fallback"));
 	CHT->Modify();
 	CHT->FallbackResult.Reset();
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 }
 
@@ -662,7 +669,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnByStructPath(const FString& C
 	}
 
 	const int32 NewIdx = PushColumn(CHT, MoveTemp(New));
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return NewIdx;
 }
 
@@ -675,7 +682,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnFloatRange(const FString& Cho
 	CHT->Modify();
 	const int32 Idx = AddTypedColumnWithBinding<FFloatRangeColumn, FFloatContextProperty>(
 		CHT, BindingPropertyChain, ContextIndex, nullptr);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -701,7 +708,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnEnum(const FString& ChooserTa
 			B.Binding.Enum = Enum;
 #endif
 		});
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -714,7 +721,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnBool(const FString& ChooserTa
 	CHT->Modify();
 	const int32 Idx = AddTypedColumnWithBinding<FBoolColumn, FBoolContextProperty>(
 		CHT, BindingPropertyChain, ContextIndex, nullptr);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -727,7 +734,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnObject(const FString& Chooser
 	CHT->Modify();
 	const int32 Idx = AddTypedColumnWithBinding<FObjectColumn, FObjectContextProperty>(
 		CHT, BindingPropertyChain, ContextIndex, nullptr);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -740,7 +747,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnGameplayTag(const FString& Ch
 	CHT->Modify();
 	const int32 Idx = AddTypedColumnWithBinding<FGameplayTagColumn, FGameplayTagContextProperty>(
 		CHT, BindingPropertyChain, ContextIndex, nullptr);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -757,7 +764,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnRandomize(const FString& Choo
 	FInstancedStruct New;
 	New.InitializeAs(FRandomizeColumn::StaticStruct());
 	const int32 Idx = PushColumn(CHT, MoveTemp(New));
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -770,7 +777,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnOutputFloat(const FString& Ch
 	CHT->Modify();
 	const int32 Idx = AddTypedColumnWithBinding<FOutputFloatColumn, FFloatContextProperty>(
 		CHT, BindingPropertyChain, ContextIndex, nullptr);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -783,7 +790,7 @@ int32 UUnrealBridgeChooserLibrary::AddChooserColumnOutputObject(const FString& C
 	CHT->Modify();
 	const int32 Idx = AddTypedColumnWithBinding<FOutputObjectColumn, FObjectContextProperty>(
 		CHT, BindingPropertyChain, ContextIndex, nullptr);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return Idx;
 }
 
@@ -797,7 +804,7 @@ bool UUnrealBridgeChooserLibrary::RemoveChooserColumn(const FString& ChooserTabl
 	const FScopedTransaction Tx(LOCTEXT("RemoveCHTCol", "Remove Chooser Column"));
 	CHT->Modify();
 	CHT->ColumnsStructs.RemoveAt(ColumnIndex);
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 }
 
@@ -813,7 +820,7 @@ bool UUnrealBridgeChooserLibrary::SetChooserColumnDisabled(const FString& Choose
 	const FScopedTransaction Tx(LOCTEXT("CHTColDisabled", "Toggle Chooser Column Disabled"));
 	CHT->Modify();
 	Base->bDisabled = bDisabled;
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 #else
 	return false;
@@ -854,7 +861,7 @@ bool UUnrealBridgeChooserLibrary::SetChooserCellRaw(const FString& ChooserTableP
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SetChooserCellRaw failed to import '%s'"), *T3DValue);
 		return false;
 	}
-	CHT->MarkPackageDirty();
+	FinishChooserWrite(CHT);
 	return true;
 }
 
