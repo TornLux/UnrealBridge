@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-05-02T13:51:37+00:00",
+  "generated_at": "2026-05-02T14:01:59+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -6423,6 +6423,18 @@
               "default": null,
               "has_default": false,
               "name": "row_index",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "compile_chooser": {
+          "doc": "X.compile_chooser(chooser_table_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
               "type": ""
             }
           ],

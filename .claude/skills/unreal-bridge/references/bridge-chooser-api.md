@@ -12,6 +12,8 @@ Read+write coverage of `UChooserTable` (`.uasset` extension: `ChooserTable` / `C
 > 
 > Plus `DisabledRows[row]` (bool) and `FallbackResult` (used when no row passes filters). Row count = `len(ResultsStructs)`. **Adding/removing a row must keep all three arrays in lockstep** — this library does that for you; never poke the arrays directly.
 
+> **Authoring a NEW chooser? Step 0: set the context class.** Without this, every column binding renders as `NoPropertyBound` in the editor (even though runtime evaluation still works against a UObject context whose property names happen to match). Newly-created `UChooserTable` assets have empty `ContextData` — the editor's binding-resolution widget needs a class schema to type-check column binding chains. Call `set_chooser_context_object_class(cht, class_path, direction)` immediately after `unreal.AssetTools.create_asset(...)` and before adding any columns. The wrapper auto-compiles + broadcasts `PostEditChangeProperty` so editor widgets refresh. If you ever see `NoPropertyBound` despite correct data, call `compile_chooser(cht)` to force a re-resolve.
+
 ---
 
 ## Read

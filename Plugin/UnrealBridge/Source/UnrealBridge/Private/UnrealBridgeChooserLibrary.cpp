@@ -544,7 +544,28 @@ bool UUnrealBridgeChooserLibrary::SetChooserContextObjectClass(const FString& Ch
 	Entry.Class = ContextClass;
 	Entry.Direction = Dir;
 	CHT->ContextData.Add(MoveTemp(New));
+
+	// Trigger compile + editor refresh:
+	// 1. Compile(true) recurses into every column/result and resolves binding chains
+	//    against the new ContextClass — without this, FCompiledBinding stays null.
+	// 2. PostEditChangeProperty with a null-Property event broadcasts OnContextClassChanged,
+	//    which refreshes ChooserEditor's binding widgets so they stop showing 'NoPropertyBound'.
+	CHT->Compile(true);
+	FPropertyChangedEvent Event(nullptr);
+	CHT->PostEditChangeProperty(Event);
+
 	CHT->MarkPackageDirty();
+	return true;
+}
+
+bool UUnrealBridgeChooserLibrary::CompileChooser(const FString& ChooserTablePath)
+{
+	using namespace BridgeChooserImpl;
+	UChooserTable* CHT = LoadCHT(ChooserTablePath);
+	if (!CHT) return false;
+	CHT->Compile(true);
+	FPropertyChangedEvent Event(nullptr);
+	CHT->PostEditChangeProperty(Event);
 	return true;
 }
 

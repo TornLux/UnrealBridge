@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-02T13:51:37+00:00'
+_GENERATED_AT = '2026-05-02T14:01:59+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -1323,6 +1323,11 @@ class Chooser:
     def clear_chooser_row_result(*, chooser_table_path, row_index):
         """X.clear_chooser_row_result(chooser_table_path, row_index) -> bool"""
         return unreal.UnrealBridgeChooserLibrary.clear_chooser_row_result(chooser_table_path, row_index)
+
+    @staticmethod
+    def compile_chooser(*, chooser_table_path):
+        """X.compile_chooser(chooser_table_path) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.compile_chooser(chooser_table_path)
 
     @staticmethod
     def evaluate_chooser_multi_with_context_object(*, chooser_table_path, context_object_path):

@@ -196,6 +196,16 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
 	static bool SetChooserContextObjectClass(const FString& ChooserTablePath, const FString& ContextClassPath, const FString& Direction);
 
+	/**
+	 * Force-recompile the chooser: walks every column + result, resolves binding
+	 * chains against the current ContextData, refreshes editor binding widgets.
+	 * `set_chooser_context_object_class` does this automatically; call this
+	 * manually after a batch of column/row edits if the editor's binding display
+	 * shows 'NoPropertyBound' even though the data is correct.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
+	static bool CompileChooser(const FString& ChooserTablePath);
+
 	// ── Column writes (typed) ──
 
 	/**
