@@ -154,10 +154,14 @@ The **only** way to write a single cell. Pass T3D text matching the column's per
 
 | Column | Cell struct | Example T3D |
 |---|---|---|
-| FloatRange | `FChooserFloatRangeRowData` | `"(Min=0.0,Max=10.0,bNoMin=False,bNoMax=False)"` |
-| Enum | `FChooserEnumRowData` | `"(ValueName=\"E_Gait::NewEnumerator2\",Value=2,Comparison=MatchEqual)"` |
-| Bool | `FChooserBoolRowData` | `"(Value=True)"` |
+| FloatRange | `FChooserFloatRangeRowData` | `"(Min=0.0,Max=10.0)"` (omit defaults; `bNoMin`/`bNoMax` only when unbounded) |
+| Enum | `FChooserEnumRowData` | `"(ValueName=\"E_Gait::NewEnumerator2\",Value=2,Comparison=MatchEqual)"` for a hard match; `"(Comparison=MatchAny)"` to wildcard |
+| Bool | (enum) | **NOT a struct** — bare enum text: `"MatchTrue"` / `"MatchFalse"` / `"MatchAny"`. Default-init cells return `"MatchFalse"`. Setting `(Value=True)` does NOT work. |
 | Object | `FChooserObjectRowData` | `"(Value=Asset'/Game/…/Foo.Foo')"` |
+
+> **Two non-obvious gotchas, both empirically verified:**
+> - **Bool cells are bare enum text, not a struct.** Pass `"MatchTrue"` / `"MatchFalse"` / `"MatchAny"` directly. The cell's Python type is `EChooserBoolColumnCellValueComparison`, not a struct with a `Value` field.
+> - **Enum `MatchAny` cells need explicit `(Comparison=MatchAny)`** — leaving the cell at default (empty `()`) compares against int `0` (whatever the first enum value is), NOT "skip this column". This is the single most common authoring bug. Always write the wildcard explicitly.
 
 To get the exact T3D format for a cell shape, read an existing one with `get_chooser_cell_raw` and edit the string. Round-trip works.
 
