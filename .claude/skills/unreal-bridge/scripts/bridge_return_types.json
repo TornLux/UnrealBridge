@@ -52,8 +52,13 @@
       "_note": "str is a Python string. NO UE-object attributes are valid. Any .x access is wrong unless x is a builtin string method (split, strip, startswith, ...). Such builtins are ignored by the detector."
     },
     "SoftObjectPath": {
-      "valid": ["asset_path_string", "package_name", "asset_name", "sub_path_string"],
-      "_note": "UE FSoftObjectPath. Common confusion: agent thinks it has AssetData fields like asset_class_path."
+      "valid": [
+        "export_text", "to_tuple", "import_text", "assign", "copy",
+        "get_editor_property", "set_editor_property", "set_editor_properties",
+        "cast", "static_struct",
+        "asset_path_string", "package_name", "asset_name", "sub_path_string"
+      ],
+      "_note": "UE FSoftObjectPath. Direct attrs are LIMITED — to read the path string use sp.export_text() (returns the full /Game/...PathName) or sp.to_tuple()[0]. The USTRUCT fields (asset_path_string / asset_name / package_name / sub_path_string) are NOT accessible as direct attributes — you must go through sp.get_editor_property('asset_path_string'). Common confusion: agent thinks it has AssetData fields like asset_class_path."
     },
     "AssetData": {
       "valid": ["asset_class_path", "package_name", "asset_name", "object_path", "package_path", "tags_and_values"],

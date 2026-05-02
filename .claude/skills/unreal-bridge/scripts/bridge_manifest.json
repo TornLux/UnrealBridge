@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-05-02T08:27:16+00:00",
+  "generated_at": "2026-05-02T08:48:21+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -15041,7 +15041,7 @@
     "UnrealBridgePoseSearchLibrary": {
       "functions": {
         "add_animation_to_database": {
-          "doc": "X.add_animation_to_database(database_path, animation_asset_path, sampling_range_min, sampling_range_max, mirror_option, enabled) -> int32",
+          "doc": "X.add_animation_to_database(database_path, animation_asset_path, sampling_range_min, sampling_range_max, mirror_option, enabled) -> BridgePSDAddResult",
           "params": [
             {
               "default": null,
@@ -15080,10 +15080,10 @@
               "type": ""
             }
           ],
-          "returns": "int32"
+          "returns": "BridgePSDAddResult"
         },
         "add_blend_space_to_database": {
-          "doc": "X.add_blend_space_to_database(database_path, blend_space_path, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y, sampling_range_min, sampling_range_max, mirror_option, enabled) -> int32",
+          "doc": "X.add_blend_space_to_database(database_path, blend_space_path, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y, sampling_range_min, sampling_range_max, mirror_option, enabled) -> BridgePSDAddResult",
           "params": [
             {
               "default": null,
@@ -15158,7 +15158,7 @@
               "type": ""
             }
           ],
-          "returns": "int32"
+          "returns": "BridgePSDAddResult"
         },
         "clear_database_animations": {
           "doc": "X.clear_database_animations(database_path) -> int32",
@@ -17353,6 +17353,10 @@
       "class_name",
       "is_dirty",
       "path"
+    ],
+    "BridgePSDAddResult": [
+      "error",
+      "index"
     ],
     "BridgePSDAnimEntry": [
       "asset_path",

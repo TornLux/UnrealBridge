@@ -143,6 +143,29 @@ struct FBridgePSDAnimEntry
 	float BlendSpaceParamY = 0.f;
 };
 
+/**
+ * Returned by add_animation_to_database / add_blend_space_to_database.
+ *
+ * Index >= 0 → success, Error empty.
+ * Index == -1 → failure, Error is human-readable (database/asset not loadable,
+ * unsupported anim type, bad mirror option string, …).
+ *
+ * Use Index < 0 to detect failure rather than raising; surfacing Error lets
+ * callers report exactly *what* went wrong without parsing the editor log
+ * (UE_LOG output isn't captured by the bridge — only Python stdout/stderr is).
+ */
+USTRUCT(BlueprintType)
+struct FBridgePSDAddResult
+{
+	GENERATED_BODY()
+
+	UPROPERTY(BlueprintReadOnly)
+	int32 Index = -1;
+
+	UPROPERTY(BlueprintReadOnly)
+	FString Error;
+};
+
 USTRUCT(BlueprintType)
 struct FBridgePSDInfo
 {
@@ -229,10 +252,13 @@ public:
 	 *
 	 * @param SamplingRangeMin/Max  pass 0/0 to use the entire animation range.
 	 * @param MirrorOption          "UnmirroredOnly" / "MirroredOnly" / "UnmirroredAndMirrored" (case-insensitive).
-	 * @return new entry index, or -1 on failure.
+	 *
+	 * @return FBridgePSDAddResult — Index >= 0 on success, -1 on failure with
+	 *         Error populated. Check Error to find out *why* (asset path typo,
+	 *         unsupported anim type, bad mirror string, …).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|PoseSearch")
-	static int32 AddAnimationToDatabase(const FString& DatabasePath, const FString& AnimationAssetPath,
+	static FBridgePSDAddResult AddAnimationToDatabase(const FString& DatabasePath, const FString& AnimationAssetPath,
 		float SamplingRangeMin, float SamplingRangeMax, const FString& MirrorOption, bool bEnabled);
 
 	/**
@@ -243,7 +269,7 @@ public:
 	 * @param bUseSingleSample      treat the BlendSpace as a single segment at (BlendParamX, BlendParamY).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|PoseSearch")
-	static int32 AddBlendSpaceToDatabase(const FString& DatabasePath, const FString& BlendSpacePath,
+	static FBridgePSDAddResult AddBlendSpaceToDatabase(const FString& DatabasePath, const FString& BlendSpacePath,
 		int32 HSamples, int32 VSamples,
 		bool bUseGridForSampling, bool bUseSingleSample,
 		float BlendParamX, float BlendParamY,

@@ -377,35 +377,54 @@ namespace BridgePoseSearchImpl
 		return INDEX_NONE;
 #endif
 	}
+
+	FBridgePSDAddResult MakeAddError(const FString& Msg)
+	{
+		FBridgePSDAddResult R;
+		R.Index = -1;
+		R.Error = Msg;
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: %s"), *Msg);
+		return R;
+	}
 }
 
-int32 UUnrealBridgePoseSearchLibrary::AddAnimationToDatabase(const FString& DatabasePath, const FString& AnimationAssetPath,
+FBridgePSDAddResult UUnrealBridgePoseSearchLibrary::AddAnimationToDatabase(const FString& DatabasePath, const FString& AnimationAssetPath,
 	float SamplingRangeMin, float SamplingRangeMax, const FString& MirrorOption, bool bEnabled)
 {
 	using namespace BridgePoseSearchImpl;
 	UPoseSearchDatabase* PSD = LoadDatabase(DatabasePath);
-	if (!PSD) return INDEX_NONE;
+	if (!PSD)
+	{
+		return MakeAddError(FString::Printf(TEXT("AddAnimationToDatabase: cannot load PoseSearchDatabase '%s'"), *DatabasePath));
+	}
 
 	UObject* Asset = LoadAnyAnim(AnimationAssetPath);
-	if (!Asset) return INDEX_NONE;
+	if (!Asset)
+	{
+		return MakeAddError(FString::Printf(TEXT("AddAnimationToDatabase: cannot load animation asset '%s' (typo? wrong package mount?)"), *AnimationAssetPath));
+	}
 	if (!Cast<UAnimSequence>(Asset) && !Cast<UBlendSpace>(Asset) && !Cast<UAnimComposite>(Asset) && !Cast<UAnimMontage>(Asset))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddAnimationToDatabase asset '%s' is not a supported anim type"),
-			*AnimationAssetPath);
-		return INDEX_NONE;
+		return MakeAddError(FString::Printf(TEXT("AddAnimationToDatabase: '%s' is a %s, not AnimSequence/BlendSpace/AnimComposite/AnimMontage"),
+			*AnimationAssetPath, *Asset->GetClass()->GetName()));
 	}
 
 	EPoseSearchMirrorOption Mirror = EPoseSearchMirrorOption::UnmirroredOnly;
 	if (!ParseMirrorOption(MirrorOption, Mirror))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddAnimationToDatabase invalid MirrorOption '%s'"), *MirrorOption);
-		return INDEX_NONE;
+		return MakeAddError(FString::Printf(TEXT("AddAnimationToDatabase: invalid MirrorOption '%s' — expected one of UnmirroredOnly / MirroredOnly / UnmirroredAndMirrored (case-insensitive)"), *MirrorOption));
 	}
 
-	return AddEntryCommon(PSD, Asset, SamplingRangeMin, SamplingRangeMax, Mirror, bEnabled, nullptr);
+	FBridgePSDAddResult R;
+	R.Index = AddEntryCommon(PSD, Asset, SamplingRangeMin, SamplingRangeMax, Mirror, bEnabled, nullptr);
+	if (R.Index < 0)
+	{
+		R.Error = TEXT("AddAnimationToDatabase: AddEntryCommon failed (likely WITH_EDITORONLY_DATA off)");
+	}
+	return R;
 }
 
-int32 UUnrealBridgePoseSearchLibrary::AddBlendSpaceToDatabase(const FString& DatabasePath, const FString& BlendSpacePath,
+FBridgePSDAddResult UUnrealBridgePoseSearchLibrary::AddBlendSpaceToDatabase(const FString& DatabasePath, const FString& BlendSpacePath,
 	int32 HSamples, int32 VSamples,
 	bool bUseGridForSampling, bool bUseSingleSample,
 	float BlendParamX, float BlendParamY,
@@ -414,20 +433,27 @@ int32 UUnrealBridgePoseSearchLibrary::AddBlendSpaceToDatabase(const FString& Dat
 {
 	using namespace BridgePoseSearchImpl;
 	UPoseSearchDatabase* PSD = LoadDatabase(DatabasePath);
-	if (!PSD) return INDEX_NONE;
+	if (!PSD)
+	{
+		return MakeAddError(FString::Printf(TEXT("AddBlendSpaceToDatabase: cannot load PoseSearchDatabase '%s'"), *DatabasePath));
+	}
 
-	UBlendSpace* BS = Cast<UBlendSpace>(LoadAnyAnim(BlendSpacePath));
+	UObject* Loaded = LoadAnyAnim(BlendSpacePath);
+	if (!Loaded)
+	{
+		return MakeAddError(FString::Printf(TEXT("AddBlendSpaceToDatabase: cannot load asset '%s'"), *BlendSpacePath));
+	}
+	UBlendSpace* BS = Cast<UBlendSpace>(Loaded);
 	if (!BS)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddBlendSpaceToDatabase '%s' is not a BlendSpace"), *BlendSpacePath);
-		return INDEX_NONE;
+		return MakeAddError(FString::Printf(TEXT("AddBlendSpaceToDatabase: '%s' is a %s, not a BlendSpace"),
+			*BlendSpacePath, *Loaded->GetClass()->GetName()));
 	}
 
 	EPoseSearchMirrorOption Mirror = EPoseSearchMirrorOption::UnmirroredOnly;
 	if (!ParseMirrorOption(MirrorOption, Mirror))
 	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: AddBlendSpaceToDatabase invalid MirrorOption '%s'"), *MirrorOption);
-		return INDEX_NONE;
+		return MakeAddError(FString::Printf(TEXT("AddBlendSpaceToDatabase: invalid MirrorOption '%s'"), *MirrorOption));
 	}
 
 	auto Tuner = [&](FPoseSearchDatabaseAnimationAsset& E)
@@ -442,7 +468,13 @@ int32 UUnrealBridgePoseSearchLibrary::AddBlendSpaceToDatabase(const FString& Dat
 #endif
 	};
 
-	return AddEntryCommon(PSD, BS, SamplingRangeMin, SamplingRangeMax, Mirror, bEnabled, Tuner);
+	FBridgePSDAddResult R;
+	R.Index = AddEntryCommon(PSD, BS, SamplingRangeMin, SamplingRangeMax, Mirror, bEnabled, Tuner);
+	if (R.Index < 0)
+	{
+		R.Error = TEXT("AddBlendSpaceToDatabase: AddEntryCommon failed (likely WITH_EDITORONLY_DATA off)");
+	}
+	return R;
 }
 
 bool UUnrealBridgePoseSearchLibrary::RemoveDatabaseAnimationAt(const FString& DatabasePath, int32 Index)
