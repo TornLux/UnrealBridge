@@ -270,6 +270,11 @@ def lint(code: str, manifest: Optional[dict] = None,
     errors: List[str] = []
     seen_call_ids = set()  # Avoid double-checking a Call's .func as an enum ref
 
+    # Hard rule: Gameplay-library script + time.sleep → engine freeze.
+    # bridge.exec runs on GameThread; sleep blocks the engine AND stops the
+    # sticky-input / runtime-timer ticker that pawn-driving scripts rely on.
+    errors.extend(_check_gameplay_with_sleep(tree, unreal_aliases, lib_aliases))
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             err = _check_call(node, unreal_aliases, lib_aliases, libraries)
@@ -481,6 +486,94 @@ def _check_call(node: ast.Call, unreal_aliases: Set[str],
             )
 
     return ""
+
+
+_GAMEPLAY_LIB = "UnrealBridgeGameplayLibrary"
+
+
+def _script_uses_gameplay(tree: ast.AST, unreal_aliases: Set[str],
+                           lib_aliases: dict) -> bool:
+    """True if the script references UnrealBridgeGameplayLibrary in any form:
+      • `from unreal_bridge import Gameplay` / `as G`
+      • `from unreal import UnrealBridgeGameplayLibrary` / `as L`
+      • `lib = unreal.UnrealBridgeGameplayLibrary` (assignment alias)
+      • `unreal.UnrealBridgeGameplayLibrary.fn(...)` (3-part chain, no alias)
+    The first three populate `lib_aliases`; the fourth needs an AST scan.
+    """
+    if any(v == _GAMEPLAY_LIB for v in lib_aliases.values()):
+        return True
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            chain = _attribute_chain(node)
+            if (len(chain) >= 2 and chain[0] in unreal_aliases
+                    and chain[1] == _GAMEPLAY_LIB):
+                return True
+    return False
+
+
+def _check_gameplay_with_sleep(tree: ast.AST, unreal_aliases: Set[str],
+                                 lib_aliases: dict) -> List[str]:
+    """Reject `time.sleep(...)` in any script that drives the Gameplay API.
+
+    Rationale (from feedback_bridge_exec_holds_gamethread.md): bridge.exec
+    runs on the GameThread. `time.sleep` inside an exec freezes the engine
+    AND stops the sticky-input / runtime-timer ticker that pawn-driving and
+    IA-injection scripts rely on. Splitting setup + verify across separate
+    execs, or using `Gameplay.register_runtime_timer(...)`, avoids this.
+
+    Detected sleep call shapes:
+      • `time.sleep(...)`                 (after `import time`)
+      • `<alias>.sleep(...)`              (after `import time as <alias>`)
+      • `sleep(...)`                       (after `from time import sleep`)
+      • `<alias>(...)`                     (after `from time import sleep as <alias>`)
+    """
+    if not _script_uses_gameplay(tree, unreal_aliases, lib_aliases):
+        return []
+
+    time_module_aliases: Set[str] = set()
+    sleep_func_aliases: Set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "time":
+                    time_module_aliases.add(alias.asname or "time")
+        elif isinstance(node, ast.ImportFrom) and node.module == "time":
+            for alias in node.names:
+                if alias.name == "sleep":
+                    sleep_func_aliases.add(alias.asname or "sleep")
+
+    if not time_module_aliases and not sleep_func_aliases:
+        return []
+
+    errors: List[str] = []
+    seen_lines: Set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        chain = _attribute_chain(node.func)
+        hit = False
+        if len(chain) == 2 and chain[0] in time_module_aliases and chain[1] == "sleep":
+            hit = True
+        elif len(chain) == 1 and chain[0] in sleep_func_aliases:
+            hit = True
+        if not hit or node.lineno in seen_lines:
+            continue
+        seen_lines.add(node.lineno)
+        errors.append(
+            f"preflight L{node.lineno}: time.sleep() inside a script that uses the "
+            f"Gameplay API.\n"
+            f"  Why:    bridge.exec runs on the GameThread; time.sleep blocks the\n"
+            f"          engine AND stops the sticky-input / runtime-timer ticker —\n"
+            f"          the very mechanism gameplay scripts need to keep ticking.\n"
+            f"  Fix:    Split setup + verify into two exec calls (client-side sleep\n"
+            f"          between them), OR drive continuous logic from\n"
+            f"          Gameplay.register_runtime_timer(callback_name=..., interval_seconds=...)\n"
+            f"          which runs on Slate ticks, not on the blocked GT.\n"
+            f"  See:    references/bridge-gameplay-api.md 'Pattern: chase a target'.\n"
+            f"  Bypass: --no-preflight (only when the sleep is genuinely outside the\n"
+            f"          gameplay loop; usually you want the two-exec split instead)."
+        )
+    return errors
 
 
 _COST_HINTS = {
