@@ -531,6 +531,16 @@ def _generate_wrapper(manifest: dict) -> "tuple[str, dict]":
                 call_parts.append(pname)
 
             doc = (fn.get("doc") or "").replace('"""', "'''")
+            # Auto-append the SoftObjectPath stringify hint to any function whose
+            # return type mentions SoftObjectPath. The struct stringifies as
+            # "<Struct 'SoftObjectPath' ... {}>" which is useless to agents —
+            # this hint is the single most common UX papercut on Asset reads.
+            returns = fn.get("returns") or ""
+            if "SoftObjectPath" in returns:
+                doc = (doc.rstrip() + "  Note: SoftObjectPath does NOT stringify usefully — "
+                       "call .export_text() to get the '/Game/Foo.Foo' path "
+                       "(or .to_tuple()[0]). See bridge-asset-api.md for idioms.")
+
             out.append("    @staticmethod")
             if params:
                 out.append(f"    def {fn_name}(*, {', '.join(sig_parts)}):")

@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-02T08:48:21+00:00'
+_GENERATED_AT = '2026-05-02T09:56:21+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -353,7 +353,7 @@ class Asset:
 
     @staticmethod
     def find_redirectors_under_path(*, folder_path, recursive):
-        """X.find_redirectors_under_path(folder_path, recursive) -> Array[SoftObjectPath]"""
+        """X.find_redirectors_under_path(folder_path, recursive) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.find_redirectors_under_path(folder_path, recursive)
 
     @staticmethod
@@ -383,7 +383,7 @@ class Asset:
 
     @staticmethod
     def get_asset_references(*, asset_path):
-        """X.get_asset_references(asset_path) -> (out_dependencies=Array[SoftObjectPath], out_referencers=Array[SoftObjectPath])"""
+        """X.get_asset_references(asset_path) -> (out_dependencies=Array[SoftObjectPath], out_referencers=Array[SoftObjectPath])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.get_asset_references(asset_path)
 
     @staticmethod
@@ -398,22 +398,22 @@ class Asset:
 
     @staticmethod
     def get_assets_by_class(*, class_path, search_sub_classes):
-        """X.get_assets_by_class(class_path, search_sub_classes) -> Array[SoftObjectPath]"""
+        """X.get_assets_by_class(class_path, search_sub_classes) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_by_class(class_path, search_sub_classes)
 
     @staticmethod
     def get_assets_by_package_paths(*, folder_paths, class_filter, recursive):
-        """X.get_assets_by_package_paths(folder_paths, class_filter, recursive) -> Array[SoftObjectPath]"""
+        """X.get_assets_by_package_paths(folder_paths, class_filter, recursive) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_by_package_paths(folder_paths, class_filter, recursive)
 
     @staticmethod
     def get_assets_by_tag_value(*, tag_name, tag_value, optional_class_path):
-        """X.get_assets_by_tag_value(tag_name, tag_value, optional_class_path) -> Array[SoftObjectPath]"""
+        """X.get_assets_by_tag_value(tag_name, tag_value, optional_class_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_by_tag_value(tag_name, tag_value, optional_class_path)
 
     @staticmethod
     def get_assets_of_classes(*, class_paths, search_sub_classes):
-        """X.get_assets_of_classes(class_paths, search_sub_classes) -> Array[SoftObjectPath]"""
+        """X.get_assets_of_classes(class_paths, search_sub_classes) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_of_classes(class_paths, search_sub_classes)
 
     @staticmethod
@@ -423,12 +423,12 @@ class Asset:
 
     @staticmethod
     def get_data_asset_soft_paths_by_asset_path(*, data_asset_path):
-        """X.get_data_asset_soft_paths_by_asset_path(data_asset_path) -> Array[SoftObjectPath]"""
+        """X.get_data_asset_soft_paths_by_asset_path(data_asset_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.get_data_asset_soft_paths_by_asset_path(data_asset_path)
 
     @staticmethod
     def get_data_asset_soft_paths_by_base_class(*, base_data_asset_class):
-        """X.get_data_asset_soft_paths_by_base_class(base_data_asset_class) -> Array[SoftObjectPath]"""
+        """X.get_data_asset_soft_paths_by_base_class(base_data_asset_class) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.get_data_asset_soft_paths_by_base_class(base_data_asset_class)
 
     @staticmethod
@@ -503,12 +503,12 @@ class Asset:
 
     @staticmethod
     def list_assets_under_path(*, folder_path, include_subfolders):
-        """X.list_assets_under_path(folder_path, include_subfolders) -> Array[SoftObjectPath]"""
+        """X.list_assets_under_path(folder_path, include_subfolders) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.list_assets_under_path(folder_path, include_subfolders)
 
     @staticmethod
     def list_assets_under_path_simple(*, content_folder_path):
-        """X.list_assets_under_path_simple(content_folder_path) -> Array[SoftObjectPath]"""
+        """X.list_assets_under_path_simple(content_folder_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.list_assets_under_path_simple(content_folder_path)
 
     @staticmethod
@@ -518,17 +518,17 @@ class Asset:
 
     @staticmethod
     def search_assets(*, query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path):
-        """X.search_assets(query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])"""
+        """X.search_assets(query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.search_assets(query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path)
 
     @staticmethod
     def search_assets_in_all_content(*, query, max_results):
-        """X.search_assets_in_all_content(query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])"""
+        """X.search_assets_in_all_content(query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.search_assets_in_all_content(query, max_results)
 
     @staticmethod
     def search_assets_under_path(*, content_folder_path, query, max_results):
-        """X.search_assets_under_path(content_folder_path, query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])"""
+        """X.search_assets_under_path(content_folder_path, query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
         return unreal.UnrealBridgeAssetLibrary.search_assets_under_path(content_folder_path, query, max_results)
 
 
