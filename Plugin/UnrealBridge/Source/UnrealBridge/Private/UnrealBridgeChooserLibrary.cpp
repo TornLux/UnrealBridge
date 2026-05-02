@@ -207,6 +207,26 @@ namespace BridgeChooserImpl
 		CHT->PostEditChangeProperty(Event);
 		CHT->MarkPackageDirty();
 	}
+
+	// ── Last-error capture ──
+	// bridge.exec runs sequentially on GameThread, so a static FString here is
+	// race-free across one exec call. Writes set the error; successful starts
+	// clear it; the UFUNCTION getter exposes the value to the script that just
+	// got a false/-1 return. UE_LOG mirroring stays for editor-log debug.
+	static FString GLastChooserError;
+
+	void SetChooserError(const FString& Msg)
+	{
+		GLastChooserError = Msg;
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge[chooser]: %s"), *Msg);
+	}
+
+	void ClearChooserError() { GLastChooserError.Empty(); }
+}
+
+FString UUnrealBridgeChooserLibrary::GetLastChooserError()
+{
+	return BridgeChooserImpl::GLastChooserError;
 }
 
 // ─── Reads ─────────────────────────────────────────────────
@@ -830,13 +850,67 @@ bool UUnrealBridgeChooserLibrary::SetChooserColumnDisabled(const FString& Choose
 bool UUnrealBridgeChooserLibrary::SetChooserCellRaw(const FString& ChooserTablePath, int32 ColumnIndex, int32 RowIndex, const FString& T3DValue)
 {
 	using namespace BridgeChooserImpl;
+	ClearChooserError();
+
 	UChooserTable* CHT = LoadCHT(ChooserTablePath);
-	if (!CHT) return false;
-	if (!CHT->ColumnsStructs.IsValidIndex(ColumnIndex)) return false;
+	if (!CHT)
+	{
+		SetChooserError(FString::Printf(TEXT("set_chooser_cell_raw: cannot load ChooserTable '%s'"), *ChooserTablePath));
+		return false;
+	}
+	if (!CHT->ColumnsStructs.IsValidIndex(ColumnIndex))
+	{
+		SetChooserError(FString::Printf(TEXT("set_chooser_cell_raw: column %d out of range [0, %d)"),
+			ColumnIndex, CHT->ColumnsStructs.Num()));
+		return false;
+	}
 
 	FInstancedStruct& Col = CHT->ColumnsStructs[ColumnIndex];
 	const UScriptStruct* ColType = Col.GetScriptStruct();
-	if (!ColType) return false;
+	if (!ColType)
+	{
+		SetChooserError(TEXT("set_chooser_cell_raw: column has no valid struct type"));
+		return false;
+	}
+	const FString ColKind = ColType->GetName();
+
+	// ── Pre-flight: catch the known wrong-format traps before import_text
+	// silently leaves the cell at default. These are the patterns that
+	// repeatedly burn agents authoring choosers from scratch. Surface a
+	// loud, specific error so the agent fixes it on the next iteration
+	// instead of debugging a "row never fires" mystery later.
+	if (ColKind == TEXT("BoolColumn") || ColKind == TEXT("OutputBoolColumn"))
+	{
+		const FString V = T3DValue.TrimStartAndEnd();
+		const bool bIsValidBoolText =
+			V.Equals(TEXT("MatchTrue"),  ESearchCase::IgnoreCase) ||
+			V.Equals(TEXT("MatchFalse"), ESearchCase::IgnoreCase) ||
+			V.Equals(TEXT("MatchAny"),   ESearchCase::IgnoreCase);
+		if (!bIsValidBoolText)
+		{
+			SetChooserError(FString::Printf(
+				TEXT("set_chooser_cell_raw col=%d row=%d: BoolColumn cells use bare enum text "
+				     "('MatchTrue' / 'MatchFalse' / 'MatchAny'), NOT a struct like '%s'. "
+				     "See bridge-chooser-api.md cell-format table."),
+				ColumnIndex, RowIndex, *T3DValue));
+			return false;
+		}
+	}
+	else if (ColKind == TEXT("EnumColumn") || ColKind == TEXT("OutputEnumColumn") || ColKind == TEXT("MultiEnumColumn"))
+	{
+		const FString V = T3DValue.TrimStartAndEnd();
+		// Bare "()" on an enum cell evaluates to (Comparison=MatchEqual, Value=0)
+		// — almost certainly NOT what the caller meant. They likely wanted MatchAny.
+		if (V == TEXT("()"))
+		{
+			SetChooserError(FString::Printf(
+				TEXT("set_chooser_cell_raw col=%d row=%d: bare '()' on an EnumColumn compares "
+				     "against int 0 (the first enum value), NOT a wildcard. For wildcard use "
+				     "'(Comparison=MatchAny)'; for a specific value use '(ValueName=\"E_Foo::Bar\",Value=N)'."),
+				ColumnIndex, RowIndex));
+			return false;
+		}
+	}
 
 	FName RowValuesName = TEXT("RowValues");
 #if WITH_EDITOR
@@ -847,10 +921,20 @@ bool UUnrealBridgeChooserLibrary::SetChooserCellRaw(const FString& ChooserTableP
 	}
 #endif
 	const FArrayProperty* ArrProp = CastField<FArrayProperty>(ColType->FindPropertyByName(RowValuesName));
-	if (!ArrProp) return false;
+	if (!ArrProp)
+	{
+		SetChooserError(FString::Printf(TEXT("set_chooser_cell_raw col=%d (%s): RowValues array property not found"),
+			ColumnIndex, *ColKind));
+		return false;
+	}
 
 	FScriptArrayHelper Helper(ArrProp, ArrProp->ContainerPtrToValuePtr<void>(Col.GetMutableMemory()));
-	if (RowIndex < 0 || RowIndex >= Helper.Num()) return false;
+	if (RowIndex < 0 || RowIndex >= Helper.Num())
+	{
+		SetChooserError(FString::Printf(TEXT("set_chooser_cell_raw col=%d row=%d out of range [0, %d)"),
+			ColumnIndex, RowIndex, Helper.Num()));
+		return false;
+	}
 
 	const FScopedTransaction Tx(LOCTEXT("CHTSetCell", "Set Chooser Cell"));
 	CHT->Modify();
@@ -858,7 +942,8 @@ bool UUnrealBridgeChooserLibrary::SetChooserCellRaw(const FString& ChooserTableP
 	const TCHAR* Result = ArrProp->Inner->ImportText_Direct(Buf, Helper.GetRawPtr(RowIndex), nullptr, PPF_None);
 	if (!Result)
 	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SetChooserCellRaw failed to import '%s'"), *T3DValue);
+		SetChooserError(FString::Printf(TEXT("set_chooser_cell_raw col=%d row=%d (%s): failed to import T3D '%s'"),
+			ColumnIndex, RowIndex, *ColKind, *T3DValue));
 		return false;
 	}
 	FinishChooserWrite(CHT);

@@ -206,6 +206,24 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
 	static bool CompileChooser(const FString& ChooserTablePath);
 
+	/**
+	 * Returns the human-readable error from the most recent failed chooser write.
+	 * Empty string when the last write succeeded.
+	 *
+	 * Many chooser write UFUNCTIONs return `bool` or `int32` and signal failure
+	 * with `false` / `-1` — but the *reason* (bad path, bad cell format, missing
+	 * context class, etc.) only goes to UE_LOG, which the bridge doesn't capture.
+	 * Call this after a failure return to surface the reason in your script.
+	 *
+	 * Example:
+	 *   if not Chooser.set_chooser_cell_raw(...).success:
+	 *       print(Chooser.get_last_chooser_error())
+	 *       # → "set_chooser_cell_raw col=0 row=2: Bool cells use bare
+	 *       #    'MatchTrue'/'MatchFalse'/'MatchAny', NOT '(Value=True)' …"
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Chooser")
+	static FString GetLastChooserError();
+
 	// ── Column writes (typed) ──
 
 	/**

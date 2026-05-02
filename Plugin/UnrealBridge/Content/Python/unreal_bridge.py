@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-02T14:41:58+00:00'
+_GENERATED_AT = '2026-05-02T14:48:37+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -1353,6 +1353,11 @@ class Chooser:
     def get_chooser_row_result(*, chooser_table_path, row_index):
         """X.get_chooser_row_result(chooser_table_path, row_index) -> BridgeCHTRowResult"""
         return unreal.UnrealBridgeChooserLibrary.get_chooser_row_result(chooser_table_path, row_index)
+
+    @staticmethod
+    def get_last_chooser_error():
+        """X.get_last_chooser_error() -> str"""
+        return unreal.UnrealBridgeChooserLibrary.get_last_chooser_error()
 
     @staticmethod
     def insert_chooser_row(*, chooser_table_path, before_row):
