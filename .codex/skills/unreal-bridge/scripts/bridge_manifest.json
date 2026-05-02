@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-05-01T13:11:14+00:00",
+  "generated_at": "2026-05-02T14:48:37+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -840,6 +840,30 @@
               "default": null,
               "has_default": false,
               "name": "node_index",
+              "type": ""
+            }
+          ],
+          "returns": "Array[str]"
+        },
+        "get_anim_node_details_by_guid": {
+          "doc": "X.get_anim_node_details_by_guid(anim_blueprint_path, graph_name, node_guid) -> Array[str]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "anim_blueprint_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_guid",
               "type": ""
             }
           ],
@@ -6129,6 +6153,669 @@
             }
           ],
           "returns": "str"
+        }
+      }
+    },
+    "UnrealBridgeChooserLibrary": {
+      "functions": {
+        "add_chooser_column_bool": {
+          "doc": "X.add_chooser_column_bool(chooser_table_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_by_struct_path": {
+          "doc": "X.add_chooser_column_by_struct_path(chooser_table_path, column_struct_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "column_struct_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_enum": {
+          "doc": "X.add_chooser_column_enum(chooser_table_path, binding_property_chain, enum_path, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "enum_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_float_range": {
+          "doc": "X.add_chooser_column_float_range(chooser_table_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_gameplay_tag": {
+          "doc": "X.add_chooser_column_gameplay_tag(chooser_table_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_object": {
+          "doc": "X.add_chooser_column_object(chooser_table_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_output_float": {
+          "doc": "X.add_chooser_column_output_float(chooser_table_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_output_object": {
+          "doc": "X.add_chooser_column_output_object(chooser_table_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_column_randomize": {
+          "doc": "X.add_chooser_column_randomize(chooser_table_path, binding_property_chain, context_index) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "binding_property_chain",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_index",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "add_chooser_row": {
+          "doc": "X.add_chooser_row(chooser_table_path) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "clear_chooser_fallback": {
+          "doc": "X.clear_chooser_fallback(chooser_table_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "clear_chooser_row_result": {
+          "doc": "X.clear_chooser_row_result(chooser_table_path, row_index) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "compile_chooser": {
+          "doc": "X.compile_chooser(chooser_table_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "evaluate_chooser_multi_with_context_object": {
+          "doc": "X.evaluate_chooser_multi_with_context_object(chooser_table_path, context_object_path) -> Array[BridgeCHTRowResult]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_object_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgeCHTRowResult]"
+        },
+        "evaluate_chooser_with_context_object": {
+          "doc": "X.evaluate_chooser_with_context_object(chooser_table_path, context_object_path) -> BridgeCHTEvaluation",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_object_path",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeCHTEvaluation"
+        },
+        "get_chooser_cell_raw": {
+          "doc": "X.get_chooser_cell_raw(chooser_table_path, column_index, row_index) -> str",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "column_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            }
+          ],
+          "returns": "str"
+        },
+        "get_chooser_info": {
+          "doc": "X.get_chooser_info(chooser_table_path) -> BridgeCHTInfo",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeCHTInfo"
+        },
+        "get_chooser_row_result": {
+          "doc": "X.get_chooser_row_result(chooser_table_path, row_index) -> BridgeCHTRowResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeCHTRowResult"
+        },
+        "get_last_chooser_error": {
+          "doc": "X.get_last_chooser_error() -> str",
+          "params": [],
+          "returns": "str"
+        },
+        "insert_chooser_row": {
+          "doc": "X.insert_chooser_row(chooser_table_path, before_row) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "before_row",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "list_chooser_columns": {
+          "doc": "X.list_chooser_columns(chooser_table_path) -> Array[BridgeCHTColumn]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgeCHTColumn]"
+        },
+        "list_chooser_rows": {
+          "doc": "X.list_chooser_rows(chooser_table_path) -> Array[BridgeCHTRow]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgeCHTRow]"
+        },
+        "list_possible_results": {
+          "doc": "X.list_possible_results(chooser_table_path) -> Array[BridgeCHTRowResult]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgeCHTRowResult]"
+        },
+        "remove_chooser_column": {
+          "doc": "X.remove_chooser_column(chooser_table_path, column_index) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "column_index",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "remove_chooser_row": {
+          "doc": "X.remove_chooser_row(chooser_table_path, row_index) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_cell_raw": {
+          "doc": "X.set_chooser_cell_raw(chooser_table_path, column_index, row_index, t3d_value) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "column_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "t3d_value",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_column_disabled": {
+          "doc": "X.set_chooser_column_disabled(chooser_table_path, column_index, disabled) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "column_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "disabled",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_context_object_class": {
+          "doc": "X.set_chooser_context_object_class(chooser_table_path, context_class_path, direction) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "context_class_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "direction",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_fallback_asset": {
+          "doc": "X.set_chooser_fallback_asset(chooser_table_path, asset_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "asset_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_row_disabled": {
+          "doc": "X.set_chooser_row_disabled(chooser_table_path, row_index, disabled) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "disabled",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_row_result_asset": {
+          "doc": "X.set_chooser_row_result_asset(chooser_table_path, row_index, asset_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "asset_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_row_result_class": {
+          "doc": "X.set_chooser_row_result_class(chooser_table_path, row_index, class_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "class_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_chooser_row_result_evaluate_chooser": {
+          "doc": "X.set_chooser_row_result_evaluate_chooser(chooser_table_path, row_index, sub_chooser_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "chooser_table_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "row_index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "sub_chooser_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
         }
       }
     },
@@ -14434,6 +15121,418 @@
         }
       }
     },
+    "UnrealBridgePoseSearchLibrary": {
+      "functions": {
+        "add_animation_to_database": {
+          "doc": "X.add_animation_to_database(database_path, animation_asset_path, sampling_range_min, sampling_range_max, mirror_option, enabled) -> BridgePSDAddResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "animation_asset_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "sampling_range_min",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "sampling_range_max",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "mirror_option",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "enabled",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePSDAddResult"
+        },
+        "add_blend_space_to_database": {
+          "doc": "X.add_blend_space_to_database(database_path, blend_space_path, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y, sampling_range_min, sampling_range_max, mirror_option, enabled) -> BridgePSDAddResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blend_space_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "h_samples",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "v_samples",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "use_grid_for_sampling",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "use_single_sample",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blend_param_x",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blend_param_y",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "sampling_range_min",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "sampling_range_max",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "mirror_option",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "enabled",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePSDAddResult"
+        },
+        "clear_database_animations": {
+          "doc": "X.clear_database_animations(database_path) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "find_databases_using_animation": {
+          "doc": "X.find_databases_using_animation(animation_asset_path) -> Array[str]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "animation_asset_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[str]"
+        },
+        "get_database_info": {
+          "doc": "X.get_database_info(database_path) -> BridgePSDInfo",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePSDInfo"
+        },
+        "get_index_status": {
+          "doc": "X.get_index_status(database_path) -> str",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            }
+          ],
+          "returns": "str"
+        },
+        "get_schema_info": {
+          "doc": "X.get_schema_info(schema_path) -> BridgePSSInfo",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "schema_path",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePSSInfo"
+        },
+        "invalidate_index": {
+          "doc": "X.invalidate_index(database_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "is_index_ready": {
+          "doc": "X.is_index_ready(database_path) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "list_database_animations": {
+          "doc": "X.list_database_animations(database_path) -> Array[BridgePSDAnimEntry]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgePSDAnimEntry]"
+        },
+        "list_schema_channels": {
+          "doc": "X.list_schema_channels(schema_path) -> Array[BridgePSSChannel]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "schema_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgePSSChannel]"
+        },
+        "remove_database_animation_at": {
+          "doc": "X.remove_database_animation_at(database_path, index) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "index",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "remove_database_animation_by_asset": {
+          "doc": "X.remove_database_animation_by_asset(database_path, animation_asset_path) -> int32",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "animation_asset_path",
+              "type": ""
+            }
+          ],
+          "returns": "int32"
+        },
+        "request_async_build_index": {
+          "doc": "X.request_async_build_index(database_path) -> str",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            }
+          ],
+          "returns": "str"
+        },
+        "set_database_animation_enabled": {
+          "doc": "X.set_database_animation_enabled(database_path, index, enabled) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "enabled",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_database_animation_mirror_option": {
+          "doc": "X.set_database_animation_mirror_option(database_path, index, mirror_option) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "mirror_option",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_database_animation_sampling_range": {
+          "doc": "X.set_database_animation_sampling_range(database_path, index, sampling_range_min, sampling_range_max) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "sampling_range_min",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "sampling_range_max",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "set_database_blend_space_sampling": {
+          "doc": "X.set_database_blend_space_sampling(database_path, index, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "database_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "index",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "h_samples",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "v_samples",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "use_grid_for_sampling",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "use_single_sample",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blend_param_x",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blend_param_y",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        }
+      }
+    },
     "UnrealBridgeReactiveLibrary": {
       "functions": {
         "clear_all": {
@@ -15333,7 +16432,7 @@
       }
     }
   },
-  "project_path": "G:/UEProjects/GameplayLocomotion/GameplayLocomotion.uproject",
+  "project_path": "G:/UEProjects/Epic/GameAnimationSample_57/GameAnimationSample_57.uproject",
   "structs": {
     "BridgeAbilityCooldownInfo": [
       "ability_class_name",
@@ -15436,6 +16535,7 @@
     "BridgeAnimGraphNodeInfo": [
       "connections",
       "detail",
+      "node_guid",
       "node_index",
       "node_title",
       "node_type"
@@ -15620,6 +16720,37 @@
       "graph_name",
       "node_guid",
       "node_title"
+    ],
+    "BridgeCHTColumn": [
+      "binding_path",
+      "disabled",
+      "display_name",
+      "is_output",
+      "kind"
+    ],
+    "BridgeCHTEvaluation": [
+      "matched_row",
+      "result_kind",
+      "result_path",
+      "succeeded",
+      "used_fallback"
+    ],
+    "BridgeCHTInfo": [
+      "column_count",
+      "fallback",
+      "has_fallback",
+      "nested_chooser_count",
+      "output_class_path",
+      "result_type",
+      "row_count"
+    ],
+    "BridgeCHTRow": [
+      "disabled",
+      "result"
+    ],
+    "BridgeCHTRowResult": [
+      "kind",
+      "result_path"
     ],
     "BridgeCallEdge": [
       "target_class",
@@ -16306,6 +17437,66 @@
       "class_name",
       "is_dirty",
       "path"
+    ],
+    "BridgePSDAddResult": [
+      "error",
+      "index"
+    ],
+    "BridgePSDAnimEntry": [
+      "asset_path",
+      "blend_space_horizontal_samples",
+      "blend_space_param_x",
+      "blend_space_param_y",
+      "blend_space_use_grid_for_sampling",
+      "blend_space_use_single_sample",
+      "blend_space_vertical_samples",
+      "disable_reselection",
+      "enabled",
+      "kind",
+      "mirror_option",
+      "sampling_range_max",
+      "sampling_range_min"
+    ],
+    "BridgePSDInfo": [
+      "base_cost_bias",
+      "continuing_pose_cost_bias",
+      "entry_count",
+      "index_status",
+      "indexed_memory_bytes",
+      "indexed_pose_count",
+      "kd_tree_query_num_neighbors",
+      "looping_cost_bias",
+      "normalization_set_path",
+      "number_of_principal_components",
+      "pose_search_mode",
+      "schema_path",
+      "tags"
+    ],
+    "BridgePSSChannel": [
+      "bone_name",
+      "kind",
+      "sample_time_offset",
+      "sub_channel_count",
+      "weight"
+    ],
+    "BridgePSSInfo": [
+      "add_data_padding",
+      "channel_count",
+      "data_preprocessor",
+      "finalized_channel_count",
+      "inject_additional_debug_channels",
+      "number_of_permutations",
+      "permutations_sample_rate",
+      "permutations_time_offset",
+      "sample_rate",
+      "schema_cardinality",
+      "skeletons",
+      "total_channel_weight"
+    ],
+    "BridgePSSSkeleton": [
+      "mirror_data_table_path",
+      "role",
+      "skeleton_path"
     ],
     "BridgePerfSnapshot": [
       "capture_time_utc",

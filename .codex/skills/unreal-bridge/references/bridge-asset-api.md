@@ -2,6 +2,30 @@
 
 Module: `unreal.UnrealBridgeAssetLibrary`
 
+> **Reading the path string out of a `SoftObjectPath` return.** Most search / list / lookup calls below return `list[SoftObjectPath]` (or pairs of them). `SoftObjectPath` is a UE struct, **not a string**. Stringifying it directly does NOT work:
+>
+> ```python
+> paths, _ = unreal.UnrealBridgeAssetLibrary.search_assets_in_all_content('Hero', 20)
+> str(paths[0])           # ❌ "<Struct 'SoftObjectPath' (0x000001...) {}>"  — useless
+> paths[0].asset_path_name  # ❌ AttributeError — UPROPERTY fields are NOT direct attrs
+> ```
+>
+> Use one of these instead:
+>
+> ```python
+> paths[0].export_text()                       # ✓ "/Game/Heroes/BP_Hero.BP_Hero"  — full object path
+> paths[0].to_tuple()[0]                       # ✓ same string, via tuple form
+> paths[0].get_editor_property('asset_path_string')  # ✓ goes through the USTRUCT field
+> paths[0].get_editor_property('package_name')       # ✓ "/Game/Heroes/BP_Hero"  (no '.AssetName')
+>
+> # Common patterns:
+> obj_path  = paths[0].export_text()              # "/Game/Heroes/BP_Hero.BP_Hero"
+> pkg_path  = obj_path.split('.')[0]              # "/Game/Heroes/BP_Hero"  (for fixup_redirectors etc.)
+> asset_nm  = obj_path.rsplit('/', 1)[-1].split('.')[0]   # "BP_Hero"
+> ```
+>
+> Preflight will warn on direct attribute lookups (`paths[0].asset_path_name`, `paths[0].to_string()`, etc.) and tell you to use `export_text()` — trust the warning. The same rule applies to every `list[SoftObjectPath]` return below.
+
 ## Asset Search
 
 ### search_assets_in_all_content(query, max_results) -> (list[SoftObjectPath], list[str])
@@ -13,7 +37,7 @@ Query syntax: `"hero !enemy"` = must contain "hero", must NOT contain "enemy". `
 ```python
 paths, tokens = unreal.UnrealBridgeAssetLibrary.search_assets_in_all_content('Interaction', 20)
 for p in paths:
-    print(str(p))
+    print(p.export_text())   # NOT str(p) — SoftObjectPath stringifies as garbage; see top of file.
 ```
 
 ### search_assets(query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path) -> (list[SoftObjectPath], list[str])
@@ -299,7 +323,7 @@ print(f'{len(redirectors)} redirectors to fix up')
 pkg_paths = [r.export_text().split('.')[0] for r in redirectors]
 ```
 
-> Note on `SoftObjectPath`: `str(p)` returns `"<Struct 'SoftObjectPath' ... {}>"` in UE 5.7. Use `p.export_text()` to get the `"/Game/Foo/Bar.Bar"` object path; strip on `'.'` for the package path.
+> Note: see the top-of-file block on `SoftObjectPath` if `r.export_text()` looks unfamiliar — `str(r)` does not work.
 
 ---
 

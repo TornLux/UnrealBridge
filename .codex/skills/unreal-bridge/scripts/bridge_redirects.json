@@ -63,6 +63,34 @@
       "raw_pattern": "unreal.GameplayStatics.get_all_actors_with_tag",
       "bridge_replacement": "from unreal_bridge import Level\nactor_paths = Level.find_actors_by_tag(tag=...)",
       "reason": "Tag-based actor lookup; bridge returns paths."
+    },
+    {
+      "id": "editor_asset_library_list_assets",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.EditorAssetLibrary.list_assets",
+      "bridge_replacement": "from unreal_bridge import Asset\nAsset.list_assets_under_path(folder_path=..., include_subfolders=True)",
+      "reason": "Bridge wrapper has the same shape but is audited + token-cost-counted; raw call walks the registry without telemetry."
+    },
+    {
+      "id": "editor_asset_library_find_asset_data",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.EditorAssetLibrary.find_asset_data",
+      "bridge_replacement": "from unreal_bridge import Asset\npaths, _ = Asset.search_assets_in_all_content(query='<asset_short_name>', max_results=10)\n# OR if you have the full path already, just LoadObject — find_asset_data is rarely the right call",
+      "reason": "find_asset_data forces an exact path match; agents using it usually meant a name search. ALL_ASSETS scope catches plugin-mounted assets the registry-by-path approach would miss."
+    },
+    {
+      "id": "pose_search_database_animation_assets",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.PoseSearchDatabase.get_editor_property",
+      "bridge_replacement": "from unreal_bridge import PoseSearch\nentries = PoseSearch.list_database_animations(database_path=...)\n# DatabaseAnimationAssets is private: in UE 5.7 — get_editor_property('database_animation_assets') raises.",
+      "reason": "PoseSearchDatabase.DatabaseAnimationAssets is private:; only the bridge library can read it. Trying get_editor_property is the most common dead-end."
+    },
+    {
+      "id": "chooser_table_results_structs",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.ChooserTable.get_editor_property",
+      "bridge_replacement": "from unreal_bridge import Chooser\nrows = Chooser.list_chooser_rows(chooser_table_path=...)\n# ResultsStructs / DisabledRows / NestedChoosers / FallbackResult are private: — only the bridge library can read them.",
+      "reason": "ChooserTable's load-bearing arrays are private:; get_editor_property silently returns None and agents loop forever debugging it."
     }
   ]
 }
