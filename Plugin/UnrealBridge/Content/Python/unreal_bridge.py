@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-01T13:11:14+00:00'
+_GENERATED_AT = '2026-05-02T08:27:16+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -1254,6 +1254,155 @@ class Blueprint:
     def wrap_nodes_in_comment_box(*, blueprint_path, graph_name, node_guids, text):
         """X.wrap_nodes_in_comment_box(blueprint_path, graph_name, node_guids, text) -> str"""
         return unreal.UnrealBridgeBlueprintLibrary.wrap_nodes_in_comment_box(blueprint_path, graph_name, node_guids, text)
+
+
+class Chooser:
+    """Wraps unreal.UnrealBridgeChooserLibrary (kwargs-only)."""
+
+    @staticmethod
+    def add_chooser_column_bool(*, chooser_table_path, binding_property_chain, context_index):
+        """X.add_chooser_column_bool(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_bool(chooser_table_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_column_by_struct_path(*, chooser_table_path, column_struct_path, binding_property_chain, context_index):
+        """X.add_chooser_column_by_struct_path(chooser_table_path, column_struct_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_by_struct_path(chooser_table_path, column_struct_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_column_enum(*, chooser_table_path, binding_property_chain, enum_path, context_index):
+        """X.add_chooser_column_enum(chooser_table_path, binding_property_chain, enum_path, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_enum(chooser_table_path, binding_property_chain, enum_path, context_index)
+
+    @staticmethod
+    def add_chooser_column_float_range(*, chooser_table_path, binding_property_chain, context_index):
+        """X.add_chooser_column_float_range(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_float_range(chooser_table_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_column_gameplay_tag(*, chooser_table_path, binding_property_chain, context_index):
+        """X.add_chooser_column_gameplay_tag(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_gameplay_tag(chooser_table_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_column_object(*, chooser_table_path, binding_property_chain, context_index):
+        """X.add_chooser_column_object(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_object(chooser_table_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_column_output_float(*, chooser_table_path, binding_property_chain, context_index):
+        """X.add_chooser_column_output_float(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_output_float(chooser_table_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_column_output_object(*, chooser_table_path, binding_property_chain, context_index):
+        """X.add_chooser_column_output_object(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_output_object(chooser_table_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_column_randomize(*, chooser_table_path, binding_property_chain, context_index):
+        """X.add_chooser_column_randomize(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_column_randomize(chooser_table_path, binding_property_chain, context_index)
+
+    @staticmethod
+    def add_chooser_row(*, chooser_table_path):
+        """X.add_chooser_row(chooser_table_path) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.add_chooser_row(chooser_table_path)
+
+    @staticmethod
+    def clear_chooser_fallback(*, chooser_table_path):
+        """X.clear_chooser_fallback(chooser_table_path) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.clear_chooser_fallback(chooser_table_path)
+
+    @staticmethod
+    def clear_chooser_row_result(*, chooser_table_path, row_index):
+        """X.clear_chooser_row_result(chooser_table_path, row_index) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.clear_chooser_row_result(chooser_table_path, row_index)
+
+    @staticmethod
+    def evaluate_chooser_with_context_object(*, chooser_table_path, context_object_path):
+        """X.evaluate_chooser_with_context_object(chooser_table_path, context_object_path) -> BridgeCHTEvaluation"""
+        return unreal.UnrealBridgeChooserLibrary.evaluate_chooser_with_context_object(chooser_table_path, context_object_path)
+
+    @staticmethod
+    def get_chooser_cell_raw(*, chooser_table_path, column_index, row_index):
+        """X.get_chooser_cell_raw(chooser_table_path, column_index, row_index) -> str"""
+        return unreal.UnrealBridgeChooserLibrary.get_chooser_cell_raw(chooser_table_path, column_index, row_index)
+
+    @staticmethod
+    def get_chooser_info(*, chooser_table_path):
+        """X.get_chooser_info(chooser_table_path) -> BridgeCHTInfo"""
+        return unreal.UnrealBridgeChooserLibrary.get_chooser_info(chooser_table_path)
+
+    @staticmethod
+    def get_chooser_row_result(*, chooser_table_path, row_index):
+        """X.get_chooser_row_result(chooser_table_path, row_index) -> BridgeCHTRowResult"""
+        return unreal.UnrealBridgeChooserLibrary.get_chooser_row_result(chooser_table_path, row_index)
+
+    @staticmethod
+    def insert_chooser_row(*, chooser_table_path, before_row):
+        """X.insert_chooser_row(chooser_table_path, before_row) -> int32"""
+        return unreal.UnrealBridgeChooserLibrary.insert_chooser_row(chooser_table_path, before_row)
+
+    @staticmethod
+    def list_chooser_columns(*, chooser_table_path):
+        """X.list_chooser_columns(chooser_table_path) -> Array[BridgeCHTColumn]"""
+        return unreal.UnrealBridgeChooserLibrary.list_chooser_columns(chooser_table_path)
+
+    @staticmethod
+    def list_chooser_rows(*, chooser_table_path):
+        """X.list_chooser_rows(chooser_table_path) -> Array[BridgeCHTRow]"""
+        return unreal.UnrealBridgeChooserLibrary.list_chooser_rows(chooser_table_path)
+
+    @staticmethod
+    def list_possible_results(*, chooser_table_path):
+        """X.list_possible_results(chooser_table_path) -> Array[BridgeCHTRowResult]"""
+        return unreal.UnrealBridgeChooserLibrary.list_possible_results(chooser_table_path)
+
+    @staticmethod
+    def remove_chooser_column(*, chooser_table_path, column_index):
+        """X.remove_chooser_column(chooser_table_path, column_index) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.remove_chooser_column(chooser_table_path, column_index)
+
+    @staticmethod
+    def remove_chooser_row(*, chooser_table_path, row_index):
+        """X.remove_chooser_row(chooser_table_path, row_index) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.remove_chooser_row(chooser_table_path, row_index)
+
+    @staticmethod
+    def set_chooser_cell_raw(*, chooser_table_path, column_index, row_index, t3d_value):
+        """X.set_chooser_cell_raw(chooser_table_path, column_index, row_index, t3d_value) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_cell_raw(chooser_table_path, column_index, row_index, t3d_value)
+
+    @staticmethod
+    def set_chooser_column_disabled(*, chooser_table_path, column_index, disabled):
+        """X.set_chooser_column_disabled(chooser_table_path, column_index, disabled) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_column_disabled(chooser_table_path, column_index, disabled)
+
+    @staticmethod
+    def set_chooser_fallback_asset(*, chooser_table_path, asset_path):
+        """X.set_chooser_fallback_asset(chooser_table_path, asset_path) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_fallback_asset(chooser_table_path, asset_path)
+
+    @staticmethod
+    def set_chooser_row_disabled(*, chooser_table_path, row_index, disabled):
+        """X.set_chooser_row_disabled(chooser_table_path, row_index, disabled) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_row_disabled(chooser_table_path, row_index, disabled)
+
+    @staticmethod
+    def set_chooser_row_result_asset(*, chooser_table_path, row_index, asset_path):
+        """X.set_chooser_row_result_asset(chooser_table_path, row_index, asset_path) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_row_result_asset(chooser_table_path, row_index, asset_path)
+
+    @staticmethod
+    def set_chooser_row_result_class(*, chooser_table_path, row_index, class_path):
+        """X.set_chooser_row_result_class(chooser_table_path, row_index, class_path) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_row_result_class(chooser_table_path, row_index, class_path)
+
+    @staticmethod
+    def set_chooser_row_result_evaluate_chooser(*, chooser_table_path, row_index, sub_chooser_path):
+        """X.set_chooser_row_result_evaluate_chooser(chooser_table_path, row_index, sub_chooser_path) -> bool"""
+        return unreal.UnrealBridgeChooserLibrary.set_chooser_row_result_evaluate_chooser(chooser_table_path, row_index, sub_chooser_path)
 
 
 class Curve:
@@ -3940,6 +4089,100 @@ class Perf:
     def get_u_object_stats(*, top_n=20):
         """X.get_u_object_stats(top_n=20) -> BridgeUObjectStats"""
         return unreal.UnrealBridgePerfLibrary.get_u_object_stats(top_n)
+
+
+class PoseSearch:
+    """Wraps unreal.UnrealBridgePoseSearchLibrary (kwargs-only)."""
+
+    @staticmethod
+    def add_animation_to_database(*, database_path, animation_asset_path, sampling_range_min, sampling_range_max, mirror_option, enabled):
+        """X.add_animation_to_database(database_path, animation_asset_path, sampling_range_min, sampling_range_max, mirror_option, enabled) -> int32"""
+        return unreal.UnrealBridgePoseSearchLibrary.add_animation_to_database(database_path, animation_asset_path, sampling_range_min, sampling_range_max, mirror_option, enabled)
+
+    @staticmethod
+    def add_blend_space_to_database(*, database_path, blend_space_path, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y, sampling_range_min, sampling_range_max, mirror_option, enabled):
+        """X.add_blend_space_to_database(database_path, blend_space_path, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y, sampling_range_min, sampling_range_max, mirror_option, enabled) -> int32"""
+        return unreal.UnrealBridgePoseSearchLibrary.add_blend_space_to_database(database_path, blend_space_path, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y, sampling_range_min, sampling_range_max, mirror_option, enabled)
+
+    @staticmethod
+    def clear_database_animations(*, database_path):
+        """X.clear_database_animations(database_path) -> int32"""
+        return unreal.UnrealBridgePoseSearchLibrary.clear_database_animations(database_path)
+
+    @staticmethod
+    def find_databases_using_animation(*, animation_asset_path):
+        """X.find_databases_using_animation(animation_asset_path) -> Array[str]"""
+        return unreal.UnrealBridgePoseSearchLibrary.find_databases_using_animation(animation_asset_path)
+
+    @staticmethod
+    def get_database_info(*, database_path):
+        """X.get_database_info(database_path) -> BridgePSDInfo"""
+        return unreal.UnrealBridgePoseSearchLibrary.get_database_info(database_path)
+
+    @staticmethod
+    def get_index_status(*, database_path):
+        """X.get_index_status(database_path) -> str"""
+        return unreal.UnrealBridgePoseSearchLibrary.get_index_status(database_path)
+
+    @staticmethod
+    def get_schema_info(*, schema_path):
+        """X.get_schema_info(schema_path) -> BridgePSSInfo"""
+        return unreal.UnrealBridgePoseSearchLibrary.get_schema_info(schema_path)
+
+    @staticmethod
+    def invalidate_index(*, database_path):
+        """X.invalidate_index(database_path) -> bool"""
+        return unreal.UnrealBridgePoseSearchLibrary.invalidate_index(database_path)
+
+    @staticmethod
+    def is_index_ready(*, database_path):
+        """X.is_index_ready(database_path) -> bool"""
+        return unreal.UnrealBridgePoseSearchLibrary.is_index_ready(database_path)
+
+    @staticmethod
+    def list_database_animations(*, database_path):
+        """X.list_database_animations(database_path) -> Array[BridgePSDAnimEntry]"""
+        return unreal.UnrealBridgePoseSearchLibrary.list_database_animations(database_path)
+
+    @staticmethod
+    def list_schema_channels(*, schema_path):
+        """X.list_schema_channels(schema_path) -> Array[BridgePSSChannel]"""
+        return unreal.UnrealBridgePoseSearchLibrary.list_schema_channels(schema_path)
+
+    @staticmethod
+    def remove_database_animation_at(*, database_path, index):
+        """X.remove_database_animation_at(database_path, index) -> bool"""
+        return unreal.UnrealBridgePoseSearchLibrary.remove_database_animation_at(database_path, index)
+
+    @staticmethod
+    def remove_database_animation_by_asset(*, database_path, animation_asset_path):
+        """X.remove_database_animation_by_asset(database_path, animation_asset_path) -> int32"""
+        return unreal.UnrealBridgePoseSearchLibrary.remove_database_animation_by_asset(database_path, animation_asset_path)
+
+    @staticmethod
+    def request_async_build_index(*, database_path):
+        """X.request_async_build_index(database_path) -> str"""
+        return unreal.UnrealBridgePoseSearchLibrary.request_async_build_index(database_path)
+
+    @staticmethod
+    def set_database_animation_enabled(*, database_path, index, enabled):
+        """X.set_database_animation_enabled(database_path, index, enabled) -> bool"""
+        return unreal.UnrealBridgePoseSearchLibrary.set_database_animation_enabled(database_path, index, enabled)
+
+    @staticmethod
+    def set_database_animation_mirror_option(*, database_path, index, mirror_option):
+        """X.set_database_animation_mirror_option(database_path, index, mirror_option) -> bool"""
+        return unreal.UnrealBridgePoseSearchLibrary.set_database_animation_mirror_option(database_path, index, mirror_option)
+
+    @staticmethod
+    def set_database_animation_sampling_range(*, database_path, index, sampling_range_min, sampling_range_max):
+        """X.set_database_animation_sampling_range(database_path, index, sampling_range_min, sampling_range_max) -> bool"""
+        return unreal.UnrealBridgePoseSearchLibrary.set_database_animation_sampling_range(database_path, index, sampling_range_min, sampling_range_max)
+
+    @staticmethod
+    def set_database_blend_space_sampling(*, database_path, index, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y):
+        """X.set_database_blend_space_sampling(database_path, index, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y) -> bool"""
+        return unreal.UnrealBridgePoseSearchLibrary.set_database_blend_space_sampling(database_path, index, h_samples, v_samples, use_grid_for_sampling, use_single_sample, blend_param_x, blend_param_y)
 
 
 class Reactive:

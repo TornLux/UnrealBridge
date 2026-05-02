@@ -638,6 +638,94 @@ def cmd_wait_compile(args):
     return 1
 
 
+def cmd_wait_pose_index(args):
+    """Poll the editor for PoseSearchDatabase index readiness.
+
+    Each poll calls UnrealBridgePoseSearchLibrary.is_index_ready, which
+    short-circuits to a `ContinueRequest` against the async cache —
+    cheap, no rebuild kicked. Mirrors `wait-compile`: GT released between
+    polls so the async indexer can finish on its own ticks.
+
+    Exit codes:
+      0  index ready
+      1  timeout
+      2  database not loadable
+      3  bridge / transport error
+    """
+    import time as _time
+
+    deadline = _time.time() + args.wait_timeout
+    poll = max(0.1, float(args.poll_interval))
+    code = (
+        "import unreal, json\n"
+        f"status = unreal.UnrealBridgePoseSearchLibrary.get_index_status('{args.database_path}')\n"
+        "print(json.dumps({'status': str(status)}))\n"
+    )
+
+    host, port, token, _project_path = resolve_target(args)
+    last = None
+    while _time.time() < deadline:
+        payload = {"id": str(uuid.uuid4()), "script": code, "timeout": 5}
+        try:
+            resp = send_request(host, port, payload, 10.0, token=token)
+        except Exception as e:
+            if args.json:
+                print(json.dumps({"success": False, "error": f"transport: {e}"}))
+            else:
+                print(f"ERROR: {e}", file=sys.stderr)
+            return 3
+
+        if not resp.get("success"):
+            err = resp.get("error") or "unknown"
+            if args.json:
+                print(json.dumps({"success": False, "error": err}))
+            else:
+                print(f"ERROR: {err}", file=sys.stderr)
+            return 3
+
+        line = (resp.get("output") or "").strip().splitlines()[-1] if resp.get("output") else ""
+        try:
+            last = json.loads(line)
+        except Exception:
+            if args.json:
+                print(json.dumps({"success": False, "error": f"bad status payload: {line!r}"}))
+            else:
+                print(f"ERROR: bad payload: {line!r}", file=sys.stderr)
+            return 3
+
+        st = last.get("status", "Error")
+        if st == "Error":
+            if args.json:
+                print(json.dumps({"success": False, "status": last}))
+            else:
+                print(f"database lookup failed: {args.database_path}", file=sys.stderr)
+            return 2
+
+        if st == "Indexed":
+            if args.json:
+                print(json.dumps({"success": True, "status": last}))
+            else:
+                print(f"ready ({args.database_path})")
+            return 0
+
+        if st == "Failed":
+            if args.json:
+                print(json.dumps({"success": False, "status": last, "error": "index build failed"}))
+            else:
+                print(f"FAILED: index build failed for {args.database_path}", file=sys.stderr)
+            return 2
+
+        # NotIndexed / Indexing → keep polling.
+        _time.sleep(poll)
+
+    if args.json:
+        print(json.dumps({"success": False, "error": "timeout", "status": last}))
+    else:
+        st = (last or {}).get("status", "?")
+        print(f"TIMEOUT after {args.wait_timeout}s  (last status={st})", file=sys.stderr)
+    return 1
+
+
 def cmd_exec(args):
     # Three input modes: positional code arg, --stdin flag, or `-` shorthand.
     use_stdin = args.stdin or args.code == "-"
@@ -984,6 +1072,18 @@ def main():
     wc_parser.add_argument("--quality", default="",
         help='Quality level: "Low" / "Medium" / "High" / "Epic". Empty → "High".')
 
+    wpi_parser = subparsers.add_parser(
+        "wait-pose-index",
+        help="Poll until a PoseSearchDatabase's async index build finishes "
+             "(client-side; GT releases between polls)",
+    )
+    wpi_parser.add_argument("database_path",
+        help="PoseSearchDatabase asset path, e.g. /Game/.../PSD_Sparse_Stand_Walk_Loops")
+    wpi_parser.add_argument("--wait-timeout", type=float, default=300.0,
+        help="Max total seconds to poll before giving up (default: 300)")
+    wpi_parser.add_argument("--poll-interval", type=float, default=1.0,
+        help="Seconds between polls (default: 1.0)")
+
     args = parser.parse_args()
 
     if args.command == "ping":
@@ -998,6 +1098,8 @@ def main():
         sys.exit(cmd_gt_ping(args))
     elif args.command == "wait-compile":
         sys.exit(cmd_wait_compile(args))
+    elif args.command == "wait-pose-index":
+        sys.exit(cmd_wait_pose_index(args))
     elif args.command == "list-editors":
         sys.exit(cmd_list_editors(args))
     elif args.command == "preflight":
