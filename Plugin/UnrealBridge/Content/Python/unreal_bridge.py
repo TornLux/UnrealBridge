@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-05-02T14:01:59+00:00'
+_GENERATED_AT = '2026-05-02T14:41:58+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -159,7 +159,7 @@ class Anim:
 
     @staticmethod
     def get_anim_node_details(*, anim_blueprint_path, node_index):
-        """X.get_anim_node_details(anim_blueprint_path, node_index) -> Array[str]"""
+        """X.get_anim_node_details(anim_blueprint_path, node_index) -> Array[str]  Index-based addressing is fragile + top-level AnimGraph only. For state-machine interiors / transition rules / sub-graphs, use get_anim_node_details_by_guid(abp_path, graph_name, node_guid)."""
         return unreal.UnrealBridgeAnimLibrary.get_anim_node_details(anim_blueprint_path, node_index)
 
     @staticmethod
@@ -358,7 +358,7 @@ class Asset:
 
     @staticmethod
     def find_redirectors_under_path(*, folder_path, recursive):
-        """X.find_redirectors_under_path(folder_path, recursive) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.find_redirectors_under_path(folder_path, recursive) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.find_redirectors_under_path(folder_path, recursive)
 
     @staticmethod
@@ -388,7 +388,7 @@ class Asset:
 
     @staticmethod
     def get_asset_references(*, asset_path):
-        """X.get_asset_references(asset_path) -> (out_dependencies=Array[SoftObjectPath], out_referencers=Array[SoftObjectPath])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.get_asset_references(asset_path) -> (out_dependencies=Array[SoftObjectPath], out_referencers=Array[SoftObjectPath])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.get_asset_references(asset_path)
 
     @staticmethod
@@ -403,22 +403,22 @@ class Asset:
 
     @staticmethod
     def get_assets_by_class(*, class_path, search_sub_classes):
-        """X.get_assets_by_class(class_path, search_sub_classes) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.get_assets_by_class(class_path, search_sub_classes) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_by_class(class_path, search_sub_classes)
 
     @staticmethod
     def get_assets_by_package_paths(*, folder_paths, class_filter, recursive):
-        """X.get_assets_by_package_paths(folder_paths, class_filter, recursive) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.get_assets_by_package_paths(folder_paths, class_filter, recursive) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_by_package_paths(folder_paths, class_filter, recursive)
 
     @staticmethod
     def get_assets_by_tag_value(*, tag_name, tag_value, optional_class_path):
-        """X.get_assets_by_tag_value(tag_name, tag_value, optional_class_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.get_assets_by_tag_value(tag_name, tag_value, optional_class_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_by_tag_value(tag_name, tag_value, optional_class_path)
 
     @staticmethod
     def get_assets_of_classes(*, class_paths, search_sub_classes):
-        """X.get_assets_of_classes(class_paths, search_sub_classes) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.get_assets_of_classes(class_paths, search_sub_classes) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.get_assets_of_classes(class_paths, search_sub_classes)
 
     @staticmethod
@@ -428,12 +428,12 @@ class Asset:
 
     @staticmethod
     def get_data_asset_soft_paths_by_asset_path(*, data_asset_path):
-        """X.get_data_asset_soft_paths_by_asset_path(data_asset_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.get_data_asset_soft_paths_by_asset_path(data_asset_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.get_data_asset_soft_paths_by_asset_path(data_asset_path)
 
     @staticmethod
     def get_data_asset_soft_paths_by_base_class(*, base_data_asset_class):
-        """X.get_data_asset_soft_paths_by_base_class(base_data_asset_class) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.get_data_asset_soft_paths_by_base_class(base_data_asset_class) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.get_data_asset_soft_paths_by_base_class(base_data_asset_class)
 
     @staticmethod
@@ -508,12 +508,12 @@ class Asset:
 
     @staticmethod
     def list_assets_under_path(*, folder_path, include_subfolders):
-        """X.list_assets_under_path(folder_path, include_subfolders) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.list_assets_under_path(folder_path, include_subfolders) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.list_assets_under_path(folder_path, include_subfolders)
 
     @staticmethod
     def list_assets_under_path_simple(*, content_folder_path):
-        """X.list_assets_under_path_simple(content_folder_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.list_assets_under_path_simple(content_folder_path) -> Array[SoftObjectPath]  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.list_assets_under_path_simple(content_folder_path)
 
     @staticmethod
@@ -523,17 +523,17 @@ class Asset:
 
     @staticmethod
     def search_assets(*, query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path):
-        """X.search_assets(query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.search_assets(query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.search_assets(query, scope, class_filter, case_sensitive, whole_word, max_results, min_characters, custom_package_path)
 
     @staticmethod
     def search_assets_in_all_content(*, query, max_results):
-        """X.search_assets_in_all_content(query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.search_assets_in_all_content(query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.search_assets_in_all_content(query, max_results)
 
     @staticmethod
     def search_assets_under_path(*, content_folder_path, query, max_results):
-        """X.search_assets_under_path(content_folder_path, query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() to get the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md for idioms."""
+        """X.search_assets_under_path(content_folder_path, query, max_results) -> (out_soft_paths=Array[SoftObjectPath], out_include_tokens_for_highlight=Array[str])  Note: SoftObjectPath does NOT stringify usefully — call .export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). See bridge-asset-api.md."""
         return unreal.UnrealBridgeAssetLibrary.search_assets_under_path(content_folder_path, query, max_results)
 
 
@@ -1266,47 +1266,47 @@ class Chooser:
 
     @staticmethod
     def add_chooser_column_bool(*, chooser_table_path, binding_property_chain, context_index):
-        """X.add_chooser_column_bool(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_bool(chooser_table_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_bool(chooser_table_path, binding_property_chain, context_index)
 
     @staticmethod
     def add_chooser_column_by_struct_path(*, chooser_table_path, column_struct_path, binding_property_chain, context_index):
-        """X.add_chooser_column_by_struct_path(chooser_table_path, column_struct_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_by_struct_path(chooser_table_path, column_struct_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_by_struct_path(chooser_table_path, column_struct_path, binding_property_chain, context_index)
 
     @staticmethod
     def add_chooser_column_enum(*, chooser_table_path, binding_property_chain, enum_path, context_index):
-        """X.add_chooser_column_enum(chooser_table_path, binding_property_chain, enum_path, context_index) -> int32"""
+        """X.add_chooser_column_enum(chooser_table_path, binding_property_chain, enum_path, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_enum(chooser_table_path, binding_property_chain, enum_path, context_index)
 
     @staticmethod
     def add_chooser_column_float_range(*, chooser_table_path, binding_property_chain, context_index):
-        """X.add_chooser_column_float_range(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_float_range(chooser_table_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_float_range(chooser_table_path, binding_property_chain, context_index)
 
     @staticmethod
     def add_chooser_column_gameplay_tag(*, chooser_table_path, binding_property_chain, context_index):
-        """X.add_chooser_column_gameplay_tag(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_gameplay_tag(chooser_table_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_gameplay_tag(chooser_table_path, binding_property_chain, context_index)
 
     @staticmethod
     def add_chooser_column_object(*, chooser_table_path, binding_property_chain, context_index):
-        """X.add_chooser_column_object(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_object(chooser_table_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_object(chooser_table_path, binding_property_chain, context_index)
 
     @staticmethod
     def add_chooser_column_output_float(*, chooser_table_path, binding_property_chain, context_index):
-        """X.add_chooser_column_output_float(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_output_float(chooser_table_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_output_float(chooser_table_path, binding_property_chain, context_index)
 
     @staticmethod
     def add_chooser_column_output_object(*, chooser_table_path, binding_property_chain, context_index):
-        """X.add_chooser_column_output_object(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_output_object(chooser_table_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_output_object(chooser_table_path, binding_property_chain, context_index)
 
     @staticmethod
     def add_chooser_column_randomize(*, chooser_table_path, binding_property_chain, context_index):
-        """X.add_chooser_column_randomize(chooser_table_path, binding_property_chain, context_index) -> int32"""
+        """X.add_chooser_column_randomize(chooser_table_path, binding_property_chain, context_index) -> int32  If this is a freshly-created chooser (empty ContextData), call set_chooser_context_object_class FIRST — otherwise the editor binding widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md step 0."""
         return unreal.UnrealBridgeChooserLibrary.add_chooser_column_randomize(chooser_table_path, binding_property_chain, context_index)
 
     @staticmethod
@@ -1386,7 +1386,7 @@ class Chooser:
 
     @staticmethod
     def set_chooser_cell_raw(*, chooser_table_path, column_index, row_index, t3d_value):
-        """X.set_chooser_cell_raw(chooser_table_path, column_index, row_index, t3d_value) -> bool"""
+        """X.set_chooser_cell_raw(chooser_table_path, column_index, row_index, t3d_value) -> bool  Trap: BoolColumn cells use bare enum text ('MatchTrue'/'MatchFalse'/'MatchAny'), NOT a struct like '(Value=True)'. EnumColumn cells need explicit '(Comparison=MatchAny)' for wildcards — default '()' compares against int 0. See bridge-chooser-api.md cell-format table."""
         return unreal.UnrealBridgeChooserLibrary.set_chooser_cell_raw(chooser_table_path, column_index, row_index, t3d_value)
 
     @staticmethod

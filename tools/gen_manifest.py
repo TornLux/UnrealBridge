@@ -531,15 +531,44 @@ def _generate_wrapper(manifest: dict) -> "tuple[str, dict]":
                 call_parts.append(pname)
 
             doc = (fn.get("doc") or "").replace('"""', "'''")
-            # Auto-append the SoftObjectPath stringify hint to any function whose
-            # return type mentions SoftObjectPath. The struct stringifies as
-            # "<Struct 'SoftObjectPath' ... {}>" which is useless to agents —
-            # this hint is the single most common UX papercut on Asset reads.
+            # Auto-append known traps to wrapper docstrings. References go
+            # under-read — these hints are the load-bearing channel: agents
+            # see them via inspect.signature, IDE auto-complete, and direct
+            # wrapper-module Read. Keep each hint terse (<200 chars) so the
+            # signature line stays scannable.
             returns = fn.get("returns") or ""
+            extra_notes = []
+
+            # Return-type traps:
             if "SoftObjectPath" in returns:
-                doc = (doc.rstrip() + "  Note: SoftObjectPath does NOT stringify usefully — "
-                       "call .export_text() to get the '/Game/Foo.Foo' path "
-                       "(or .to_tuple()[0]). See bridge-asset-api.md for idioms.")
+                extra_notes.append(
+                    "Note: SoftObjectPath does NOT stringify usefully — call "
+                    ".export_text() for the '/Game/Foo.Foo' path (or .to_tuple()[0]). "
+                    "See bridge-asset-api.md.")
+
+            # Function-name traps (matched by lib + name; a single bridge-X
+            # function shouldn't have more than one trap so this stays linear):
+            qualname = f"{lib_name}.{fn_name}"
+            if qualname == "UnrealBridgeChooserLibrary.set_chooser_cell_raw":
+                extra_notes.append(
+                    "Trap: BoolColumn cells use bare enum text ('MatchTrue'/'MatchFalse'/"
+                    "'MatchAny'), NOT a struct like '(Value=True)'. EnumColumn cells need "
+                    "explicit '(Comparison=MatchAny)' for wildcards — default '()' compares "
+                    "against int 0. See bridge-chooser-api.md cell-format table.")
+            elif fn_name.startswith("add_chooser_column"):
+                extra_notes.append(
+                    "If this is a freshly-created chooser (empty ContextData), call "
+                    "set_chooser_context_object_class FIRST — otherwise the editor binding "
+                    "widget shows 'NoPropertyBound' on every column. See bridge-chooser-api.md "
+                    "step 0.")
+            elif qualname == "UnrealBridgeAnimLibrary.get_anim_node_details":
+                extra_notes.append(
+                    "Index-based addressing is fragile + top-level AnimGraph only. For "
+                    "state-machine interiors / transition rules / sub-graphs, use "
+                    "get_anim_node_details_by_guid(abp_path, graph_name, node_guid).")
+
+            if extra_notes:
+                doc = doc.rstrip() + "  " + " ".join(extra_notes)
 
             out.append("    @staticmethod")
             if params:
