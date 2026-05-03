@@ -14,6 +14,10 @@
   </p>
 </p>
 
+<p align="center">
+  <img src="docs/images/en/01-hook.png" alt="UNREAL ENGINE 5.4+ — FULL CONTROL for your AI Agent">
+</p>
+
 ---
 
 UnrealBridge is an Unreal Engine editor bridging layer built for AI Agents. It provides a typed operation surface for core scenarios such as animation-asset introspection, reactive event subscription, asset search and reference analysis, and automatic layout of Blueprint graphs. The Agent issues queries and modifications against a locally running editor instance; every change takes effect in real time, is bounded by the transaction system, and is undoable.
@@ -21,6 +25,11 @@ UnrealBridge is an Unreal Engine editor bridging layer built for AI Agents. It p
 ## Highlights
 
 - **AST-based hallucination defense.** Before any script reaches UE, `bridge_preflight.py` parses it as Python AST and validates every `unreal.UnrealBridge*Library.fn(...)` call against an auto-generated manifest (14 libraries × 805 UFUNCTIONs) — catching unknown function/library names (with did-you-mean), wrong positional arg counts, unknown kwargs, and non-existent bridge-enum members **without ever round-tripping to the editor**. A second layer redirects raw `AssetRegistry` / `GameplayStatics` usage patterns to their bridge equivalents and tracks each returned value's type so attribute access on a `str` or `SoftObjectPath` doesn't silently misbehave; on a real `AttributeError` from a UE object the bridge calls back into UE Python, lists that live class's reflected `UPROPERTY`s, and emits a paste-ready correction (auto-handles `snake_case` ↔ `PascalCase` mismatches). A third layer ships a kwargs-only Python wrapper module so positional-arg-order errors are structurally impossible. Together these dropped a fresh-context agent's bridge-call failure rate from **24% → 16%** across A/B validation runs — protection that prompt-only "look-up-before-call" rules in `SKILL.md` had failed to deliver.
+
+  <p align="center">
+    <img src="docs/images/en/02-preflight.png" alt="Local AST preflight — stop hallucinations before they reach UE">
+  </p>
+
 - **Deep asset-structure introspection + author-level write ops.** `UnrealBridgeAnimLibrary` covers full queries over AnimBP state machines, AnimGraph nodes, linked layers, slots, curves, Sequence / Montage / BlendSpace, and the skeleton tree — paired with a full suite of write ops: building an ABP from scratch, adding / removing states / transitions / condition rules, creating and wiring AnimGraph nodes, auto-layout of both the state machine and AnimGraph. `UnrealBridgeAssetLibrary` goes beyond keyword search with forward-dependency and reverse-reference analysis, surfacing a complete dependency view to the Agent. Compared with basic CRUD wrappers or schemes that require hand-assembled reflection calls, this level of structured capability is available out of the box.
 - **Reactive event subscription.** The Agent can subscribe to GAS events, attribute changes, actor lifecycle, AnimNotify, input, timers, and editor-side asset-change events. When the specified event fires, the bridge calls back proactively — no polling needed. This is a scenario that a pure request / response protocol cannot cover.
 - **Agent control surface at PIE runtime.** `UnrealBridgeGameplayLibrary` provides aggregated world observation, navigation pathfinding, and input operations for movement / look / jump — suitable for AI-behavior validation, automated testing, and in-game NPC prototyping.
@@ -223,3 +232,9 @@ UnrealBridge/
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+<p align="center">
+  <img src="docs/images/en/03-outro.png" alt="UnrealBridge — Turn the Unreal Editor into a programmable surface for AI Agents">
+</p>
