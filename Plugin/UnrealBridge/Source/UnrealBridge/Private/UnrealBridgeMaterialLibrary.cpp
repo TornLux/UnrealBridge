@@ -1,5 +1,9 @@
 #include "UnrealBridgeMaterialLibrary.h"
 
+#include "Misc/EngineVersionComparison.h"
+
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInterface.h"
@@ -5506,3 +5510,5 @@ FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::SetMaterialAttributeL
 	Out.FailedAtIndex = -1;
 	return Out;
 }
+
+#endif // !UE_VERSION_OLDER_THAN(5, 7, 0)

@@ -1,4 +1,5 @@
 #include "UnrealBridgeGameplayAbilityLibrary.h"
+#include "Misc/EngineVersionComparison.h"
 #include "UnrealBridgeTestAttributeSet.h"
 #include "Abilities/GameplayAbility.h"
 #include "Abilities/GameplayAbilityTypes.h"
@@ -343,7 +344,12 @@ FBridgeGameplayAbilityInfo UUnrealBridgeGameplayAbilityLibrary::GetGameplayAbili
 	Result.NetExecutionPolicy = StaticEnum<EGameplayAbilityNetExecutionPolicy::Type>()
 		->GetNameStringByValue(static_cast<int64>(CDO->GetNetExecutionPolicy()));
 
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 	BridgeGameplayAbilityImpl::TagContainerToStrings(CDO->GetAssetTags(), Result.AbilityTags);
+#else
+	// 5.4: GetAssetTags() not yet exposed; AbilityTags is the legacy field.
+	BridgeGameplayAbilityImpl::TagContainerToStrings(CDO->AbilityTags, Result.AbilityTags);
+#endif
 
 	if (CDO->GetCostGameplayEffect() && CDO->GetCostGameplayEffect()->GetClass())
 	{
@@ -539,7 +545,12 @@ TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAbilitiesByTag(
 		{
 			continue;
 		}
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 		const FGameplayTagContainer AssetTags = CDO->GetAssetTags();
+#else
+		// 5.4: legacy field.
+		const FGameplayTagContainer& AssetTags = CDO->AbilityTags;
+#endif
 		bool bMatches = false;
 		for (const FGameplayTag& T : AssetTags)
 		{
@@ -2433,6 +2444,7 @@ TArray<FString> UUnrealBridgeGameplayAbilityLibrary::ListAbilityTaskFactories(co
 	return Result;
 }
 
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 FString UUnrealBridgeGameplayAbilityLibrary::AddAbilityTaskNode(
 	const FString& AbilityBlueprintPath,
 	const FString& GraphName,
@@ -2509,6 +2521,7 @@ FString UUnrealBridgeGameplayAbilityLibrary::AddAbilityTaskNode(
 	BP->MarkPackageDirty();
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);
 }
+#endif // !UE_VERSION_OLDER_THAN(5, 7, 0)
 
 // ─── Create GA Blueprint (M3) ──────────────────────────────
 

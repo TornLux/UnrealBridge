@@ -1,5 +1,9 @@
 #include "UnrealBridgeChooserLibrary.h"
 
+#include "Misc/EngineVersionComparison.h"
+
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+
 #include "Chooser.h"
 #include "IObjectChooser.h"
 #include "IChooserColumn.h"
@@ -1059,3 +1063,5 @@ TArray<FBridgeCHTRowResult> UUnrealBridgeChooserLibrary::ListPossibleResults(con
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // !UE_VERSION_OLDER_THAN(5, 7, 0)

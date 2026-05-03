@@ -1,5 +1,9 @@
 #include "UnrealBridgePoseSearchLibrary.h"
 
+#include "Misc/EngineVersionComparison.h"
+
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+
 #include "PoseSearch/PoseSearchDatabase.h"
 #include "PoseSearch/PoseSearchSchema.h"
 #include "PoseSearch/PoseSearchFeatureChannel.h"
@@ -712,3 +716,5 @@ bool UUnrealBridgePoseSearchLibrary::InvalidateIndex(const FString& DatabasePath
 }
 
 #undef LOCTEXT_NAMESPACE
+
+#endif // !UE_VERSION_OLDER_THAN(5, 7, 0)

@@ -1,5 +1,9 @@
 #include "UnrealBridgeNavigationLibrary.h"
 
+#include "Misc/EngineVersionComparison.h"
+
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
+
 #include "Editor.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -155,3 +159,5 @@ bool UUnrealBridgeNavigationLibrary::ExportNavMeshToObj(const FString& OutFilePa
 	UE_LOG(LogUnrealBridgeNav, Log, TEXT("ExportNavMeshToObj: %s"), *OutSummary);
 	return true;
 }
+
+#endif // !UE_VERSION_OLDER_THAN(5, 7, 0)

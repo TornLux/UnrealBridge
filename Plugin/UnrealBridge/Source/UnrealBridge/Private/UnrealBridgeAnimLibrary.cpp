@@ -1,4 +1,5 @@
 #include "UnrealBridgeAnimLibrary.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Animation/AnimBlueprint.h"
 #include "Animation/AnimSequence.h"
 #include "Animation/AnimSequenceBase.h"
@@ -2294,7 +2295,16 @@ bool UUnrealBridgeAnimLibrary::SetAnimStateDefault(const FString& AnimBlueprintP
 	UAnimStateEntryNode* Entry = SMGraph->EntryNode;
 	if (!Entry) return false;
 
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 	UEdGraphPin* EntryOut = Entry->GetOutputPin();
+#else
+	// 5.4: UAnimStateEntryNode lacks GetOutputPin(); walk Pins directly.
+	UEdGraphPin* EntryOut = nullptr;
+	for (UEdGraphPin* Pin : Entry->Pins)
+	{
+		if (Pin && Pin->Direction == EGPD_Output) { EntryOut = Pin; break; }
+	}
+#endif
 	UEdGraphPin* TargetIn = Target->GetInputPin();
 	if (!EntryOut || !TargetIn) return false;
 

@@ -1,4 +1,5 @@
 #include "UnrealBridgeDataTableLibrary.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Engine/DataTable.h"
 #include "DataTableEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -734,6 +735,7 @@ int32 UUnrealBridgeDataTableLibrary::ClearDataTable(const FString& DataTablePath
 
 // ─── CopyDataTableRows ──────────────────────────────────────
 
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 int32 UUnrealBridgeDataTableLibrary::CopyDataTableRows(
 	const FString& SourceDataTablePath,
 	const FString& DestDataTablePath,
@@ -778,6 +780,7 @@ int32 UUnrealBridgeDataTableLibrary::CopyDataTableRows(
 	Dst->MarkPackageDirty();
 	return NumCopied;
 }
+#endif // !UE_VERSION_OLDER_THAN(5, 7, 0)
 
 // ─── GetDataTableRowStructPath ──────────────────────────────
 

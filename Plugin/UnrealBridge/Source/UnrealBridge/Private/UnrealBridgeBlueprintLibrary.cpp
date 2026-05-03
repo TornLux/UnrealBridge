@@ -1,4 +1,5 @@
 #include "UnrealBridgeBlueprintLibrary.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Engine/Blueprint.h"
 #include "Engine/BlueprintGeneratedClass.h"
 #include "Engine/SimpleConstructionScript.h"
@@ -10157,6 +10158,7 @@ FString UUnrealBridgeBlueprintLibrary::CollapseNodesToMacro(
 
 // ─── #13 Async action node ──────────────────────────────────────
 
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 FString UUnrealBridgeBlueprintLibrary::AddAsyncActionNode(
 	const FString& BlueprintPath, const FString& GraphName,
 	const FString& FactoryClassPath, const FString& FactoryFunctionName,
@@ -10183,6 +10185,7 @@ FString UUnrealBridgeBlueprintLibrary::AddAsyncActionNode(
 	FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);
 }
+#endif // !UE_VERSION_OLDER_THAN(5, 7, 0)
 
 // ─── #19 Add K2Node by class name ───────────────────────────────
 
@@ -11153,8 +11156,14 @@ TArray<FBridgeNodeCoverageEntry> UUnrealBridgeBlueprintLibrary::GetPIENodeCovera
 		if (!bMatch) continue;
 
 		UObject* Ctx = S.Context.Get();
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 		UEdGraphNode* Node = FKismetDebugUtilities::FindSourceNodeForCodeLocation(
 			Ctx, Func, S.Offset, /*bAllowImpreciseHit*/ true);
+#else
+		// 5.4: 2nd arg expects UFunction* (non-const).
+		UEdGraphNode* Node = FKismetDebugUtilities::FindSourceNodeForCodeLocation(
+			Ctx, const_cast<UFunction*>(Func), S.Offset, /*bAllowImpreciseHit*/ true);
+#endif
 		if (!Node) continue;
 
 		const FString Guid = Node->NodeGuid.ToString(EGuidFormats::Digits);
