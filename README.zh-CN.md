@@ -5,7 +5,7 @@
   </p>
   <p align="center">
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="License"></a>
-    <a href="https://www.unrealengine.com/"><img src="https://img.shields.io/badge/Unreal%20Engine-5.7-313131?logo=unrealengine" alt="UE5.7"></a>
+    <a href="https://www.unrealengine.com/"><img src="https://img.shields.io/badge/Unreal%20Engine-5.4%2B-313131?logo=unrealengine" alt="UE5.4+"></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/-Python-3776AB?logo=python&logoColor=white" alt="Python"></a>
     <img src="https://img.shields.io/badge/-C%2B%2B-00599C?logo=cplusplus&logoColor=white" alt="C++">
     <img src="https://img.shields.io/badge/platform-Windows-0078D6?logo=windows" alt="Windows">
@@ -34,7 +34,7 @@ flowchart LR
     CLI["bridge.py"]
     Server["FUnrealBridgeServer"]
     Libs["UnrealBridge*Library<br/>(14 个库, ~1010 UFUNCTION)"]
-    UE["Unreal Editor 5.7"]
+    UE["Unreal Editor 5.4+"]
 
     Agent -- "shell" --> CLI
     CLI -- "UDP 探测<br/>239.255.42.99:9876" --> Server
@@ -195,7 +195,7 @@ Ping:  {"id","command":"ping"}  →  pong
 
 ```
 UnrealBridge/
-├── Plugin/UnrealBridge/         # UE 5.7 编辑器插件(C++)
+├── Plugin/UnrealBridge/         # UE 5.4+ 编辑器插件(C++)
 │   ├── Source/UnrealBridge/     #   TCP 服务器 + 桥接库
 │   └── Content/Python/          #   UE Python 环境自动载入的辅助脚本
 ├── .claude/skills/unreal-bridge/
@@ -208,7 +208,7 @@ UnrealBridge/
 
 ## 系统要求
 
-- **Unreal Engine 5.7**，需启用 `PythonScriptPlugin` 与 `GameplayAbilities`（均为引擎自带）
+- **Unreal Engine 5.4+**，需启用 `PythonScriptPlugin` 与 `GameplayAbilities`（均为引擎自带）。`tools/build_matrix.py` 已对 5.4 与 5.7 验证通过；部分库（Chooser / PoseSearch / Material / Navigation 及少量独立 UFUNCTION）需要 5.7+，详见 [docs/version-compatibility.md](docs/version-compatibility.md)
 - **Windows 10/11** —— 插件本身可移植，但辅助脚本里的路径按 Windows 风格写死
 - **Python 3.9+**，已加入 PATH
 - **Visual Studio 2022** + UE 工作负载 —— 用于编译插件

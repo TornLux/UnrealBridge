@@ -1,12 +1,12 @@
 ---
 name: unreal-bridge
-description: Execute Python scripts inside a running Unreal Engine 5.7 editor via TCP bridge. Use when the user asks to interact with UE, manipulate assets, query scenes, automate workflows, or run Python in Unreal.
+description: Execute Python scripts inside a running Unreal Engine 5.4+ editor via TCP bridge. Use when the user asks to interact with UE, manipulate assets, query scenes, automate workflows, or run Python in Unreal.
 allowed-tools: Bash Read Write Edit Glob Grep
 ---
 
 # UnrealBridge
 
-Execute Python directly inside a running UE 5.7 editor. Auto-discovers via UDP multicast (`239.255.42.99:9876`); the TCP data port is OS-assigned per editor.
+Execute Python directly inside a running UE 5.4+ editor. Auto-discovers via UDP multicast (`239.255.42.99:9876`); the TCP data port is OS-assigned per editor.
 
 ## Preconditions
 

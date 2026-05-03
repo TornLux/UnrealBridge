@@ -1,8 +1,11 @@
 # UnrealBridge — engine version compatibility
 
-The plugin compiles against **Unreal Engine 5.4** and **5.7**. Some features
-are gated to 5.7+ because they depend on engine APIs that don't exist or
-behave differently on 5.4.
+The plugin claims **Unreal Engine 5.4+**. The build matrix in
+`tools/build_matrix.py` has verified clean BuildPlugin against 5.4 and 5.7
+with the gating below; 5.2 / 5.3 / 5.5 / 5.6 are unverified and likely work
+for the 5.4+ tier (untested). Some features are gated to **5.7+** because
+they depend on engine APIs that don't exist or behave differently on 5.4
+(and presumably on the older 5.x's too).
 
 This document lists what's gated. The build matrix in `tools/build_matrix.py`
 verifies the gates by compiling the plugin against each engine version.
@@ -63,16 +66,21 @@ python tools/build_matrix.py --only 5.7  # only 5.7
 ```
 
 Last verified versions:
-- UE 5.4.4 (J:\UnrealEngine\UE_5.4) — 5.4-Plus stable build
-- UE 5.7.1 (G:\UnrealEngine\UE_5.7) — 5.7.1-48512491
+- UE 5.4 (point release: 5.4.4)
+- UE 5.7 (point release: 5.7.1)
 
-## Lowering the threshold (when adding 5.5 / 5.6)
+5.2 / 5.3 / 5.5 / 5.6 are unverified — likely work for the 5.4+ tier
+(everything except items in the tables above) but the matrix has not been
+exercised against them.
 
-When you install 5.5 or 5.6 and add it to `tools/engines.local.json`,
+## Lowering the threshold
+
+When you install another 5.x and add it to `tools/engines.local.json`,
 re-running the matrix will reveal which of the 5.7-gated items also work on
-the new version. To lower a gate from 5.7 to 5.5:
+the new version. To lower a gate, e.g. from 5.7 to 5.5:
 
 1. Replace `UE_VERSION_OLDER_THAN(5, 7, 0)` with `UE_VERSION_OLDER_THAN(5, 5, 0)`
-   on the affected sites.
+   on the affected sites (in both the main `.cpp` body gate and the
+   corresponding `_Stubs.cpp` inverse gate).
 2. Re-run the matrix; verify the lowered version passes.
-3. Update this table.
+3. Update the tables above.
