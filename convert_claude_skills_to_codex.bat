@@ -45,8 +45,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "    $name = [regex]::Match($front, '(?m)^name:\s*(.+?)\s*$').Groups[1].Value;" ^
   "    $description = [regex]::Match($front, '(?m)^description:\s*(.+?)\s*$').Groups[1].Value;" ^
   "    if (-not [string]::IsNullOrWhiteSpace($name) -and -not [string]::IsNullOrWhiteSpace($description)) {" ^
-  "      $newText = ('---' + [Environment]::NewLine + 'name: ' + $name.Trim() + [Environment]::NewLine + 'description: ' + $description.Trim() + [Environment]::NewLine + '---' + [Environment]::NewLine + $body);" ^
-  "      Set-Content -LiteralPath $targetSkillMd -Value $newText -Encoding UTF8;" ^
+  "      $newText = ('---' + \"`n\" + 'name: ' + $name.Trim() + \"`n\" + 'description: ' + $description.Trim() + \"`n\" + '---' + \"`n\" + $body);" ^
+  "      [System.IO.File]::WriteAllText($targetSkillMd, $newText, [System.Text.UTF8Encoding]::new($false));" ^
   "    } else { Write-Warning ('{0}: SKILL.md frontmatter did not contain both name and description; copied unchanged.' -f $skill.Name) }" ^
   "  } else { Write-Warning ('{0}: SKILL.md has no YAML frontmatter; copied unchanged.' -f $skill.Name) }" ^
   "  $copied++;" ^
