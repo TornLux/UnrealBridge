@@ -1,0 +1,8 @@
+{
+  "_comment": "Copy this file to engines.local.json and replace paths with your real engine installs. engines.local.json is gitignored.",
+  "engines": [
+    { "version": "5.4", "path": "J:/UnrealEngine/UE_5.4", "enabled": true },
+    { "version": "5.7", "path": "G:/UnrealEngine/UE_5.7", "enabled": true }
+  ],
+  "build_args": ["-TargetPlatforms=Win64", "-Rocket"]
+}

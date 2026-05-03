@@ -33,6 +33,16 @@
 
 # Claude Code local overrides
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
 
 # Local scratch dir
 temp/
+
+# Python bytecode caches
+__pycache__/
+*.py[cod]
+
+# Build matrix outputs (tools/build_matrix.py)
+tools/engines.local.json
+tools/build_engines/
+build_matrix_report.md
