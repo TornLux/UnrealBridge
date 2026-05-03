@@ -10,28 +10,28 @@ struct FBridgeEditorState
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString EngineVersion;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString ProjectName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bIsPIE = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bIsPaused = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString CurrentLevelPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	int32 NumOpenedAssets = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	int32 NumSelectedActors = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	int32 NumContentBrowserSelection = 0;
 };
 
@@ -41,13 +41,13 @@ struct FBridgeOpenedAsset
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Path;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString ClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bIsDirty = false;
 };
 
@@ -57,13 +57,13 @@ struct FBridgeCompileResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Path;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bSuccess = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString ErrorMessage;
 };
 
@@ -73,13 +73,13 @@ struct FBridgeViewportCamera
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FVector Location = FVector::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FRotator Rotation = FRotator::ZeroRotator;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	float FOV = 90.f;
 };
 
@@ -89,31 +89,31 @@ struct FBridgeScreenshotResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bSuccess = false;
 
 	/** Absolute path of the written PNG. Empty when OutFilePath was empty (base64-only mode). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString FilePath;
 
 	/** Captured viewport pixel width. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	int32 Width = 0;
 
 	/** Captured viewport pixel height. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	int32 Height = 0;
 
 	/** Which viewport produced the capture: "LevelEditor" | "PIE" | "". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Source;
 
 	/** Base64-encoded PNG bytes (empty unless bIncludeBase64 = true). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Base64;
 
 	/** Human-readable failure reason. Empty on success. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Error;
 };
 
@@ -123,25 +123,25 @@ struct FBridgeChannelCaptureResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bSuccess = false;
 
 	/** Absolute path written (empty when OutFilePath was empty). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString FilePath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	int32 Width = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	int32 Height = 0;
 
 	/** Echoes the requested channel name for round-trip confidence. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Channel;
 
 	/** Pixel encoding: "PNG" (8-bit RGB/A) | "PNG16" (16-bit grayscale, depth) | "EXR" (HDR float). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Format;
 
 	/**
@@ -152,18 +152,18 @@ struct FBridgeChannelCaptureResult
 	 *   depth = DepthMin + (pixel / 65535.0) * (DepthMax - DepthMin)
 	 * Zero for non-depth channels.
 	 */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	float DepthMin = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	float DepthMax = 0.f;
 
 	/** Base64-encoded compressed bytes (empty unless bIncludeBase64 = true). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Base64;
 
 	/** Failure reason. Empty on success. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Error;
 };
 
@@ -174,11 +174,11 @@ struct FBridgeLiveCodingResult
 	GENERATED_BODY()
 
 	/** True if the compile request was accepted (regardless of compile outcome). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bTriggered = false;
 
 	/** True when bWaitForCompletion was set AND the compile finished cleanly (Success or NoChanges). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	bool bCompleted = false;
 
 	/**
@@ -192,11 +192,11 @@ struct FBridgeLiveCodingResult
 	 *   "Cancelled"          — user cancelled
 	 *   "Unavailable"        — Live Coding not supported on this platform
 	 */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Status;
 
 	/** Human-readable error (empty on success). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor")
 	FString Error;
 };
 
@@ -209,33 +209,33 @@ struct FBridgeCallLogEntry
 	GENERATED_BODY()
 
 	/** Request id from the client (uuid4 when produced by bridge.py). */
-	UPROPERTY(BlueprintReadOnly) FString RequestId;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") FString RequestId;
 
 	/** "exec" | "ping" | "debug_resume" | "gamethread_ping" | other. */
-	UPROPERTY(BlueprintReadOnly) FString Command;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") FString Command;
 
 	/** First ~80 chars of the Python script for `exec` calls; empty otherwise. */
-	UPROPERTY(BlueprintReadOnly) FString ScriptPreview;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") FString ScriptPreview;
 
 	/** UTC fractional seconds since the Unix epoch (FDateTime::UtcNow() projected). */
-	UPROPERTY(BlueprintReadOnly) double UnixSecondsUtc = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") double UnixSecondsUtc = 0;
 
 	/** Wall-clock time for the whole HandleClient run (recv → send), ms. */
-	UPROPERTY(BlueprintReadOnly) float TotalDurationMs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") float TotalDurationMs = 0;
 
 	/** Time spent inside Python exec (queue wait + run). 0 for non-exec commands. */
-	UPROPERTY(BlueprintReadOnly) float ExecDurationMs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") float ExecDurationMs = 0;
 
-	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") bool bSuccess = false;
 
-	UPROPERTY(BlueprintReadOnly) int32 OutputBytes = 0;
-	UPROPERTY(BlueprintReadOnly) int32 ErrorBytes = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") int32 OutputBytes = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") int32 ErrorBytes = 0;
 
 	/** Client endpoint, e.g. "127.0.0.1:51234". */
-	UPROPERTY(BlueprintReadOnly) FString Endpoint;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") FString Endpoint;
 
 	/** First ~200 chars of the error message (populated when bSuccess=false). */
-	UPROPERTY(BlueprintReadOnly) FString ErrorPreview;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") FString ErrorPreview;
 };
 
 /** Aggregated bridge-call statistics across the current ring buffer. */
@@ -244,21 +244,21 @@ struct FBridgeCallStats
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int32 TotalCalls = 0;
-	UPROPERTY(BlueprintReadOnly) int32 SuccessCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 FailureCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") int32 TotalCalls = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") int32 SuccessCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") int32 FailureCount = 0;
 
-	UPROPERTY(BlueprintReadOnly) float AvgDurationMs = 0;
-	UPROPERTY(BlueprintReadOnly) float MinDurationMs = 0;
-	UPROPERTY(BlueprintReadOnly) float MaxDurationMs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") float AvgDurationMs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") float MinDurationMs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") float MaxDurationMs = 0;
 	/** 95th-percentile total duration across the buffered entries. */
-	UPROPERTY(BlueprintReadOnly) float P95DurationMs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") float P95DurationMs = 0;
 
 	/** Max entries the ring buffer holds (configurable via SetBridgeCallLogCapacity). */
-	UPROPERTY(BlueprintReadOnly) int32 Capacity = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") int32 Capacity = 0;
 
 	/** Number of entries evicted because the ring filled up — across the whole session. */
-	UPROPERTY(BlueprintReadOnly) int32 TotalDropped = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Editor") int32 TotalDropped = 0;
 };
 
 /**

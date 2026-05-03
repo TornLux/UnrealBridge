@@ -21,10 +21,10 @@ struct FBridgeAssetTag
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	FString Key;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	FString Value;
 };
 
@@ -34,30 +34,30 @@ struct FBridgeAssetInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	FString PackageName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	FString AssetName;
 
 	/** TopLevelAssetPath of the asset's class (e.g. "/Script/Engine.Blueprint"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	FString ClassPath;
 
 	/** True if this asset is an ObjectRedirector. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	bool bIsRedirector = false;
 
 	/** Whether the registry actually found this asset. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	bool bFound = false;
 
 	/** Size in bytes of the .uasset/.umap on disk; -1 if not resolvable. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	int64 DiskSize = -1;
 
 	/** All AssetRegistry tag key/value pairs (may be empty). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
 	TArray<FBridgeAssetTag> Tags;
 };
 
@@ -68,12 +68,12 @@ struct FBridgeMeshLODStats
 	GENERATED_BODY()
 
 	/** LOD index (0 = highest detail). */
-	UPROPERTY(BlueprintReadOnly) int32 LODIndex = 0;
-	UPROPERTY(BlueprintReadOnly) int32 VertexCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 TriangleCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 LODIndex = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 VertexCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 TriangleCount = 0;
 
 	/** Material slot indices referenced by this LOD's sections. */
-	UPROPERTY(BlueprintReadOnly) TArray<int32> MaterialIndices;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<int32> MaterialIndices;
 };
 
 /** Summary of a UStaticMesh asset. */
@@ -82,32 +82,32 @@ struct FBridgeStaticMeshInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bFound = false;
-	UPROPERTY(BlueprintReadOnly) FString AssetPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bFound = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString AssetPath;
 
 	/** World-space bounds of the full mesh (LOD 0). */
-	UPROPERTY(BlueprintReadOnly) FVector BoundsOrigin = FVector::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) FVector BoundsExtent = FVector::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) float BoundsSphereRadius = 0.0f;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FVector BoundsOrigin = FVector::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FVector BoundsExtent = FVector::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") float BoundsSphereRadius = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly) int32 NumLODs = 0;
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeMeshLODStats> LODStats;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumLODs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FBridgeMeshLODStats> LODStats;
 
 	/** Material slot names in declaration order. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> MaterialSlotNames;
-	UPROPERTY(BlueprintReadOnly) TArray<FString> MaterialAssetPaths;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FString> MaterialSlotNames;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FString> MaterialAssetPaths;
 
-	UPROPERTY(BlueprintReadOnly) int32 NumSockets = 0;
-	UPROPERTY(BlueprintReadOnly) TArray<FString> SocketNames;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumSockets = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FString> SocketNames;
 
 	/** true = has a simple collision mesh body; false = render-only. */
-	UPROPERTY(BlueprintReadOnly) bool bHasCollision = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bHasCollision = false;
 
 	/** Number of UV channels on LOD 0. */
-	UPROPERTY(BlueprintReadOnly) int32 NumUVChannels = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumUVChannels = 0;
 
 	/** Nanite-enabled flag (UE 5.x). */
-	UPROPERTY(BlueprintReadOnly) bool bHasNaniteData = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bHasNaniteData = false;
 };
 
 /** Summary of a USkeletalMesh asset. */
@@ -116,30 +116,30 @@ struct FBridgeSkeletalMeshInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bFound = false;
-	UPROPERTY(BlueprintReadOnly) FString AssetPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bFound = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString AssetPath;
 
-	UPROPERTY(BlueprintReadOnly) FVector BoundsOrigin = FVector::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) FVector BoundsExtent = FVector::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) float BoundsSphereRadius = 0.0f;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FVector BoundsOrigin = FVector::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FVector BoundsExtent = FVector::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") float BoundsSphereRadius = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly) int32 NumLODs = 0;
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeMeshLODStats> LODStats;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumLODs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FBridgeMeshLODStats> LODStats;
 
-	UPROPERTY(BlueprintReadOnly) TArray<FString> MaterialSlotNames;
-	UPROPERTY(BlueprintReadOnly) TArray<FString> MaterialAssetPaths;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FString> MaterialSlotNames;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FString> MaterialAssetPaths;
 
 	/** Path to the bound USkeleton asset. */
-	UPROPERTY(BlueprintReadOnly) FString SkeletonPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString SkeletonPath;
 
-	UPROPERTY(BlueprintReadOnly) int32 NumBones = 0;
-	UPROPERTY(BlueprintReadOnly) int32 NumSockets = 0;
-	UPROPERTY(BlueprintReadOnly) TArray<FString> SocketNames;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumBones = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumSockets = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") TArray<FString> SocketNames;
 
-	UPROPERTY(BlueprintReadOnly) int32 NumMorphTargets = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumMorphTargets = 0;
 
 	/** Path to the bound UPhysicsAsset if any. */
-	UPROPERTY(BlueprintReadOnly) FString PhysicsAssetPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString PhysicsAssetPath;
 };
 
 /** Summary of a UTexture2D asset. */
@@ -148,27 +148,27 @@ struct FBridgeTextureInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bFound = false;
-	UPROPERTY(BlueprintReadOnly) FString AssetPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bFound = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString AssetPath;
 
-	UPROPERTY(BlueprintReadOnly) int32 Width = 0;
-	UPROPERTY(BlueprintReadOnly) int32 Height = 0;
-	UPROPERTY(BlueprintReadOnly) int32 NumMips = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 Width = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 Height = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumMips = 0;
 
 	/** EPixelFormat name (e.g. "PF_DXT5", "PF_BC7", "PF_FloatRGBA"). */
-	UPROPERTY(BlueprintReadOnly) FString PixelFormat;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString PixelFormat;
 
 	/** TextureCompressionSettings enum name ("TC_Default", "TC_NormalMap", ...). */
-	UPROPERTY(BlueprintReadOnly) FString CompressionSettings;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString CompressionSettings;
 
 	/** TextureGroup enum name ("TEXTUREGROUP_World", "TEXTUREGROUP_UI", ...). */
-	UPROPERTY(BlueprintReadOnly) FString LODGroup;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString LODGroup;
 
-	UPROPERTY(BlueprintReadOnly) bool bSRGB = false;
-	UPROPERTY(BlueprintReadOnly) bool bNeverStream = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bSRGB = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bNeverStream = false;
 
 	/** Bytes actually resident in memory (GetResourceSize). */
-	UPROPERTY(BlueprintReadOnly) int64 ResourceSizeBytes = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int64 ResourceSizeBytes = 0;
 };
 
 /** Summary of a USoundWave / USoundCue asset. */
@@ -177,24 +177,24 @@ struct FBridgeSoundInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bFound = false;
-	UPROPERTY(BlueprintReadOnly) FString AssetPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bFound = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString AssetPath;
 
 	/** "SoundWave" | "SoundCue" | "MetaSound" | other. */
-	UPROPERTY(BlueprintReadOnly) FString SoundKind;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") FString SoundKind;
 
-	UPROPERTY(BlueprintReadOnly) float DurationSeconds = 0.0f;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") float DurationSeconds = 0.0f;
 
 	/** Sample rate in Hz. 0 if not applicable (e.g. SoundCue). */
-	UPROPERTY(BlueprintReadOnly) int32 SampleRate = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 SampleRate = 0;
 
 	/** 1 = mono, 2 = stereo, etc. 0 if not applicable. */
-	UPROPERTY(BlueprintReadOnly) int32 NumChannels = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int32 NumChannels = 0;
 
-	UPROPERTY(BlueprintReadOnly) bool bLooping = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") bool bLooping = false;
 
 	/** Approx compressed data bytes (SoundWave); 0 otherwise. */
-	UPROPERTY(BlueprintReadOnly) int64 CompressedDataBytes = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset") int64 CompressedDataBytes = 0;
 };
 
 /**

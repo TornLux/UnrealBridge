@@ -54,18 +54,18 @@ struct FBridgeCurveInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	FString Name;
 
 	/** "CurveFloat" / "CurveVector" / "CurveLinearColor" (or the UClass FName for unknown UCurveBase subclasses). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	FString ClassName;
 
 	/** Channel labels, parallel to NumKeysPerChannel. One entry for UCurveFloat; three for Vector; four for LinearColor. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	TArray<FString> ChannelNames;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	TArray<int32> NumKeysPerChannel;
 
 	/**
@@ -73,10 +73,10 @@ struct FBridgeCurveInfo
 	 * but in practice they're set together from the curve editor, so channel 0 is representative.
 	 * Values: "Cycle" / "CycleWithOffset" / "Oscillate" / "Linear" / "Constant" / "None".
 	 */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	FString PreInfinityExtrap;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	FString PostInfinityExtrap;
 };
 
@@ -86,18 +86,18 @@ struct FBridgeCurveTableInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	FString Name;
 
 	/** "Empty" / "SimpleCurves" / "RichCurves". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	FString CurveTableMode;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	TArray<FString> RowNames;
 
 	/** Key counts parallel to RowNames. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Curve")
 	TArray<int32> NumKeysPerRow;
 };
 

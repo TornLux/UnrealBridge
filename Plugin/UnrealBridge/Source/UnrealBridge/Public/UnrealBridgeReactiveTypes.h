@@ -56,27 +56,27 @@ struct FBridgeHandlerStats
 	GENERATED_BODY()
 
 	/** Total times this handler was invoked. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive")
 	int64 Calls = 0;
 
 	/** Cumulative wall-time spent inside ExecPythonCommandEx, microseconds. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive")
 	int64 TotalMicroseconds = 0;
 
 	/** Worst-case single invocation, microseconds. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive")
 	int64 MaxMicroseconds = 0;
 
 	/** Number of invocations that returned bSuccess=false. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive")
 	int64 ErrorCount = 0;
 
 	/** Most recent error string (empty if none). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive")
 	FString LastError;
 
 	/** UE world time (Editor world) of most recent fire. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive")
 	double LastFireTimeSeconds = 0.0;
 };
 
@@ -86,17 +86,17 @@ struct FBridgeHandlerSummary
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString HandlerId;
-	UPROPERTY(BlueprintReadOnly) FString Scope;            // "runtime" or "editor"
-	UPROPERTY(BlueprintReadOnly) FString TaskName;
-	UPROPERTY(BlueprintReadOnly) FString Description;
-	UPROPERTY(BlueprintReadOnly) FString TriggerSummary;   // e.g. "GameplayEvent:Event.Combat.Hit"
-	UPROPERTY(BlueprintReadOnly) FString SubjectPath;      // resolved path or "" for global / dead
-	UPROPERTY(BlueprintReadOnly) FString ScriptPath;       // optional, agent-provided
-	UPROPERTY(BlueprintReadOnly) TArray<FString> Tags;
-	UPROPERTY(BlueprintReadOnly) FString Lifetime;         // EBridgeHandlerLifetime as string
-	UPROPERTY(BlueprintReadOnly) bool bPaused = false;
-	UPROPERTY(BlueprintReadOnly) FBridgeHandlerStats Stats;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString HandlerId;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString Scope;            // "runtime" or "editor"
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString TaskName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString Description;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString TriggerSummary;   // e.g. "GameplayEvent:Event.Combat.Hit"
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString SubjectPath;      // resolved path or "" for global / dead
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString ScriptPath;       // optional, agent-provided
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") TArray<FString> Tags;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString Lifetime;         // EBridgeHandlerLifetime as string
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") bool bPaused = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FBridgeHandlerStats Stats;
 };
 
 /** Full record returned by GetHandler — includes script source. */
@@ -105,20 +105,20 @@ struct FBridgeHandlerDetail
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FBridgeHandlerSummary Summary;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FBridgeHandlerSummary Summary;
 
 	/** Inline Python source the handler will execute. */
-	UPROPERTY(BlueprintReadOnly) FString Script;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString Script;
 
 	/** ErrorPolicy as string. */
-	UPROPERTY(BlueprintReadOnly) FString ErrorPolicy;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString ErrorPolicy;
 
 	/** Throttle interval in milliseconds (0 = unlimited). */
-	UPROPERTY(BlueprintReadOnly) int32 ThrottleMs = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") int32 ThrottleMs = 0;
 
 	/** For Lifetime=Count: invocations remaining (-1 if not Count). */
-	UPROPERTY(BlueprintReadOnly) int32 RemainingCalls = -1;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") int32 RemainingCalls = -1;
 
 	/** ISO-8601 timestamp string of registration. */
-	UPROPERTY(BlueprintReadOnly) FString CreatedAt;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Reactive") FString CreatedAt;
 };

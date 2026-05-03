@@ -10,13 +10,13 @@ struct FBridgeTransform
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FVector Location = FVector::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FRotator Rotation = FRotator::ZeroRotator;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FVector Scale = FVector::OneVector;
 };
 
@@ -27,23 +27,23 @@ struct FBridgeActorBrief
 	GENERATED_BODY()
 
 	/** Internal FName */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Name;
 
 	/** User-visible label */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Label;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString ClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FVector Location = FVector::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	TArray<FString> Tags;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bHidden = false;
 };
 
@@ -53,17 +53,17 @@ struct FBridgeLevelComponentInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString ClassName;
 
 	/** Name of parent component (empty if root / non-scene) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString AttachParent;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FBridgeTransform RelativeTransform;
 };
 
@@ -73,40 +73,40 @@ struct FBridgeActorInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Label;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString ClassName;
 
 	/** Full path of the actor's class */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString ClassPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FBridgeTransform Transform;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	TArray<FString> Tags;
 
 	/** Parent actor name (empty if not attached) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString AttachedTo;
 
 	/** Attached child actor names */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	TArray<FString> Children;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	TArray<FBridgeLevelComponentInfo> Components;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bHidden = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bHiddenInGame = false;
 };
 
@@ -116,23 +116,23 @@ struct FBridgeLevelSummary
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString LevelName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString LevelPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	int32 NumActors = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	int32 NumStreamingLevels = 0;
 
 	/** "Editor", "PIE", "Game" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString WorldType;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bWorldPartition = false;
 };
 
@@ -142,13 +142,13 @@ struct FBridgeStreamingLevel
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString PackageName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bLoaded = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bVisible = false;
 };
 
@@ -159,15 +159,15 @@ struct FBridgeActorBounds
 	GENERATED_BODY()
 
 	/** World-space center of the bounds box. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FVector Origin = FVector::ZeroVector;
 
 	/** Half-extents on each axis. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FVector BoxExtent = FVector::ZeroVector;
 
 	/** Radius of the bounding sphere. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	float SphereRadius = 0.f;
 };
 
@@ -177,13 +177,13 @@ struct FBridgeActorRadiusHit
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString ClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	float Distance = 0.f;
 };
 
@@ -194,31 +194,31 @@ struct FBridgePropertyInfo
 	GENERATED_BODY()
 
 	/** Property name as it appears in `get_actor_property` PropertyPath. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Name;
 
 	/** C++ type string (e.g. "float", "FVector", "TArray<UStaticMesh*>"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString TypeName;
 
 	/** UPROPERTY(meta=(Category="...")) value, empty if none. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	FString Category;
 
 	/** True for EditAnywhere / EditDefaultsOnly / EditInstanceOnly. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bEditable = false;
 
 	/** True for BlueprintReadOnly / non-Edit. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bReadOnly = false;
 
 	/** True for transient (not serialized). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bTransient = false;
 
 	/** True for component subobjects (RootComponent, named SCS components). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Level")
 	bool bIsComponent = false;
 };
 

@@ -17,40 +17,40 @@ struct FBridgeFrameTiming
 	GENERATED_BODY()
 
 	/** Engine's running-average FPS (GAverageFPS). 0 before the first full frame. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	float Fps = 0.f;
 
 	/** Frame time in ms. FStatUnitData::FrameTime when smoothed; else 1000/Fps. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	float FrameMs = 0.f;
 
 	/** Game-thread time, ms. Raw GGameThreadTime, or smoothed FStatUnitData value. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	float GameThreadMs = 0.f;
 
 	/** Render-thread time, ms. Raw GRenderThreadTime, or smoothed FStatUnitData value. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	float RenderThreadMs = 0.f;
 
 	/** GPU frame time, ms. Summed across MAX_NUM_GPUS via RHIGetGPUFrameCycles. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	float GpuMs = 0.f;
 
 	/** RHI translation time, ms. 0 on the raw path — only set when bSmoothed=true. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	float RhiMs = 0.f;
 
 	/** Delta seconds reported by FApp for the most recent frame. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	float DeltaSeconds = 0.f;
 
 	/** GFrameCounter value at capture time. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 FrameNumber = 0;
 
 	/** True when `stat unit` is active and values came from FStatUnitData (smoothed). */
 	/** False means raw per-frame globals (no running average). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	bool bSmoothed = false;
 };
 
@@ -66,15 +66,15 @@ struct FBridgeRenderCounters
 	GENERATED_BODY()
 
 	/** GNumDrawCallsRHI summed across MAX_NUM_GPUS. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int32 DrawCalls = 0;
 
 	/** GNumPrimitivesDrawnRHI summed across MAX_NUM_GPUS. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int32 PrimitivesDrawn = 0;
 
 	/** GNumExplicitGPUsForRendering — usually 1 on desktop builds. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int32 NumGpus = 1;
 };
 
@@ -85,31 +85,31 @@ struct FBridgeMemoryStats
 	GENERATED_BODY()
 
 	/** Process working set (FPlatformMemoryStats::UsedPhysical), MiB. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 UsedPhysicalMb = 0;
 
 	/** Process virtual commit (UsedVirtual), MiB. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 UsedVirtualMb = 0;
 
 	/** Peak working set observed this session, MiB. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 PeakUsedPhysicalMb = 0;
 
 	/** Peak virtual commit observed this session, MiB. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 PeakUsedVirtualMb = 0;
 
 	/** System-wide available physical memory at capture time, MiB. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 AvailablePhysicalMb = 0;
 
 	/** System-wide available virtual memory at capture time, MiB. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 AvailableVirtualMb = 0;
 
 	/** Total physical RAM on the machine, MiB. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int64 TotalPhysicalMb = 0;
 };
 
@@ -119,10 +119,10 @@ struct FBridgeUObjectClassCount
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	FString ClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int32 Count = 0;
 };
 
@@ -137,15 +137,15 @@ struct FBridgeUObjectStats
 	GENERATED_BODY()
 
 	/** Total number of live UObjects walked. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int32 TotalObjects = 0;
 
 	/** Number of distinct UClass types seen. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	int32 UniqueClasses = 0;
 
 	/** Top classes by live-object count, descending. Capped at the caller's TopN. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	TArray<FBridgeUObjectClassCount> TopClasses;
 };
 
@@ -155,28 +155,28 @@ struct FBridgePerfSnapshot
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	FBridgeFrameTiming Timing;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	FBridgeRenderCounters Render;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	FBridgeMemoryStats Memory;
 
 	/** Populated only when bIncludeUObjectStats was true. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	FBridgeUObjectStats UObjects;
 
 	/** ISO-8601 UTC timestamp for delta-comparison across snapshots. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	FString CaptureTimeUtc;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	FString EngineVersion;
 
 	/** True when PIE was active at capture time. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Perf")
 	bool bWasInPie = false;
 };
 

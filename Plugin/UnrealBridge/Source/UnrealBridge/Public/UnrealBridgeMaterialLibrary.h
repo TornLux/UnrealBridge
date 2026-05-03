@@ -10,15 +10,15 @@ struct FBridgeMaterialParam
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
 	/** "Scalar", "Vector", "Texture", "DoubleVector", etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ParamType;
 
 	/** String representation of the value */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Value;
 };
 
@@ -28,18 +28,18 @@ struct FBridgeMaterialInstanceInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
 	/** Parent material name */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ParentName;
 
 	/** Parent material path */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ParentPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialParam> Parameters;
 };
 
@@ -49,18 +49,18 @@ struct FBridgeMaterialParamDefault
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
 	/** "Scalar", "Vector", "Texture", "StaticSwitch" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ParamType;
 
 	/** String representation of the default value (scalar → float, vector → "(R,G,B,A)", texture → path, switch → "True"/"False") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Value;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid Guid;
 };
 
@@ -70,71 +70,71 @@ struct FBridgeMaterialInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
 	/** True if the asset is a UMaterialInstance (vs a UMaterial master). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bIsMaterialInstance = false;
 
 	/** Immediate parent path (only set for MI). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ParentPath;
 
 	/** Ultimate base UMaterial path (same as Path for masters). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString BasePath;
 
 	/** "Surface", "DeferredDecal", "LightFunction", "Volume", "PostProcess", "UI", "RuntimeVirtualTexture" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString MaterialDomain;
 
 	/** "Opaque", "Masked", "Translucent", "Additive", "Modulate", "AlphaComposite", "AlphaHoldout" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString BlendMode;
 
 	/** One entry per shading model present on this material (DefaultLit / Unlit / Subsurface / ...). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> ShadingModels;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bTwoSided = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bUseMaterialAttributes = false;
 
 	/** Human-readable flag names ("SkeletalMesh", "ParticleSprites", "Nanite", ...) that are enabled on the base material. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> UsageFlags;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString SubsurfaceProfilePath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialParamDefault> ScalarParameters;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialParamDefault> VectorParameters;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialParamDefault> TextureParameters;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialParamDefault> StaticSwitchParameters;
 
 	/** Total number of UMaterialExpression nodes on the base material. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 NumExpressions = 0;
 
 	/** Number of UMaterialExpressionMaterialFunctionCall nodes. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 NumFunctionCalls = 0;
 
 	/** Whether the lookup succeeded. Callers should check this; empty struct otherwise. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 };
 
@@ -144,25 +144,25 @@ struct FBridgeMaterialFunctionPort
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Description;
 
 	/** "Scalar" / "Vector2" / "Vector3" / "Vector4" / "Texture2D" / "TextureCube" / "Texture2DArray" / "VolumeTexture" / "StaticBool" / "MaterialAttributes" / "TextureExternal" / "" (output — type determined by incoming connection) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString PortType;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 SortPriority = 0;
 
 	/** For inputs only — stringified preview value when bUsePreviewValueAsDefault is true. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString DefaultValue;
 
 	/** For inputs only — whether the preview value is used when an MF caller leaves the pin unconnected. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bUsePreviewValueAsDefault = false;
 };
 
@@ -172,19 +172,19 @@ struct FBridgeMaterialFunctionSummary
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Description;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bExposeToLibrary = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString LibraryCategory;
 };
 
@@ -194,33 +194,33 @@ struct FBridgeMaterialFunctionInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Description;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bExposeToLibrary = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString LibraryCategory;
 
 	/** Sorted by SortPriority ascending. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialFunctionPort> Inputs;
 
 	/** Sorted by SortPriority ascending. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialFunctionPort> Outputs;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 NumExpressions = 0;
 };
 
@@ -230,18 +230,18 @@ struct FBridgeMaterialInstanceLayer
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
 	/** True for the final UMaterial base; false for all intermediate MIs. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bIsBaseMaterial = false;
 
 	/** Parameters set *on this layer* (MI overrides). Empty for the base UMaterial — defaults live on the base. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialParam> OverrideParameters;
 };
 
@@ -251,14 +251,14 @@ struct FBridgeMaterialInstanceChain
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
 	/** Ordered leaf → base. Element 0 is the MI passed in; last element is the UMaterial. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialInstanceLayer> Layers;
 };
 
@@ -268,13 +268,13 @@ struct FBridgeMPCScalarParam
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	float DefaultValue = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid Id;
 };
 
@@ -284,13 +284,13 @@ struct FBridgeMPCVectorParam
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FLinearColor DefaultValue = FLinearColor::Black;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid Id;
 };
 
@@ -300,19 +300,19 @@ struct FBridgeMaterialParameterCollectionInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMPCScalarParam> ScalarParameters;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMPCVectorParam> VectorParameters;
 };
 
@@ -323,37 +323,37 @@ struct FBridgeMaterialGraphNode
 	GENERATED_BODY()
 
 	/** MaterialExpressionGuid — stable across reloads, what connections reference. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid Guid;
 
 	/** UMaterialExpression subclass name ("MaterialExpressionConstant3Vector"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 X = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 Y = 0;
 
 	/** First line of UMaterialExpression::GetCaption() — typically the displayed node title. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Caption;
 
 	/** UMaterialExpression::Desc — user comment on the node. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Desc;
 
 	/** Named output pins on this node (empty string if anonymous default output). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> OutputNames;
 
 	/** Named input pins on this node. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> InputNames;
 
 	/** Class-specific key properties as "k=v;k=v" — ParameterName, DefaultValue, Texture, SamplerType, FunctionPath, Code (truncated) for Custom, etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString KeyProperties;
 };
 
@@ -364,28 +364,28 @@ struct FBridgeMaterialGraphConnection
 	GENERATED_BODY()
 
 	/** Source expression's MaterialExpressionGuid. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid SrcGuid;
 
 	/** Name of the output pin on the source expression ("" = default / index 0 anonymous output). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString SrcOutputName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 SrcOutputIndex = 0;
 
 	/** Destination expression's guid. Invalid (all-zero) for material-property output connections (see DstPropertyName). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid DstGuid;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString DstInputName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 DstInputIndex = 0;
 
 	/** For wires into main material outputs ("BaseColor" / "Metallic" / ...), the property name. Empty for expression→expression. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString DstPropertyName;
 };
 
@@ -395,25 +395,25 @@ struct FBridgeMaterialGraph
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
 	/** True if the asset is a UMaterialFunction (in which case OutputConnections will be empty). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bIsMaterialFunction = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialGraphNode> Nodes;
 
 	/** Expression → expression edges. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialGraphConnection> Connections;
 
 	/** Expression → main material output (BaseColor / Metallic / Normal / ...) edges. Empty for material functions. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialGraphConnection> OutputConnections;
 };
 
@@ -424,18 +424,18 @@ struct FBridgeMaterialShaderStat
 	GENERATED_BODY()
 
 	/** Human-readable shader variant name (e.g. "StationarySurface", "StaticMesh", "NaniteMesh"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ShaderType;
 
 	/** Longer description of the variant (e.g. "Base pass shader with only stationary lighting"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ShaderDescription;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 InstructionCount = 0;
 
 	/** Extra per-shader statistics as a free-form string (GPU-specific counters if available). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ExtraStatistics;
 };
 
@@ -445,34 +445,34 @@ struct FBridgeMaterialStats
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
 	/** "SM5" / "SM6" / "ES3_1" etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString FeatureLevel;
 
 	/** "Low" / "Medium" / "High" / "Epic" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString QualityLevel;
 
 	/** One entry per representative shader variant. Empty if the material's shader map is still compiling. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialShaderStat> Shaders;
 
 	/** UMaterialInterface::GetNumVirtualTextureStacks — count of VT sample stacks on this material. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 VirtualTextureStackCount = 0;
 
 	/** Compile errors reported by the shader map. Empty = clean compile. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> CompileErrors;
 
 	/** False if the material resource is still compiling — call again once `is_compiling()` is false. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bShaderMapReady = false;
 };
 
@@ -500,11 +500,11 @@ struct FBridgeShaderCompileStatus
 	GENERATED_BODY()
 
 	/** True if the queried material resource was loadable + a FeatureLevel/Quality resolved. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 
 	/** True when the requested shader map is compiled + live on the game thread. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bShaderMapReady = false;
 
 	/**
@@ -512,19 +512,19 @@ struct FBridgeShaderCompileStatus
 	 * across ALL assets (materials, textures, static meshes, etc). Useful as a "the
 	 * editor isn't idle yet" signal even if this specific material already resolved.
 	 */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 PendingAssetsGlobal = 0;
 
 	/** Echo of the resolved feature level ("SM5", "SM6", "ES3_1"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString FeatureLevel;
 
 	/** Echo of the resolved quality level ("Low", "Medium", "High", "Epic"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString QualityLevel;
 
 	/** Populated on resolution failure (e.g. bad path, bad feature level string). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Error;
 };
 
@@ -535,27 +535,27 @@ struct FBridgeMaterialFinding
 	GENERATED_BODY()
 
 	/** Stable rule id ("M5-2", "M5-3", ...). Stable for programmatic filtering. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString RuleId;
 
 	/** "info" / "warning" / "error". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Severity;
 
 	/** Short human-readable description. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Message;
 
 	/** Guid of the offending UMaterialExpression (invalid for material-level findings). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid ExpressionGuid;
 
 	/** Class of the offending expression (empty for material-level findings). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ExpressionClass;
 
 	/** Free-form extra context (e.g. "Texture=.. UV=.. OutPin=.."). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Detail;
 };
 
@@ -565,49 +565,49 @@ struct FBridgeMaterialAnalysis
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
 	/** Resolved material domain ("Surface" / "PostProcess" / ...). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString MaterialDomain;
 
 	/** Shading models present on the material. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> ShadingModels;
 
 	/** Max instructions across all shader variants (0 if shader map not ready). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 MaxInstructions = 0;
 
 	/** Distinct texture-parameter count (upper bound on sampler slots). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 SamplerCount = 0;
 
 	/** Total expression count on the graph (excluding comments / reroutes). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 ExpressionCount = 0;
 
 	/** Budgets echoed back from the analyze call (0 = not enforced). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 InstructionBudget = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 SamplerBudget = 0;
 
 	/** Compile errors from the shader map, if any. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> CompileErrors;
 
 	/** Ordered error → warning → info, then by RuleId ascending. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialFinding> Findings;
 
 	/** False when shader stats couldn't be collected (material still compiling). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bShaderStatsReady = false;
 };
 
@@ -618,10 +618,10 @@ struct FBridgePostProcessBlendable
 	GENERATED_BODY()
 
 	/** Material (or MI) asset path — empty when the blendable points at something non-UMaterialInterface. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString MaterialPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	float Weight = 1.0f;
 };
 
@@ -632,27 +632,27 @@ struct FBridgePostProcessVolumeInfo
 	GENERATED_BODY()
 
 	/** Editor-visible label (the one you see in the Outliner). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ActorLabel;
 
 	/** Internal UObject name (stable across relabels). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ActorName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bEnabled = false;
 
 	/** True = global / ignores volume bounds. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bUnbound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	float BlendWeight = 1.0f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	float Priority = 0.0f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgePostProcessBlendable> Blendables;
 };
 
@@ -662,31 +662,31 @@ struct FBridgeMaterialAutoFixResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bSuccess = false;
 
 	/** Count of findings resolved by the fix pass. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 FindingsFixed = 0;
 
 	/** Number of expressions deleted (drop_unused, static_switch_conversion, inline_trivial_custom). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 NodesRemoved = 0;
 
 	/** Number of expression properties changed (samplersource_share). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 PropertiesChanged = 0;
 
 	/** Number of expressions added by graph rewrites (static_switch_conversion, inline_trivial_custom). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 NodesAdded = 0;
 
 	/** Fix IDs that were requested but not recognised by the current implementation. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> SkippedFixes;
 
 	/** Human-readable, one-action-per-line report. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> Log;
 };
 
@@ -696,13 +696,13 @@ struct FBridgeCreateAssetResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bSuccess = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Path;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Error;
 };
 
@@ -713,17 +713,17 @@ struct FBridgeMaterialGraphOp
 	GENERATED_BODY()
 
 	/** "add" / "connect" / "connect_out" / "disconnect_in" / "disconnect_out" / "set_prop" / "comment" / "reroute" / "delete" */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Op;
 
 	/** For "add": UE expression short name ("Constant3Vector") or full path. */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString ClassName;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	int32 X = 0;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	int32 Y = 0;
 
 	/**
@@ -731,38 +731,38 @@ struct FBridgeMaterialGraphOp
 	 * Either a concrete guid ("12345678-..."), or a back-ref "$N" to the Nth
 	 * op in the same batch that produced a guid (add / comment / reroute).
 	 */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString SrcRef;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString SrcOutput;
 
 	/** Destination reference for "connect" / "disconnect_in" / "set_prop" / "delete". Same format as SrcRef. */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString DstRef;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString DstInput;
 
 	/** Property name for "connect_out" / "disconnect_out" (BaseColor / Metallic / ...) or for "set_prop". */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Property;
 
 	/** Value for "set_prop" (ImportText-format). */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Value;
 
 	/** Comment-specific fields. */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	int32 Width = 0;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	int32 Height = 0;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Text;
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FLinearColor Color = FLinearColor(0.2f, 0.7f, 1.0f, 0.4f);
 };
 
@@ -772,10 +772,10 @@ struct FBridgeMaterialGraphOpResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bSuccess = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 OpsApplied = 0;
 
 	/**
@@ -783,14 +783,14 @@ struct FBridgeMaterialGraphOpResult
 	 *   add / comment / reroute → the new node's guid
 	 *   other ops → invalid guid
 	 */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FGuid> Guids;
 
 	/** First failure's message (empty on full success). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Error;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 FailedAtIndex = -1;
 };
 
@@ -800,11 +800,11 @@ struct FBridgeMIParamSet
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Name;
 
 	/** "Scalar" / "Vector" / "Texture" / "StaticSwitch" / "Collection" (MPC scalar auto-detect). */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Type;
 
 	/**
@@ -814,7 +814,7 @@ struct FBridgeMIParamSet
 	 *   Texture       "/Game/Textures/T_Base.T_Base"
 	 *   StaticSwitch  "true" / "false"
 	 */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Value;
 };
 
@@ -824,14 +824,14 @@ struct FBridgeMIParamResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bSuccess = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 Applied = 0;
 
 	/** Per-failed-param diagnostic messages. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> Skipped;
 };
 
@@ -841,26 +841,26 @@ struct FBridgeShaderSnippet
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Description;
 
 	/** Full HLSL function signature line. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Signature;
 
 	/** "SM5" / "SM6" / "ES3_1". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString MinFeatureLevel;
 
 	/** Rough instruction-count estimate (as authored in the header comment). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString InstructionEstimate;
 
 	/** Full function body — only populated by get_shared_snippet; list_shared_snippets leaves it empty. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Source;
 };
 
@@ -870,11 +870,11 @@ struct FBridgeExpressionPropSet
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Name;
 
 	/** ImportText-format string (see SetMaterialExpressionProperty docs). */
-	UPROPERTY(BlueprintReadWrite)
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Value;
 };
 
@@ -884,18 +884,18 @@ struct FBridgeAddExpressionResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bSuccess = false;
 
 	/** MaterialExpressionGuid of the newly created node — pass this to connect / set-property ops. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FGuid Guid;
 
 	/** Resolved UE class name (e.g. "MaterialExpressionConstant3Vector"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ResolvedClass;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Error;
 };
 

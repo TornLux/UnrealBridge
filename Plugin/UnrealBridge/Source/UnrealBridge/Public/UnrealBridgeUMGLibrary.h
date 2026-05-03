@@ -10,27 +10,27 @@ struct FBridgeWidgetInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString Name;
 
 	/** Widget class, e.g. "CanvasPanel", "TextBlock", "Button" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString WidgetClass;
 
 	/** Parent widget name (empty for root) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString ParentName;
 
 	/** Slot class if parented, e.g. "CanvasPanelSlot", "OverlaySlot" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString SlotType;
 
 	/** Whether this widget is exposed as a variable in the Blueprint */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	bool bIsVariable = false;
 
 	/** Visibility setting, e.g. "Visible", "Collapsed", "Hidden" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString Visibility;
 };
 
@@ -40,13 +40,13 @@ struct FBridgeWidgetPropertyValue
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString Type;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString Value;
 };
 
@@ -57,15 +57,15 @@ struct FBridgeWidgetAnimTrack
 	GENERATED_BODY()
 
 	/** The widget targeted by this track */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString WidgetName;
 
 	/** Track type, e.g. "Color", "Transform", "Visibility" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString TrackType;
 
 	/** Display name of the track */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString DisplayName;
 };
 
@@ -75,13 +75,13 @@ struct FBridgeWidgetAnimationInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	float Duration = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	TArray<FBridgeWidgetAnimTrack> Tracks;
 };
 
@@ -92,19 +92,19 @@ struct FBridgeWidgetBindingInfo
 	GENERATED_BODY()
 
 	/** The widget this binding is on */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString WidgetName;
 
 	/** The property being bound, e.g. "Text", "Visibility", "ColorAndOpacity" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString PropertyName;
 
 	/** The function providing the value */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString FunctionName;
 
 	/** "Function" or "Property" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString Kind;
 };
 
@@ -115,15 +115,15 @@ struct FBridgeWidgetEventInfo
 	GENERATED_BODY()
 
 	/** The widget this event is on */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString WidgetName;
 
 	/** Event name, e.g. "OnClicked", "OnHovered" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString EventName;
 
 	/** Bound function or node description */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|UMG")
 	FString HandlerName;
 };
 

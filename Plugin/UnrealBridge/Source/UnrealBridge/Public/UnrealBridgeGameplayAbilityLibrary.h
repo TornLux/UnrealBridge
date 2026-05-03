@@ -10,31 +10,31 @@ struct FBridgeGameplayAbilityInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString Name;
 
 	/** Parent class name (e.g. "GameplayAbility" or a custom base). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString ParentClassName;
 
 	/** "InstancedPerActor", "InstancedPerExecution", "NonInstanced", or empty on failure. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString InstancingPolicy;
 
 	/** "LocalPredicted", "ServerInitiated", "ServerOnly", "LocalOnly", or empty on failure. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString NetExecutionPolicy;
 
 	/** AbilityTags on the CDO. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> AbilityTags;
 
 	/** Path to the cost GameplayEffect class, if any. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString CostGameplayEffectClass;
 
 	/** Path to the cooldown GameplayEffect class, if any. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString CooldownGameplayEffectClass;
 };
 
@@ -47,19 +47,19 @@ struct FBridgeGEModifierInfo
 	GENERATED_BODY()
 
 	/** Attribute being modified (e.g. "Health.Damage"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString Attribute;
 
 	/** "Additive", "Multiplicitive", "Division", "Override", or empty. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString ModOp;
 
 	/** Best-effort constant magnitude (only populated for ScalableFloat with constant curve). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float Magnitude = 0.f;
 
 	/** "ScalableFloat", "AttributeBased", "CustomMagnitude", "SetByCaller", or empty. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString MagnitudeSource;
 };
 
@@ -69,11 +69,11 @@ struct FBridgeGEComponentInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString ClassName;
 
 	/** Flat list of "PropertyName: Tag" entries for every FGameplayTagContainer / FInheritedTagContainer found. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> Tags;
 };
 
@@ -83,36 +83,36 @@ struct FBridgeGameplayEffectInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString ParentClassName;
 
 	/** "Instant", "HasDuration", "Infinite", or empty. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString DurationPolicy;
 
 	/** Best-effort constant duration in seconds (-1 when non-constant / infinite / instant). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float DurationSeconds = -1.f;
 
 	/** Best-effort constant period in seconds (0 = non-periodic). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float PeriodSeconds = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FBridgeGEModifierInfo> Modifiers;
 
 	/** "None", "AggregateBySource", "AggregateByTarget", or empty. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString StackingType;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 StackLimitCount = 0;
 
 	/** GEComponents attached to this effect (tag requirements / asset tags / etc. live here in UE5.3+). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FBridgeGEComponentInfo> Components;
 };
 
@@ -124,15 +124,15 @@ struct FBridgeAttributeInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString Name;
 
 	/** Underlying struct type, e.g. "GameplayAttributeData". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString Type;
 
 	/** CDO base value. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float BaseValue = 0.f;
 };
 
@@ -142,13 +142,13 @@ struct FBridgeAttributeSetInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString ParentClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FBridgeAttributeInfo> Attributes;
 };
 
@@ -158,19 +158,19 @@ struct FBridgeAttributeValue
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString AttributeName;
 
 	/** True when the attribute was resolved on the actor's ASC. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	bool bFound = false;
 
 	/** Current (modified) value. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float CurrentValue = 0.f;
 
 	/** Base value (pre-modifier). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float BaseValue = 0.f;
 };
 
@@ -180,27 +180,27 @@ struct FBridgeAbilityCooldownInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString AbilityClassName;
 
 	/** True when the ability spec was located on the ASC. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	bool bFound = false;
 
 	/** True when the ability is currently on cooldown. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	bool bOnCooldown = false;
 
 	/** Seconds remaining on the active cooldown (0 when off cooldown). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float TimeRemaining = 0.f;
 
 	/** Total cooldown duration for the current application (0 when off cooldown). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float CooldownDuration = 0.f;
 
 	/** Tag strings that put this ability into cooldown (from the ability CDO). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> CooldownTags;
 };
 
@@ -210,26 +210,26 @@ struct FBridgeActiveEffectInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString EffectClassName;
 
 	/** Seconds remaining; -1 for infinite / non-duration effects. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float TimeRemaining = 0.f;
 
 	/** Total duration of this application. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float Duration = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 StackCount = 1;
 
 	/** Period length for periodic effects (0 = non-periodic). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	float PeriodSeconds = 0.f;
 
 	/** Dynamic tags granted by the spec (design-time component tags live on the GE class). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> DynamicGrantedTags;
 };
 
@@ -241,16 +241,16 @@ struct FBridgeGrantedAbilityInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString AbilityClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 Level = 1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 InputID = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	bool bIsActive = false;
 };
 
@@ -260,25 +260,25 @@ struct FBridgeActorAbilitySystemInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString ActorName;
 
 	/** True if an ASC was found on (or owned by) the actor. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FBridgeGrantedAbilityInfo> GrantedAbilities;
 
 	/** Currently owned gameplay tags (from effects + loose). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> OwnedTags;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 ActiveEffectCount = 0;
 
 	/** AttributeSet class names spawned on this ASC. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> AttributeSetClasses;
 };
 
@@ -289,43 +289,43 @@ struct FBridgeAbilityTagRequirements
 	GENERATED_BODY()
 
 	/** Resolved ability class name (empty on failure). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString AbilityClassName;
 
 	/** Abilities with any of these tags are cancelled when this ability activates. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> CancelAbilitiesWithTag;
 
 	/** Abilities with any of these tags are blocked while this ability is active. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> BlockAbilitiesWithTag;
 
 	/** Tags applied to the activating owner while this ability is active. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> ActivationOwnedTags;
 
 	/** Owner must have all of these tags to activate. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> ActivationRequiredTags;
 
 	/** Blocked if the owner has any of these tags. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> ActivationBlockedTags;
 
 	/** Source actor must have all of these tags. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> SourceRequiredTags;
 
 	/** Blocked if the source actor has any of these tags. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> SourceBlockedTags;
 
 	/** Target actor must have all of these tags. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> TargetRequiredTags;
 
 	/** Blocked if the target actor has any of these tags. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	TArray<FString> TargetBlockedTags;
 };
 
@@ -336,11 +336,11 @@ struct FBridgeAbilityTriggerInfo
 	GENERATED_BODY()
 
 	/** Trigger tag string. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString TriggerTag;
 
 	/** "GameplayEvent", "OwnedTagAdded", "OwnedTagPresent", or "Unknown". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString TriggerSource;
 };
 
@@ -350,17 +350,17 @@ struct FBridgeActiveAbilityInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	FString AbilityClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 Level = 1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 InputID = -1;
 
 	/** Number of currently running instances (always >= 1 when reported). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility")
 	int32 ActiveCount = 0;
 };
 
@@ -371,10 +371,10 @@ struct FBridgeTagReference
 	GENERATED_BODY()
 
 	/** Asset object path, e.g. "/Game/GA/BP_Foo.BP_Foo". */
-	UPROPERTY(BlueprintReadOnly) FString AssetPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") FString AssetPath;
 
 	/** "Blueprint" / "DataTable" / "DataAsset" / etc. — short class name of the asset. */
-	UPROPERTY(BlueprintReadOnly) FString AssetClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") FString AssetClass;
 
 	/**
 	 * Field path inside the asset where the tag was found, e.g.
@@ -383,16 +383,16 @@ struct FBridgeTagReference
 	 *   "GEComponents[0]->InheritableAssetTags.Added"
 	 *   "Pin: TagPin"
 	 */
-	UPROPERTY(BlueprintReadOnly) FString Location;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") FString Location;
 
 	/**
 	 * Extra context — for BP graph hits: "Graph: <name>, Node: <title>".
 	 * For DataTable rows: "Row: <name>". For CDO scans: "CDO".
 	 */
-	UPROPERTY(BlueprintReadOnly) FString Context;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") FString Context;
 
 	/** The actual tag string found (may be a child of TagQuery when bMatchExact=false). */
-	UPROPERTY(BlueprintReadOnly) FString MatchedTag;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") FString MatchedTag;
 };
 
 /** Aggregate report from FindGameplayTagReferences. */
@@ -401,25 +401,25 @@ struct FBridgeTagReferenceReport
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString TagQuery;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") FString TagQuery;
 
-	UPROPERTY(BlueprintReadOnly) bool bMatchExact = true;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") bool bMatchExact = true;
 
 	/** Number of assets walked (may be < total under PackagePath if MaxResults hit). */
-	UPROPERTY(BlueprintReadOnly) int32 AssetsScanned = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") int32 AssetsScanned = 0;
 
 	/** Number of distinct assets that contained at least one match. */
-	UPROPERTY(BlueprintReadOnly) int32 AssetsMatched = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") int32 AssetsMatched = 0;
 
 	/** Total reference rows in `References` (may be capped at MaxResults). */
-	UPROPERTY(BlueprintReadOnly) int32 ReferenceCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") int32 ReferenceCount = 0;
 
 	/** True when the scan stopped because MaxResults was reached. */
-	UPROPERTY(BlueprintReadOnly) bool bTruncated = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") bool bTruncated = false;
 
-	UPROPERTY(BlueprintReadOnly) float ScanDurationMs = 0.f;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") float ScanDurationMs = 0.f;
 
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeTagReference> References;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|GameplayAbility") TArray<FBridgeTagReference> References;
 };
 
 /**

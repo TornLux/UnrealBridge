@@ -10,11 +10,11 @@ struct FBridgeDataTableRow
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	FString RowName;
 
 	/** Key-value pairs: "PropertyName = Value" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	TArray<FString> Fields;
 };
 
@@ -24,15 +24,15 @@ struct FBridgeDataTableColumn
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	FString Name;
 
 	/** Property type name (e.g. "FloatProperty", "StructProperty", "NameProperty"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	FString TypeName;
 
 	/** For struct/object/enum properties: inner type name. Empty otherwise. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	FString InnerTypeName;
 };
 
@@ -42,21 +42,21 @@ struct FBridgeDataTableInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	FString Name;
 
 	/** Row struct type name */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	FString RowStructName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	int32 NumRows = 0;
 
 	/** Column names (property names of the row struct) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	TArray<FString> ColumnNames;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|DataTable")
 	TArray<FBridgeDataTableRow> Rows;
 };
 

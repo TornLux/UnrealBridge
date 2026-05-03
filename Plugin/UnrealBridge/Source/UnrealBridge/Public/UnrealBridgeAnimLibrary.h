@@ -11,13 +11,13 @@ struct FBridgeAnimState
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	bool bIsConduit = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	bool bIsDefault = false;
 };
 
@@ -26,19 +26,19 @@ struct FBridgeAnimTransition
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString FromState;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString ToState;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	bool bBidirectional = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float CrossfadeDuration = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 PriorityOrder = 0;
 };
 
@@ -47,13 +47,13 @@ struct FBridgeStateMachineInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeAnimState> States;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeAnimTransition> Transitions;
 };
 
@@ -65,13 +65,13 @@ struct FBridgeAnimNodeConnection
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SourcePin;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 TargetNodeIndex = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString TargetPin;
 };
 
@@ -81,25 +81,25 @@ struct FBridgeAnimGraphNodeInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NodeIndex = 0;
 
 	/** Stable address: stringified NodeGuid (Digits form). Use with `get_anim_node_details_by_guid` and the rest of the GUID-based write API — index drifts on graph mutation, GUID does not. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString NodeGuid;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString NodeTitle;
 
 	/** e.g. "AnimGraphNode_SequencePlayer", "AnimGraphNode_Slot" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString NodeType;
 
 	/** Extra detail: referenced anim asset, slot name, etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Detail;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeAnimNodeConnection> Connections;
 };
 
@@ -111,15 +111,15 @@ struct FBridgeAnimLayerInfo
 	GENERATED_BODY()
 
 	/** Interface class name, e.g. "ALI_ItemAnimLayers" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString InterfaceName;
 
 	/** Layer function name, e.g. "Hands", "Arms" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString LayerName;
 
 	/** The ABP class implementing this layer (empty if unset) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString ImplementingClass;
 };
 
@@ -130,14 +130,14 @@ struct FBridgeAnimSlotInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SlotName;
 
 	/** Which graph contains this slot node */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString GraphName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString NodeTitle;
 };
 
@@ -148,17 +148,17 @@ struct FBridgeAnimNotifyInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString NotifyName;
 
 	/** "Notify" or "NotifyState" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString NotifyType;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float TriggerTime = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float Duration = 0.f;
 };
 
@@ -167,11 +167,11 @@ struct FBridgeAnimCurveInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString CurveName;
 
 	/** Number of keys in the curve */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumKeys = 0;
 };
 
@@ -180,31 +180,31 @@ struct FBridgeAnimSequenceInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SkeletonName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float PlayLength = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumFrames = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float FrameRate = 30.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float RateScale = 1.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	bool bHasRootMotion = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeAnimNotifyInfo> Notifies;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeAnimCurveInfo> Curves;
 };
 
@@ -215,14 +215,14 @@ struct FBridgeMontageSectionInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SectionName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float StartTime = 0.f;
 
 	/** Next section name for auto-linking (empty = none) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString NextSectionName;
 };
 
@@ -231,31 +231,31 @@ struct FBridgeMontageInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SkeletonName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float PlayLength = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SlotName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float BlendInTime = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float BlendOutTime = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	bool bEnableAutoBlendOut = true;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeMontageSectionInfo> Sections;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeAnimNotifyInfo> Notifies;
 };
 
@@ -266,16 +266,16 @@ struct FBridgeBlendSpaceAxis
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float Min = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float Max = 100.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 GridDivisions = 4;
 };
 
@@ -284,13 +284,13 @@ struct FBridgeBlendSpaceSample
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString AnimationName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FVector SampleValue = FVector::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float RateScale = 1.f;
 };
 
@@ -299,20 +299,20 @@ struct FBridgeBlendSpaceInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SkeletonName;
 
 	/** 1 for BlendSpace1D, 2 for standard BlendSpace */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumAxes = 2;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeBlendSpaceAxis> Axes;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FBridgeBlendSpaceSample> Samples;
 };
 
@@ -323,16 +323,16 @@ struct FBridgeBoneInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString BoneName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 BoneIndex = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 ParentIndex = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString ParentName;
 };
 
@@ -344,13 +344,13 @@ struct FBridgeVirtualBoneInfo
 	GENERATED_BODY()
 
 	/** Virtual bone name (already includes the "VB " prefix as stored on the skeleton). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString VirtualBoneName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SourceBoneName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString TargetBoneName;
 };
 
@@ -362,29 +362,29 @@ struct FBridgeMontageSlotSegment
 	GENERATED_BODY()
 
 	/** Slot name that owns this segment. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SlotName;
 
 	/** Referenced anim asset path (empty if the segment has no anim). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString AnimReferencePath;
 
 	/** Montage-local start position in seconds. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float StartPos = 0.f;
 
 	/** Sub-clip start time inside the referenced anim. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float AnimStartTime = 0.f;
 
 	/** Sub-clip end time inside the referenced anim. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float AnimEndTime = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float AnimPlayRate = 1.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 LoopingCount = 1;
 };
 
@@ -395,20 +395,20 @@ struct FBridgeSocketInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString SocketName;
 
 	/** Bone this socket is attached to */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString ParentBoneName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FVector RelativeLocation = FVector::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FRotator RelativeRotation = FRotator::ZeroRotator;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FVector RelativeScale = FVector::OneVector;
 };
 
@@ -419,14 +419,14 @@ struct FBridgeAnimSyncMarker
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString MarkerName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float Time = 0.f;
 
 	/** Editor-only notify track index (-1 when no editor data). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 TrackIndex = -1;
 };
 
@@ -437,36 +437,36 @@ struct FBridgeAnimBlueprintInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
 	/** Parent class full path (e.g. "/Script/Engine.AnimInstance"). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString ParentClass;
 
 	/** Target skeleton soft object path. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString TargetSkeleton;
 
 	/** Editor preview skeletal mesh soft object path (empty if unset). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString PreviewSkeletalMesh;
 
 	/** True for a Template (skeleton-agnostic) AnimBlueprint. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	bool bIsTemplate = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumStateMachines = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumLinkedLayers = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumSlots = 0;
 
 	/** Implemented AnimLayer interfaces (class names). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	TArray<FString> ImplementedInterfaces;
 };
 
@@ -481,18 +481,18 @@ struct FBridgeAnimGraphSummary
 	GENERATED_BODY()
 
 	/** Graph name as stored on the UEdGraph (use this as GraphName in write ops). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
 	/** One of: "AnimGraph", "StateMachine", "State", "Conduit", "TransitionRule", "Function", "Other". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Kind;
 
 	/** Parent container graph name — "" for top-level graphs. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString ParentGraphName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumNodes = 0;
 };
 
@@ -502,17 +502,17 @@ struct FBridgeAnimLayoutResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bSucceeded = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation") bool bSucceeded = false;
 
-	UPROPERTY(BlueprintReadOnly) int32 NodesPositioned = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation") int32 NodesPositioned = 0;
 
 	/** Layer / column count of the final layout. */
-	UPROPERTY(BlueprintReadOnly) int32 LayerCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation") int32 LayerCount = 0;
 
-	UPROPERTY(BlueprintReadOnly) int32 BoundsWidth = 0;
-	UPROPERTY(BlueprintReadOnly) int32 BoundsHeight = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation") int32 BoundsWidth = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation") int32 BoundsHeight = 0;
 
-	UPROPERTY(BlueprintReadOnly) TArray<FString> Warnings;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation") TArray<FString> Warnings;
 };
 
 // ─── Blend Profile structs ──────────────────────────────────
@@ -522,14 +522,14 @@ struct FBridgeBlendProfileInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Name;
 
 	/** "TimeFactor", "WeightFactor", or "BlendMask". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString Mode;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	int32 NumEntries = 0;
 };
 
@@ -538,10 +538,10 @@ struct FBridgeBlendProfileEntry
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	FString BoneName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Animation")
 	float BlendScale = 0.f;
 };
 

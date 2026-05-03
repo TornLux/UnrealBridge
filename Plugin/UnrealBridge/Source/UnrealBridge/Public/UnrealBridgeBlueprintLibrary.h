@@ -12,13 +12,13 @@ struct FBridgeClassInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString ClassName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString ClassPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsNative = false;
 };
 
@@ -29,35 +29,35 @@ struct FBridgeVariableInfo
 	GENERATED_BODY()
 
 	/** Variable name */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
 	/** Type as displayed in the editor (e.g. "Float", "Vector", "MyStruct", "Array of Int") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Type;
 
 	/** Category assigned in the Blueprint editor */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Category;
 
 	/** Whether this variable is marked Instance Editable (visible in Details panel) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bInstanceEditable = false;
 
 	/** Whether this variable is marked Blueprint Read Only */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bBlueprintReadOnly = false;
 
 	/** Default value as string (best-effort serialization) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString DefaultValue;
 
 	/** Tooltip / description set in the editor */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Description;
 
 	/** The replication condition (None, Replicated, RepNotify) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString ReplicationCondition;
 };
 
@@ -67,14 +67,14 @@ struct FBridgeFunctionParam
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Type;
 
 	/** True if this is a return / output parameter */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsOutput = false;
 
 	/** Declared default value when the function was exposed to Blueprint
@@ -82,18 +82,18 @@ struct FBridgeFunctionParam
 	 *  Empty when no default was specified — the caller must wire a value.
 	 *  Only populated by GetFunctionSignature; older APIs (GetFunctionCallSignature
 	 *  / GetBlueprintFunctions) leave this empty. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString DefaultValue;
 
 	/** True when the parameter is passed by reference (`UPARAM(ref)` / `Foo&`).
 	 *  Relevant because Blueprint must wire a variable (not a literal) into
 	 *  the pin. Only populated by GetFunctionSignature. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsReference = false;
 
 	/** True when the parameter is `const` — some callers use this to decide
 	 *  whether a pin default is legal. Only populated by GetFunctionSignature. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsConst = false;
 };
 
@@ -103,35 +103,35 @@ struct FBridgeFunctionInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
 	/** "Function", "Event", "Override" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Kind;
 
 	/** Access level: "Public", "Protected", "Private" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Access;
 
 	/** Whether this is a pure function (no exec pin) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsPure = false;
 
 	/** Whether this is a static function */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsStatic = false;
 
 	/** Category assigned in editor */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Category;
 
 	/** Input and output parameters */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FBridgeFunctionParam> Params;
 
 	/** Description / tooltip */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Description;
 };
 
@@ -142,23 +142,23 @@ struct FBridgeComponentInfo
 	GENERATED_BODY()
 
 	/** Component variable name */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
 	/** Component class (e.g. "StaticMeshComponent", "CapsuleComponent") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString ComponentClass;
 
 	/** Parent component name (empty for root) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString ParentName;
 
 	/** Whether this is the scene root component */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsRoot = false;
 
 	/** Whether this component is inherited from a parent class */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsInherited = false;
 };
 
@@ -169,19 +169,19 @@ struct FBridgeInterfaceInfo
 	GENERATED_BODY()
 
 	/** Interface class name (e.g. "BPI_Interactable") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString InterfaceName;
 
 	/** Full class path */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString InterfacePath;
 
 	/** Whether this interface is implemented via a Blueprint (vs C++) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsBlueprintImplemented = false;
 
 	/** Function names declared by this interface */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FString> Functions;
 };
 
@@ -192,15 +192,15 @@ struct FBridgeCallEdge
 	GENERATED_BODY()
 
 	/** The function/event being called */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString TargetName;
 
 	/** Target class or object (e.g. "KismetMathLibrary", "Self", "OtherActor") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString TargetClass;
 
 	/** Whether the target is a function, event, or macro */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString TargetKind;
 };
 
@@ -211,28 +211,28 @@ struct FBridgeNodeInfo
 	GENERATED_BODY()
 
 	/** Node title as shown in the editor (e.g. "Branch", "Print String", "Set Timer by Event") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Title;
 
 	/** Node type category: "FunctionCall", "VariableGet", "VariableSet", "Branch", "ForEach",
 	    "Cast", "Event", "Macro", "Spawn", "Timeline", "Knot", "Other" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeType;
 
 	/** For function calls: the target class (e.g. "KismetSystemLibrary") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString TargetClass;
 
 	/** For variable nodes: the variable name */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString VariableName;
 
 	/** Node comment if any */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Comment;
 
 	/** NodeGuid (digits form, 32-hex); pass to connect_graph_pins / remove_graph_node / etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeGuid;
 };
 
@@ -244,10 +244,10 @@ struct FBridgeVariableSummary
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Type;
 };
 
@@ -257,15 +257,15 @@ struct FBridgeFunctionSummary
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
 	/** "Function", "Event", "Override" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Kind;
 
 	/** Compact signature, e.g. "(Int, Float) -> Bool" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Signature;
 };
 
@@ -275,13 +275,13 @@ struct FBridgeComponentSummary
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString ComponentClass;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString ParentName;
 };
 
@@ -291,35 +291,35 @@ struct FBridgeBlueprintOverview
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString BlueprintName;
 
 	/** First native ancestor class name: "Actor", "Character", "AnimInstance", "UserWidget", etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString BlueprintType;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FBridgeClassInfo ParentClass;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FBridgeVariableSummary> Variables;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FBridgeFunctionSummary> Functions;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FBridgeComponentSummary> Components;
 
 	/** Interface class names */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FString> Interfaces;
 
 	/** Event dispatcher names */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FString> EventDispatchers;
 
 	/** All graph names (EventGraph, functions, macros) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FString> GraphNames;
 };
 
@@ -331,11 +331,11 @@ struct FBridgeEventDispatcherInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
 	/** Parameters of the dispatcher delegate */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FBridgeFunctionParam> Params;
 };
 
@@ -347,11 +347,11 @@ struct FBridgeGraphInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
 	/** "EventGraph", "Function", "Macro", "EventDispatcher" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString GraphType;
 };
 
@@ -364,11 +364,11 @@ struct FBridgeExecConnection
 	GENERATED_BODY()
 
 	/** Exec output pin name (e.g. "then", "True", "False", "Completed") */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString PinName;
 
 	/** Index of the target step in the result array (-1 = unconnected) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	int32 TargetStepIndex = -1;
 };
 
@@ -378,21 +378,21 @@ struct FBridgeExecStep
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	int32 StepIndex = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeTitle;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeType;
 
 	/** Extra context: called function, variable name, cast target, etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Detail;
 
 	/** Outgoing exec-pin connections (branching info) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FBridgeExecConnection> ExecOutputs;
 };
 
@@ -405,21 +405,21 @@ struct FBridgePinConnection
 	GENERATED_BODY()
 
 	/** Source node index (matches GetFunctionNodes order with empty filter) */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	int32 SourceNodeIndex = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString SourcePinName;
 
 	/** Target node index */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	int32 TargetNodeIndex = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString TargetPinName;
 
 	/** True for exec wires, false for data wires */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bIsExec = false;
 };
 
@@ -431,17 +431,17 @@ struct FBridgePropertyValue
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Type;
 
 	/** Value as export-text string */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Value;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Category;
 };
 
@@ -453,21 +453,21 @@ struct FBridgeNodeSearchResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString GraphName;
 
 	/** "EventGraph", "Function", "Macro" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString GraphType;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeTitle;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeType;
 
 	/** Variable name, function name, cast target, etc. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Detail;
 };
 
@@ -479,11 +479,11 @@ struct FBridgeTimelineTrack
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString TrackName;
 
 	/** "Float", "Vector", "LinearColor", "Event" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString TrackType;
 };
 
@@ -493,22 +493,22 @@ struct FBridgeTimelineInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Name;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	float Length = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bAutoPlay = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bLoop = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bReplicated = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	TArray<FBridgeTimelineTrack> Tracks;
 };
 
@@ -519,15 +519,15 @@ struct FBridgeCompileMessage
 	GENERATED_BODY()
 
 	/** "Error" | "Warning" | "Note" | "Info" */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Severity;
 
 	/** Plain-text message with object/node tokens flattened to names. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString Message;
 
 	/** NodeGuid (digits) of the first graph node referenced by the message, or "" if none. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeGuid;
 };
 
@@ -537,19 +537,19 @@ struct FBridgeBreakpointInfo
 	GENERATED_BODY()
 
 	/** Graph name the node lives in (e.g. "EventGraph", "MyFunction"). Empty if graph unresolved. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString GraphName;
 
 	/** NodeGuid (digits) of the node the breakpoint is attached to. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeGuid;
 
 	/** User-facing node title — best-effort, may be empty if the node was deleted. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	FString NodeTitle;
 
 	/** True if the breakpoint is enabled (as requested by the user — ignores single-step transient state). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint")
 	bool bEnabled = false;
 };
 
@@ -567,50 +567,50 @@ struct FBridgeBlueprintSummary
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString Name;
-	UPROPERTY(BlueprintReadOnly) FString Path;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Path;
 
 	/** Short name of immediate superclass. */
-	UPROPERTY(BlueprintReadOnly) FString ParentClass;
-	UPROPERTY(BlueprintReadOnly) FString ParentClassPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString ParentClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString ParentClassPath;
 
 	/** First native ancestor ("Actor", "Character", "UserWidget", etc.). */
-	UPROPERTY(BlueprintReadOnly) FString BlueprintType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString BlueprintType;
 
 	/** Interface class short names. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> Interfaces;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> Interfaces;
 
 	/** Names of events this BP actually overrides / handles
 	 *  (entry nodes found in UbergraphPages + AnimGraph). */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> EventsHandled;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> EventsHandled;
 
 	/** Non-internal function names defined on this BP. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> PublicFunctions;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> PublicFunctions;
 
 	/** Event dispatcher names declared on this BP. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> EventDispatchers;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> EventDispatchers;
 
-	UPROPERTY(BlueprintReadOnly) int32 VariableCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 InstanceEditableCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 ReplicatedVariableCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 FunctionCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 MacroCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 ComponentCount = 0;
-	UPROPERTY(BlueprintReadOnly) int32 TimelineCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 VariableCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 InstanceEditableCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 ReplicatedVariableCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 FunctionCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 MacroCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 ComponentCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 TimelineCount = 0;
 
 	/** Sum of nodes across every graph (ubergraph + functions + macros). */
-	UPROPERTY(BlueprintReadOnly) int32 TotalNodeCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 TotalNodeCount = 0;
 
 	/** Deduped variable categories across all variables. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> VariableCategories;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> VariableCategories;
 
 	/** Most-called external classes (e.g. "KismetSystemLibrary",
 	 *  "GameplayStatics"), sorted by call-site frequency, top 10. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> KeyReferencedClasses;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> KeyReferencedClasses;
 
 	/** Asset paths referenced by pin defaults + component class refs,
 	 *  deduped, top 10. Gives a sense of what content this BP "uses". */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> KeyReferencedAssets;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> KeyReferencedAssets;
 };
 
 /** Per-function semantic digest — pre-formatted exec outline + aggregate
@@ -621,50 +621,50 @@ struct FBridgeFunctionSemantics
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Name;
 
 	/** "Function" | "Event" | "Override" | "Macro" | "EventGraph". */
-	UPROPERTY(BlueprintReadOnly) FString Kind;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Kind;
 
 	/** "Public" | "Protected" | "Private". */
-	UPROPERTY(BlueprintReadOnly) FString Access;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Access;
 
-	UPROPERTY(BlueprintReadOnly) bool bIsPure = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsOverride = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsPure = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsOverride = false;
 
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeFunctionParam> Params;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeFunctionParam> Params;
 
 	/** Indented human-readable outline of the exec flow. Each entry is
 	 *  one line, two-space indent per nesting level. e.g.
 	 *    "Branch (IsValid(Target))"
 	 *    "  True → Call GameplayStatics.ApplyDamage"
 	 *    "  False → Log 'no target'" */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> ExecOutline;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> ExecOutline;
 
 	/** Variable names read in this function body (deduped). */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> ReadsVariables;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> ReadsVariables;
 
 	/** Variable names written (Set) in this function body. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> WritesVariables;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> WritesVariables;
 
 	/** Functions called (formatted "ClassName.FuncName", deduped). */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> CallsFunctions;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> CallsFunctions;
 
 	/** Event dispatchers fired (Call). */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> FiresDispatchers;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> FiresDispatchers;
 
 	/** Classes spawned via SpawnActorFromClass / similar. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> SpawnsClasses;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> SpawnsClasses;
 
-	UPROPERTY(BlueprintReadOnly) int32 NodeCount = 0;
-	UPROPERTY(BlueprintReadOnly) bool bHasLoops = false;
-	UPROPERTY(BlueprintReadOnly) bool bHasBranches = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 NodeCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bHasLoops = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bHasBranches = false;
 
 	/** Text from UEdGraphNode_Comment boxes inside this graph. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> CommentBlocks;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> CommentBlocks;
 
 	/** One-line tooltip / metadata description if any. */
-	UPROPERTY(BlueprintReadOnly) FString Description;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Description;
 };
 
 /** Positioning + sizing data for a Blueprint graph node. Used for layout.
@@ -682,35 +682,35 @@ struct FBridgeNodeLayout
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) int32 PosX = 0;
-	UPROPERTY(BlueprintReadOnly) int32 PosY = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 PosX = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 PosY = 0;
 
 	/** Width as stored on UEdGraphNode::NodeWidth.
 	 *  Authoritative for Comment nodes; 0 until Slate renders for others. */
-	UPROPERTY(BlueprintReadOnly) int32 StoredWidth = 0;
-	UPROPERTY(BlueprintReadOnly) int32 StoredHeight = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 StoredWidth = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 StoredHeight = 0;
 
 	/** Synthesised from title length + visible pin count when Stored is 0. */
-	UPROPERTY(BlueprintReadOnly) int32 EstimatedWidth = 0;
-	UPROPERTY(BlueprintReadOnly) int32 EstimatedHeight = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 EstimatedWidth = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 EstimatedHeight = 0;
 
 	/** Stored if nonzero, else Estimated. Used for corner calculations. */
-	UPROPERTY(BlueprintReadOnly) int32 EffectiveWidth = 0;
-	UPROPERTY(BlueprintReadOnly) int32 EffectiveHeight = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 EffectiveWidth = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 EffectiveHeight = 0;
 
 	/** All four corners in graph coordinates. TopLeft == (PosX, PosY). */
-	UPROPERTY(BlueprintReadOnly) FVector2D TopLeft      = FVector2D::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) FVector2D TopRight     = FVector2D::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) FVector2D BottomLeft   = FVector2D::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) FVector2D BottomRight  = FVector2D::ZeroVector;
-	UPROPERTY(BlueprintReadOnly) FVector2D Center       = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D TopLeft      = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D TopRight     = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D BottomLeft   = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D BottomRight  = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D Center       = FVector2D::ZeroVector;
 
 	/** True if this is a UEdGraphNode_Comment (sizes always authoritative). */
-	UPROPERTY(BlueprintReadOnly) bool bIsCommentBox = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsCommentBox = false;
 
 	/** True when EffectiveWidth/Height came from StoredWidth/Height
 	 *  (reliable). False when we had to estimate because Stored was 0. */
-	UPROPERTY(BlueprintReadOnly) bool bSizeIsAuthoritative = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bSizeIsAuthoritative = false;
 };
 
 /** Pixel-accurate pin position, queried from the live Slate SGraphPin
@@ -722,18 +722,18 @@ struct FBridgeRenderedPin
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString Name;
-	UPROPERTY(BlueprintReadOnly) FString Direction;  // "input" or "output"
-	UPROPERTY(BlueprintReadOnly) int32 DirectionIndex = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Direction;  // "input" or "output"
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 DirectionIndex = 0;
 
 	/** Pin position relative to its owning node's top-left corner. */
-	UPROPERTY(BlueprintReadOnly) FVector2D NodeOffset = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D NodeOffset = FVector2D::ZeroVector;
 
 	/** Pin position in graph coordinates (node graph pos + node offset). */
-	UPROPERTY(BlueprintReadOnly) FVector2D GraphPosition = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D GraphPosition = FVector2D::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly) bool bIsExec = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsHidden = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsExec = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsHidden = false;
 };
 
 /** Pixel-accurate node geometry queried from the live SGraphNode widget.
@@ -745,20 +745,20 @@ struct FBridgeRenderedNode
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
-	UPROPERTY(BlueprintReadOnly) FString Title;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Title;
 
 	/** Graph-space position (top-left). Matches UEdGraphNode::NodePosX/Y. */
-	UPROPERTY(BlueprintReadOnly) FVector2D GraphPosition = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D GraphPosition = FVector2D::ZeroVector;
 
 	/** Actual rendered size in graph units, from SGraphNode->GetDesiredSize(). */
-	UPROPERTY(BlueprintReadOnly) FVector2D Size = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D Size = FVector2D::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeRenderedPin> Pins;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeRenderedPin> Pins;
 
 	/** True when Size & Pins were read from the live widget; false if the
 	 *  node's widget couldn't be found (graph not open / not yet rendered). */
-	UPROPERTY(BlueprintReadOnly) bool bIsLive = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsLive = false;
 };
 
 /** Estimated per-pin position for layout. Pin X is inset from node edges;
@@ -768,27 +768,27 @@ struct FBridgePinLayout
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Name;
 
 	/** "input" or "output". */
-	UPROPERTY(BlueprintReadOnly) FString Direction;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Direction;
 
 	/** Index among pins of the same direction on this node (0-based,
 	 *  hidden pins skipped). Used to drive pin Y. */
-	UPROPERTY(BlueprintReadOnly) int32 DirectionIndex = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 DirectionIndex = 0;
 
 	/** Position relative to the node's top-left origin. */
-	UPROPERTY(BlueprintReadOnly) FVector2D LocalOffset = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D LocalOffset = FVector2D::ZeroVector;
 
 	/** Absolute position in graph coordinates (node pos + local offset). */
-	UPROPERTY(BlueprintReadOnly) FVector2D Position = FVector2D::ZeroVector;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FVector2D Position = FVector2D::ZeroVector;
 
-	UPROPERTY(BlueprintReadOnly) bool bIsExec = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsHidden = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsExec = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsHidden = false;
 
 	/** Always true for now — pin coordinates are synthesised. A running
 	 *  Slate graph editor is required for pixel-accurate pin positions. */
-	UPROPERTY(BlueprintReadOnly) bool bIsEstimated = true;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsEstimated = true;
 };
 
 /** Pre-spawn node size estimate. Same heuristic as FBridgeNodeLayout's
@@ -800,26 +800,26 @@ struct FBridgeNodeSizeEstimate
 	GENERATED_BODY()
 
 	/** Predicted width in graph units. Matches EstimateNodeSize's output. */
-	UPROPERTY(BlueprintReadOnly) int32 Width = 180;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 Width = 180;
 
 	/** Predicted height in graph units. */
-	UPROPERTY(BlueprintReadOnly) int32 Height = 60;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 Height = 60;
 
 	/** Visible input pin count (exec + data, hidden pins excluded). */
-	UPROPERTY(BlueprintReadOnly) int32 InputPinCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 InputPinCount = 0;
 
 	/** Visible output pin count. */
-	UPROPERTY(BlueprintReadOnly) int32 OutputPinCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 OutputPinCount = 0;
 
 	/** Echoes the input Kind — "function_call", "branch", etc. */
-	UPROPERTY(BlueprintReadOnly) FString Kind;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Kind;
 
 	/** Diagnostic notes: "function not found", "fallback default", etc. */
-	UPROPERTY(BlueprintReadOnly) FString Notes;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Notes;
 
 	/** True if the estimate succeeded; false if kind/params couldn't be
 	 *  resolved and we fell back to a generic default size. */
-	UPROPERTY(BlueprintReadOnly) bool bResolved = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bResolved = false;
 };
 
 /** Result of AutoLayoutGraph. */
@@ -828,20 +828,20 @@ struct FBridgeLayoutResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bSucceeded = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bSucceeded = false;
 
 	/** Number of nodes whose NodePosX/Y was updated. */
-	UPROPERTY(BlueprintReadOnly) int32 NodesPositioned = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 NodesPositioned = 0;
 
 	/** Depth of the layered layout (layer 0 = leftmost sources). */
-	UPROPERTY(BlueprintReadOnly) int32 LayerCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 LayerCount = 0;
 
 	/** Width of the final laid-out area in graph units. */
-	UPROPERTY(BlueprintReadOnly) int32 BoundsWidth = 0;
-	UPROPERTY(BlueprintReadOnly) int32 BoundsHeight = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 BoundsWidth = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 BoundsHeight = 0;
 
 	/** Per-node diagnostics: cycles broken, unreachable nodes, etc. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> Warnings;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> Warnings;
 };
 
 /** A single finding from LintBlueprint. `code` is a stable machine-readable
@@ -853,25 +853,25 @@ struct FBridgeLintIssue
 	GENERATED_BODY()
 
 	/** "error" (compile-blocking), "warning" (quality issue), "info" (style). */
-	UPROPERTY(BlueprintReadOnly) FString Severity;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Severity;
 
 	/** Stable identifier (e.g. "OrphanNode", "OversizedFunction", "UnusedVariable"). */
-	UPROPERTY(BlueprintReadOnly) FString Code;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Code;
 
 	/** Plain-English description with the specific offending name(s) inlined. */
-	UPROPERTY(BlueprintReadOnly) FString Message;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Message;
 
 	/** Graph where the issue lives ("" for BP-level issues like unused class vars). */
-	UPROPERTY(BlueprintReadOnly) FString GraphName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphName;
 
 	/** Node GUID for per-node issues ("" if not applicable). */
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
 
 	/** Variable name for per-variable issues ("" if not applicable). */
-	UPROPERTY(BlueprintReadOnly) FString VariableName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString VariableName;
 
 	/** Function name for per-function issues ("" if not applicable). */
-	UPROPERTY(BlueprintReadOnly) FString FunctionName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString FunctionName;
 };
 
 /** Full pin description for one node pin (listed regardless of wire state). */
@@ -881,78 +881,78 @@ struct FBridgePinInfo
 	GENERATED_BODY()
 
 	/** Pin's internal name (e.g. "then", "Center", "InString", "Condition"). */
-	UPROPERTY(BlueprintReadOnly) FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Name;
 
 	/** User-facing pin label shown in the graph editor (sometimes differs). */
-	UPROPERTY(BlueprintReadOnly) FString DisplayName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString DisplayName;
 
 	/** Human-readable type. Examples: "Exec", "Bool", "Int", "Float",
 	 *  "Vector", "String", "Actor", "Array of Int", "Class<PrimitiveComponent>",
 	 *  "Enum<EMovementMode>". */
-	UPROPERTY(BlueprintReadOnly) FString Type;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Type;
 
 	/** "input" or "output". */
-	UPROPERTY(BlueprintReadOnly) FString Direction;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Direction;
 
 	/** Raw FEdGraphPinType::PinCategory (e.g. "exec", "int", "object"). */
-	UPROPERTY(BlueprintReadOnly) FString Category;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Category;
 
 	/** Raw FEdGraphPinType::PinSubCategory (rarely useful directly;
 	 *  see SubCategoryObjectPath for class/struct name). */
-	UPROPERTY(BlueprintReadOnly) FString SubCategory;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString SubCategory;
 
 	/** Path of the subcategory object (class for Object/SoftObject/Class
 	 *  pins, struct for Struct pins, enum for Enum pins). Empty otherwise. */
-	UPROPERTY(BlueprintReadOnly) FString SubCategoryObjectPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString SubCategoryObjectPath;
 
 	/** Effective default value as a string. For object pins this is the
 	 *  object path; for text pins the text contents; for literals the
 	 *  string form. Empty when the pin is connected (default is ignored)
 	 *  or when no default has been set. */
-	UPROPERTY(BlueprintReadOnly) FString DefaultValue;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString DefaultValue;
 
 	/** True if the pin has an object reference default (distinct from
 	 *  a literal DefaultValue string). */
-	UPROPERTY(BlueprintReadOnly) bool bHasDefaultObject = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bHasDefaultObject = false;
 
-	UPROPERTY(BlueprintReadOnly) bool bIsExec = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsConnected = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsExec = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsConnected = false;
 
 	/** Number of currently-linked pins on the other side. */
-	UPROPERTY(BlueprintReadOnly) int32 LinkCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 LinkCount = 0;
 
-	UPROPERTY(BlueprintReadOnly) bool bIsArray = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsSet = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsMap = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsArray = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsSet = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsMap = false;
 
-	UPROPERTY(BlueprintReadOnly) bool bIsReference = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsConst = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsHidden = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsReference = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsConst = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsHidden = false;
 
 	/** True for the implicit "self" / target pin most K2 CallFunction nodes carry. */
-	UPROPERTY(BlueprintReadOnly) bool bIsSelfPin = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsSelfPin = false;
 
 	/** "None" | "Array" | "Set" | "Map". Mirrors PinType.ContainerType so
 	 *  callers don't have to read the bIsArray/bIsSet/bIsMap booleans above. */
-	UPROPERTY(BlueprintReadOnly) FString ContainerKind;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString ContainerKind;
 
 	/** For Map pins: human-readable value-type (the V in Map<K, V>). Empty for
 	 *  non-map pins. The Type field above already shows "Map<K, V>" combined;
 	 *  these fields let callers see the V side without string surgery. */
-	UPROPERTY(BlueprintReadOnly) FString MapValueType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString MapValueType;
 
-	UPROPERTY(BlueprintReadOnly) FString MapValueCategory;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString MapValueCategory;
 
-	UPROPERTY(BlueprintReadOnly) FString MapValueSubCategory;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString MapValueSubCategory;
 
-	UPROPERTY(BlueprintReadOnly) FString MapValueSubCategoryObjectPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString MapValueSubCategoryObjectPath;
 
 	/** Connected pins on the other side, each formatted `"<node_guid>:<pin_name>"`
 	 *  where node_guid is the 32-hex Digits form and pin_name is the target
 	 *  pin's internal FName. Empty if the pin has no links. Populated by
 	 *  DescribeNode; other pin-returning APIs may leave this empty for cost
 	 *  reasons (see their docs). */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> LinkedTo;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> LinkedTo;
 };
 
 /**
@@ -969,33 +969,33 @@ struct FBridgeSpawnableAction
 	 *  SpawnNodeByActionKey to spawn this exact node. Built from the spawner's
 	 *  FBlueprintNodeSignature so it survives across registry walks but not
 	 *  across editor restarts (re-list then re-spawn after restart). */
-	UPROPERTY(BlueprintReadOnly) FString Key;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Key;
 
 	/** User-facing menu name (e.g. "Get Player Controller", "Print String",
 	 *  "Set MyVariable"). */
-	UPROPERTY(BlueprintReadOnly) FString Title;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Title;
 
 	/** Editor menu category (e.g. "Math|Float", "Utilities|String", "Variables").
 	 *  Pipe-separated for nested categories. */
-	UPROPERTY(BlueprintReadOnly) FString Category;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Category;
 
-	UPROPERTY(BlueprintReadOnly) FString Tooltip;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Tooltip;
 
 	/** Searchable keyword text the editor surfaces in palette search. */
-	UPROPERTY(BlueprintReadOnly) FString Keywords;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Keywords;
 
 	/** K2Node class short name this spawner produces (e.g. "K2Node_CallFunction",
 	 *  "K2Node_VariableGet", "K2Node_IfThenElse"). Useful for filtering. */
-	UPROPERTY(BlueprintReadOnly) FString NodeType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeType;
 
 	/** Owning class / asset short name — for function spawners this is the class
 	 *  declaring the function; for variable spawners the var-owner; for engine
 	 *  intrinsics like Branch/Sequence this may be the node class itself. */
-	UPROPERTY(BlueprintReadOnly) FString OwningClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString OwningClass;
 
 	/** Full path of the owning class/asset when resolvable (e.g.
 	 *  "/Script/Engine.KismetSystemLibrary"). Empty when not derivable. */
-	UPROPERTY(BlueprintReadOnly) FString OwningClassPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString OwningClassPath;
 };
 
 /** A single reference site surfaced by Find* cross-reference queries. */
@@ -1004,18 +1004,18 @@ struct FBridgeReference
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString GraphName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphName;
 
 	/** "EventGraph" | "Function" | "Macro". */
-	UPROPERTY(BlueprintReadOnly) FString GraphType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphType;
 
 	/** NodeGuid (digits). */
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
 
-	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeTitle;
 
 	/** "read" | "write" | "call" | "bind" | "unbind" | "event". */
-	UPROPERTY(BlueprintReadOnly) FString Kind;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Kind;
 };
 
 /** Single selected node in the currently-focused Blueprint editor. */
@@ -1024,9 +1024,9 @@ struct FBridgeSelectedNode
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
-	UPROPERTY(BlueprintReadOnly) FString NodeClass;
-	UPROPERTY(BlueprintReadOnly) FString Title;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Title;
 };
 
 /** Snapshot of the user's current Blueprint-editor focus. Empty fields when
@@ -1038,22 +1038,22 @@ struct FBridgeEditorFocusState
 
 	/** Path of the BP currently shown in the focused editor tab. Empty when
 	 *  no BP editor has focus. */
-	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString BlueprintPath;
 
 	/** Name of the graph currently visible in the BP editor's main tab
 	 *  (function / macro / event graph). Empty when not resolvable. */
-	UPROPERTY(BlueprintReadOnly) FString FocusedGraphName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString FocusedGraphName;
 
 	/** "EventGraph" | "Function" | "Macro" | "" (when not in that BP). */
-	UPROPERTY(BlueprintReadOnly) FString FocusedGraphType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString FocusedGraphType;
 
 	/** Selected nodes in the focused graph. Empty array when nothing's
 	 *  selected or when no graph is focused. */
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeSelectedNode> SelectedNodes;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeSelectedNode> SelectedNodes;
 
 	/** Paths of every BP currently open in an asset-editor tab (including
 	 *  non-focused ones). */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> OpenBlueprintPaths;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> OpenBlueprintPaths;
 };
 
 /** Summary of a cross-Blueprint rename operation. */
@@ -1064,16 +1064,16 @@ struct FBridgeRenameReport
 
 	/** true when the defining-BP rename succeeded. False results leave the
 	 *  rest of the report empty. */
-	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bSuccess = false;
 
 	/** Asset paths of BPs whose call/get/set sites were updated. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> UpdatedBlueprints;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> UpdatedBlueprints;
 
 	/** Total number of K2Node references rewritten across all BPs. */
-	UPROPERTY(BlueprintReadOnly) int32 UpdatedNodeCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 UpdatedNodeCount = 0;
 
 	/** Diagnostic text when bSuccess is false, or warnings when partial. */
-	UPROPERTY(BlueprintReadOnly) FString Message;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Message;
 };
 
 /** Per-operation result row in an ApplyGraphOps batch. */
@@ -1083,18 +1083,18 @@ struct FBridgeGraphOpResult
 	GENERATED_BODY()
 
 	/** Index into the input ops array (mirrors the caller's order). */
-	UPROPERTY(BlueprintReadOnly) int32 Index = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 Index = 0;
 
 	/** Op-kind string echoed from input ("add_call_function" etc.). */
-	UPROPERTY(BlueprintReadOnly) FString Op;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Op;
 
-	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bSuccess = false;
 
 	/** GUID of a newly-spawned node, for ops that spawn nodes; empty otherwise. */
-	UPROPERTY(BlueprintReadOnly) FString NewNodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NewNodeGuid;
 
 	/** Error detail on failure; empty on success. */
-	UPROPERTY(BlueprintReadOnly) FString Message;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Message;
 };
 
 /** Report of a replace-node-preserving-connections op. */
@@ -1103,20 +1103,20 @@ struct FBridgeReplaceNodeReport
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bSuccess = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bSuccess = false;
 
 	/** GUID of the new node, or empty on failure. */
-	UPROPERTY(BlueprintReadOnly) FString NewNodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NewNodeGuid;
 
 	/** Pins on the old node that were successfully rewired to the new node. */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> ReconnectedPins;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> ReconnectedPins;
 
 	/** Pins on the old node whose links could not be carried over (no matching
 	 *  pin on the new node, or types were incompatible). */
-	UPROPERTY(BlueprintReadOnly) TArray<FString> DroppedPins;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FString> DroppedPins;
 
 	/** Diagnostic text on failure. */
-	UPROPERTY(BlueprintReadOnly) FString Message;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Message;
 };
 
 /** Single node entry used in a graph diff's added/removed lists. */
@@ -1125,9 +1125,9 @@ struct FBridgeGraphDiffNode
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
-	UPROPERTY(BlueprintReadOnly) FString NodeClass;
-	UPROPERTY(BlueprintReadOnly) FString Title;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Title;
 };
 
 /** Single wire entry used in a graph diff's added/removed lists. */
@@ -1136,10 +1136,10 @@ struct FBridgeGraphDiffWire
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString SrcNodeGuid;
-	UPROPERTY(BlueprintReadOnly) FString SrcPinName;
-	UPROPERTY(BlueprintReadOnly) FString DstNodeGuid;
-	UPROPERTY(BlueprintReadOnly) FString DstPinName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString SrcNodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString SrcPinName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString DstNodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString DstPinName;
 };
 
 /** Result of comparing two graph snapshots. */
@@ -1148,10 +1148,10 @@ struct FBridgeGraphDiff
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffNode> AddedNodes;
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffNode> RemovedNodes;
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffWire> AddedWires;
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeGraphDiffWire> RemovedWires;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeGraphDiffNode> AddedNodes;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeGraphDiffNode> RemovedNodes;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeGraphDiffWire> AddedWires;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeGraphDiffWire> RemovedWires;
 };
 
 /** One per-node hit count from get_pie_node_coverage. */
@@ -1160,13 +1160,13 @@ struct FBridgeNodeCoverageEntry
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
-	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
-	UPROPERTY(BlueprintReadOnly) FString GraphName;
-	UPROPERTY(BlueprintReadOnly) int32 HitCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeTitle;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 HitCount = 0;
 
 	/** FPlatformTime::Seconds() timestamp of the most recent sample. */
-	UPROPERTY(BlueprintReadOnly) double LastHitTime = 0.0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") double LastHitTime = 0.0;
 };
 
 /** One param / local / return value captured when a breakpoint hits. */
@@ -1175,14 +1175,14 @@ struct FBridgeBreakpointHitValue
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString Name;
-	UPROPERTY(BlueprintReadOnly) FString Type;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Name;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Type;
 
 	/** ExportText form of the value at the instant the breakpoint hit. */
-	UPROPERTY(BlueprintReadOnly) FString Value;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Value;
 
 	/** "param" | "local" | "return". */
-	UPROPERTY(BlueprintReadOnly) FString Kind;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Kind;
 };
 
 /** Snapshot of the most recent breakpoint hit for a Blueprint. */
@@ -1191,20 +1191,20 @@ struct FBridgeBreakpointHit
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) bool bHasHit = false;
-	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
-	UPROPERTY(BlueprintReadOnly) FString FunctionName;
-	UPROPERTY(BlueprintReadOnly) FString GraphName;
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
-	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bHasHit = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString BlueprintPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString FunctionName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeTitle;
 
 	/** Path of the object whose execution hit the breakpoint. */
-	UPROPERTY(BlueprintReadOnly) FString SelfPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString SelfPath;
 
 	/** FPlatformTime::Seconds() timestamp of the hit. */
-	UPROPERTY(BlueprintReadOnly) double HitTime = 0.0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") double HitTime = 0.0;
 
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeBreakpointHitValue> Values;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeBreakpointHitValue> Values;
 };
 
 /** Single CDO override row for FindCdoVariableOverrides. */
@@ -1213,14 +1213,14 @@ struct FBridgeCdoOverride
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
-	UPROPERTY(BlueprintReadOnly) FString VariableName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString BlueprintPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString VariableName;
 
 	/** Parent CDO's value (ExportText form). */
-	UPROPERTY(BlueprintReadOnly) FString ParentValue;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString ParentValue;
 
 	/** Child CDO's value (ExportText form) — differs from ParentValue. */
-	UPROPERTY(BlueprintReadOnly) FString ChildValue;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString ChildValue;
 };
 
 /** Reference site for a cross-Blueprint query — same fields as FBridgeReference
@@ -1231,20 +1231,20 @@ struct FBridgeGlobalReference
 	GENERATED_BODY()
 
 	/** Full object path of the containing Blueprint (e.g. "/Game/BP_X.BP_X"). */
-	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString BlueprintPath;
 
-	UPROPERTY(BlueprintReadOnly) FString GraphName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphName;
 
 	/** "EventGraph" | "Function" | "Macro". */
-	UPROPERTY(BlueprintReadOnly) FString GraphType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphType;
 
 	/** NodeGuid (digits). */
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
 
-	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeTitle;
 
 	/** "call". */
-	UPROPERTY(BlueprintReadOnly) FString Kind;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Kind;
 };
 
 /** One debug-print call site found by FindBlueprintDebugPrints. */
@@ -1254,29 +1254,29 @@ struct FBridgeDebugPrintSite
 	GENERATED_BODY()
 
 	/** Full object path of the containing Blueprint (e.g. "/Game/BP_X.BP_X"). */
-	UPROPERTY(BlueprintReadOnly) FString BlueprintPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString BlueprintPath;
 
-	UPROPERTY(BlueprintReadOnly) FString GraphName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphName;
 
 	/** "EventGraph" | "Function" | "Macro". */
-	UPROPERTY(BlueprintReadOnly) FString GraphType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString GraphType;
 
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
 
-	UPROPERTY(BlueprintReadOnly) FString NodeTitle;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeTitle;
 
 	/** Short name of the KismetSystemLibrary function — "PrintString", "PrintText",
 	 *  "PrintWarning". Lets callers bucket prints by flavour. */
-	UPROPERTY(BlueprintReadOnly) FString FunctionName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString FunctionName;
 
 	/** Literal default of the `InString` / `InText` pin when it's not wired to
 	 *  another node. Empty when the pin is connected (dynamic message) or when
 	 *  the default is the engine's placeholder "Hello". */
-	UPROPERTY(BlueprintReadOnly) FString StringLiteral;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString StringLiteral;
 
 	/** True when `InString` / `InText` is connected to another node — the
 	 *  message is computed at runtime, not a static literal. */
-	UPROPERTY(BlueprintReadOnly) bool bHasConnectedInput = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bHasConnectedInput = false;
 };
 
 /** Unified one-shot description of a single graph node. Combines title,
@@ -1289,80 +1289,80 @@ struct FBridgeNodeDescription
 	GENERATED_BODY()
 
 	/** NodeGuid in 32-hex digits form. */
-	UPROPERTY(BlueprintReadOnly) FString NodeGuid;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeGuid;
 
 	/** `GetNodeTitle(ENodeTitleType::ListView)` — the palette-style name. */
-	UPROPERTY(BlueprintReadOnly) FString Title;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Title;
 
 	/** Coarse type from ClassifyNode: "FunctionCall", "VariableGet",
 	 *  "VariableSet", "Branch", "Cast", "Event", "CustomEvent", "Macro",
 	 *  "Spawn", "Timeline", "Knot", "MakeStruct", "BreakStruct", ... */
-	UPROPERTY(BlueprintReadOnly) FString NodeType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeType;
 
 	/** Exact UE class name of the UEdGraphNode (e.g. "K2Node_CallFunction",
 	 *  "K2Node_VariableGet", "K2Node_IfThenElse"). Stable across UE versions;
 	 *  prefer this when dispatching on node type in code. */
-	UPROPERTY(BlueprintReadOnly) FString NodeClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString NodeClass;
 
-	UPROPERTY(BlueprintReadOnly) int32 PosX = 0;
-	UPROPERTY(BlueprintReadOnly) int32 PosY = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 PosX = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 PosY = 0;
 
 	/** Rendered size if Slate has arranged the node; else estimated. */
-	UPROPERTY(BlueprintReadOnly) int32 Width = 0;
-	UPROPERTY(BlueprintReadOnly) int32 Height = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 Width = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 Height = 0;
 
 	/** User-authored node comment (floating text above the node). */
-	UPROPERTY(BlueprintReadOnly) FString Comment;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Comment;
 
 	/** "Enabled" | "Disabled" | "DevelopmentOnly". */
-	UPROPERTY(BlueprintReadOnly) FString EnabledState;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString EnabledState;
 
 	// ── Subclass-specific fields (populated based on NodeClass) ──
 
 	/** Function call: target class short name. Cast: target class.
 	 *  Empty when not applicable. */
-	UPROPERTY(BlueprintReadOnly) FString TargetClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString TargetClass;
 
 	/** Function call: function internal name. Event / CustomEvent: event name.
 	 *  Empty when not applicable. */
-	UPROPERTY(BlueprintReadOnly) FString TargetName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString TargetName;
 
 	/** VariableGet / VariableSet: the variable's internal name. */
-	UPROPERTY(BlueprintReadOnly) FString VariableName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString VariableName;
 
 	/** VariableGet / VariableSet: "member" (Blueprint class variable),
 	 *  "local" (function local), or "external" (inherited / foreign class). */
-	UPROPERTY(BlueprintReadOnly) FString VariableScope;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString VariableScope;
 
 	/** VariableGet / VariableSet: resolved variable type (PinTypeToHuman form). */
-	UPROPERTY(BlueprintReadOnly) FString VariableType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString VariableType;
 
 	/** Function call: `true` if pure (no exec pin). Cast: true for pure cast. */
-	UPROPERTY(BlueprintReadOnly) bool bIsPure = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsPure = false;
 
 	/** Function call: true if the target UFunction is const. */
-	UPROPERTY(BlueprintReadOnly) bool bIsConst = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsConst = false;
 
 	/** MakeStruct / BreakStruct: struct class path. */
-	UPROPERTY(BlueprintReadOnly) FString StructType;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString StructType;
 
 	/** Literal nodes (MakeLiteralInt / Bool / etc.): current literal value
 	 *  (from the corresponding pin's default). */
-	UPROPERTY(BlueprintReadOnly) FString LiteralValue;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString LiteralValue;
 
 	/** Macro instance: the macro graph's display name, empty otherwise. */
-	UPROPERTY(BlueprintReadOnly) FString MacroGraph;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString MacroGraph;
 
 	/** AddDelegate / RemoveDelegate / CallDelegate: the delegate property name. */
-	UPROPERTY(BlueprintReadOnly) FString DelegateName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString DelegateName;
 
 	/** For fanout-style exec nodes (ExecutionSequence, Branch, Select):
 	 *  number of wired exec outputs. 0 for others. */
-	UPROPERTY(BlueprintReadOnly) int32 ExecOutCount = 0;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") int32 ExecOutCount = 0;
 
 	/** All visible pins with full type info, default value, and LinkedTo
 	 *  populated. Same ordering as GetNodePins. */
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgePinInfo> Pins;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgePinInfo> Pins;
 };
 
 /** UFunction signature query result: full parameter list with types and
@@ -1374,30 +1374,30 @@ struct FBridgeFunctionSignature
 	GENERATED_BODY()
 
 	/** True when the function was found and the other fields are meaningful. */
-	UPROPERTY(BlueprintReadOnly) bool bFound = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bFound = false;
 
-	UPROPERTY(BlueprintReadOnly) FString FunctionName;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString FunctionName;
 
 	/** Owning class short name (e.g. "KismetSystemLibrary", "Actor"). */
-	UPROPERTY(BlueprintReadOnly) FString OwningClass;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString OwningClass;
 
 	/** Full class path (e.g. "/Script/Engine.KismetSystemLibrary"). */
-	UPROPERTY(BlueprintReadOnly) FString OwningClassPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString OwningClassPath;
 
-	UPROPERTY(BlueprintReadOnly) bool bIsPure = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsConst = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsStatic = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsLatent = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsBlueprintCallable = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsBlueprintPure = false;
-	UPROPERTY(BlueprintReadOnly) bool bIsNative = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsPure = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsConst = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsStatic = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsLatent = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsBlueprintCallable = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsBlueprintPure = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") bool bIsNative = false;
 
-	UPROPERTY(BlueprintReadOnly) FString Category;
-	UPROPERTY(BlueprintReadOnly) FString Tooltip;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Category;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") FString Tooltip;
 
 	/** Ordered parameter list. Includes inputs, outputs, and the return
 	 *  value (the return is marked with bIsOutput=true and Name="ReturnValue"). */
-	UPROPERTY(BlueprintReadOnly) TArray<FBridgeFunctionParam> Parameters;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Blueprint") TArray<FBridgeFunctionParam> Parameters;
 };
 
 // ─── Function Library ────────────────────────────────────────

@@ -10,22 +10,22 @@ struct FBridgeCHTColumn
 	GENERATED_BODY()
 
 	/** Column struct short name, e.g. "FloatRangeColumn", "EnumColumn". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString Kind;
 
 	/** Property binding chain joined by "." — empty when bound to root or unbound. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString BindingPath;
 
 	/** Editor display name from the binding (often friendlier than BindingPath). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString DisplayName;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	bool bDisabled = false;
 
 	/** True when the column produces outputs into the eval context (Output* family). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	bool bIsOutput = false;
 };
 
@@ -35,11 +35,11 @@ struct FBridgeCHTRowResult
 	GENERATED_BODY()
 
 	/** "Asset" / "Class" / "NestedChooser" / "EvaluateChooser" / "None" / "<Other>". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString Kind;
 
 	/** Asset / class / sub-chooser path, "" when none/unsupported. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString ResultPath;
 };
 
@@ -48,10 +48,10 @@ struct FBridgeCHTRow
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	bool bDisabled = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FBridgeCHTRowResult Result;
 };
 
@@ -60,28 +60,28 @@ struct FBridgeCHTInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	int32 RowCount = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	int32 ColumnCount = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	int32 NestedChooserCount = 0;
 
 	/** Full path of the OutputObjectType class (UClass*). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString OutputClassPath;
 
 	/** "ObjectResult" / "ClassResult". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString ResultType;
 
 	/** True when FallbackResult is set (used when no row passes filters). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	bool bHasFallback = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FBridgeCHTRowResult Fallback;
 };
 
@@ -90,20 +90,20 @@ struct FBridgeCHTEvaluation
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	bool bSucceeded = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString ResultPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	FString ResultKind;
 
 	/** -1 if nothing matched (fallback was used or null returned). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	int32 MatchedRow = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Chooser")
 	bool bUsedFallback = false;
 };
 

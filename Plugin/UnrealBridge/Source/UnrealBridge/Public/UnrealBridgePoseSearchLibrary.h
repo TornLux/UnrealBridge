@@ -12,23 +12,23 @@ struct FBridgePSSChannel
 	GENERATED_BODY()
 
 	/** Channel class short name, e.g. "PoseSearchFeatureChannel_Position". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString Kind;
 
 	/** Channel weight. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float Weight = 1.f;
 
 	/** For bone-based channels (Position/Velocity/Heading): the bone name. "" otherwise. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString BoneName;
 
 	/** Sample-time offset in seconds (0 = present). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float SampleTimeOffset = 0.f;
 
 	/** Number of immediate child channels (Group/Trajectory have these). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 SubChannelCount = 0;
 };
 
@@ -37,13 +37,13 @@ struct FBridgePSSSkeleton
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString SkeletonPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString MirrorDataTablePath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString Role;
 };
 
@@ -52,43 +52,43 @@ struct FBridgePSSInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 SampleRate = 30;
 
 	/** Final feature-vector dimension after Finalize() — drives KDTree/PCA performance. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 SchemaCardinality = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 NumberOfPermutations = 1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 PermutationsSampleRate = 30;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float PermutationsTimeOffset = 0.f;
 
 	/** EPoseSearchDataPreprocessor as string. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString DataPreprocessor;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	bool bAddDataPadding = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	bool bInjectAdditionalDebugChannels = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 ChannelCount = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 FinalizedChannelCount = 0;
 
 	/** Sum of every top-level channel weight (sanity check for normalization). */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float TotalChannelWeight = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	TArray<FBridgePSSSkeleton> Skeletons;
 };
 
@@ -100,46 +100,46 @@ struct FBridgePSDAnimEntry
 	GENERATED_BODY()
 
 	/** Underlying asset class short name: "AnimSequence", "BlendSpace", "AnimComposite", "AnimMontage", "" if missing. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString Kind;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString AssetPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	bool bEnabled = true;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	bool bDisableReselection = false;
 
 	/** Sampling range min (seconds). 0 with max==0 means "use entire range". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float SamplingRangeMin = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float SamplingRangeMax = 0.f;
 
 	/** EPoseSearchMirrorOption as string: "UnmirroredOnly" / "MirroredOnly" / "UnmirroredAndMirrored". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString MirrorOption;
 
 	/** BlendSpace-only: number of horizontal samples. -1 if N/A. */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 BlendSpaceHorizontalSamples = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 BlendSpaceVerticalSamples = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	bool bBlendSpaceUseSingleSample = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	bool bBlendSpaceUseGridForSampling = false;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float BlendSpaceParamX = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float BlendSpaceParamY = 0.f;
 };
 
@@ -159,10 +159,10 @@ struct FBridgePSDAddResult
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 Index = -1;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString Error;
 };
 
@@ -171,45 +171,45 @@ struct FBridgePSDInfo
 {
 	GENERATED_BODY()
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString SchemaPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString NormalizationSetPath;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 EntryCount = 0;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 IndexedPoseCount = 0;
 
 	/** "NotIndexed" / "Indexing" / "Indexed" / "Failed". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString IndexStatus;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int64 IndexedMemoryBytes = 0;
 
 	/** "BruteForce" / "PCAKDTree" / "VPTree" / "EventOnly". */
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	FString PoseSearchMode;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 NumberOfPrincipalComponents = 4;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	int32 KDTreeQueryNumNeighbors = 200;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float ContinuingPoseCostBias = -0.01f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float BaseCostBias = 0.f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	float LoopingCostBias = -0.005f;
 
-	UPROPERTY(BlueprintReadOnly)
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|PoseSearch")
 	TArray<FName> Tags;
 };
 
