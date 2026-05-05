@@ -69,7 +69,13 @@ namespace BridgeGameplayTagOps
 
 		UGameplayTagsManager& TagsMgr = UGameplayTagsManager::Get();
 		const FGameplayTagSource* Source = TagsMgr.FindTagSource(SourceName);
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 		if (!Source || !Source->SourceTagList) return 0;
+#else
+		if (!Source) return 0;
+		UGameplayTagsSettings* TagSettings = GetMutableDefault<UGameplayTagsSettings>();
+		if (!TagSettings) return 0;
+#endif
 
 		const FString IniPath = Source->GetConfigFileName();
 		if (IniPath.IsEmpty()) return 0;
@@ -79,7 +85,11 @@ namespace BridgeGameplayTagOps
 
 		// Build the set of redirect lines that should be present.
 		TArray<FString> MissingLines;
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 		for (const FGameplayTagRedirect& R : Source->SourceTagList->GameplayTagRedirects)
+#else
+		for (const FGameplayTagRedirect& R : TagSettings->GameplayTagRedirects)
+#endif
 		{
 			if (R.OldTagName.IsNone() || R.NewTagName.IsNone()) continue;
 			const FString Line = FString::Printf(
@@ -387,7 +397,11 @@ bool UUnrealBridgeGameplayTagLibrary::RenameGameplayTag(
 		return false;
 	}
 
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 	const bool bOk = IGameplayTagsEditorModule::Get().RenameTagInINI(OldTag, NewTag, bRenameChildren);
+#else
+	const bool bOk = IGameplayTagsEditorModule::Get().RenameTagInINI(OldTag, NewTag);
+#endif
 
 	// Re-append the just-written redirect if a follow-up serialise dropped it,
 	// and any other in-memory redirects that may have gone missing.
@@ -454,7 +468,11 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 	};
 
 	const FGameplayTagSource* FoundSource = nullptr;
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 	UGameplayTagsList* FoundList = nullptr;
+#else
+	int32 FoundSettingsIdx = INDEX_NONE;
+#endif
 	int32 FoundIdx = INDEX_NONE;
 
 	for (EGameplayTagSourceType Type : WritableTypes)
@@ -463,15 +481,28 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 		TagsMgr.FindTagSourcesWithType(Type, Sources);
 		for (const FGameplayTagSource* Source : Sources)
 		{
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 			if (!Source || !Source->SourceTagList) continue;
 			UGameplayTagsList* List = Source->SourceTagList;
 			for (int32 i = 0; i < List->GameplayTagRedirects.Num(); ++i)
 			{
 				const FGameplayTagRedirect& R = List->GameplayTagRedirects[i];
+#else
+			if (!Source) continue;
+			UGameplayTagsSettings* Settings = GetMutableDefault<UGameplayTagsSettings>();
+			if (!Settings) continue;
+			for (int32 i = 0; i < Settings->GameplayTagRedirects.Num(); ++i)
+			{
+				const FGameplayTagRedirect& R = Settings->GameplayTagRedirects[i];
+#endif
 				if (R.OldTagName == OldFName && R.NewTagName == NewFName)
 				{
 					FoundSource = Source;
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 					FoundList = List;
+#else
+					FoundSettingsIdx = i;
+#endif
 					FoundIdx = i;
 					break;
 				}
@@ -490,7 +521,11 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 	}
 
 	// 1) drop from in-memory so EnsureSourceRedirectsPersisted won't re-add it
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 	FoundList->GameplayTagRedirects.RemoveAt(FoundIdx);
+#else
+		GetMutableDefault<UGameplayTagsSettings>()->GameplayTagRedirects.RemoveAt(FoundSettingsIdx);
+#endif
 
 	// 2) strip the matching line from the on-disk ini
 	const FString IniPath = FoundSource->GetConfigFileName();
@@ -563,11 +598,19 @@ TArray<FBridgeTagRedirectEntry> UUnrealBridgeGameplayTagLibrary::ListGameplayTag
 		TagsMgr.FindTagSourcesWithType(Type, Sources);
 		for (const FGameplayTagSource* Source : Sources)
 		{
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 			if (!Source || !Source->SourceTagList) continue;
+#else
+			if (!Source) continue;
+#endif
 			if (!SourceFilterFName.IsNone() && Source->SourceName != SourceFilterFName) continue;
 
 			const FString SourceNameStr = Source->SourceName.ToString();
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
 			for (const FGameplayTagRedirect& R : Source->SourceTagList->GameplayTagRedirects)
+#else
+			for (const FGameplayTagRedirect& R : GetDefault<UGameplayTagsSettings>()->GameplayTagRedirects)
+#endif
 			{
 				if (R.OldTagName.IsNone() || R.NewTagName.IsNone()) continue;
 
