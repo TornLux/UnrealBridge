@@ -69,7 +69,7 @@ namespace BridgeGameplayTagOps
 
 		UGameplayTagsManager& TagsMgr = UGameplayTagsManager::Get();
 		const FGameplayTagSource* Source = TagsMgr.FindTagSource(SourceName);
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 		if (!Source || !Source->SourceTagList) return 0;
 #else
 		if (!Source) return 0;
@@ -85,7 +85,7 @@ namespace BridgeGameplayTagOps
 
 		// Build the set of redirect lines that should be present.
 		TArray<FString> MissingLines;
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 		for (const FGameplayTagRedirect& R : Source->SourceTagList->GameplayTagRedirects)
 #else
 		for (const FGameplayTagRedirect& R : TagSettings->GameplayTagRedirects)
@@ -468,7 +468,7 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 	};
 
 	const FGameplayTagSource* FoundSource = nullptr;
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 	UGameplayTagsList* FoundList = nullptr;
 #else
 	int32 FoundSettingsIdx = INDEX_NONE;
@@ -481,7 +481,7 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 		TagsMgr.FindTagSourcesWithType(Type, Sources);
 		for (const FGameplayTagSource* Source : Sources)
 		{
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 			if (!Source || !Source->SourceTagList) continue;
 			UGameplayTagsList* List = Source->SourceTagList;
 			for (int32 i = 0; i < List->GameplayTagRedirects.Num(); ++i)
@@ -498,7 +498,7 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 				if (R.OldTagName == OldFName && R.NewTagName == NewFName)
 				{
 					FoundSource = Source;
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 					FoundList = List;
 #else
 					FoundSettingsIdx = i;
@@ -521,7 +521,7 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 	}
 
 	// 1) drop from in-memory so EnsureSourceRedirectsPersisted won't re-add it
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 	FoundList->GameplayTagRedirects.RemoveAt(FoundIdx);
 #else
 		GetMutableDefault<UGameplayTagsSettings>()->GameplayTagRedirects.RemoveAt(FoundSettingsIdx);
@@ -598,7 +598,7 @@ TArray<FBridgeTagRedirectEntry> UUnrealBridgeGameplayTagLibrary::ListGameplayTag
 		TagsMgr.FindTagSourcesWithType(Type, Sources);
 		for (const FGameplayTagSource* Source : Sources)
 		{
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 			if (!Source || !Source->SourceTagList) continue;
 #else
 			if (!Source) continue;
@@ -606,7 +606,7 @@ TArray<FBridgeTagRedirectEntry> UUnrealBridgeGameplayTagLibrary::ListGameplayTag
 			if (!SourceFilterFName.IsNone() && Source->SourceName != SourceFilterFName) continue;
 
 			const FString SourceNameStr = Source->SourceName.ToString();
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 			for (const FGameplayTagRedirect& R : Source->SourceTagList->GameplayTagRedirects)
 #else
 			for (const FGameplayTagRedirect& R : GetDefault<UGameplayTagsSettings>()->GameplayTagRedirects)
