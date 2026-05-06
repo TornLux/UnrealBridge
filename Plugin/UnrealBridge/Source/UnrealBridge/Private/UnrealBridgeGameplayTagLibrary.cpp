@@ -7,6 +7,7 @@
 #include "GameplayTagsEditorModule.h"
 #include "GameplayTagsManager.h"
 #include "GameplayTagsSettings.h"
+#include "Misc/EngineVersionComparison.h"
 #include "Misc/FileHelper.h"
 
 namespace BridgeGameplayTagOps
@@ -69,13 +70,8 @@ namespace BridgeGameplayTagOps
 
 		UGameplayTagsManager& TagsMgr = UGameplayTagsManager::Get();
 		const FGameplayTagSource* Source = TagsMgr.FindTagSource(SourceName);
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 		if (!Source || !Source->SourceTagList) return 0;
-#else
-		if (!Source) return 0;
-		UGameplayTagsSettings* TagSettings = GetMutableDefault<UGameplayTagsSettings>();
-		if (!TagSettings) return 0;
-#endif
 
 		const FString IniPath = Source->GetConfigFileName();
 		if (IniPath.IsEmpty()) return 0;
@@ -85,11 +81,7 @@ namespace BridgeGameplayTagOps
 
 		// Build the set of redirect lines that should be present.
 		TArray<FString> MissingLines;
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 		for (const FGameplayTagRedirect& R : Source->SourceTagList->GameplayTagRedirects)
-#else
-		for (const FGameplayTagRedirect& R : TagSettings->GameplayTagRedirects)
-#endif
 		{
 			if (R.OldTagName.IsNone() || R.NewTagName.IsNone()) continue;
 			const FString Line = FString::Printf(
@@ -131,6 +123,9 @@ namespace BridgeGameplayTagOps
 			TEXT("EnsureSourceRedirectsPersisted: re-appended %d redirect(s) to %s"),
 			MissingLines.Num(), *IniPath);
 		return MissingLines.Num();
+#else
+		return 0;  // The serialization bug is 5.7+ only
+#endif
 	}
 
 	/** Look up a tag's primary source name (the FName the manager indexes
@@ -397,7 +392,7 @@ bool UUnrealBridgeGameplayTagLibrary::RenameGameplayTag(
 		return false;
 	}
 
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 7
+#if !UE_VERSION_OLDER_THAN(5, 7, 0)
 	const bool bOk = IGameplayTagsEditorModule::Get().RenameTagInINI(OldTag, NewTag, bRenameChildren);
 #else
 	const bool bOk = IGameplayTagsEditorModule::Get().RenameTagInINI(OldTag, NewTag);
@@ -468,7 +463,7 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 	};
 
 	const FGameplayTagSource* FoundSource = nullptr;
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 	UGameplayTagsList* FoundList = nullptr;
 #else
 	int32 FoundSettingsIdx = INDEX_NONE;
@@ -481,32 +476,45 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 		TagsMgr.FindTagSourcesWithType(Type, Sources);
 		for (const FGameplayTagSource* Source : Sources)
 		{
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 			if (!Source || !Source->SourceTagList) continue;
 			UGameplayTagsList* List = Source->SourceTagList;
 			for (int32 i = 0; i < List->GameplayTagRedirects.Num(); ++i)
 			{
 				const FGameplayTagRedirect& R = List->GameplayTagRedirects[i];
-#else
-			if (!Source) continue;
-			UGameplayTagsSettings* Settings = GetMutableDefault<UGameplayTagsSettings>();
-			if (!Settings) continue;
-			for (int32 i = 0; i < Settings->GameplayTagRedirects.Num(); ++i)
-			{
-				const FGameplayTagRedirect& R = Settings->GameplayTagRedirects[i];
-#endif
 				if (R.OldTagName == OldFName && R.NewTagName == NewFName)
 				{
 					FoundSource = Source;
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
 					FoundList = List;
-#else
-					FoundSettingsIdx = i;
-#endif
 					FoundIdx = i;
 					break;
 				}
 			}
+#else
+			// Legacy: scan this source's ini for the matching redirect line
+			if (!Source) continue;
+			{
+				const FString SIniPath = Source->GetConfigFileName();
+				if (SIniPath.IsEmpty()) continue;
+				FString SIniText;
+				if (!FFileHelper::LoadFileToString(SIniText, *SIniPath)) continue;
+				TArray<FString> SLines;
+				SIniText.ParseIntoArrayLines(SLines);
+				const FString TargetLine = FString::Printf(
+					TEXT("+GameplayTagRedirects=(OldTagName=\"%s\",NewTagName=\"%s\")"),
+					*OldTag, *NewTag);
+				bool bFoundInSource = false;
+				for (const FString& SL : SLines)
+				{
+					FString ST = SL.TrimStartAndEnd();
+					if (ST == TargetLine) { bFoundInSource = true; break; }
+				}
+				if (!bFoundInSource) continue;
+				FoundSource = Source;
+				FoundSettingsIdx = 0;
+				FoundIdx = 0;
+			}
+#endif
 			if (FoundIdx != INDEX_NONE) break;
 		}
 		if (FoundIdx != INDEX_NONE) break;
@@ -521,10 +529,10 @@ bool UUnrealBridgeGameplayTagLibrary::RemoveGameplayTagRedirect(
 	}
 
 	// 1) drop from in-memory so EnsureSourceRedirectsPersisted won't re-add it
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 	FoundList->GameplayTagRedirects.RemoveAt(FoundIdx);
 #else
-		GetMutableDefault<UGameplayTagsSettings>()->GameplayTagRedirects.RemoveAt(FoundSettingsIdx);
+	// Legacy: no in-memory singleton to update; ini strip handles persistence
 #endif
 
 	// 2) strip the matching line from the on-disk ini
@@ -598,7 +606,7 @@ TArray<FBridgeTagRedirectEntry> UUnrealBridgeGameplayTagLibrary::ListGameplayTag
 		TagsMgr.FindTagSourcesWithType(Type, Sources);
 		for (const FGameplayTagSource* Source : Sources)
 		{
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 			if (!Source || !Source->SourceTagList) continue;
 #else
 			if (!Source) continue;
@@ -606,11 +614,8 @@ TArray<FBridgeTagRedirectEntry> UUnrealBridgeGameplayTagLibrary::ListGameplayTag
 			if (!SourceFilterFName.IsNone() && Source->SourceName != SourceFilterFName) continue;
 
 			const FString SourceNameStr = Source->SourceName.ToString();
-#if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 6
+#if !UE_VERSION_OLDER_THAN(5, 6, 0)
 			for (const FGameplayTagRedirect& R : Source->SourceTagList->GameplayTagRedirects)
-#else
-			for (const FGameplayTagRedirect& R : GetDefault<UGameplayTagsSettings>()->GameplayTagRedirects)
-#endif
 			{
 				if (R.OldTagName.IsNone() || R.NewTagName.IsNone()) continue;
 
@@ -625,6 +630,50 @@ TArray<FBridgeTagRedirectEntry> UUnrealBridgeGameplayTagLibrary::ListGameplayTag
 				Entry.SourceName = SourceNameStr;
 				Result.Add(MoveTemp(Entry));
 			}
+#else
+			// Legacy: parse redirects from this source's ini file
+			{
+				const FString LIniPath = Source->GetConfigFileName();
+				if (LIniPath.IsEmpty()) continue;
+				FString LIniText;
+				if (!FFileHelper::LoadFileToString(LIniText, *LIniPath)) continue;
+				TArray<FString> LLines;
+				LIniText.ParseIntoArrayLines(LLines);
+				for (const FString& LL : LLines)
+				{
+					FString LT = LL.TrimStartAndEnd();
+					if (!LT.StartsWith(TEXT("+GameplayTagRedirects="))) continue;
+					FString OldStr, NewStr;
+					{
+						int32 OI = LT.Find(TEXT("OldTagName=\""));
+						int32 NI = LT.Find(TEXT("NewTagName=\""));
+						if (OI != INDEX_NONE)
+						{
+							int32 OStart = OI + 12; // len of "OldTagName=\""
+							int32 OEnd = LT.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, OStart);
+							if (OEnd != INDEX_NONE) OldStr = LT.Mid(OStart, OEnd - OStart);
+						}
+						if (NI != INDEX_NONE)
+						{
+							int32 NStart = NI + 12; // len of "NewTagName=\""
+							int32 NEnd = LT.Find(TEXT("\""), ESearchCase::CaseSensitive, ESearchDir::FromStart, NStart);
+							if (NEnd != INDEX_NONE) NewStr = LT.Mid(NStart, NEnd - NStart);
+						}
+					}
+					if (OldStr.IsEmpty() || NewStr.IsEmpty()) continue;
+
+					// Tags are case-sensitive (Statetree != StateTree); filter must match.
+					if (!OldTagPrefixFilter.IsEmpty()
+						&& !OldStr.StartsWith(OldTagPrefixFilter, ESearchCase::CaseSensitive)) continue;
+
+					FBridgeTagRedirectEntry Entry;
+					Entry.OldTag = MoveTemp(OldStr);
+					Entry.NewTag = MoveTemp(NewStr);
+					Entry.SourceName = SourceNameStr;
+					Result.Add(MoveTemp(Entry));
+				}
+			}
+#endif
 		}
 	}
 

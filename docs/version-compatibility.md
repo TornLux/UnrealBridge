@@ -41,6 +41,7 @@ These remain callable on 5.4 — the macro picks the right code path internally.
 | `UnrealBridgeAnimLibrary::SetAnimStateDefault` | `UAnimStateEntryNode::GetOutputPin()` | walk `Entry->Pins[]` for the first `EGPD_Output` pin |
 | `UnrealBridgeGameplayAbilityLibrary::GetGameplayAbilityBlueprintInfo` and `ListGameplayAbilitiesByTag` | `UGameplayAbility::GetAssetTags()` | read legacy `CDO->AbilityTags` field |
 | `UnrealBridgeBlueprintLibrary::GetPIENodeCoverage` | `FKismetDebugUtilities::FindSourceNodeForCodeLocation` const-correctness | `const_cast<UFunction*>(Func)` |
+| `UnrealBridgeGameplayTagLibrary` — `EnsureSourceRedirectsPersisted`, `RenameGameplayTag`, `RemoveGameplayTagRedirect`, `ListGameplayTagRedirects` | 5.5 lacks `UGameplayTagsList::GameplayTagRedirects` (on `UGameplayTagsSettings` only); `RenameTagInINI` 3-arg overload added in 5.7 | `!UE_VERSION_OLDER_THAN(5, 6, 0)`: use `SourceTagList->GameplayTagRedirects`; legacy: parse per-source `+GameplayTagRedirects=` lines from disk ini. `RenameTagInINI` gated at `!UE_VERSION_OLDER_THAN(5, 7, 0)` for the `bRenameChildren` parameter |
 
 ## How the gate macro works
 
@@ -67,9 +68,11 @@ python tools/build_matrix.py --only 5.7  # only 5.7
 
 Last verified versions:
 - UE 5.4 (point release: 5.4.4)
+- UE 5.5 (point release: 5.5.4)
+- UE 5.6 (point release: 5.6.1)
 - UE 5.7 (point release: 5.7.1)
 
-5.2 / 5.3 / 5.5 / 5.6 are unverified — likely work for the 5.4+ tier
+5.2 / 5.3 / are unverified — likely work for the 5.4+ tier
 (everything except items in the tables above) but the matrix has not been
 exercised against them.
 
