@@ -10,8 +10,7 @@ PR：`https://github.com/TornLux/UnrealBridge/pull/2`
 - GitHub 重新计算后显示 `MERGEABLE`。
 - 仓库当前没有 GitHub status checks。
 - 本地工作树在最终复核时为干净状态；验证命令覆盖当前 PR 文件树。
-- PR is kept as 6 readable review commits after the scope-checker and JSON-RPC
-  batch follow-ups.
+- PR is kept as 7 readable review commits after the handler isolation follow-up.
 
 ## 当前提交序列
 
@@ -19,7 +18,10 @@ PR：`https://github.com/TornLux/UnrealBridge/pull/2`
 cd32e47 fix(bridge): harden exec transport and UE builds
 a9517a4 feat(mcp): add stdio wrapper and no-editor smoke
 67e1ecf docs: record MCP roadmap and validation
-HEAD ci(mcp): include wrapper docs in workflow scope
+3a58070 ci(mcp): include wrapper docs in workflow scope
+aa0ac04 test(mcp): support combined scope validation
+5e91226 fix(mcp): reject empty JSON-RPC batches
+HEAD fix(mcp): isolate tool handler failures
 ```
 
 ## 验证
@@ -132,3 +134,20 @@ Note: `cd32e47` is the only current PR commit that changes `Plugin/UnrealBridge`
   `python tools\smoke_mcp_stdio.py`, `python tools\smoke_mcp_all.py`,
   `python tools\check_mcp_followup_scope.py --mode combined --base
   origin/main`, and `git diff --check`; all passed.
+
+## 2026-05-29 handler isolation update
+
+- Wrapped `tools/call` handler execution so unexpected handler exceptions
+  return `-32603` with the original JSON-RPC request id instead of falling
+  through to the outer process loop as an id-less error.
+- Added `tools/test_mcp_server_protocol.py`, including a batch case that proves
+  a failing tool reply does not prevent later batch items from receiving
+  responses.
+- Added the new protocol test to `python tools\smoke_mcp_all.py`, workflow path
+  filters, and scope allowlists.
+- Re-ran `python tools\test_mcp_server_protocol.py`,
+  `python tools\check_mcp_workflow.py`,
+  `python tools\test_check_mcp_workflow.py`,
+  `python tools\check_mcp_followup_scope.py --mode combined --base
+  origin/main`, `python tools\smoke_mcp_all.py`, and `git diff --check`; all
+  passed.

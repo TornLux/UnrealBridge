@@ -212,6 +212,7 @@ python tools/test_check_mcp_tool_docs.py
 python tools/check_mcp_workflow.py
 python tools/test_check_mcp_workflow.py
 python tools/test_check_mcp_followup_scope.py
+python tools/test_mcp_server_protocol.py
 python tools/test_smoke_mcp_all.py
 python tools/test_smoke_mcp_pagination.py
 python tools/test_smoke_mcp_stdio.py

@@ -16,6 +16,7 @@ It also:
 - rejects requests without `jsonrpc: "2.0"` as `-32600 Invalid Request`;
 - rejects requests with a missing or non-string `method` as `-32600 Invalid Request`;
 - rejects non-object request `params` instead of silently treating arrays as empty objects;
+- isolates unexpected tool handler failures so JSON-RPC error responses keep the original request id and batches continue;
 - adds an all-in-one no-editor smoke runner and a scoped GitHub Actions workflow for review / CI handoff;
 - keeps UE 5.7 `BuildPlugin -StrictIncludes` green by declaring direct dependencies and includes.
 
@@ -45,7 +46,7 @@ and Blueprint audit reports under `docs/reports/`.
 
 ## Compatibility notes
 
-- The wrapper supports common MCP probes used by multiple clients: `initialize`, `ping`, `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, `logging/setLevel`, JSON-RPC notifications, notification-like methods sent with request ids, JSON-RPC error responses, explicit nullable request ids, JSON-RPC version rejection, missing-method rejection, non-object params rejection, valid batches, and invalid empty-batch probes.
+- The wrapper supports common MCP probes used by multiple clients: `initialize`, `ping`, `tools/list`, `resources/list`, `resources/templates/list`, `prompts/list`, `logging/setLevel`, JSON-RPC notifications, notification-like methods sent with request ids, JSON-RPC error responses, explicit nullable request ids, JSON-RPC version rejection, missing-method rejection, non-object params rejection, valid batches, invalid empty-batch probes, and per-request handler failure isolation.
 - Tool schemas reject unknown arguments and validate required arguments before handlers run.
 - UE 5.8 final validation is intentionally left out of the current blocking scope.
 - `StructUtils` still emits a UE deprecation warning; this PR declares the existing dependency but does not migrate that dependency to a future replacement.

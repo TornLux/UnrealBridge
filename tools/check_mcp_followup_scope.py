@@ -34,6 +34,7 @@ ALLOWED_FILES = {
     "tools/test_check_mcp_followup_scope.py",
     "tools/test_check_mcp_tool_docs.py",
     "tools/test_check_mcp_workflow.py",
+    "tools/test_mcp_server_protocol.py",
     "tools/test_smoke_mcp_all.py",
     "tools/test_smoke_mcp_pagination.py",
     "tools/test_smoke_mcp_stdio.py",

@@ -1024,7 +1024,11 @@ def _handle_message(message: JsonObject) -> JsonObject | None:
         unknown = _unknown_args(tool, args)
         if unknown:
             return _error(request_id, -32602, f"unknown tool arguments for {name}: {', '.join(unknown)}")
-        return _response(request_id, tool.handler(args))
+        try:
+            result = tool.handler(args)
+        except Exception as exc:
+            return _error(request_id, -32603, f"tool handler failed for {name}: {exc}")
+        return _response(request_id, result)
     if method == "resources/list":
         return _response(request_id, {"resources": []})
     if method == "resources/templates/list":
