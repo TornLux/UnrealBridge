@@ -9,6 +9,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Engine/BlueprintGeneratedClass.h"
+#include "Engine/DataAsset.h"
 #include "Engine/DataTable.h"
 #include "HAL/PlatformTime.h"
 #include "FileHelpers.h"

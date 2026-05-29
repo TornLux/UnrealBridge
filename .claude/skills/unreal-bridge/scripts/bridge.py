@@ -44,6 +44,7 @@ import os
 import socket
 import struct
 import sys
+import tempfile
 import uuid
 from logging.handlers import RotatingFileHandler
 
@@ -75,10 +76,12 @@ except ImportError:
 
 
 DEFAULT_TIMEOUT = 30
+DEFAULT_MAX_OUTPUT_BYTES = 0
 
 AUDIT_LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 MB per file
 AUDIT_LOG_BACKUPS = 3                    # 4 files total (1 active + 3 backups) = 20 MB hard cap
 AUDIT_LOG_NAME = "exec.log"
+SPILL_DIR_NAME = "spills"
 
 
 # ── Resolution: turn CLI args into a (host, port, token, project_path) tuple ─
@@ -422,6 +425,88 @@ def _audit(project_path: "str | None", mode: str, src: "str | None",
     except Exception:
         # Any other audit-side failure is non-fatal.
         pass
+
+
+# ── Output cap / spill-to-file helpers ───────────────────────────────────
+
+def _parse_nonnegative_int(value: "str | None", default: int = 0) -> int:
+    if value is None or value == "":
+        return default
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(parsed, 0)
+
+
+def _effective_max_output_bytes(args) -> int:
+    explicit = getattr(args, "max_output_bytes", None)
+    if explicit is not None:
+        return max(int(explicit), 0)
+    return _parse_nonnegative_int(os.environ.get("UNREAL_BRIDGE_MAX_OUTPUT_BYTES"),
+                                  DEFAULT_MAX_OUTPUT_BYTES)
+
+
+def _spill_dir(project_path: "str | None", args) -> str:
+    explicit = getattr(args, "spill_dir", None) or os.environ.get("UNREAL_BRIDGE_SPILL_DIR")
+    if explicit:
+        return os.path.abspath(os.path.expanduser(str(explicit)))
+    if project_path:
+        return os.path.join(os.path.dirname(project_path), "Saved", "UnrealBridge", SPILL_DIR_NAME)
+    return os.path.join(tempfile.gettempdir(), "UnrealBridge", SPILL_DIR_NAME)
+
+
+def _truncate_utf8(text: str, max_bytes: int) -> str:
+    return text.encode("utf-8")[:max_bytes].decode("utf-8", errors="replace")
+
+
+def _spill_text(text: str, field: str, project_path: "str | None", args,
+                request_id: str) -> "tuple[str, dict]":
+    raw = text.encode("utf-8")
+    max_bytes = _effective_max_output_bytes(args)
+    shown = _truncate_utf8(text, max_bytes)
+    out_dir = _spill_dir(project_path, args)
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    filename = f"{stamp}_{request_id}_{field}.txt"
+    path = os.path.join(out_dir, filename)
+    with open(path, "w", encoding="utf-8", newline="") as fh:
+        fh.write(text)
+    info = {
+        "path": path,
+        "bytes": len(raw),
+        "shown_bytes": max_bytes,
+        "truncated": True,
+    }
+    note = (
+        f"\n\n[UnrealBridge truncated {field}: wrote full text to {path} "
+        f"({len(raw)} bytes; showing first {max_bytes} bytes)]"
+    )
+    return shown + note, info
+
+
+def _apply_output_spills(resp: dict, project_path: "str | None", args,
+                         request_id: str) -> dict:
+    max_bytes = _effective_max_output_bytes(args)
+    if max_bytes <= 0:
+        return resp
+
+    updated = dict(resp)
+    existing_spills = updated.get("spills")
+    spills = dict(existing_spills) if isinstance(existing_spills, dict) else {}
+    for field in ("output", "error"):
+        value = updated.get(field)
+        if not isinstance(value, str):
+            continue
+        if len(value.encode("utf-8")) <= max_bytes:
+            continue
+        try:
+            updated[field], spills[field] = _spill_text(value, field, project_path, args, request_id)
+        except OSError as exc:
+            updated.setdefault("spill_errors", {})[field] = str(exc)
+    if spills:
+        updated["spills"] = spills
+    return updated
 
 
 # ── Wire protocol helpers ─────────────────────────────────────────────────
@@ -818,15 +903,17 @@ def cmd_preflight(args):
         except OSError as e:
             print(f"ERROR: cannot read {args.file}: {e}", file=sys.stderr)
             return 2
-    errs = _preflight_or_skip(code)
+    errs, warns = _preflight_or_skip(code)
     if not errs:
         if args.json:
-            print(json.dumps({"ok": True, "errors": []}))
+            print(json.dumps({"ok": True, "errors": [], "warnings": warns}, ensure_ascii=False))
         else:
             print("preflight: clean")
+            for w in warns:
+                print(w, file=sys.stderr)
         return 0
     if args.json:
-        print(json.dumps({"ok": False, "errors": errs}, ensure_ascii=False))
+        print(json.dumps({"ok": False, "errors": errs, "warnings": warns}, ensure_ascii=False))
     else:
         for e in errs:
             print(e, file=sys.stderr)
@@ -888,8 +975,9 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
     # cost can be one round-trip → instant fix instead of N guesses.
     wrapped = _wrap_for_attr_enrichment(code)
 
+    request_id = str(uuid.uuid4())
     payload = {
-        "id": str(uuid.uuid4()),
+        "id": request_id,
         "script": wrapped,
         "timeout": args.timeout,
     }
@@ -914,6 +1002,8 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
             print(f"ERROR: {e}", file=sys.stderr)
         _audit(project_path, mode, src, code, ok=False, err=f"transport: {e}")
         return 1
+
+    resp = _apply_output_spills(resp, project_path, args, request_id)
 
     if args.json:
         print(json.dumps(resp, ensure_ascii=False))
@@ -986,6 +1076,19 @@ def main():
         "--json",
         action="store_true",
         help="Output in JSON format (machine-readable)",
+    )
+    parser.add_argument(
+        "--max-output-bytes",
+        type=int,
+        default=None,
+        help="Maximum UTF-8 bytes to keep inline for exec output/error fields. "
+             "Larger fields are written to a spill file. Use 0 to disable "
+             "(or set UNREAL_BRIDGE_MAX_OUTPUT_BYTES).",
+    )
+    parser.add_argument(
+        "--spill-dir",
+        help="Directory for oversized exec output/error spill files "
+             "(or set UNREAL_BRIDGE_SPILL_DIR).",
     )
     parser.add_argument(
         "--no-preflight",

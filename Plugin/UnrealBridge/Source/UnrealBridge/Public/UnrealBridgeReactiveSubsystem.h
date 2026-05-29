@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "EditorSubsystem.h"
 #include "UObject/WeakObjectPtr.h"
 #include "UnrealBridgeReactiveTypes.h"

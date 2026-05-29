@@ -34,8 +34,10 @@
 #include "UObject/Package.h"
 #include "Misc/App.h"
 #include "Misc/EngineVersion.h"
+#include "Misc/ConfigCacheIni.h"
 #include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectIterator.h"
 #include "HighResScreenshot.h"
 #include "ShowFlags.h"
 #include "Engine/EngineBaseTypes.h"
@@ -68,6 +70,8 @@
 #include "Engine/GameViewportClient.h"
 #include "Engine/SceneCapture2D.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "Dom/JsonObject.h"
+#include "Dom/JsonValue.h"
 #include "Engine/TextureRenderTarget2D.h"
 #include "TextureResource.h"
 #include "RenderingThread.h"
@@ -79,6 +83,8 @@
 #endif
 #include "UnrealBridgeCallLog.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
+#include "Serialization/JsonSerializer.h"
+#include "Serialization/JsonWriter.h"
 #include "UObject/UnrealType.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeEditor"

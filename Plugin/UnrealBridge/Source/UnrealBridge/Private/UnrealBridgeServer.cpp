@@ -680,11 +680,14 @@ FUnrealBridgeServer::FExecResult FUnrealBridgeServer::EnqueueAndWaitForExec(
 	const bool bReady = Future.WaitFor(FTimespan::FromSeconds(TimeoutSeconds));
 	if (!bReady)
 	{
+		Pending->bCancelled = true;
 		FExecResult R;
 		R.bSuccess = false;
 		R.Error = FString::Printf(TEXT("exec timeout after %.1fs"), TimeoutSeconds);
-		// Leave the promise alone — the ticker will still fulfill it later,
-		// but Pending's shared-ptr means that's safe and leaks nothing.
+		// If the GameThread has not started this item yet, the ticker will
+		// observe bCancelled and skip execution. If it is already in-flight,
+		// Python cannot be interrupted safely, so this remains a client-side
+		// timeout only.
 		return R;
 	}
 	return Future.Get();
@@ -704,6 +707,16 @@ bool FUnrealBridgeServer::TickConsumeQueue(float /*DeltaTime*/)
 	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending;
 	if (!ExecQueue.Dequeue(Pending) || !Pending.IsValid())
 	{
+		return true;
+	}
+
+	if (Pending->bCancelled)
+	{
+		FExecResult Result;
+		Result.bSuccess = false;
+		Result.Error = FString::Printf(TEXT("exec request %s was cancelled before execution"),
+			*Pending->RequestId);
+		Pending->Promise.SetValue(MoveTemp(Result));
 		return true;
 	}
 

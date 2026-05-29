@@ -53,6 +53,7 @@
 #include "Components/SkinnedMeshComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Materials/MaterialInterface.h"
+#include "Materials/MaterialInstance.h"
 #include "HAL/IConsoleManager.h"
 
 // GAverageFPS / GAverageMS are defined in UnrealEngine.cpp and have no

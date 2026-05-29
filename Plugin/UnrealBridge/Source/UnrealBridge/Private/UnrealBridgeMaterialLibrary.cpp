@@ -87,6 +87,8 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/ARFilter.h"
+#include "Editor.h"
+#include "TextureResource.h"
 
 namespace BridgeMaterialImpl
 {

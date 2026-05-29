@@ -12,6 +12,7 @@
 #include "Dom/JsonValue.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "ScopedTransaction.h"
+#include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeCurve"

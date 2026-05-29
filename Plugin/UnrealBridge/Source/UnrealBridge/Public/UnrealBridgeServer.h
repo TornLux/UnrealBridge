@@ -7,6 +7,7 @@
 #include "Containers/Ticker.h"
 #include "Async/Future.h"
 #include "Containers/Set.h"
+#include "HAL/ThreadSafeBool.h"
 #include "Misc/ScopeLock.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 
@@ -109,6 +110,7 @@ private:
 		FString Script;
 		float TimeoutSeconds = 30.0f;
 		FString RequestId;
+		FThreadSafeBool bCancelled = false;
 		TPromise<FExecResult> Promise;
 	};
 

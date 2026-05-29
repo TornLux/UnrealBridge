@@ -28,6 +28,7 @@
 #include "GameFramework/WorldSettings.h"
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
+#include "EdGraph/EdGraph.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonWriter.h"
@@ -49,6 +50,8 @@
 #include "RenderingThread.h"
 #include "ImageCore.h"
 #include "ImageUtils.h"
+#include "StaticMeshResources.h"
+#include "TextureResource.h"
 #include "HAL/PlatformFileManager.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeLevel"
