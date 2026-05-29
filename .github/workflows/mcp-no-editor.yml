@@ -1,0 +1,79 @@
+name: MCP no-editor checks
+
+on:
+  pull_request:
+    paths:
+      - ".claude/skills/unreal-bridge/**"
+      - "tools/check_mcp_followup_scope.py"
+      - "tools/check_mcp_tool_docs.py"
+      - "tools/check_mcp_workflow.py"
+      - "tools/fixtures/mcp_stdio_common_probes.json"
+      - "tools/run_mcp_stdio_fixture.py"
+      - "tools/smoke_mcp_all.py"
+      - "tools/smoke_mcp_pagination.py"
+      - "tools/smoke_mcp_stdio.py"
+      - "tools/smoke_output_spill.py"
+      - "tools/test_check_mcp_followup_scope.py"
+      - "tools/test_check_mcp_tool_docs.py"
+      - "tools/test_check_mcp_workflow.py"
+      - "tools/test_smoke_mcp_all.py"
+      - "tools/test_smoke_mcp_pagination.py"
+      - "tools/test_smoke_mcp_stdio.py"
+      - "docs/mcp-stdio-wrapper.md"
+      - "docs/plans/mcp-pagination-followups.md"
+      - "docs/plans/mcp-stdio-wrapper-roadmap.md"
+      - "docs/plans/pagination-followup-pr-description.md"
+      - "docs/plans/pagination-followup-submit-checklist.md"
+      - ".github/workflows/mcp-no-editor.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".claude/skills/unreal-bridge/**"
+      - "tools/check_mcp_followup_scope.py"
+      - "tools/check_mcp_tool_docs.py"
+      - "tools/check_mcp_workflow.py"
+      - "tools/fixtures/mcp_stdio_common_probes.json"
+      - "tools/run_mcp_stdio_fixture.py"
+      - "tools/smoke_mcp_all.py"
+      - "tools/smoke_mcp_pagination.py"
+      - "tools/smoke_mcp_stdio.py"
+      - "tools/smoke_output_spill.py"
+      - "tools/test_check_mcp_followup_scope.py"
+      - "tools/test_check_mcp_tool_docs.py"
+      - "tools/test_check_mcp_workflow.py"
+      - "tools/test_smoke_mcp_all.py"
+      - "tools/test_smoke_mcp_pagination.py"
+      - "tools/test_smoke_mcp_stdio.py"
+      - "docs/mcp-stdio-wrapper.md"
+      - "docs/plans/mcp-pagination-followups.md"
+      - "docs/plans/mcp-stdio-wrapper-roadmap.md"
+      - "docs/plans/pagination-followup-pr-description.md"
+      - "docs/plans/pagination-followup-submit-checklist.md"
+      - ".github/workflows/mcp-no-editor.yml"
+  workflow_dispatch:
+
+jobs:
+  mcp-no-editor:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        python-version:
+          - "3.11"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run no-editor MCP checks
+        run: python tools/smoke_mcp_all.py

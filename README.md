@@ -191,6 +191,25 @@ python .claude/skills/unreal-bridge/scripts/hot_reload.py        # body-only edi
 python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # reflection changes
 ```
 
+### MCP stdio wrapper
+
+MCP-capable agents can talk to UnrealBridge through a stdio wrapper:
+
+```bash
+python .claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py
+```
+
+This wrapper does not start a second Unreal-side server or use HTTP. It calls
+`bridge.py`, preserving UDP discovery, token handling, AST preflight, audit
+logging, output spill-to-file protection, and the existing length-prefixed TCP
+bridge. It also includes cursor-paginated MCP tools for broad asset search,
+actor listing, SearchableName / GameplayTag index browsing, DataTable row
+lookup, and Blueprint audit queries. See
+[`docs/mcp-stdio-wrapper.md`](docs/mcp-stdio-wrapper.md) for generic MCP,
+OpenClaw-style, and Hermes-style configuration examples.
+Follow-up work is tracked in
+[`docs/plans/mcp-stdio-wrapper-roadmap.md`](docs/plans/mcp-stdio-wrapper-roadmap.md).
+
 ## Bridge libraries
 
 | Library | Purpose |

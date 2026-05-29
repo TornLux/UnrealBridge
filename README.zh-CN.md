@@ -161,12 +161,27 @@ bridge.py exec "print('hello from UE')"
 bridge.py exec-file my_script.py
 ```
 
+### MCP stdio 包装层
+
+支持 MCP 的客户端可以通过 stdio 包装层调用 UnrealBridge：
+
+```bash
+python .claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py
+```
+
+这个包装层不会启动第二套 Unreal 侧服务，也不走 HTTP。它只调用现有
+`bridge.py`，继续复用 UDP 发现、token、AST preflight、审计日志和现有的
+输出过大时的 spill-to-file 保护，以及长度前缀 TCP bridge；同时提供面向宽泛资产搜索、Actor 列表、SearchableName / GameplayTag 索引浏览、DataTable 行查询和 Blueprint 审计查询的 cursor 分页 MCP 工具。通用 MCP、OpenClaw 风格和 Hermes 风格配置示例见
+[`docs/mcp-stdio-wrapper.md`](docs/mcp-stdio-wrapper.md)，后续路线图见
+[`docs/plans/mcp-stdio-wrapper-roadmap.md`](docs/plans/mcp-stdio-wrapper-roadmap.md)。
+
 参数（全部可选，常规使用可以一个都不传）：
 
 - `--project=<名称|路径>` —— 同时跑多个编辑器时用来挑一个
 - `--endpoint=host:port` —— 跳过发现直连（或环境变量 `UNREAL_BRIDGE_ENDPOINT`）
 - `--token=<密钥>` —— 仅当 server 绑定非 loopback 时需要（或 `UNREAL_BRIDGE_TOKEN`）
 - `--timeout`（默认 30 秒）、`--json`、`--discovery-timeout=<ms>`（默认 800）
+- `--max-output-bytes` / `UNREAL_BRIDGE_MAX_OUTPUT_BYTES` —— 超大 `exec` 输出只在终端保留预览，全文写入 spill 文件
 
 `bridge.py list-editors` 发一次探测并列出所有响应的编辑器 —— 多编辑器场景的诊断快捷命令。
 

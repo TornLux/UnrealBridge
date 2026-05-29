@@ -86,7 +86,41 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | `list-editors` | Print every editor that responded to a discovery probe |
 | `wait-compile <material>` / `wait-pose-index <psd>` | Client-side polling helpers |
 
-Optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or env `UNREAL_BRIDGE_PROJECT`), `--endpoint=host:port`, `--token=<secret>`, `--timeout=<s>`, `--json`, `--no-preflight`.
+Optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or env `UNREAL_BRIDGE_PROJECT`), `--endpoint=host:port`, `--token=<secret>`, `--timeout=<s>`, `--json`, `--no-preflight`, `--max-output-bytes=<n>`, `--spill-dir=<path>`.
+
+## MCP stdio wrapper
+
+For MCP-capable agents, use the stdio wrapper instead of exposing a second Unreal-side service:
+
+```bash
+python "${CLAUDE_SKILL_DIR}/scripts/unrealbridge_mcp_server.py"
+```
+
+The wrapper is intentionally thin. It calls `bridge.py`, so UDP discovery, token handling, AST preflight, audit logging, output spill-to-file protection, and UnrealBridge's length-prefixed TCP protocol remain the single source of truth. Keep secrets such as `UNREAL_BRIDGE_TOKEN` in the MCP server environment instead of passing them as tool arguments.
+
+Client setup and extension notes live in `docs/mcp-stdio-wrapper.md`.
+Follow-up work lives in `docs/plans/mcp-stdio-wrapper-roadmap.md`.
+
+Exposed MCP tools:
+
+- `bridge_ping`
+- `bridge_list_editors`
+- `bridge_preflight`
+- `bridge_exec`
+- `bridge_exec_file`
+- `bridge_suggest`
+- `bridge_gamethread_ping`
+- `bridge_resume`
+- `bridge_wait_compile`
+- `bridge_wait_pose_index`
+- `bridge_search_assets_page`
+- `bridge_list_actors_page`
+- `bridge_searchable_name_values_page`
+- `bridge_assets_referencing_searchable_name_page`
+- `bridge_datatable_row_names_page`
+- `bridge_datatable_search_rows_page`
+- `bridge_blueprint_call_sites_page`
+- `bridge_blueprint_debug_prints_page`
 
 ## Workflow
 

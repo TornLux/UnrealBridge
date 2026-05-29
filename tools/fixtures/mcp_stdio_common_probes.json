@@ -1,0 +1,280 @@
+{
+  "description": "Common no-editor MCP stdio probes for UnrealBridge client compatibility.",
+  "initialize": {
+    "request": {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "initialize",
+      "params": {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": {
+          "name": "mcp_stdio_fixture",
+          "version": "0.1.0"
+        }
+      }
+    },
+    "expect": {
+      "server_name": "unrealbridge-mcp",
+      "protocol_version": "2025-03-26",
+      "capabilities": [
+        "tools"
+      ]
+    }
+  },
+  "notifications": [
+    {
+      "jsonrpc": "2.0",
+      "method": "notifications/initialized"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "notifications/cancelled"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "$/cancelRequest"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "ping"
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "ping",
+      "params": []
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "tools/call",
+      "params": {
+        "name": "bridge_ping",
+        "arguments": {}
+      }
+    }
+  ],
+  "requests": [
+    {
+      "name": "ping",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "ping"
+      },
+      "expect": {
+        "result": {}
+      }
+    },
+    {
+      "name": "tools/list",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/list"
+      },
+      "expect": {
+        "tools_include": [
+          "bridge_ping",
+          "bridge_preflight",
+          "bridge_exec",
+          "bridge_exec_file",
+          "bridge_search_assets_page",
+          "bridge_list_actors_page",
+          "bridge_searchable_name_values_page",
+          "bridge_assets_referencing_searchable_name_page",
+          "bridge_datatable_row_names_page",
+          "bridge_datatable_search_rows_page",
+          "bridge_blueprint_call_sites_page",
+          "bridge_blueprint_debug_prints_page"
+        ]
+      }
+    },
+    {
+      "name": "bridge_preflight",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+          "name": "bridge_preflight",
+          "arguments": {
+            "code": "print('fixture ok')"
+          }
+        }
+      },
+      "expect": {
+        "tool_ok": true,
+        "inner_ok": true
+      }
+    },
+    {
+      "name": "resources/list",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "resources/list"
+      },
+      "expect": {
+        "result": {
+          "resources": []
+        }
+      }
+    },
+    {
+      "name": "resources/templates/list",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "resources/templates/list"
+      },
+      "expect": {
+        "result": {
+          "resourceTemplates": []
+        }
+      }
+    },
+    {
+      "name": "prompts/list",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "prompts/list"
+      },
+      "expect": {
+        "result": {
+          "prompts": []
+        }
+      }
+    },
+    {
+      "name": "logging/setLevel",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "logging/setLevel",
+        "params": {
+          "level": "info"
+        }
+      },
+      "expect": {
+        "result": {}
+      }
+    },
+    {
+      "name": "unknown method error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "unknown/probe"
+      },
+      "expect": {
+        "error_code": -32601,
+        "message_contains": "method not found"
+      }
+    },
+    {
+      "name": "explicit null id request",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": null,
+        "method": "unknown/probe"
+      },
+      "expect": {
+        "error_code": -32601,
+        "message_contains": "method not found"
+      }
+    },
+    {
+      "name": "tools/call invalid params error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "tools/call",
+        "params": {
+          "arguments": {}
+        }
+      },
+      "expect": {
+        "error_code": -32602,
+        "message_contains": "params.name"
+      }
+    },
+    {
+      "name": "unknown tool isError",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "tools/call",
+        "params": {
+          "name": "bridge_missing_tool",
+          "arguments": {}
+        }
+      },
+      "expect": {
+        "tool_is_error": true,
+        "content_contains": "unknown tool"
+      }
+    },
+    {
+      "name": "tools/call missing required argument error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "tools/call",
+        "params": {
+          "name": "bridge_exec",
+          "arguments": {}
+        }
+      },
+      "expect": {
+        "error_code": -32602,
+        "message_contains": "missing required tool arguments"
+      }
+    },
+    {
+      "name": "tools/call unknown argument error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 15,
+        "method": "tools/call",
+        "params": {
+          "name": "bridge_ping",
+          "arguments": {
+            "not_in_schema": true
+          }
+        }
+      },
+      "expect": {
+        "error_code": -32602,
+        "message_contains": "unknown tool arguments"
+      }
+    }
+  ],
+  "batch": {
+    "request": [
+      {
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "ping"
+      },
+      {
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "resources/list"
+      },
+      {
+        "jsonrpc": "2.0",
+        "method": "notifications/cancelled"
+      }
+    ],
+    "expect": {
+      "reply_count": 2,
+      "results": [
+        {},
+        {
+          "resources": []
+        }
+      ]
+    }
+  }
+}
