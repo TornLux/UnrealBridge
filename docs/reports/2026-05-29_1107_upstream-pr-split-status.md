@@ -2,6 +2,10 @@
 
 时间：2026-05-29 11:07
 
+## 最新状态
+
+本报告下方的 6 提交 / Draft PR 状态是 11:07 的历史快照。当前状态以 `docs/plans/upstream-pr-split-plan.md`、`docs/plans/upstream-pr-description.md` 和 `docs/reports/2026-05-29_1129_pr-final-readiness.md` 为准：PR #2 已转为 Ready for review，并整理为 8 个可读 review 提交。
+
 ## 状态
 
 - 已新增 `docs/plans/upstream-pr-split-plan.md`，把当前工作树拆成 6 个建议提交。

@@ -2,27 +2,20 @@
 
 更新：2026-05-29
 
-当前分支：`codex/mcp-pagination-followups`
+最终提交分支：`codex/mcp-stdio-wrapper-pr`
+
+备份分支：`codex/mcp-pagination-followups`
 
 状态：P1 分页工具已完成并通过 UE 5.7.4 live smoke、pagination smoke、output spill、py_compile、diff whitespace，以及当前 no-editor MCP guardrail 套件验证。no-editor 套件覆盖 stdio schema shape、常见客户端探针、错误响应、response envelope、notification no-response、required / unknown tool argument validation、clean shutdown、二页 pagination script shape、pagination helper failure path、tool docs、workflow scope、follow-up scope 和 smoke runner 自检。根据当前提交策略，本 follow-up 内容并入 `TornLux/UnrealBridge#2` 最终提交版，不再等待单独 follow-up PR。
 
-本文件记录 `TornLux/UnrealBridge#2` 之后的分页工具候选。当前 PR 已经覆盖两类最基础高基数查询：
+本文件最初用于规划 #2 之后的分页 follow-up。当前 #2 最终范围已经覆盖以下高基数读取工具：
 
 - `bridge_search_assets_page`
 - `bridge_list_actors_page`
-
-本 follow-up 分支已开始实现第一组 SearchableName 工具：
-
 - `bridge_searchable_name_values_page`
 - `bridge_assets_referencing_searchable_name_page`
-
-第二组 DataTable 工具也已在本分支实现：
-
 - `bridge_datatable_row_names_page`
 - `bridge_datatable_search_rows_page`
-
-第三组 Blueprint audit 工具也已在本分支实现：
-
 - `bridge_blueprint_call_sites_page`
 - `bridge_blueprint_debug_prints_page`
 
@@ -61,8 +54,8 @@ P1 状态：已完成。当前实现覆盖 SearchableName / GameplayTag、DataTa
 
 建议工具：
 
-- `bridge_searchable_name_values_page`（已在 follow-up 分支实现）
-- `bridge_assets_referencing_searchable_name_page`（已在 follow-up 分支实现）
+- `bridge_searchable_name_values_page`（已并入 `TornLux/UnrealBridge#2`）
+- `bridge_assets_referencing_searchable_name_page`（已并入 `TornLux/UnrealBridge#2`）
 
 ### 2. `bridge_datatable_rows_page`
 
@@ -79,8 +72,8 @@ P1 状态：已完成。当前实现覆盖 SearchableName / GameplayTag、DataTa
 
 建议工具：
 
-- `bridge_datatable_row_names_page`（已在 follow-up 分支实现）
-- `bridge_datatable_search_rows_page`（已在 follow-up 分支实现）
+- `bridge_datatable_row_names_page`（已并入 `TornLux/UnrealBridge#2`）
+- `bridge_datatable_search_rows_page`（已并入 `TornLux/UnrealBridge#2`）
 - 暂不分页 `GetDataTableRows`，避免鼓励整表导出。
 
 ### 3. `bridge_blueprint_call_sites_page`
@@ -97,8 +90,8 @@ P1 状态：已完成。当前实现覆盖 SearchableName / GameplayTag、DataTa
 
 建议工具：
 
-- `bridge_blueprint_call_sites_page`（已在 follow-up 分支实现）
-- `bridge_blueprint_debug_prints_page`（已在 follow-up 分支实现）
+- `bridge_blueprint_call_sites_page`（已并入 `TornLux/UnrealBridge#2`）
+- `bridge_blueprint_debug_prints_page`（已并入 `TornLux/UnrealBridge#2`）
 
 ## P2 候选
 

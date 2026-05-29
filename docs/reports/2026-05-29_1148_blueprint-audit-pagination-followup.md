@@ -63,4 +63,10 @@ MCP stdio live tool smoke:
 
 - `TEST_57` 当前没有匹配的 `PrintString` / debug print audit 结果，因此本轮 live smoke 验证的是 API 暴露和安全空结果路径。
 - 有真实 Blueprint audit 命中后，应补第一页 / 第二页 / stale cursor 的 live smoke。
-- 该 follow-up 分支尚未推送，不影响 `TornLux/UnrealBridge#2`。
+- 当时该 follow-up 仍处于本地分支阶段；当前状态见下方更新。
+
+## 2026-05-29 状态更新
+
+- 该 follow-up 已不再作为单独分支提交，当前已并入 `TornLux/UnrealBridge#2` 的最终合并 PR 范围。
+- 当前提交分支：`codex/mcp-stdio-wrapper-pr`。
+- 备份分支：`codex/mcp-pagination-followups`。

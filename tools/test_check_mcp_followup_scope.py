@@ -32,10 +32,12 @@ def main() -> int:
 
     allowed = [
         ".claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py",
+        "docs/plans/eda-integration-roadmap.md",
         "docs/plans/mcp-pagination-followups.md",
         "docs/plans/upstream-pr-description.md",
         "docs/reports/2026-05-29_1156_pagination-followup-branch-status.md",
         "tools/check_mcp_followup_scope.py",
+        "tools/test_bridge_mcp_config.py",
         "tools/test_mcp_server_protocol.py",
         "tools/test_smoke_mcp_all.py",
         "tools/test_smoke_mcp_pagination.py",

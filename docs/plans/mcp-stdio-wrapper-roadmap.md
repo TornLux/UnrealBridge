@@ -32,6 +32,8 @@ This roadmap tracks follow-up work for the UnrealBridge MCP stdio wrapper.
 - [x] Add a registry-vs-doc checker for the MCP exposed tool lists.
 - [x] Add an all-in-one no-editor MCP smoke runner for review and CI handoff.
 - [x] Add a GitHub Actions workflow for the no-editor MCP smoke runner.
+- [x] Add `bridge.py mcp-config` for copyable Codex TOML, OpenClaw JSON,
+  Hermes YAML, Claude Desktop / Cursor / generic `mcpServers` JSON snippets.
 
 ## P0 - Current PR scope
 
@@ -75,6 +77,9 @@ This roadmap tracks follow-up work for the UnrealBridge MCP stdio wrapper.
   overly broad workflow path filters stay covered by negative tests.
 - Keep the folded high-cardinality pagination coverage documented in
   `docs/plans/mcp-pagination-followups.md`.
+- Keep `bridge.py mcp-config` output covered by no-editor shape tests when
+  config snippets change. These tests validate emitted JSON / TOML / YAML, not
+  real client launches.
 
 ## P2 - Low priority compatibility validation
 

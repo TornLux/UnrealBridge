@@ -1024,6 +1024,130 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
 
 # ── CLI plumbing ────────────────────────────────────────────────────────
 
+MCP_CONFIG_CLIENTS = (
+    "generic",
+    "claude-desktop",
+    "cursor",
+    "codex",
+    "openclaw",
+    "hermes",
+)
+
+
+def _json_quote(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _mcp_server_script_path() -> str:
+    return os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "unrealbridge_mcp_server.py")
+    )
+
+
+def _mcp_config_env(args) -> dict:
+    if getattr(args, "token", None):
+        raise ValueError(
+            "mcp-config refuses to print --token. Put UNREAL_BRIDGE_TOKEN in "
+            "the client environment or secret store instead."
+        )
+
+    env = {}
+    project = getattr(args, "project", None)
+    endpoint = getattr(args, "endpoint", None)
+    discovery_group = getattr(args, "discovery_group", None)
+    if project:
+        env["UNREAL_BRIDGE_PROJECT"] = project
+    if endpoint:
+        env["UNREAL_BRIDGE_ENDPOINT"] = endpoint
+    if discovery_group:
+        env["UNREAL_BRIDGE_DISCOVERY_GROUP"] = discovery_group
+    return env
+
+
+def _mcp_server_definition(args) -> dict:
+    server = {
+        "command": args.python,
+        "args": [args.script_path or _mcp_server_script_path()],
+    }
+    env = _mcp_config_env(args)
+    if env:
+        server["env"] = env
+    return server
+
+
+def _toml_array(values) -> str:
+    return "[" + ", ".join(_json_quote(value) for value in values) + "]"
+
+
+def _toml_key(value: str) -> str:
+    return _json_quote(value)
+
+
+def _render_codex_mcp_config(name: str, server: dict) -> str:
+    server_key = _toml_key(name)
+    lines = [
+        f"[mcp_servers.{server_key}]",
+        f"command = {_json_quote(str(server['command']))}",
+        f"args = {_toml_array([str(value) for value in server.get('args', [])])}",
+    ]
+    env = server.get("env")
+    if isinstance(env, dict) and env:
+        lines.append("")
+        lines.append(f"[mcp_servers.{server_key}.env]")
+        for key in sorted(env):
+            lines.append(f"{key} = {_json_quote(str(env[key]))}")
+    return "\n".join(lines) + "\n"
+
+
+def _render_hermes_mcp_config(name: str, server: dict) -> str:
+    lines = [
+        "mcp_servers:",
+        f"  {_json_quote(name)}:",
+        f"    command: {_json_quote(str(server['command']))}",
+        "    args:",
+    ]
+    for value in server.get("args", []):
+        lines.append(f"      - {_json_quote(str(value))}")
+    env = server.get("env")
+    if isinstance(env, dict) and env:
+        lines.append("    env:")
+        for key in sorted(env):
+            lines.append(f"      {key}: {_json_quote(str(env[key]))}")
+    lines.extend([
+        "    timeout: 120",
+        "    connect_timeout: 60",
+        "    tools:",
+        "      resources: false",
+        "      prompts: false",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def cmd_mcp_config(args) -> int:
+    try:
+        server = _mcp_server_definition(args)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    name = args.server_name
+    client = args.client
+    if client in {"generic", "claude-desktop", "cursor"}:
+        payload = {"mcpServers": {name: server}}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif client == "openclaw":
+        payload = {"mcp": {"servers": {name: server}}}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    elif client == "codex":
+        print(_render_codex_mcp_config(name, server), end="")
+    elif client == "hermes":
+        print(_render_hermes_mcp_config(name, server), end="")
+    else:
+        print(f"ERROR: unsupported MCP client {client!r}", file=sys.stderr)
+        return 2
+    return 0
+
+
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
     """Shared discovery / override flags that every subcommand accepts."""
     parser.add_argument(
@@ -1050,6 +1174,30 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         "--discovery-group",
         help=f"Multicast group host:port "
              f"(default: {DEFAULT_DISCOVERY_GROUP}:{DEFAULT_DISCOVERY_PORT}).",
+    )
+
+
+def _add_mcp_config_target_args(parser: argparse.ArgumentParser) -> None:
+    """Let mcp-config accept target env flags after the subcommand too."""
+    parser.add_argument(
+        "--endpoint",
+        default=argparse.SUPPRESS,
+        help="Emit UNREAL_BRIDGE_ENDPOINT for direct host:port connections.",
+    )
+    parser.add_argument(
+        "--project",
+        default=argparse.SUPPRESS,
+        help="Emit UNREAL_BRIDGE_PROJECT for discovery filtering.",
+    )
+    parser.add_argument(
+        "--discovery-group",
+        default=argparse.SUPPRESS,
+        help="Emit UNREAL_BRIDGE_DISCOVERY_GROUP for custom multicast.",
+    )
+    parser.add_argument(
+        "--token",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
     )
 
 
@@ -1165,6 +1313,32 @@ def main():
              "Omit to list every redirect.",
     )
 
+    mc_parser = subparsers.add_parser(
+        "mcp-config",
+        help="Print a stdio MCP client config snippet for the UnrealBridge wrapper",
+    )
+    mc_parser.add_argument(
+        "--client",
+        choices=MCP_CONFIG_CLIENTS,
+        default="generic",
+        help="Client config shape to print (default: generic).",
+    )
+    mc_parser.add_argument(
+        "--server-name",
+        default="unrealbridge",
+        help="MCP server name in the generated config (default: unrealbridge).",
+    )
+    mc_parser.add_argument(
+        "--python",
+        default="python",
+        help="Python executable command for launching the stdio server (default: python).",
+    )
+    mc_parser.add_argument(
+        "--script-path",
+        help="Path to unrealbridge_mcp_server.py (default: this bridge.py sibling).",
+    )
+    _add_mcp_config_target_args(mc_parser)
+
     wc_parser = subparsers.add_parser(
         "wait-compile",
         help="Poll shader-map readiness on a material / MI (client-side, "
@@ -1217,6 +1391,8 @@ def main():
         sys.exit(cmd_preflight(args))
     elif args.command == "suggest":
         sys.exit(cmd_suggest(args))
+    elif args.command == "mcp-config":
+        sys.exit(cmd_mcp_config(args))
 
 
 if __name__ == "__main__":

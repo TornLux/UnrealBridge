@@ -2,47 +2,65 @@
 
 更新：2026-05-29
 
-本文件用于把当前工作树整理成作者容易 review 的提交顺序。目标是保留完整证据链，同时避免把 MCP wrapper、exec timeout、输出保护、分页工具和 StrictIncludes 混成一个难审的大提交。
+本文件用于把当前工作树整理成作者容易 review 的提交顺序。目标是保留完整证据链，同时避免把 MCP wrapper、exec timeout、输出保护、分页工具、JSON-RPC 兼容性、客户端配置生成和 StrictIncludes 混成一个难审的大提交。
 
-## 当前本地提交
+## 当前状态
 
-当前分支：`codex/mcp-stdio-wrapper-pr`
+- 当前分支：`codex/mcp-stdio-wrapper-pr`
+- 当前 PR：`https://github.com/TornLux/UnrealBridge/pull/2`
+- PR 状态：Ready for review
+- 当前 review 粒度：8 个可读提交
+- PR 描述正文以 `docs/plans/upstream-pr-description.md` 为准。本文件只维护拆分和审阅分组，避免重复维护两份 PR body。
 
-实际已拆成 6 个本地提交：
+当前提交序列：
 
-1. `9289668 fix(cli): keep preflight JSON warnings separate`
-2. `3a6fa99 fix(server): cancel queued exec after client timeout`
-3. `67a11f0 feat(cli): spill oversized bridge output to files`
-4. `077b5e1 feat(mcp): add stdio wrapper and paginated bridge tools`
-5. `cc02854 build: satisfy UE 5.7 StrictIncludes`
-6. `docs: record MCP wrapper validation and PR plan`
+```text
+cd32e47 fix(bridge): harden exec transport and UE builds
+a9517a4 feat(mcp): add stdio wrapper and no-editor smoke
+67e1ecf docs: record MCP roadmap and validation
+3a58070 ci(mcp): include wrapper docs in workflow scope
+aa0ac04 test(mcp): support combined scope validation
+5e91226 fix(mcp): reject empty JSON-RPC batches
+df99e7d fix(mcp): isolate tool handler failures
+HEAD feat(mcp): add client config generator
+```
 
-说明：MCP wrapper 文件本身已经包含 MCP content cap、bridge output cap 透传和分页工具，因此实际提交中把 MCP wrapper 与分页工具合并成一个可审单元，避免为了形式拆分而制造中间不可用状态。
+说明：早期拆分方案曾按 6 个主题组织。当前 PR 已演进为 8 个 review 提交，新增了 CI scope、combined scope checker、JSON-RPC batch / handler isolation、`bridge.py mcp-config` 等后续修正。它们仍然按逻辑单元组织，不追求固定提交数量。
 
-当前 Draft PR：`https://github.com/TornLux/UnrealBridge/pull/2`
+## 建议审阅顺序
 
-## 建议提交顺序
+### 1. Bridge / CLI reliability baseline
 
-### 1. fix(cli): keep preflight JSON warnings separate
+对应提交：
+
+- `fix(bridge): harden exec transport and UE builds`
 
 范围：
 
 - `.claude/skills/unreal-bridge/scripts/bridge.py`
-- `tools/smoke_mcp_stdio.py` 中依赖该行为的断言
+- `Plugin/UnrealBridge/Source/UnrealBridge/**`
+- `Plugin/UnrealBridge/UnrealBridge.uplugin`
 
 内容：
 
 - 修复 `bridge.py --json preflight` 返回结构，确保 `errors` 与 `warnings` 都是独立数组。
-- 保持 stdout 为可解析 JSON，错误仍通过非零 exit code 表达。
+- 当客户端 timeout 时标记尚未执行的 pending exec，GameThread ticker 在 Python 执行前跳过已取消请求。
+- 增加 oversized output spill，避免超大 `output` / `error` 直接撑爆 inline 响应。
+- 显式声明 UE 5.7 StrictIncludes 暴露的直接依赖和 includes。
 
-验证：
+主要验证：
 
 ```powershell
-"print('ok')" | python .claude\skills\unreal-bridge\scripts\bridge.py --json preflight -
-python tools\smoke_mcp_stdio.py
+python tools\smoke_output_spill.py
+RunUAT.bat BuildPlugin -Plugin=C:\tmp\TornLux-UnrealBridge-mcp-pr-clean\Plugin\UnrealBridge\UnrealBridge.uplugin -Package=C:\tmp\UnrealBridgeFinal57Loose_112427 -TargetPlatforms=Win64
+RunUAT.bat BuildPlugin -Plugin=C:\tmp\TornLux-UnrealBridge-mcp-pr-clean\Plugin\UnrealBridge\UnrealBridge.uplugin -Package=C:\tmp\UnrealBridgeFinal57Strict_112624 -TargetPlatforms=Win64 -StrictIncludes
 ```
 
-### 2. feat(mcp): add stdio MCP wrapper around bridge.py
+### 2. Stdio MCP wrapper and no-editor smoke
+
+对应提交：
+
+- `feat(mcp): add stdio wrapper and no-editor smoke`
 
 范围：
 
@@ -61,155 +79,144 @@ python tools\smoke_mcp_stdio.py
 - 新增 client-neutral stdio MCP wrapper。
 - wrapper 只调用 `bridge.py`，不新增 Unreal 侧 HTTP/server/transport。
 - token 只走环境变量，不作为 tool 参数暴露。
-- 支持常见 MCP probes：`initialize`、`ping`、`tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`、`logging/setLevel`、batch。
+- 支持常见 MCP probes：`initialize`、`ping`、`tools/list`、`resources/list`、`resources/templates/list`、`prompts/list`、`logging/setLevel`、batch、notification。
+- 新增 cursor pagination 工具，覆盖 asset、actor、SearchableName / GameplayTag、DataTable、Blueprint audit 等大结果集读取场景。
 
-验证：
+主要验证：
 
 ```powershell
 python tools\smoke_mcp_stdio.py
 python tools\run_mcp_stdio_fixture.py
+python tools\smoke_mcp_pagination.py
 ```
 
-### 3. fix(server): cancel queued exec after client timeout
+### 3. Roadmap, reports, and client-facing docs
+
+对应提交：
+
+- `docs: record MCP roadmap and validation`
 
 范围：
 
-- `Plugin/UnrealBridge/Source/UnrealBridge/Public/UnrealBridgeServer.h`
-- `Plugin/UnrealBridge/Source/UnrealBridge/Private/UnrealBridgeServer.cpp`
+- `docs/reports/**`
+- `docs/plans/**`
+- `README.md`
+- `README.zh-CN.md`
+- `.claude/skills/unreal-bridge/SKILL.md`
 
 内容：
 
-- 当客户端 timeout 时标记尚未执行的 pending exec。
-- GameThread ticker 在 Python 执行前跳过已取消的 pending exec。
-- 已经开始执行的 Python 不尝试中断，仍保持 client-side timeout 语义。
+- 记录 live validation、BuildPlugin / StrictIncludes、pagination follow-up 和 final readiness。
+- 明确当前 PR 使用现有 Unreal-side TCP bridge + Python stdio MCP wrapper，不引入 HTTP。
+- 保留 UE 5.8 / EDA ToolsetRegistry 路线图，但不作为当前阻塞项。
+- 记录 P1 pagination 已并入 PR #2，P2 Perf / render pagination 继续延期。
 
-验证：
+### 4. CI and scope guardrails
+
+对应提交：
+
+- `ci(mcp): include wrapper docs in workflow scope`
+- `test(mcp): support combined scope validation`
+
+范围：
+
+- `.github/workflows/mcp-no-editor.yml`
+- `tools/check_mcp_workflow.py`
+- `tools/check_mcp_followup_scope.py`
+- 相关测试和 allowlist
+
+内容：
+
+- 让 wrapper-facing docs 和 PR body draft 变化触发 no-editor MCP smoke。
+- 增加 `combined` / `followup` 两种 scope checker 模式。
+- 当前 #2 使用 `combined`，因为它有意包含 bridge/plugin reliability fixes 与 MCP wrapper。
+- 后续 pagination-only 分支继续使用默认 `followup` guard，避免误引入 `Plugin/` 变化。
+
+主要验证：
 
 ```powershell
-RunUAT.bat BuildPlugin -Plugin=Plugin\UnrealBridge\UnrealBridge.uplugin -Package=C:\tmp\UnrealBridgeBuild -TargetPlatforms=Win64
+python tools\check_mcp_workflow.py
+python tools\test_check_mcp_workflow.py
+python tools\check_mcp_followup_scope.py --mode combined --base origin/main
+python tools\test_check_mcp_followup_scope.py
 ```
 
-live 验证见：
+### 5. JSON-RPC compatibility hardening
 
-- `docs/reports/2026-05-29_0947_mcp-stdio-wrapper-pr-live-test.md`
+对应提交：
 
-### 4. feat(cli): spill oversized bridge output to files
+- `fix(mcp): reject empty JSON-RPC batches`
+- `fix(mcp): isolate tool handler failures`
+
+范围：
+
+- `.claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py`
+- `tools/fixtures/mcp_stdio_common_probes.json`
+- `tools/test_mcp_server_protocol.py`
+- `tools/smoke_mcp_stdio.py`
+
+内容：
+
+- 显式 `"id": null` 作为 request 处理，缺失 `id` 才作为 notification。
+- 空 batch `[]` 返回 `-32600 Invalid Request`。
+- notification-like methods 如果带 request id，则返回 `{}`，避免客户端挂起。
+- 缺失 / 错误 `jsonrpc`、缺失 / 非字符串 `method`、非对象 `params` 都返回标准错误。
+- `tools/call` handler 异常被隔离，保留原 request id，batch 后续请求继续响应。
+
+主要验证：
+
+```powershell
+python tools\run_mcp_stdio_fixture.py
+python tools\test_mcp_server_protocol.py
+python tools\smoke_mcp_stdio.py
+```
+
+### 6. MCP client config generator
+
+对应提交：
+
+- `feat(mcp): add client config generator`
 
 范围：
 
 - `.claude/skills/unreal-bridge/scripts/bridge.py`
-- `.claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py`
-- `tools/smoke_output_spill.py`
-- `.claude/skills/unreal-bridge/SKILL.md`
-- `README.md`
-- `README.zh-CN.md`
-- `docs/mcp-stdio-wrapper.md`
-- `docs/plans/mcp-stdio-wrapper-roadmap.md`
+- `tools/test_bridge_mcp_config.py`
+- README / docs / roadmap / reports
 
 内容：
 
-- `bridge.py exec` 增加 `--max-output-bytes` / `--spill-dir`。
-- 超大 `output` / `error` 写入 spill 文件，inline 响应保留预览和 `spills` 元数据。
-- MCP wrapper 默认设置保守输出上限，并对最终 MCP text content 做兜底保护。
+- 新增 `bridge.py mcp-config`。
+- 输出 `generic`、`claude-desktop`、`cursor`、`codex`、`openclaw`、`hermes`
+  对应的配置片段形态，并用 no-editor 测试覆盖 JSON / TOML / YAML 输出；不声明真实客户端端到端验收。
+- 输出 project / endpoint / discovery-group 等 MCP server 环境变量。
+- 拒绝打印 `--token`，保持 `UNREAL_BRIDGE_TOKEN` 留在 client env 或 secret store。
 
-验证：
-
-```powershell
-python tools\smoke_output_spill.py
-python tools\smoke_mcp_stdio.py
-```
-
-live 验证见：
-
-- `docs/reports/2026-05-29_1024_output-spill-validation.md`
-
-### 5. feat(mcp): add cursor-paginated asset and actor tools
-
-范围：
-
-- `.claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py`
-- `tools/smoke_mcp_pagination.py`
-- `tools/smoke_mcp_stdio.py`
-- `.claude/skills/unreal-bridge/SKILL.md`
-- `README.md`
-- `README.zh-CN.md`
-- `docs/mcp-stdio-wrapper.md`
-- `docs/plans/mcp-stdio-wrapper-roadmap.md`
-
-内容：
-
-- 新增 opaque cursor helper。
-- 新增 MCP tools：
-  - `bridge_search_assets_page`
-  - `bridge_list_actors_page`
-- cursor 与原始查询参数绑定，参数变化复用旧 cursor 返回 `STALE_CURSOR`。
-
-验证：
+主要验证：
 
 ```powershell
-python tools\smoke_mcp_pagination.py
-python tools\smoke_mcp_stdio.py
+python tools\test_bridge_mcp_config.py
+python tools\smoke_mcp_all.py
 ```
 
-live 验证见：
+## 总体验证入口
 
-- `docs/reports/2026-05-29_1045_mcp-pagination-validation.md`
-
-### 6. build: satisfy UE 5.7 StrictIncludes
-
-范围：
-
-- `Plugin/UnrealBridge/UnrealBridge.uplugin`
-- `Plugin/UnrealBridge/Source/UnrealBridge/Public/UnrealBridgeServer.h`
-- `Plugin/UnrealBridge/Source/UnrealBridge/Public/UnrealBridgeReactiveSubsystem.h`
-- `Plugin/UnrealBridge/Source/UnrealBridge/Private/*.cpp` 中 StrictIncludes 暴露的 include 补齐
-
-内容：
-
-- 显式声明 `StructUtils` 插件依赖。
-- 补齐直接使用类型所需 include。
-- 不改变运行时行为。
-
-验证：
+当前 no-editor 总入口：
 
 ```powershell
-RunUAT.bat BuildPlugin -Plugin=Plugin\UnrealBridge\UnrealBridge.uplugin -Package=C:\tmp\UnrealBridgeBuild57Loose -TargetPlatforms=Win64
-RunUAT.bat BuildPlugin -Plugin=Plugin\UnrealBridge\UnrealBridge.uplugin -Package=C:\tmp\UnrealBridgeBuild57Strict -TargetPlatforms=Win64 -StrictIncludes
+python tools\smoke_mcp_all.py
+python tools\check_mcp_followup_scope.py --mode combined --base origin/main
+git diff --check
 ```
 
-验证记录：
+UE 5.7 BuildPlugin / StrictIncludes 验证记录：
 
 - `docs/reports/2026-05-29_1100_strict-includes-validation.md`
-
-## PR 描述草稿
-
-### Summary
-
-This PR adds a thin stdio MCP wrapper for UnrealBridge while keeping the existing `bridge.py` client and Unreal-side TCP bridge as the single source of truth. It also fixes `preflight --json` shape, prevents queued exec requests from running after client timeout, adds output spill protection, introduces cursor-paginated MCP tools for broad asset/actor queries, and keeps UE 5.7 StrictIncludes green.
-
-### Design notes
-
-- No HTTP server is added.
-- No second Unreal-side transport is added.
-- MCP tools delegate to `bridge.py`, preserving UDP discovery, token handling, AST preflight, audit logging, and length-prefixed TCP execution.
-- Secrets stay in the MCP server environment; `UNREAL_BRIDGE_TOKEN` is not exposed as a tool argument.
-- The wrapper keeps a small tool surface and adds paginated coarse-grained tools only where broad result sets are common.
-
-### Validation
-
-```powershell
-python tools\smoke_mcp_stdio.py
-python tools\run_mcp_stdio_fixture.py
-python tools\smoke_output_spill.py
-python tools\smoke_mcp_pagination.py
-RunUAT.bat BuildPlugin -Plugin=Plugin\UnrealBridge\UnrealBridge.uplugin -Package=C:\tmp\UnrealBridgeBuild57Loose -TargetPlatforms=Win64
-RunUAT.bat BuildPlugin -Plugin=Plugin\UnrealBridge\UnrealBridge.uplugin -Package=C:\tmp\UnrealBridgeBuild57Strict -TargetPlatforms=Win64 -StrictIncludes
-```
-
-Live validation reports are under `docs/reports/`.
+- `docs/reports/2026-05-29_1129_pr-final-readiness.md`
 
 ## 注意事项
 
+- 本 PR 不新增 HTTP server。
+- 本 PR 不新增第二套 Unreal-side transport。
 - `StructUtils` 在 UE 5.5+ 会输出 deprecation 提示；本 PR 只显式声明现有依赖，不处理未来替代迁移。
-- UE 5.8 final validation 保持低优先级，继续放在路线图 P2。
-- 如果维护者偏好小 PR，可按上面的 6 个提交拆成 2 到 4 个 PR。
+- UE 5.8 final validation 保持低优先级，继续放在路线图 P2 / EDA future work。
+- 如果维护者偏好更小 PR，可按上述审阅顺序拆成多 PR；当前提交序列已经按可读逻辑粒度整理，不追求固定提交数量。

@@ -169,9 +169,15 @@ bridge.py exec-file my_script.py
 python .claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py
 ```
 
+也可以直接生成客户端配置片段：
+
+```bash
+python .claude/skills/unreal-bridge/scripts/bridge.py mcp-config --client codex --project MyProject
+```
+
 这个包装层不会启动第二套 Unreal 侧服务，也不走 HTTP。它只调用现有
 `bridge.py`，继续复用 UDP 发现、token、AST preflight、审计日志和现有的
-输出过大时的 spill-to-file 保护，以及长度前缀 TCP bridge；同时提供面向宽泛资产搜索、Actor 列表、SearchableName / GameplayTag 索引浏览、DataTable 行查询和 Blueprint 审计查询的 cursor 分页 MCP 工具。通用 MCP、OpenClaw 风格和 Hermes 风格配置示例见
+输出过大时的 spill-to-file 保护，以及长度前缀 TCP bridge；同时提供面向宽泛资产搜索、Actor 列表、SearchableName / GameplayTag 索引浏览、DataTable 行查询和 Blueprint 审计查询的 cursor 分页 MCP 工具。配置片段生成形态及 no-editor 验证边界见
 [`docs/mcp-stdio-wrapper.md`](docs/mcp-stdio-wrapper.md)，后续路线图见
 [`docs/plans/mcp-stdio-wrapper-roadmap.md`](docs/plans/mcp-stdio-wrapper-roadmap.md)。
 

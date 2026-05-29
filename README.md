@@ -199,14 +199,20 @@ MCP-capable agents can talk to UnrealBridge through a stdio wrapper:
 python .claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py
 ```
 
+Generate client config snippets with:
+
+```bash
+python .claude/skills/unreal-bridge/scripts/bridge.py mcp-config --client codex --project MyProject
+```
+
 This wrapper does not start a second Unreal-side server or use HTTP. It calls
 `bridge.py`, preserving UDP discovery, token handling, AST preflight, audit
 logging, output spill-to-file protection, and the existing length-prefixed TCP
 bridge. It also includes cursor-paginated MCP tools for broad asset search,
 actor listing, SearchableName / GameplayTag index browsing, DataTable row
 lookup, and Blueprint audit queries. See
-[`docs/mcp-stdio-wrapper.md`](docs/mcp-stdio-wrapper.md) for generic MCP,
-OpenClaw-style, and Hermes-style configuration examples.
+[`docs/mcp-stdio-wrapper.md`](docs/mcp-stdio-wrapper.md) for generated
+configuration-shape examples and their no-editor validation boundary.
 Follow-up work is tracked in
 [`docs/plans/mcp-stdio-wrapper-roadmap.md`](docs/plans/mcp-stdio-wrapper-roadmap.md).
 

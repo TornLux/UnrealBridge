@@ -68,4 +68,10 @@ MCP stdio live tool smoke:
 ## 备注
 
 - `TEST_57` 当前没有返回 GameplayTag SearchableName 样本，但函数存在且 MCP handler 到 UnrealBridge 的只读调用链成功。
-- 该 follow-up 分支尚未推送，不影响 `TornLux/UnrealBridge#2`。
+- 当时该 follow-up 仍处于本地分支阶段；当前状态见下方更新。
+
+## 2026-05-29 状态更新
+
+- 该 follow-up 已不再作为单独分支提交，当前已并入 `TornLux/UnrealBridge#2` 的最终合并 PR 范围。
+- 当前提交分支：`codex/mcp-stdio-wrapper-pr`。
+- 备份分支：`codex/mcp-pagination-followups`。

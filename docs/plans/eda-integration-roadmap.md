@@ -2,7 +2,7 @@
 
 目标:让 UnrealBridge 在 UE 5.8+ 上**寄生** Epic 官方 EDA(Editor Development Assistant)框架,**白嫖**它的基础设施红利(Editor Slate 面板、MCP 协议暴露、客户端配置生成、analytics、official 背书),同时**保留** UnrealBridge 自身在 token 经济学、API 深度、AST 防幻觉、heredoc 多步合并方面的护城河。
 
-最后更新:2026-05-10(v0.1 — initial draft;基于 UE 5.8 主线分支 ContainerAllocationPolicies / ModelContextProtocol / ToolsetRegistry / AllToolsets / 16 个 toolset 的源码扫描 + git log `[EDA]` / `[ModelContextProtocol]` 标签的功能时间线分析)
+最后更新:2026-05-29(v0.2 — 同步 `TornLux/UnrealBridge#2` 的 stdio MCP wrapper 与 `bridge.py mcp-config` 现状；UE 5.8 / EDA 正式集成仍保持低优先级)
 
 ---
 
@@ -37,8 +37,8 @@ EDA 与 UnrealBridge 的关系**不是替代,是互补**。两者的目标用户
 | P0 ToolsetRegistry 接入 | ⏸ 未开始 |
 | P1 EDA toolset 兼容 shim | ⏸ 未开始 |
 | P1 5.8 适配(前置) | ⏸ 未开始 |
-| P2 MCP 客户端配置生成器 | ⏸ 未开始 |
-| P3 独立 MCP 薄壳(退路) | ⏸ 未开始 |
+| P2 MCP 客户端配置生成器 | ✅ stdio wrapper 路径已完成；EDA endpoint 自动生成待 P0 后再评估 |
+| P3 独立 MCP 薄壳(退路) | ✅ Python stdio wrapper 已完成；UE 侧 MCP server 不再优先 |
 | P4 三模块拆分(可选) | ⏸ 未开始 |
 
 ---
@@ -99,14 +99,19 @@ EDA 覆盖了 9 个 UnrealBridge 没有的领域(Niagara / SequencerAnimMixer / 
 
 EDA 在 2026-04-09 commit `[ModelContextProtocol] Add console command to generate MCP client configuration files` 加了一个 console 命令一键生成 MCP 客户端配置。UnrealBridge 抄一份。
 
+2026-05-29 更新：当前 #2 PR 已用 `bridge.py mcp-config` 交付 stdio MCP wrapper 的配置片段生成器，可输出
+`generic` / `claude-desktop` / `cursor` / `codex` / `openclaw` / `hermes` 对应的 JSON / TOML / YAML 配置形态。
+当前测试覆盖的是 no-editor 配置片段形态与 token 不回显，不代表这些外部客户端都已安装并完成端到端连接。该实现不依赖 UE 5.8，也不会打印 `UNREAL_BRIDGE_TOKEN`。下表中 EDA endpoint 自动生成只在 P0
+ToolsetRegistry 路径落地后再评估。
+
 | # | 能力 | 工程量 | 备注 |
 |---|---|---|---|
-| P2-1 | `bridge.py gen-config --client=claude-desktop\|cursor\|codex\|generic` 子命令,输出可直接粘贴的 JSON 配置片段 | 小 | 对 Claude Desktop:写 `claude_desktop_config.json` 的 `mcpServers` 段;Cursor 类似 |
-| P2-2 | 配置内容:指向当前活跃 editor 的 EDA MCP endpoint(走 P0 的注册路径),或 fallback 到独立 MCP 薄壳(P3,如果做了) | 小 | 用 UDP discovery 找当前 editor + tcp_port |
-| P2-3 | `bridge.py gen-config --output=<path>` 直接写文件;默认 stdout | 小 | 标准 CLI |
-| P2-4 | README 加"快速接入 Claude Desktop"段,3 行命令: `gen-config` → 复制 → 重启 Claude Desktop | 小 | UX |
+| P2-1 | `bridge.py mcp-config --client=claude-desktop\|cursor\|codex\|generic\|openclaw\|hermes` 子命令,输出可直接粘贴的配置片段 | 已完成 | `docs/mcp-stdio-wrapper.md` 与 `tools/test_bridge_mcp_config.py` 覆盖 JSON / TOML / YAML 输出形态；未声明真实客户端端到端验收 |
+| P2-2 | 配置内容:当前先指向 stdio MCP wrapper；未来如 P0 落地,再补 EDA MCP endpoint 自动生成 | 部分完成 | 当前支持 `--project` / `--endpoint` / `--discovery-group` 写入 server env |
+| P2-3 | `bridge.py mcp-config --output=<path>` 直接写文件;默认 stdout | 暂缓 | 当前只输出 stdout,避免直接改写用户客户端配置 |
+| P2-4 | README 加"快速接入 Claude Desktop"段,3 行命令: `mcp-config` → 复制 → 重启 Claude Desktop | 部分完成 | README / docs 已给 `mcp-config` 示例；Claude Desktop 专门教程可等上游反馈后补 |
 
-**完成定义**:用户跑一行命令,Claude Desktop 重启后就能看到 UnrealBridge 工具。
+**当前完成定义**:用户可以用一行 `bridge.py mcp-config` 生成可粘贴的 MCP 客户端配置片段；是否进一步写入客户端文件,等待上游反馈后再决定。
 
 ---
 
@@ -114,15 +119,20 @@ EDA 在 2026-04-09 commit `[ModelContextProtocol] Add console command to generat
 
 P0 走通后,5.8 用户通过 EDA 蹭到 MCP 已经够。但如果用户想在 **5.7** 上也用 MCP 客户端(不能用 EDA,因为 EDA 是 5.8 only),需要 UnrealBridge 自带一个独立 MCP server。
 
+2026-05-29 更新：当前 #2 PR 已经交付 Python stdio MCP wrapper，5.7 用户可以通过客户端启动
+`.claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py`，再由它委托 `bridge.py` 走现有
+TCP bridge。这个路径满足“不新增 UE 侧 transport、不走 HTTP、不复制 bridge 逻辑”的约束，因此下表中的
+UE 侧 MCP server 模块不再作为近期优先项。
+
 | # | 能力 | 工程量 | 备注 |
 |---|---|---|---|
-| P3-1 | `Plugin/UnrealBridge/Source/UnrealBridgeMCPShell/` 独立模块,实现一个最小 MCP server(走 stdio 或 HTTP/SSE) | 中-大 | 用 [Anthropic MCP SDK](https://modelcontextprotocol.io) 的 spec 实现一个最小 server |
+| P3-1 | `Plugin/UnrealBridge/Source/UnrealBridgeMCPShell/` 独立模块,实现一个最小 UE 侧 MCP server | 不再优先 | 当前 Python stdio wrapper 已覆盖 5.7 客户端接入需求,且避免新增 UE 侧 transport |
 | P3-2 | 只暴露 1-3 个 tool:`exec_python` / `preflight` / `list_libraries` | 小 | 同 P0 设计原则 |
 | P3-3 | 每个 tool handler 转发到现有 TCP server | 小 | 复用 P0 抽出的共用函数 |
-| P3-4 | `bridge.py mcp-server --transport=stdio\|http` 启动模式 | 小 | 让用户能直接以 stdio 子进程方式启动 |
+| P3-4 | `bridge.py mcp-server` 启动模式 | 不再优先 | 当前以 `unrealbridge_mcp_server.py` 作为 stdio 子进程入口；不规划 HTTP transport |
 | P3-5 | `version-compatibility.md` 注明:5.8 用户**优先**走 P0(原生 EDA 寄生),5.7 及以下用户走 P3(独立薄壳) | 小 | 决策树 |
 
-**完成定义**:5.7 用户能用 Claude Desktop 调用 UnrealBridge。**优先级低于 P0** — 多数用户已经在升级 5.8,P3 的实际受益面在收窄。
+**当前完成定义**:5.7 用户可通过 stdio MCP wrapper 调用 UnrealBridge。UE 侧 MCP server 只有在上游明确要求“插件内置 MCP server”时再重新评估。
 
 ---
 
@@ -210,8 +220,8 @@ EDA 的 `ModelContextProtocol` 在 2026-04-07 commit `[ModelContextProtocol] Dec
 1. P1a (5.8 适配)        ←─── 前置,必须先做
 2. P0 (ToolsetRegistry)  ←─── 一招吃下大半 EDA 红利
 3. P1b (EDA toolset shim) ←─── 9 个领域白嫖
-4. P2 (MCP 配置生成器)    ←─── UX 小红利,半天工作量
-5. P3 (独立 MCP 薄壳)     ←─── 仅当 5.7- 用户也想要 MCP 时做
+4. P2 (MCP 配置生成器)    ←─── stdio wrapper 路径已交付;EDA endpoint 待 P0 后补
+5. P3 (独立 MCP 薄壳)     ←─── Python stdio wrapper 已覆盖 5.7 接入;UE 侧 server 暂不做
 6. P4 (三模块拆分)        ←─── 长期演进,不紧迫
 ```
 
@@ -219,8 +229,8 @@ EDA 的 `ModelContextProtocol` 在 2026-04-07 commit `[ModelContextProtocol] Dec
 - P1a:2-5 天
 - P0:2-3 天
 - P1b:1-2 天
-- P2:0.5 天
-- P3:3-5 天(可选)
+- P2:已交付 stdio wrapper 配置生成;EDA endpoint 自动生成待 P0 后评估
+- P3:已交付 Python stdio wrapper;UE 侧内置 MCP server 暂不估时
 - P4:2-3 天(可选)
 
 **最小可见交付**(MVP):P1a + P0 = 4-8 天,UnrealBridge 在 5.8 上跑通 + 通过 EDA 暴露给所有 MCP 客户端。
@@ -235,6 +245,8 @@ EDA 的 `ModelContextProtocol` 在 2026-04-07 commit `[ModelContextProtocol] Dec
 | 2026-05-10 | 单一 `exec_python` tool 而不是按 21 个 Library 注册 21 个 tool | 21 个 tool(粗粒度)/ 1020 个 tool(细粒度) | token 经济学最优;1020 tool 直接 ban(详见 feedback memory);21 tool 在 EDA UI 上可能还是不够,因每个 tool 还是 Python free-form 入参 |
 | 2026-05-10 | EDA 独有 9 个 toolset 走 shim 不重写 | 重写 / 不覆盖 | EDA 已 working,shim 1-2 天搞定;重写每个领域 1 周以上 |
 | 2026-05-10 | 5.3-5.7 维持 TCP 通道,**不**强制走 MCP | 全切 MCP / 5.7 弃用 | 老用户基数仍然大;TCP 路径更便宜;EDA 是 5.8 only,不能强求 |
+| 2026-05-29 | 5.7 MCP 接入先走 Python stdio wrapper + 现有 TCP bridge | UE 侧内置 MCP server | 满足 Codex、OpenClaw、Hermes 等 stdio MCP 客户端接入;不新增 UE 侧 transport,不走 HTTP,不复制 bridge 逻辑 |
+| 2026-05-29 | `bridge.py mcp-config` 只输出片段,暂不直接写客户端配置文件 | 自动写 `config.toml` / `claude_desktop_config.json` | 避免误改用户全局配置和泄露 token;上游反馈需要安装器时再做写文件模式 |
 
 ---
 

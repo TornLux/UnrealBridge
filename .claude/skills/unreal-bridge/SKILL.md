@@ -84,6 +84,7 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | `gamethread-ping` | Probe GameThread liveness (bypasses exec queue; use when `exec` hangs) |
 | `resume` | Unstick a paused BP breakpoint |
 | `list-editors` | Print every editor that responded to a discovery probe |
+| `mcp-config` | Print copyable stdio MCP config snippets for Codex TOML, OpenClaw JSON, Hermes YAML, Claude Desktop / Cursor / generic `mcpServers` JSON shapes |
 | `wait-compile <material>` / `wait-pose-index <psd>` | Client-side polling helpers |
 
 Optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or env `UNREAL_BRIDGE_PROJECT`), `--endpoint=host:port`, `--token=<secret>`, `--timeout=<s>`, `--json`, `--no-preflight`, `--max-output-bytes=<n>`, `--spill-dir=<path>`.
@@ -100,6 +101,11 @@ The wrapper is intentionally thin. It calls `bridge.py`, so UDP discovery, token
 
 Client setup and extension notes live in `docs/mcp-stdio-wrapper.md`.
 Follow-up work lives in `docs/plans/mcp-stdio-wrapper-roadmap.md`.
+Generate copyable client config-shape snippets with `bridge.py mcp-config --client <client>`;
+the no-editor tests validate emitted JSON / TOML / YAML shapes, not real client
+launches.
+the command deliberately refuses to print `--token`, so keep
+`UNREAL_BRIDGE_TOKEN` in the client environment or secret store.
 
 Exposed MCP tools:
 

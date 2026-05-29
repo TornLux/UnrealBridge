@@ -19,6 +19,23 @@ Most stdio MCP clients use the same shape: a command, arguments, and optional
 environment variables. Prefer environment variables for secrets instead of
 passing tokens through tool arguments.
 
+Use `bridge.py mcp-config` to generate copyable snippets instead of hand-writing
+paths:
+
+```bash
+python .claude/skills/unreal-bridge/scripts/bridge.py mcp-config --client codex --project MyProject
+python .claude/skills/unreal-bridge/scripts/bridge.py mcp-config --client claude-desktop
+python .claude/skills/unreal-bridge/scripts/bridge.py mcp-config --client openclaw --server-name unrealbridge
+python .claude/skills/unreal-bridge/scripts/bridge.py mcp-config --client hermes --endpoint 127.0.0.1:6904
+```
+
+The generator can emit config shapes for `generic`, `claude-desktop`, `cursor`,
+`codex`, `openclaw`, and `hermes`. The command refuses to print `--token`; put
+`UNREAL_BRIDGE_TOKEN` in the client environment or secret store instead.
+
+The no-editor tests validate the emitted JSON / TOML / YAML snippets and their
+secret-handling behavior. They do not launch external MCP clients.
+
 ```json
 {
   "mcpServers": {
@@ -70,7 +87,7 @@ Hermes reads MCP client config from `~/.hermes/config.yaml` under
 
 ```yaml
 mcp_servers:
-  unrealbridge:
+  "unrealbridge":
     command: "python"
     args:
       - "/absolute/path/to/UnrealBridge/.claude/skills/unreal-bridge/scripts/unrealbridge_mcp_server.py"
@@ -211,6 +228,7 @@ python tools/check_mcp_tool_docs.py
 python tools/test_check_mcp_tool_docs.py
 python tools/check_mcp_workflow.py
 python tools/test_check_mcp_workflow.py
+python tools/test_bridge_mcp_config.py
 python tools/test_check_mcp_followup_scope.py
 python tools/test_mcp_server_protocol.py
 python tools/test_smoke_mcp_all.py
@@ -236,6 +254,9 @@ The doc checker tests cover missing, extra, and reordered MCP tool entries.
 The workflow checker verifies that the GitHub Actions path filters stay scoped
 to MCP wrapper files and no-editor smoke tooling.
 The workflow checker tests cover missing, extra, and overly broad path filters.
+The `mcp-config` tests cover generic, Claude Desktop, Cursor, and OpenClaw
+JSON shapes, Codex TOML shape, Hermes YAML shape, target environment
+propagation, and token refusal behavior.
 The all-smoke runner tests make sure each executed script has a `py_compile`
 entry and that no check names or executed scripts are duplicated.
 The pagination helper tests cover bad bridge JSON output, invalid cursors, and
