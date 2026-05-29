@@ -10,14 +10,15 @@ PR：`https://github.com/TornLux/UnrealBridge/pull/2`
 - GitHub 重新计算后显示 `MERGEABLE`。
 - 仓库当前没有 GitHub status checks。
 - 本地工作树在最终复核时为干净状态；验证命令覆盖当前 PR 文件树。
-- PR is compacted into 3 review commits to avoid the dense intermediate follow-up history.
+- PR is kept as 4 readable review commits after the CI path-filter follow-up.
 
 ## 当前提交序列
 
 ```text
 cd32e47 fix(bridge): harden exec transport and UE builds
 a9517a4 feat(mcp): add stdio wrapper and no-editor smoke
-HEAD docs: record MCP validation and PR plan
+67e1ecf docs: record MCP roadmap and validation
+HEAD ci(mcp): include wrapper docs in workflow scope
 ```
 
 ## 验证
@@ -79,4 +80,14 @@ Note: `cd32e47` is the only current PR commit that changes `Plugin/UnrealBridge`
 - Fixed JSON-RPC request handling so a missing `id` is treated as a notification, while an explicit `"id": null` request still receives a response. This avoids hanging generic JSON-RPC clients that send a nullable request id.
 - Added the explicit null-id request to `tools/fixtures/mcp_stdio_common_probes.json`.
 - Re-ran `python tools\smoke_mcp_all.py` and `git diff --check`; both passed.
-- Re-pushed `codex/mcp-stdio-wrapper-pr` and backup branch `codex/mcp-pagination-followups` with 3 review commits.
+- Re-pushed `codex/mcp-stdio-wrapper-pr` and backup branch `codex/mcp-pagination-followups` with readable review commits.
+
+## 2026-05-29 CI scope update
+
+- Added `README.md`, `README.zh-CN.md`, and
+  `docs/plans/upstream-pr-description.md` to the no-editor workflow path
+  filters, so wrapper-facing docs and the PR body draft trigger the same MCP
+  smoke guardrails after merge.
+- Re-ran `python tools\check_mcp_workflow.py`,
+  `python tools\test_check_mcp_workflow.py`, `python tools\smoke_mcp_all.py`,
+  and `git diff --check`; all passed.

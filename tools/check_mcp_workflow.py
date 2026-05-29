@@ -42,6 +42,9 @@ EXPECTED_PATH_FILTERS = [
     "docs/plans/mcp-stdio-wrapper-roadmap.md",
     "docs/plans/pagination-followup-pr-description.md",
     "docs/plans/pagination-followup-submit-checklist.md",
+    "docs/plans/upstream-pr-description.md",
+    "README.md",
+    "README.zh-CN.md",
     ".github/workflows/mcp-no-editor.yml",
 ]
 
