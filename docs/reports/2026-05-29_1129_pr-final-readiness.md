@@ -91,3 +91,16 @@ Note: `cd32e47` is the only current PR commit that changes `Plugin/UnrealBridge`
 - Re-ran `python tools\check_mcp_workflow.py`,
   `python tools\test_check_mcp_workflow.py`, `python tools\smoke_mcp_all.py`,
   and `git diff --check`; all passed.
+
+## 2026-05-29 scope-checker update
+
+- Updated `tools/check_mcp_followup_scope.py` with explicit `combined` and
+  `followup` modes. The current #2 PR uses `combined` because it intentionally
+  includes bridge/plugin reliability fixes with the MCP wrapper; later
+  pagination-only branches keep the default `followup` guard that forbids
+  `Plugin/` changes.
+- Re-ran `python tools\check_mcp_followup_scope.py --mode combined --base
+  origin/main`, `python tools\check_mcp_followup_scope.py --base
+  codex/mcp-stdio-wrapper-pr`, `python tools\test_check_mcp_followup_scope.py`,
+  `python tools\smoke_mcp_all.py`, `python tools\check_mcp_workflow.py`, and
+  `git diff --check`; all passed.

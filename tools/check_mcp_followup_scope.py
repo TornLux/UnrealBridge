@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the MCP pagination follow-up branch stays in scope."""
+"""Check that MCP wrapper / pagination branches stay in scope."""
 
 from __future__ import annotations
 
@@ -39,11 +39,25 @@ ALLOWED_FILES = {
     "tools/test_smoke_mcp_stdio.py",
 }
 
+COMBINED_PR_EXTRA_FILES = {
+    ".claude/skills/unreal-bridge/scripts/bridge.py",
+    "docs/plans/upstream-pr-split-plan.md",
+    "tools/smoke_output_spill.py",
+}
+
 ALLOWED_PREFIXES = (
     "docs/reports/",
 )
 
-FORBIDDEN_PREFIXES = (
+COMBINED_PR_EXTRA_PREFIXES = (
+    "Plugin/UnrealBridge/Source/UnrealBridge/",
+)
+
+COMBINED_PR_EXTRA_EXACT = {
+    "Plugin/UnrealBridge/UnrealBridge.uplugin",
+}
+
+FOLLOWUP_FORBIDDEN_PREFIXES = (
     "Plugin/",
 )
 
@@ -62,16 +76,27 @@ def _changed_files(base_ref: str) -> list[str]:
     return [line.strip().replace("\\", "/") for line in proc.stdout.splitlines() if line.strip()]
 
 
-def _is_allowed(path: str) -> bool:
-    if path in ALLOWED_FILES:
+def _is_allowed(path: str, mode: str) -> bool:
+    allowed_files = set(ALLOWED_FILES)
+    allowed_prefixes = tuple(ALLOWED_PREFIXES)
+    if mode == "combined":
+        allowed_files |= COMBINED_PR_EXTRA_FILES | COMBINED_PR_EXTRA_EXACT
+        allowed_prefixes = (*allowed_prefixes, *COMBINED_PR_EXTRA_PREFIXES)
+
+    if path in allowed_files:
         return True
-    return any(path.startswith(prefix) for prefix in ALLOWED_PREFIXES)
+    return any(path.startswith(prefix) for prefix in allowed_prefixes)
 
 
-def check_scope(changed: list[str]) -> list[str]:
+def check_scope(changed: list[str], mode: str = "followup") -> list[str]:
+    if mode not in {"followup", "combined"}:
+        raise ValueError(f"unsupported scope mode: {mode}")
+
     failures: list[str] = []
-    forbidden = [path for path in changed if any(path.startswith(prefix) for prefix in FORBIDDEN_PREFIXES)]
-    unexpected = [path for path in changed if not _is_allowed(path)]
+    forbidden: list[str] = []
+    if mode == "followup":
+        forbidden = [path for path in changed if any(path.startswith(prefix) for prefix in FOLLOWUP_FORBIDDEN_PREFIXES)]
+    unexpected = [path for path in changed if not _is_allowed(path, mode)]
 
     if forbidden:
         failures.append(f"forbidden Unreal plugin/source paths changed: {forbidden}")
@@ -87,6 +112,12 @@ def main() -> int:
         default="codex/mcp-stdio-wrapper-pr",
         help="Base ref to compare against. Use origin/main after PR #2 is merged and this branch is rebased.",
     )
+    parser.add_argument(
+        "--mode",
+        choices=("followup", "combined"),
+        default="followup",
+        help="Scope mode. Use 'combined' for PR #2; use 'followup' for later pagination-only branches.",
+    )
     args = parser.parse_args()
 
     try:
@@ -95,7 +126,7 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
-    failures = check_scope(changed)
+    failures = check_scope(changed, mode=args.mode)
     if failures:
         print(f"Changed files from {args.base}..HEAD:", file=sys.stderr)
         for path in changed:
@@ -104,7 +135,7 @@ def main() -> int:
             print(failure, file=sys.stderr)
         return 1
 
-    print(f"MCP follow-up scope check passed ({len(changed)} changed files from {args.base}..HEAD)")
+    print(f"MCP {args.mode} scope check passed ({len(changed)} changed files from {args.base}..HEAD)")
     return 0
 
 

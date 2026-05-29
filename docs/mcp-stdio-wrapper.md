@@ -242,11 +242,13 @@ bridge failure propagation for paginated handlers.
 The stdio smoke helper tests cover negative `tools/list` schema cases such as
 duplicate names, missing descriptions, open-ended properties, and invalid
 required fields.
-The follow-up scope checker tests cover forbidden `Plugin/` changes and
-unexpected files. The actual branch scope check is base-dependent and is only
-needed when preparing future stacked follow-up branches, for example:
+The scope checker has two modes. Use `combined` for the current PR #2, where
+the MCP wrapper is intentionally shipped together with bridge/plugin reliability
+fixes. Use the default `followup` mode for later stacked pagination-only
+branches, where `Plugin/` changes should stay forbidden.
 
 ```bash
+python tools/check_mcp_followup_scope.py --mode combined --base origin/main
 python tools/check_mcp_followup_scope.py --base codex/mcp-stdio-wrapper-pr
 ```
 

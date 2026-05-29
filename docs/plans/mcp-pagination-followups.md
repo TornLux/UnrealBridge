@@ -146,7 +146,7 @@ P2 状态：暂缓。等待 #2 反馈或真实项目中出现明确的高基数 
 - PR 描述草稿：`docs/plans/upstream-pr-description.md`
 - 提交 checklist：`docs/plans/pagination-followup-submit-checklist.md` 仅保留为历史拆分方案参考；当前不再单独开启 follow-up PR。
 - 范围边界：本 PR 只做 stdio MCP wrapper、分页 wrapper、文档和 smoke 覆盖，不引入新的 transport，不把 UnrealBridge 拆成几百个细碎 MCP tools。
-- 验证入口：提交前以 `python tools\smoke_mcp_all.py`、`python tools\check_mcp_followup_scope.py --base <submit-base>` 和 `git diff --check` 为准；详细步骤见提交 checklist。
+- 验证入口：当前 combined PR 提交前以 `python tools\smoke_mcp_all.py`、`python tools\check_mcp_followup_scope.py --mode combined --base <submit-base>` 和 `git diff --check` 为准；后续 pagination-only follow-up 分支使用默认 `followup` 模式。详细步骤见提交 checklist。
 
 ## 验证来源
 

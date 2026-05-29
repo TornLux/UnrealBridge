@@ -42,6 +42,14 @@ def main() -> int:
     ]
     assert checker.check_scope(allowed) == []
 
+    combined_allowed = [
+        ".claude/skills/unreal-bridge/scripts/bridge.py",
+        "Plugin/UnrealBridge/Source/UnrealBridge/Private/UnrealBridgeServer.cpp",
+        "Plugin/UnrealBridge/UnrealBridge.uplugin",
+        "tools/smoke_output_spill.py",
+    ]
+    assert checker.check_scope(combined_allowed, mode="combined") == []
+
     plugin_failures = checker.check_scope(
         ["Plugin/UnrealBridge/Source/UnrealBridge/Private/UnrealBridgeServer.cpp"]
     )
@@ -49,6 +57,9 @@ def main() -> int:
 
     unknown_failures = checker.check_scope(["tools/unrelated_helper.py"])
     _assert_failure_contains(unknown_failures, "unexpected files outside MCP follow-up scope")
+
+    combined_unknown_failures = checker.check_scope(["Plugin/UnrealBridge/Content/Unexpected.uasset"], mode="combined")
+    _assert_failure_contains(combined_unknown_failures, "unexpected files outside MCP follow-up scope")
 
     mixed_failures = checker.check_scope(
         [

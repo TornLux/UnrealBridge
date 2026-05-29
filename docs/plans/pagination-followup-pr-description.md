@@ -43,7 +43,7 @@ It also adds:
 
 ```powershell
 python tools\smoke_mcp_all.py
-python tools\check_mcp_followup_scope.py --base origin/main
+python tools\check_mcp_followup_scope.py --mode combined --base origin/main
 git diff --check
 ```
 
