@@ -161,6 +161,17 @@
       }
     },
     {
+      "name": "notification-like request",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 16,
+        "method": "notifications/cancelled"
+      },
+      "expect": {
+        "result": {}
+      }
+    },
+    {
       "name": "unknown method error",
       "request": {
         "jsonrpc": "2.0",
@@ -170,6 +181,36 @@
       "expect": {
         "error_code": -32601,
         "message_contains": "method not found"
+      }
+    },
+    {
+      "name": "missing jsonrpc invalid request",
+      "request": {
+        "id": 19,
+        "method": "ping"
+      },
+      "expect": {
+        "error_code": -32600,
+        "message_contains": "jsonrpc must be 2.0"
+      }
+    },
+    {
+      "name": "missing method invalid request",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 18
+      },
+      "expect": {
+        "error_code": -32600,
+        "message_contains": "method must be a string"
+      }
+    },
+    {
+      "name": "empty batch invalid request",
+      "request": [],
+      "expect": {
+        "error_code": -32600,
+        "message_contains": "batch must not be empty"
       }
     },
     {
@@ -197,6 +238,19 @@
       "expect": {
         "error_code": -32602,
         "message_contains": "params.name"
+      }
+    },
+    {
+      "name": "array params invalid params error",
+      "request": {
+        "jsonrpc": "2.0",
+        "id": 17,
+        "method": "tools/list",
+        "params": []
+      },
+      "expect": {
+        "error_code": -32602,
+        "message_contains": "params must be an object"
       }
     },
     {

@@ -983,8 +983,12 @@ def _handle_message(message: JsonObject) -> JsonObject | None:
     request_id = message.get("id")
     if is_notification:
         return None
+    if message.get("jsonrpc") != "2.0":
+        return _error(request_id, -32600, "request jsonrpc must be 2.0")
+    if not isinstance(method, str):
+        return _error(request_id, -32600, "request method must be a string")
 
-    params = message.get("params") or {}
+    params = message["params"] if "params" in message and message.get("params") is not None else {}
     if not isinstance(params, dict):
         return _error(request_id, -32602, "params must be an object")
 
@@ -999,7 +1003,7 @@ def _handle_message(message: JsonObject) -> JsonObject | None:
             },
         )
     if method in {"notifications/initialized", "notifications/cancelled", "$/cancelRequest"}:
-        return None
+        return _response(request_id, {})
     if method == "ping":
         return _response(request_id, {})
     if method == "tools/list":
@@ -1034,6 +1038,8 @@ def _handle_message(message: JsonObject) -> JsonObject | None:
 
 def _handle_payload(payload: Any) -> JsonObject | list[JsonObject] | None:
     if isinstance(payload, list):
+        if not payload:
+            return _error(None, -32600, "batch must not be empty")
         replies = []
         for item in payload:
             if not isinstance(item, dict):

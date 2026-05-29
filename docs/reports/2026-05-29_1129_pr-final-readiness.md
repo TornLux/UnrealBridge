@@ -10,7 +10,8 @@ PR：`https://github.com/TornLux/UnrealBridge/pull/2`
 - GitHub 重新计算后显示 `MERGEABLE`。
 - 仓库当前没有 GitHub status checks。
 - 本地工作树在最终复核时为干净状态；验证命令覆盖当前 PR 文件树。
-- PR is kept as 4 readable review commits after the CI path-filter follow-up.
+- PR is kept as 6 readable review commits after the scope-checker and JSON-RPC
+  batch follow-ups.
 
 ## 当前提交序列
 
@@ -104,3 +105,30 @@ Note: `cd32e47` is the only current PR commit that changes `Plugin/UnrealBridge`
   codex/mcp-stdio-wrapper-pr`, `python tools\test_check_mcp_followup_scope.py`,
   `python tools\smoke_mcp_all.py`, `python tools\check_mcp_workflow.py`, and
   `git diff --check`; all passed.
+
+## 2026-05-29 JSON-RPC batch update
+
+- Fixed empty JSON-RPC batch handling so `[]` returns `-32600 Invalid Request`
+  instead of producing no response and potentially hanging generic clients.
+- Added an empty-batch probe to
+  `tools/fixtures/mcp_stdio_common_probes.json`.
+- Fixed known notification-like methods sent with a request id so they return
+  `{}` instead of producing no response.
+- Added a notification-like request probe to
+  `tools/fixtures/mcp_stdio_common_probes.json`.
+- Fixed request `jsonrpc` validation so requests without `jsonrpc: "2.0"`
+  return `-32600 Invalid Request`.
+- Added a missing-jsonrpc probe to
+  `tools/fixtures/mcp_stdio_common_probes.json`.
+- Fixed request `method` validation so missing or non-string methods return
+  `-32600 Invalid Request` instead of `method not found`.
+- Added a missing-method probe to
+  `tools/fixtures/mcp_stdio_common_probes.json`.
+- Fixed request `params` validation so arrays are rejected instead of being
+  silently treated as empty objects.
+- Added a non-object params probe to
+  `tools/fixtures/mcp_stdio_common_probes.json`.
+- Re-ran `python tools\run_mcp_stdio_fixture.py`,
+  `python tools\smoke_mcp_stdio.py`, `python tools\smoke_mcp_all.py`,
+  `python tools\check_mcp_followup_scope.py --mode combined --base
+  origin/main`, and `git diff --check`; all passed.
