@@ -11,6 +11,10 @@
 #include "UObject/UnrealType.h"
 #include "UObject/Package.h"
 #include "UObject/SavePackage.h"
+#include "Dom/JsonObject.h"
+#include "JsonObjectConverter.h"
+#include "Policies/PrettyJsonPrintPolicy.h"
+#include "Serialization/JsonSerializer.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgeDataTable"
 
@@ -73,6 +77,68 @@ namespace BridgeDataTableImpl
 		const TCHAR* Buffer = *Value;
 		const TCHAR* After = Prop->ImportText_Direct(Buffer, ValuePtr, nullptr, PPF_None, GLog);
 		return After != nullptr;
+	}
+
+	/** Build a DataTable JSON string without using UDataTable::GetTableAsJSON(). */
+	bool BuildDataTableJSONString(const UDataTable* DT, FString& OutJson)
+	{
+		OutJson.Reset();
+		if (!DT)
+		{
+			return false;
+		}
+
+		const UScriptStruct* RowStruct = DT->GetRowStruct();
+		if (!RowStruct)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: DataTable '%s' has no row struct"), *DT->GetPathName());
+			return false;
+		}
+
+		TArray<TSharedPtr<FJsonValue>> Rows;
+		const TMap<FName, uint8*>& RowMap = DT->GetRowMap();
+		Rows.Reserve(RowMap.Num());
+
+		for (const TPair<FName, uint8*>& Pair : RowMap)
+		{
+			const uint8* RowData = Pair.Value;
+			if (!RowData)
+			{
+				UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: DataTable '%s' row '%s' has null row data"), *DT->GetPathName(), *Pair.Key.ToString());
+				continue;
+			}
+
+			TSharedRef<FJsonObject> RowObject = MakeShared<FJsonObject>();
+			RowObject->SetStringField(TEXT("Name"), Pair.Key.ToString());
+
+			for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+			{
+				FProperty* Prop = *It;
+				if (!Prop)
+				{
+					continue;
+				}
+
+				const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(RowData);
+				TSharedPtr<FJsonValue> JsonValue = FJsonObjectConverter::UPropertyToJsonValue(Prop, ValuePtr, 0, 0);
+				if (JsonValue.IsValid())
+				{
+					RowObject->SetField(Prop->GetName(), JsonValue);
+				}
+				else
+				{
+					FString ExportedText;
+					Prop->ExportTextItem_Direct(ExportedText, ValuePtr, nullptr, nullptr, PPF_None);
+					RowObject->SetStringField(Prop->GetName(), ExportedText);
+				}
+			}
+
+			Rows.Add(MakeShared<FJsonValueObject>(RowObject));
+		}
+
+		TSharedRef<TJsonWriter<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>> Writer =
+			TJsonWriterFactory<TCHAR, TPrettyJsonPrintPolicy<TCHAR>>::Create(&OutJson);
+		return FJsonSerializer::Serialize(Rows, Writer);
 	}
 }
 
@@ -565,7 +631,13 @@ FString UUnrealBridgeDataTableLibrary::GetDataTableAsJSONString(const FString& D
 {
 	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return FString();
-	return DT->GetTableAsJSON();
+
+	FString Contents;
+	if (!BridgeDataTableImpl::BuildDataTableJSONString(DT, Contents))
+	{
+		return FString();
+	}
+	return Contents;
 }
 
 // ─── ExportDataTableToJSON ──────────────────────────────────
@@ -576,10 +648,13 @@ bool UUnrealBridgeDataTableLibrary::ExportDataTableToJSON(
 	UDataTable* DT = BridgeDataTableImpl::LoadDT(DataTablePath);
 	if (!DT) return false;
 
-	const FString Contents = DT->GetTableAsJSON();
-	if (Contents.IsEmpty()) return false;
+	FString Contents;
+	if (!BridgeDataTableImpl::BuildDataTableJSONString(DT, Contents) || Contents.IsEmpty())
+	{
+		return false;
+	}
 
-	if (!FFileHelper::SaveStringToFile(Contents, *OutJsonFilePath))
+	if (!FFileHelper::SaveStringToFile(Contents, *OutJsonFilePath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 	{
 		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: Could not write JSON file '%s'"), *OutJsonFilePath);
 		return false;
