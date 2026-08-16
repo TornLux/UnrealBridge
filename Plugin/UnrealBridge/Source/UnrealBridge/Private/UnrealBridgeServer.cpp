@@ -1,4 +1,5 @@
 #include "UnrealBridgeServer.h"
+#include "UnrealBridgeCancellableWork.h"
 #include "IPythonScriptPlugin.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
@@ -31,6 +32,22 @@ namespace UnrealBridgeLimits
 	// triggering an OOM in the editor via blind SetNumUninitialized.
 	constexpr int32 MaxRequestBytes = 10 * 1024 * 1024;
 }
+
+/**
+ * exec queue 的共享 control block；worker 等待它，GameThread ticker 尝试消费它。
+ * Shared exec-queue control block waited by a worker and claimed by the GameThread ticker.
+ */
+struct FUnrealBridgeServer::FPendingExec final
+{
+	FPendingExec(TFunction<FExecResult()>&& InBody, FString InRequestId)
+		: Work(MoveTemp(InBody))
+		, RequestId(MoveTemp(InRequestId))
+	{
+	}
+
+	TUnrealBridgeCancellableWork<FExecResult> Work;
+	FString RequestId;
+};
 
 // Modal-dialog inspection and actions deliberately live outside the normal
 // Python exec queue. A Slate modal loop does not tick FTSTicker, so an exec
@@ -495,22 +512,54 @@ namespace UnrealBridgeModal
 		return MakeResult(false, TEXT(""), TEXT("unsupported modal action"), Snapshot);
 	}
 
-	bool RunOnGameThread(TFunction<TSharedPtr<FJsonObject>()>&& Work,
-		TSharedPtr<FJsonObject>& OutResult, float TimeoutSeconds = 3.0f)
+	/** GameThread wait 的权威终态。 / Authoritative outcome of a bounded GameThread wait. */
+	enum class EGameThreadWorkWaitResult : uint8
 	{
-		auto Promise = MakeShared<TPromise<TSharedPtr<FJsonObject>>, ESPMode::ThreadSafe>();
-		TFuture<TSharedPtr<FJsonObject>> Future = Promise->GetFuture();
-		AsyncTask(ENamedThreads::GameThread, [Promise, Work = MoveTemp(Work)]() mutable
+		Completed,
+		CancelledBeforeStart,
+		AlreadyRunning,
+	};
+
+	EGameThreadWorkWaitResult RunOnGameThread(
+		TFunction<TSharedPtr<FJsonObject>()>&& Body,
+		TSharedPtr<FJsonObject>& OutResult,
+		float TimeoutSeconds = 3.0f)
+	{
+		using FModalWork = TUnrealBridgeCancellableWork<TSharedPtr<FJsonObject>>;
+		TSharedPtr<FModalWork, ESPMode::ThreadSafe> Pending =
+			MakeShared<FModalWork, ESPMode::ThreadSafe>(MoveTemp(Body));
+
+		AsyncTask(ENamedThreads::GameThread, [Pending]()
 		{
-			Promise->SetValue(Work());
+			// timeout 取消成功后，这个晚到 task 只会失败 claim，绝不执行 Slate body。
+			// After timeout cancellation wins, this late task can only fail its claim and never runs the Slate body.
+			Pending->TryExecute();
 		});
 
-		if (!Future.WaitFor(FTimespan::FromSeconds(TimeoutSeconds)))
+		if (Pending->WaitFor(FTimespan::FromSeconds(TimeoutSeconds)))
 		{
-			return false;
+			OutResult = Pending->GetResult();
+			return EGameThreadWorkWaitResult::Completed;
 		}
-		OutResult = Future.Get();
-		return OutResult.IsValid();
+
+		EUnrealBridgeWorkState ObservedState = EUnrealBridgeWorkState::Queued;
+		TSharedPtr<FJsonObject> CancelledResult;
+		if (Pending->TryCancel(MoveTemp(CancelledResult), ObservedState))
+		{
+			return EGameThreadWorkWaitResult::CancelledBeforeStart;
+		}
+		if (ObservedState == EUnrealBridgeWorkState::Completed)
+		{
+			// completion 与 deadline 同时发生时返回真实结果，不伪造 timeout。
+			// If completion races the deadline, return the real result instead of fabricating a timeout.
+			OutResult = Pending->GetResult();
+			return EGameThreadWorkWaitResult::Completed;
+		}
+		if (ObservedState == EUnrealBridgeWorkState::Cancelled)
+		{
+			return EGameThreadWorkWaitResult::CancelledBeforeStart;
+		}
+		return EGameThreadWorkWaitResult::AlreadyRunning;
 	}
 }
 
@@ -519,6 +568,7 @@ namespace UnrealBridgeModal
 // ─────────────────────────────────────────────────────────────
 
 FUnrealBridgeServer::FUnrealBridgeServer()
+	: WorkAdmission(MakeUnique<FUnrealBridgeWorkAdmissionGate>())
 {
 }
 
@@ -631,6 +681,7 @@ bool FUnrealBridgeServer::Start(const FStartConfig& Config)
 	});
 
 	bIsRunning = true;
+	WorkAdmission->Open();
 	UE_LOG(LogUnrealBridge, Log, TEXT("Listening on %s:%d%s"),
 		*BindAddressStr, ListenPort,
 		HasToken() ? TEXT(" (token auth enforced)") : TEXT(""));
@@ -639,19 +690,25 @@ bool FUnrealBridgeServer::Start(const FStartConfig& Config)
 
 void FUnrealBridgeServer::Stop()
 {
-	if (!bIsRunning)
+	if (!bIsRunning && !WorkAdmission->IsOpen())
 	{
 		return;
 	}
-	bIsRunning = false;
+	checkf(IsInGameThread(), TEXT("UnrealBridge Server must stop on the GameThread"));
 
-	// 1. Stop accepting new connections.
+	// 1. 先原子关闭 work admission；Close 返回后，accept/enqueue callback 均已离开。
+	// First close work admission atomically; after Close returns, accept/enqueue callbacks have left.
+	WorkAdmission->Close();
+	bIsRunning = false;
+	const FGraphEventArray WorkersToWait = ClientWorkerTasks;
+
+	// 2. Stop accepting new connections.
 	if (Listener.IsValid())
 	{
 		Listener.Reset();
 	}
 
-	// 2. Unregister GameThread ticker and editor delegates (items #11 #12).
+	// 3. Unregister GameThread ticker and editor delegates (items #11 #12).
 	if (TickHandle.IsValid())
 	{
 		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
@@ -678,19 +735,19 @@ void FUnrealBridgeServer::Stop()
 		PieEndHandle.Reset();
 	}
 
-	// 3. Fulfill any queued execs with a shutdown error so worker threads
-	// waiting on TFuture wake up immediately.
+	// 4. 通过共同状态机取消 queued exec；gate 已关闭，所以 drain 后不能再有新 item。
+	// Cancel queued execs through the shared state machine; the closed gate prevents post-drain admission.
 	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending;
 	while (ExecQueue.Dequeue(Pending) && Pending.IsValid())
 	{
-		FExecResult R;
-		R.bSuccess = false;
-		R.Error = TEXT("server shutting down");
-		Pending->Promise.SetValue(MoveTemp(R));
+		FExecResult ShutdownResult;
+		ShutdownResult.bSuccess = false;
+		ShutdownResult.Error = TEXT("server shutting down");
+		EUnrealBridgeWorkState ObservedState = EUnrealBridgeWorkState::Queued;
+		Pending->Work.TryCancel(MoveTemp(ShutdownResult), ObservedState);
 	}
 
-	// 4. Force-close active client sockets so HandleClient's RecvAll
-	// unblocks immediately instead of waiting for its 5 s idle timeout.
+	// 5. Force-close active client sockets so HandleClient's RecvAll/SendAll unblocks.
 	{
 		FScopeLock Lock(&ActiveSocketsLock);
 		for (FSocket* S : ActiveSockets)
@@ -702,26 +759,21 @@ void FUnrealBridgeServer::Stop()
 		}
 	}
 
-	// 5. Bounded wait for AsyncTask workers to drain (item #12). Beyond
-	// the deadline we log and proceed — the workers will still finish
-	// their cleanup (DestroySocket, ActiveClients.Decrement) but
-	// ShutdownModule isn't held hostage to a stuck Python exec.
-	const double Deadline = FPlatformTime::Seconds() + 3.0;
-	while (ActiveClients.GetValue() > 0 && FPlatformTime::Seconds() < Deadline)
+	// 6. Module unload 不能留下任何 plugin-owned closure。等待完整 graph event 会覆盖
+	// lambda body、capture destructor 与 bookkeeping；GameThread wait 同时泵送 modal/ping task。
+	// Module unload cannot leave plugin-owned closures behind. Waiting on graph events covers the
+	// lambda body, capture destruction, and bookkeeping while the GameThread pumps modal/ping tasks.
+	if (WorkersToWait.Num() > 0)
 	{
-		FPlatformProcess::Sleep(0.01f);
+		FTaskGraphInterface::Get().WaitUntilTasksComplete(WorkersToWait, ENamedThreads::GameThread);
 	}
-	const int32 Stragglers = ActiveClients.GetValue();
-	if (Stragglers > 0)
-	{
-		UE_LOG(LogUnrealBridge, Warning,
-			TEXT("Stop(): %d client worker(s) still active after 3s drain timeout"),
-			Stragglers);
-	}
-	else
-	{
-		UE_LOG(LogUnrealBridge, Log, TEXT("Stop(): all client workers drained cleanly"));
-	}
+	FTaskGraphInterface::Get().ProcessThreadUntilIdle(ENamedThreads::GameThread);
+	ClientWorkerTasks.Reset();
+
+	checkf(ActiveClients.GetValue() == 0,
+		TEXT("UnrealBridge client graph events completed with %d active clients"),
+		ActiveClients.GetValue());
+	UE_LOG(LogUnrealBridge, Log, TEXT("Stop(): all client workers and GameThread closures drained cleanly"));
 }
 
 bool FUnrealBridgeServer::IsRunning() const
@@ -750,48 +802,64 @@ bool FUnrealBridgeServer::IsEditorReady() const
 bool FUnrealBridgeServer::OnConnectionAccepted(FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint)
 {
 	const FString EndpointStr = ClientEndpoint.ToString();
+	bool bAccepted = false;
 
-	// Bound concurrent clients so a runaway caller can't saturate the
-	// AsyncTask background pool and starve other editor work. When we're
-	// over capacity we return false so FTcpListener destroys the accepted
-	// socket itself — the client sees a clean connection reset rather than
-	// a silent hang.
-	const int32 Active = ActiveClients.Increment();
-	if (Active > MaxConcurrentClients)
+	// gate callback 同时完成容量检查、graph-event 注册与 task dispatch；Stop::Close
+	// 返回后不会出现“已快照 worker 列表之后才注册”的尾随 closure。
+	// The gate callback performs capacity check, graph-event registration, and dispatch together;
+	// after Stop::Close returns, no trailing closure can register after the worker snapshot.
+	const bool bAdmissionOpen = WorkAdmission->TryAdmit([this, ClientSocket, EndpointStr, &bAccepted]()
 	{
-		ActiveClients.Decrement();
-		UE_LOG(LogUnrealBridge, Warning,
-			TEXT("[conn] rejecting %s — at concurrency limit (%d/%d)"),
-			*EndpointStr, Active - 1, MaxConcurrentClients);
-		return false;
-	}
-
-	UE_LOG(LogUnrealBridge, Verbose, TEXT("[conn] accepted %s (active=%d)"), *EndpointStr, Active);
-
-	AsyncTask(ENamedThreads::AnyBackgroundThreadNormalTask, [this, ClientSocket, EndpointStr]()
-	{
-		// Register socket so Stop() can force-close us (item #6).
+		ClientWorkerTasks.RemoveAll([](const FGraphEventRef& Task)
 		{
-			FScopeLock Lock(&ActiveSocketsLock);
-			ActiveSockets.Add(ClientSocket);
+			return !Task.IsValid() || Task->IsComplete();
+		});
+
+		const int32 Active = ActiveClients.Increment();
+		if (Active > MaxConcurrentClients)
+		{
+			ActiveClients.Decrement();
+			UE_LOG(LogUnrealBridge, Warning,
+				TEXT("[conn] rejecting %s — at concurrency limit (%d/%d)"),
+				*EndpointStr, Active - 1, MaxConcurrentClients);
+			return;
 		}
 
-		HandleClient(ClientSocket, EndpointStr);
+		UE_LOG(LogUnrealBridge, Verbose,
+			TEXT("[conn] accepted %s (active=%d)"), *EndpointStr, Active);
 
-		{
-			FScopeLock Lock(&ActiveSocketsLock);
-			ActiveSockets.Remove(ClientSocket);
-		}
+		TSharedRef<FUnrealBridgeServer, ESPMode::ThreadSafe> Self = AsShared();
+		FGraphEventRef WorkerTask = FFunctionGraphTask::CreateAndDispatchWhenReady(
+			[Self, ClientSocket, EndpointStr]()
+			{
+				// Register socket so Stop() can force-close us (item #6).
+				{
+					FScopeLock Lock(&Self->ActiveSocketsLock);
+					Self->ActiveSockets.Add(ClientSocket);
+				}
 
-		ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
-		if (SocketSubsystem)
-		{
-			SocketSubsystem->DestroySocket(ClientSocket);
-		}
-		ActiveClients.Decrement();
+				Self->HandleClient(ClientSocket, EndpointStr);
+
+				{
+					FScopeLock Lock(&Self->ActiveSocketsLock);
+					Self->ActiveSockets.Remove(ClientSocket);
+				}
+
+				ISocketSubsystem* SocketSubsystem = ISocketSubsystem::Get(PLATFORM_SOCKETSUBSYSTEM);
+				if (SocketSubsystem)
+				{
+					SocketSubsystem->DestroySocket(ClientSocket);
+				}
+				Self->ActiveClients.Decrement();
+			},
+			TStatId(),
+			nullptr,
+			ENamedThreads::AnyBackgroundThreadNormalTask);
+		ClientWorkerTasks.Add(MoveTemp(WorkerTask));
+		bAccepted = true;
 	});
 
-	return true;
+	return bAdmissionOpen && bAccepted;
 }
 
 void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& EndpointStr)
@@ -978,8 +1046,13 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		// Together these pop the debug-mode stack and let ProcessEvent
 		// return, which unblocks the stuck Python exec, which unblocks the
 		// TCP response to the original caller.
-		AsyncTask(ENamedThreads::GameThread, []()
+		TSharedRef<FUnrealBridgeServer, ESPMode::ThreadSafe> ServerOwner = AsShared();
+		AsyncTask(ENamedThreads::GameThread, [ServerOwner]()
 		{
+			if (!ServerOwner->IsRunning())
+			{
+				return;
+			}
 			FKismetDebugUtilities::RequestAbortingExecution();
 			if (FSlateApplication::IsInitialized())
 			{
@@ -1015,9 +1088,10 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		TFuture<bool> ProbeFuture = Probe->GetFuture();
 		const double ProbeT0 = FPlatformTime::Seconds();
 
-		AsyncTask(ENamedThreads::GameThread, [Probe]()
+		TSharedRef<FUnrealBridgeServer, ESPMode::ThreadSafe> ServerOwner = AsShared();
+		AsyncTask(ENamedThreads::GameThread, [Probe, ServerOwner]()
 		{
-			Probe->SetValue(true);
+			Probe->SetValue(ServerOwner->IsRunning());
 		});
 
 		const bool bAlive = ProbeFuture.WaitFor(FTimespan::FromSeconds(ProbeTimeout));
@@ -1050,30 +1124,52 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		bool bChecked = false;
 		const bool bHasChecked = Request->TryGetBoolField(TEXT("checked"), bChecked);
 
+		TSharedRef<FUnrealBridgeServer, ESPMode::ThreadSafe> ServerOwner = AsShared();
 		TSharedPtr<FJsonObject> ModalResult;
-		const bool bCompleted = UnrealBridgeModal::RunOnGameThread(
-			[Command, ExpectedSnapshot, Action, ControlId, Value, bChecked, bHasChecked]()
-			{
-				if (Command == TEXT("modal_status"))
+		const UnrealBridgeModal::EGameThreadWorkWaitResult WaitResult =
+			UnrealBridgeModal::RunOnGameThread(
+				[ServerOwner, Command, ExpectedSnapshot, Action, ControlId, Value, bChecked, bHasChecked]()
 				{
-					return UnrealBridgeModal::GetStatus();
-				}
-				return UnrealBridgeModal::PerformAction(
-					ExpectedSnapshot, Action, ControlId, Value, bChecked, bHasChecked);
-			},
-			ModalResult);
+					// Stop 关闭 admission 后，晚到 task 只能返回 shutdown，不得触碰 Slate。
+					// After Stop closes admission, a late task may only return shutdown and must not touch Slate.
+					if (!ServerOwner->IsRunning())
+					{
+						return UnrealBridgeModal::MakeResult(
+							false, TEXT(""), TEXT("server shutting down"), UnrealBridgeModal::FModalSnapshot());
+					}
+					if (Command == TEXT("modal_status"))
+					{
+						return UnrealBridgeModal::GetStatus();
+					}
+					return UnrealBridgeModal::PerformAction(
+						ExpectedSnapshot, Action, ControlId, Value, bChecked, bHasChecked);
+				},
+				ModalResult);
 
-		if (bCompleted)
+		if (WaitResult == UnrealBridgeModal::EGameThreadWorkWaitResult::Completed
+			&& ModalResult.IsValid())
 		{
 			Response = ModalResult.ToSharedRef();
 			Response->SetStringField(TEXT("id"), RequestId);
 		}
 		else
 		{
+			FString Error;
+			if (WaitResult == UnrealBridgeModal::EGameThreadWorkWaitResult::CancelledBeforeStart)
+			{
+				Error = TEXT("GameThread did not service the modal request within 3.0s; queued modal work cancelled before execution");
+			}
+			else if (WaitResult == UnrealBridgeModal::EGameThreadWorkWaitResult::AlreadyRunning)
+			{
+				Error = TEXT("modal request timed out after 3.0s; work already started and outcome is unknown");
+			}
+			else
+			{
+				Error = TEXT("modal request completed without a result");
+			}
 			Response->SetBoolField(TEXT("success"), false);
 			Response->SetStringField(TEXT("output"), TEXT(""));
-			Response->SetStringField(TEXT("error"),
-				TEXT("GameThread did not service the modal request within 3.0s"));
+			Response->SetStringField(TEXT("error"), Error);
 			Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
 		}
 	}
@@ -1193,40 +1289,99 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 // Python execution pipeline
 // ─────────────────────────────────────────────────────────────
 //
-// Worker threads enqueue heap-allocated FPendingExec and wait on the
-// associated TFuture. A single FTSTicker consumer on the GameThread drains
-// the queue one item per frame, guarded by bExecInFlight. This design:
-//   - Eliminates the reentrancy crash caused by AsyncTask(GameThread) being
-//     pulled off the task-graph queue during Python-triggered TaskGraph pumps.
-//   - Removes the dangling-reference / event-pool-reuse bug from the old
-//     per-request FEvent scheme: TSharedPtr<FPendingExec> keeps the promise
-//     alive until the ticker fulfills it, regardless of whether the worker
-//     has already returned a timeout to its client.
+// worker 把共享 FPendingExec control block 入队并等待；GameThread 的单一 FTSTicker
+// 每帧最多消费一项，并由 bExecInFlight 防止重入。共同状态机保证：保留 Python 的
+// 非重入 ticker 调度；timeout/shutdown/ticker 只有一个 terminal winner；ticker
+// 取到 cancelled tombstone 时不会执行 body。
+// Workers enqueue shared FPendingExec control blocks and wait. One GameThread
+// FTSTicker drains at most one item per frame under bExecInFlight. The shared
+// state machine preserves non-reentrant Python dispatch, gives timeout/shutdown/
+// ticker one terminal winner, and makes cancelled queue tombstones harmless.
 // ─────────────────────────────────────────────────────────────
 
 FUnrealBridgeServer::FExecResult FUnrealBridgeServer::EnqueueAndWaitForExec(
 	const FString& Script, float TimeoutSeconds, const FString& RequestId)
 {
-	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending = MakeShared<FPendingExec, ESPMode::ThreadSafe>();
-	Pending->Script = Script;
-	Pending->TimeoutSeconds = TimeoutSeconds;
-	Pending->RequestId = RequestId;
-
-	TFuture<FExecResult> Future = Pending->Promise.GetFuture();
-	ExecQueue.Enqueue(Pending);
-
-	const bool bReady = Future.WaitFor(FTimespan::FromSeconds(TimeoutSeconds));
-	if (!bReady)
+	TFunction<FExecResult()> Body = [this, Script]()
 	{
-		FExecResult R;
-		R.bSuccess = false;
-		R.Error = FString::Printf(TEXT("exec timeout after %.1fs"), TimeoutSeconds);
-		// Leave the promise alone — the ticker will still fulfill it later,
-		// but Pending's shared-ptr means that's safe and leaks nothing.
-		return R;
+		return DoPythonExec(Script);
+	};
+	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending =
+		MakeShared<FPendingExec, ESPMode::ThreadSafe>(MoveTemp(Body), RequestId);
+
+	const bool bEnqueued = WorkAdmission->TryAdmit([this, &Pending]()
+	{
+		ExecQueue.Enqueue(Pending);
+	});
+	if (!bEnqueued)
+	{
+		FExecResult ShutdownResult;
+		ShutdownResult.bSuccess = false;
+		ShutdownResult.Error = TEXT("server shutting down");
+		return ShutdownResult;
 	}
-	return Future.Get();
+
+	if (Pending->Work.WaitFor(FTimespan::FromSeconds(TimeoutSeconds)))
+	{
+		return Pending->Work.GetResult();
+	}
+
+	FExecResult TimeoutResult;
+	TimeoutResult.bSuccess = false;
+	TimeoutResult.Error = FString::Printf(
+		TEXT("exec timeout after %.1fs; queued work cancelled before execution"),
+		TimeoutSeconds);
+
+	EUnrealBridgeWorkState ObservedState = EUnrealBridgeWorkState::Queued;
+	if (Pending->Work.TryCancel(MoveTemp(TimeoutResult), ObservedState))
+	{
+		return Pending->Work.GetResult();
+	}
+	if (ObservedState == EUnrealBridgeWorkState::Completed
+		|| ObservedState == EUnrealBridgeWorkState::Cancelled)
+	{
+		// completion/shutdown 与 deadline 同时发生时返回权威 terminal result。
+		// If completion/shutdown races the deadline, return the authoritative terminal result.
+		return Pending->Work.GetResult();
+	}
+
+	FExecResult RunningResult;
+	RunningResult.bSuccess = false;
+	RunningResult.Error = FString::Printf(
+		TEXT("exec timeout after %.1fs; work already started and outcome is unknown"),
+		TimeoutSeconds);
+	return RunningResult;
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool FUnrealBridgeServer::EnqueueExecForTesting(
+	TFunction<void()>&& Body,
+	bool bCancelBeforeConsume,
+	const FString& RequestId)
+{
+	TFunction<FExecResult()> ExecBody = [Body = MoveTemp(Body)]() mutable
+	{
+		Body();
+		FExecResult Result;
+		Result.bSuccess = true;
+		return Result;
+	};
+	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending =
+		MakeShared<FPendingExec, ESPMode::ThreadSafe>(MoveTemp(ExecBody), RequestId);
+	const bool bEnqueued = WorkAdmission->TryAdmit([this, &Pending]()
+	{
+		ExecQueue.Enqueue(Pending);
+	});
+	if (bEnqueued && bCancelBeforeConsume)
+	{
+		FExecResult CancelledResult;
+		CancelledResult.Error = TEXT("cancelled by automation driver");
+		EUnrealBridgeWorkState ObservedState = EUnrealBridgeWorkState::Queued;
+		Pending->Work.TryCancel(MoveTemp(CancelledResult), ObservedState);
+	}
+	return bEnqueued;
+}
+#endif
 
 bool FUnrealBridgeServer::TickConsumeQueue(float /*DeltaTime*/)
 {
@@ -1239,16 +1394,27 @@ bool FUnrealBridgeServer::TickConsumeQueue(float /*DeltaTime*/)
 		return true; // belt-and-suspenders guard against ticker reentrancy
 	}
 
+	// 同一 tick 丢弃任意数量的 cancelled tombstone，但最多执行一个 Python body。
+	// Discard any number of cancelled tombstones in this tick, but execute at most one Python body.
 	TSharedPtr<FPendingExec, ESPMode::ThreadSafe> Pending;
-	if (!ExecQueue.Dequeue(Pending) || !Pending.IsValid())
+	while (ExecQueue.Dequeue(Pending))
 	{
-		return true;
-	}
+		if (!Pending.IsValid())
+		{
+			continue;
+		}
 
-	bExecInFlight = true;
-	FExecResult Result = DoPythonExec(Pending->Script);
-	Pending->Promise.SetValue(MoveTemp(Result));
-	bExecInFlight = false;
+		bExecInFlight = true;
+		const bool bExecuted = Pending->Work.TryExecute();
+		bExecInFlight = false;
+		if (bExecuted)
+		{
+			return true;
+		}
+
+		UE_LOG(LogUnrealBridge, Verbose,
+			TEXT("Skipping cancelled exec id=%s"), *Pending->RequestId);
+	}
 	return true;
 }
 

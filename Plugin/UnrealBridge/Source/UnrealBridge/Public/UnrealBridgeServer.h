@@ -6,9 +6,12 @@
 #include "Containers/Queue.h"
 #include "Containers/Ticker.h"
 #include "Async/Future.h"
+#include "Async/TaskGraphInterfaces.h"
 #include "Containers/Set.h"
 #include "Misc/ScopeLock.h"
 #include "Interfaces/IPv4/IPv4Address.h"
+
+class FUnrealBridgeWorkAdmissionGate;
 
 /**
  * TCP server that listens for incoming connections and executes Python scripts
@@ -23,7 +26,7 @@
  *   {"id":"...", "command":"modal_status"} -> active Slate modal snapshot
  *   {"id":"...", "command":"modal_action", "snapshot":"...", ...} -> guarded modal interaction
  */
-class FUnrealBridgeServer : public TSharedFromThis<FUnrealBridgeServer>
+class FUnrealBridgeServer : public TSharedFromThis<FUnrealBridgeServer, ESPMode::ThreadSafe>
 {
 public:
 	/** Configuration for Start — replaces the legacy `int32 Port` signature. */
@@ -80,6 +83,13 @@ public:
 	bool IsEditorReady() const;
 
 private:
+#if WITH_DEV_AUTOMATION_TESTS
+	friend class FUnrealBridgeServerTestAccessor;
+
+	/** 为确定性 Automation 注入不调用 Python 的 exec body。 / Inject a non-Python exec body for deterministic Automation. */
+	bool EnqueueExecForTesting(TFunction<void()>&& Body, bool bCancelBeforeConsume, const FString& RequestId);
+#endif
+
 	/** Called by FTcpListener when a new client connects. */
 	bool OnConnectionAccepted(FSocket* ClientSocket, const FIPv4Endpoint& ClientEndpoint);
 
@@ -101,18 +111,10 @@ private:
 	};
 
 	/**
-	 * A queued exec request. Heap-allocated and shared between the worker
-	 * thread (which waits on Promise's future) and the GameThread ticker
-	 * consumer (which fulfills Promise). Shared ownership guarantees no
-	 * dangling references if the worker times out before the ticker runs.
+	 * queued exec 的私有 control block；定义留在 Server.cpp，避免把调度细节暴露为公共 API。
+	 * Private queued-exec control block, defined in Server.cpp so scheduling details stay out of the public API.
 	 */
-	struct FPendingExec
-	{
-		FString Script;
-		float TimeoutSeconds = 30.0f;
-		FString RequestId;
-		TPromise<FExecResult> Promise;
-	};
+	struct FPendingExec;
 
 	/** Enqueue a script for GameThread execution and block on the future. */
 	FExecResult EnqueueAndWaitForExec(const FString& Script, float TimeoutSeconds, const FString& RequestId);
@@ -130,13 +132,19 @@ private:
 	FThreadSafeBool bIsRunning = false;
 	FThreadSafeBool bEditorReady = false;
 
-	// Exec pipeline (item #1 of server stability plan).
+	// exec admission 与 shutdown 由同一 gate 排序；Close 后 queue 不能再收到新 work。
+	// One gate orders exec admission against shutdown; no work can enter the queue after Close.
+	TUniquePtr<FUnrealBridgeWorkAdmissionGate> WorkAdmission;
 	TQueue<TSharedPtr<FPendingExec, ESPMode::ThreadSafe>, EQueueMode::Mpsc> ExecQueue;
 	FTSTicker::FDelegateHandle TickHandle;
 	bool bExecInFlight = false; // GameThread-only, no atomic needed
 
+	// client worker graph events 让 Stop 等待 closure 真正销毁，而不只是等待 raw counter 归零。
+	// Client worker graph events let Stop wait for closure destruction, not merely a raw counter reaching zero.
+	FGraphEventArray ClientWorkerTasks;
+
 	// Connection limit (item #5). Atomic because we increment/decrement from
-	// the listener thread (accept path) and the AsyncTask worker (completion).
+	// the listener thread (accept path) and the task-graph worker (completion).
 	FThreadSafeCounter ActiveClients;
 	static constexpr int32 MaxConcurrentClients = 16;
 

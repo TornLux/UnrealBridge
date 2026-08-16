@@ -13,6 +13,7 @@ public:
 	virtual void ShutdownModule() override;
 
 private:
-	TSharedPtr<FUnrealBridgeServer> Server;
+	TSharedPtr<FUnrealBridgeServer, ESPMode::ThreadSafe> Server;
 	TUniquePtr<FBridgeDiscoveryService> Discovery;
+	FDelegateHandle MainFrameReadyHandle;
 };
