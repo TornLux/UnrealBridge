@@ -169,12 +169,13 @@ bridge.py exec "print('hello from UE')"
 bridge.py exec-file my_script.py
 ```
 
-参数（全部可选，常规使用可以一个都不传）：
+发现模式参数均为可选，常规使用可以一个都不传：
 
 - `--project=<名称|路径>` —— 同时跑多个编辑器时用来挑一个
-- `--endpoint=host:port` —— 跳过发现直连（或环境变量 `UNREAL_BRIDGE_ENDPOINT`）
 - `--token=<密钥>` —— 仅当 server 绑定非 loopback 时需要（或 `UNREAL_BRIDGE_TOKEN`）
 - `--timeout`（默认 30 秒）、`--json`、`--discovery-timeout=<ms>`（默认 800）
+
+直连模式必须把四项视为不可拆分的元组：`--endpoint=host:port --instance-id=<uuid> --expected-pid=<pid> --expected-project-path=<uproject>`。instance、PID 与工程路径必须逐字复制同一次 discovery 响应或 Server 启动日志，不得改写路径分隔符或大小写；也可使用对应的 `UNREAL_BRIDGE_ENDPOINT`、`UNREAL_BRIDGE_INSTANCE_ID`、`UNREAL_BRIDGE_PID`、`UNREAL_BRIDGE_PROJECT_PATH` 环境变量。
 
 `bridge.py list-editors` 发一次探测并列出所有响应的编辑器 —— 多编辑器场景的诊断快捷命令。
 
@@ -240,15 +241,17 @@ python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # 动到反射
 
 两个通道：
 
-1. **UDP 发现**：端口 `9876`。客户端把带同一 request_id 的 `probe`（可带 project 过滤器）同时发往局域网多播 `239.255.42.99` 和本机回环 `127.0.0.1`，并按编辑器 PID 去重。多播保留局域网/多编辑器发现，回环探测则避免 Windows、VPN 或虚拟网卡丢弃多播回环时导致本机发现失效。每个编辑器单播回自己的 TCP 绑定地址 + 端口 + token 指纹，多编辑器通过 `SO_REUSEADDR` 共存。
+1. **UDP 发现 v2**：端口 `9876`。客户端把带同一 request_id 的 `probe` 同时发往局域网多播 `239.255.42.99` 和本机回环 `127.0.0.1`，拒绝畸形、旧版或字段不完整的响应，再按每次 Server 启动生成的 UUID 去重。每个编辑器返回 `protocol_version`、`instance_id`、PID、唯一 wire-canonical 工程路径、TCP endpoint、capabilities 与 token 指纹。六个 exact command 是最低必需 capability 集；允许不重复的未来扩展项。Server 广告通配 TCP bind 时，客户端使用 UDP 响应源 IP。多编辑器通过 `SO_REUSEADDR` 共存。
 
-2. **TCP 数据通道**：端口由编辑器在发现响应里给出（OS 分配，默认 `127.0.0.1`）。长度前缀 JSON：
+2. **TCP 数据通道**：端口由编辑器在发现响应里给出（OS 分配，默认 `127.0.0.1`）。每个请求冻结发现到的身份，每个响应回显并由客户端复核。长度前缀 JSON：
 
 ```
-请求:  [4 字节大端长度][{"id","script","timeout","token?"}]
-响应:  [4 字节大端长度][{"id","success","output","error"}]
-Ping:  {"id","command":"ping"}  →  pong
+请求:  [4 字节大端长度][{"id","command":"exact_exec","expected":{...},"request":{"script","timeout"},"token?"}]
+响应:  [4 字节大端长度][{"id","success","output","error","protocol_version","instance_id","pid","project_path"}]
+Ping:  {"command":"exact_ping","expected":{...},"request":{}}  →  pong
 ```
+
+`request` 嵌套对象确保 exact command 落到旧 Server 时不会出现可执行的顶层 `script`。缺失/错误身份、未知或旧 wire form 都由生产 dispatcher 在任何 command body、work admission 或 GameThread dispatch 前拒绝。`project_path` 是 wire identity 而不是文件系统等价检查：所有平台都要求逐字匹配 discovery/启动值。客户端响应帧上限为 10 MiB，且必须是非空 UTF-8 JSON object。
 
 当 server 绑定非 loopback 时自动启用 token 鉴权；客户端从 `<Project>/Saved/UnrealBridge/token.txt` 读取并在每个请求里带上。
 

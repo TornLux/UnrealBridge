@@ -1,5 +1,8 @@
 #include "UnrealBridgeServer.h"
 #include "UnrealBridgeCancellableWork.h"
+#include "UnrealBridgeEndpointIdentity.h"
+#include "UnrealBridgeExactRequestDispatcher.h"
+#include "UnrealBridgeProtocol.h"
 #include "IPythonScriptPlugin.h"
 #include "Dom/JsonObject.h"
 #include "Serialization/JsonReader.h"
@@ -643,6 +646,13 @@ bool FUnrealBridgeServer::Start(const FStartConfig& Config)
 		}
 	}
 
+	// 身份只在 listener 成功建立后生成；每次成功 Start 都得到新的 UUID。
+	// Identity is generated only after the listener succeeds; every successful Start receives a fresh UUID.
+	const FUnrealBridgeEndpointIdentity Identity = FUnrealBridgeEndpointIdentity::Create();
+	InstanceId = Identity.InstanceId;
+	ProjectPath = Identity.ProjectPath;
+	ProcessId = Identity.ProcessId;
+
 	Listener->OnConnectionAccepted().BindRaw(this, &FUnrealBridgeServer::OnConnectionAccepted);
 
 	// Register the GameThread ticker that drains the exec queue.
@@ -779,6 +789,11 @@ void FUnrealBridgeServer::Stop()
 bool FUnrealBridgeServer::IsRunning() const
 {
 	return bIsRunning;
+}
+
+int32 FUnrealBridgeServer::GetProtocolVersion()
+{
+	return UnrealBridgeProtocol::Version;
 }
 
 void FUnrealBridgeServer::SetEditorReady(bool bReady)
@@ -958,6 +973,11 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 	// 4. Build response
 	TSharedRef<FJsonObject> Response = MakeShared<FJsonObject>();
 	Response->SetStringField(TEXT("id"), RequestId);
+	FUnrealBridgeEndpointIdentity ResponseIdentity;
+	ResponseIdentity.InstanceId = InstanceId;
+	ResponseIdentity.ProjectPath = ProjectPath;
+	ResponseIdentity.ProcessId = ProcessId;
+	ResponseIdentity.AppendToResponse(Response);
 
 	// 4a. Token auth — only enforced when the server was started with a token
 	// (i.e. binding to a non-localhost interface). Constant-time compare so a
@@ -1006,22 +1026,53 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		}
 	}
 
-	FString Command;
-	Request->TryGetStringField(TEXT("command"), Command); // optional
-	CallRecord.Command = Command.IsEmpty() ? TEXT("exec") : Command;
+	FString WireCommand;
+	Request->TryGetStringField(UnrealBridgeProtocol::CommandField, WireCommand);
+	CallRecord.Command = WireCommand.IsEmpty() ? TEXT("<missing>") : WireCommand;
 
 	UE_LOG(LogUnrealBridge, Verbose,
 		TEXT("[%s] request id=%s cmd=%s payload=%u"),
-		*EndpointStr, *RequestId, Command.IsEmpty() ? TEXT("(exec)") : *Command, PayloadLen);
+		*EndpointStr, *RequestId, WireCommand.IsEmpty() ? TEXT("(missing)") : *WireCommand, PayloadLen);
 
-	if (Command == TEXT("ping"))
+	FUnrealBridgeAcceptedRequest AcceptedRequest;
+	FString DispatchErrorCode;
+	FString DispatchError;
+	const bool bExactRequestValid = FUnrealBridgeExactRequestDispatcher::TryDispatch(
+		Request,
+		ResponseIdentity,
+		[&AcceptedRequest](const FUnrealBridgeAcceptedRequest& Accepted)
+		{
+			AcceptedRequest = Accepted;
+		},
+		DispatchErrorCode,
+		DispatchError);
+	if (!bExactRequestValid)
+	{
+		Response->SetBoolField(TEXT("success"), false);
+		Response->SetStringField(TEXT("output"), TEXT(""));
+		Response->SetStringField(TEXT("error"), DispatchError);
+		Response->SetStringField(TEXT("error_code"), DispatchErrorCode);
+		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+	}
+	else
+	{
+		Request = AcceptedRequest.Payload;
+	}
+
+	const EUnrealBridgeExactCommand Command = AcceptedRequest.Command;
+	if (!bExactRequestValid)
+	{
+		// 唯一 dispatcher 拒绝后不进入任何命令 body、work admission 或 GameThread dispatch。
+		// After the sole dispatcher rejects, no command body, work admission, or GameThread dispatch is entered.
+	}
+	else if (Command == EUnrealBridgeExactCommand::Ping)
 	{
 		Response->SetBoolField(TEXT("success"), true);
 		Response->SetStringField(TEXT("output"), TEXT("pong"));
 		Response->SetStringField(TEXT("error"), TEXT(""));
 		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
 	}
-	else if (Command == TEXT("debug_resume"))
+	else if (Command == EUnrealBridgeExactCommand::DebugResume)
 	{
 		// Recovery path for a stuck blueprint breakpoint.
 		//
@@ -1064,7 +1115,7 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		Response->SetStringField(TEXT("error"), TEXT(""));
 		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
 	}
-	else if (Command == TEXT("gamethread_ping"))
+	else if (Command == EUnrealBridgeExactCommand::GameThreadPing)
 	{
 		// Probe whether the GameThread is responsive without going through
 		// the FTSTicker exec queue. Submits a no-op AsyncTask(GameThread)
@@ -1105,7 +1156,8 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		Response->SetNumberField(TEXT("latency_ms"), LatencyMs);
 		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
 	}
-	else if (Command == TEXT("modal_status") || Command == TEXT("modal_action"))
+	else if (Command == EUnrealBridgeExactCommand::ModalStatus
+		|| Command == EUnrealBridgeExactCommand::ModalAction)
 	{
 		// This path intentionally bypasses both Python and the FTSTicker exec
 		// queue. It remains callable while an earlier exec is suspended inside
@@ -1137,7 +1189,7 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 						return UnrealBridgeModal::MakeResult(
 							false, TEXT(""), TEXT("server shutting down"), UnrealBridgeModal::FModalSnapshot());
 					}
-					if (Command == TEXT("modal_status"))
+					if (Command == EUnrealBridgeExactCommand::ModalStatus)
 					{
 						return UnrealBridgeModal::GetStatus();
 					}
@@ -1233,6 +1285,10 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		}
 	}
 
+	// modal result 会替换 Response 对象，因此在所有分支结束后再次写入权威 identity。
+	// Modal results replace the Response object, so append authoritative identity again after all branches.
+	ResponseIdentity.AppendToResponse(Response);
+
 	// Mirror the authoritative Response fields into the call record so
 	// every branch (ping / resume / exec / rejected-not-ready / etc.)
 	// logs consistent success/output/error sizes without bespoke wiring.
@@ -1269,14 +1325,14 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 	{
 		UE_LOG(LogUnrealBridge, Warning,
 			TEXT("[%s] send response header failed (id=%s cmd=%s)"),
-			*EndpointStr, *RequestId, *Command);
+			*EndpointStr, *RequestId, *WireCommand);
 		return;
 	}
 	if (!SendAll(ClientSocket, (const uint8*)Utf8Response.Get(), ResponseLen))
 	{
 		UE_LOG(LogUnrealBridge, Warning,
 			TEXT("[%s] send response body failed (id=%s cmd=%s len=%d)"),
-			*EndpointStr, *RequestId, *Command, ResponseLen);
+			*EndpointStr, *RequestId, *WireCommand, ResponseLen);
 		return;
 	}
 

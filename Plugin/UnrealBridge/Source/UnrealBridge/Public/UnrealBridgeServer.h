@@ -17,14 +17,12 @@ class FUnrealBridgeWorkAdmissionGate;
  * TCP server that listens for incoming connections and executes Python scripts
  * in the Unreal Editor's Python interpreter.
  *
- * Protocol: Length-prefixed JSON frames
- *   Request:  <4 bytes big-endian length><JSON: {"id":"...", "script":"...", "timeout":30}>
- *   Response: <4 bytes big-endian length><JSON: {"id":"...", "success":bool, "output":"...", "error":"..."}>
+ * Protocol: Length-prefixed protocol-v2 JSON frames
+ *   Request:  <length><JSON: {"id":"...", "command":"exact_exec", "expected":{...}, "request":{"script":"..."}}>
+ *   Response: <length><JSON: {"id":"...", "success":bool, "output":"...", "error":"...", "instance_id":"..."}>
  *
- * Special commands:
- *   {"id":"...", "command":"ping"} -> {"id":"...", "success":true, "output":"pong", "error":""}
- *   {"id":"...", "command":"modal_status"} -> active Slate modal snapshot
- *   {"id":"...", "command":"modal_action", "snapshot":"...", ...} -> guarded modal interaction
+ * 所有命令必须使用 exact_* wire form，并在任何副作用调度前通过启动实例身份验证。
+ * Every command must use the exact_* wire form and pass Server-start identity validation before side-effect dispatch.
  */
 class FUnrealBridgeServer : public TSharedFromThis<FUnrealBridgeServer, ESPMode::ThreadSafe>
 {
@@ -73,6 +71,18 @@ public:
 
 	/** True if a token was set and request-time auth is enforced. */
 	bool HasToken() const { return !Token.IsEmpty(); }
+
+	/** 本次 Server 启动的不可复用 UUID。 / Non-reusable UUID for this Server start. */
+	const FString& GetInstanceId() const { return InstanceId; }
+
+	/** TCP/discovery 共同使用且客户端必须逐字复制的 wire-canonical 工程路径。 / Wire-canonical project path shared by TCP/discovery and copied verbatim by clients. */
+	const FString& GetProjectPath() const { return ProjectPath; }
+
+	/** exact identity 中冻结的当前进程 ID。 / Current process ID frozen into exact identity. */
+	int32 GetProcessId() const { return ProcessId; }
+
+	/** 当前 exact-wire 协议版本。 / Current exact-wire protocol version. */
+	static int32 GetProtocolVersion();
 
 	/**
 	 * Mark the editor as fully initialized (main frame created). Until this is
@@ -129,6 +139,9 @@ private:
 	int32 ListenPort = 0;
 	FString BindAddressStr = TEXT("127.0.0.1");
 	FString Token;
+	FString InstanceId;
+	FString ProjectPath;
+	int32 ProcessId = 0;
 	FThreadSafeBool bIsRunning = false;
 	FThreadSafeBool bEditorReady = false;
 

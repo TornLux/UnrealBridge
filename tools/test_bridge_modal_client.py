@@ -29,6 +29,22 @@ sys.modules[SPEC.name] = bridge
 SPEC.loader.exec_module(bridge)
 
 
+def sample_identity():
+    return bridge.Endpoint(
+        protocol_version=bridge.PROTOCOL_VERSION,
+        instance_id="11111111-2222-3333-4444-555555555555",
+        pid=4242,
+        project="TestProject",
+        project_path="C:/Projects/TestProject/TestProject.uproject",
+        engine_version="5.7.0",
+        tcp_bind="127.0.0.1",
+        tcp_port=12345,
+        token_fingerprint="",
+        capabilities=bridge.EXACT_CAPABILITIES,
+        response_host="127.0.0.1",
+    )
+
+
 def sample_modal() -> dict:
     return {
         "present": True,
@@ -74,7 +90,7 @@ class ModalClientTests(unittest.TestCase):
     def test_probe_uses_modal_bypass_command(self):
         response = {"success": True, "modal": sample_modal()}
         with mock.patch.object(bridge, "send_request", return_value=response) as send:
-            modal = bridge._probe_modal("127.0.0.1", 12345, None)
+            modal = bridge._probe_modal("127.0.0.1", 12345, None, sample_identity())
 
         self.assertEqual(modal["title"], "Message")
         payload = send.call_args.args[2]
@@ -100,7 +116,10 @@ class ModalClientTests(unittest.TestCase):
 
         with ExitStack() as stack:
             stack.enter_context(mock.patch.object(
-                bridge, "resolve_target", return_value=("127.0.0.1", 12345, None, None)
+                bridge, "resolve_target", return_value=(
+                    "127.0.0.1", 12345, None,
+                    "C:/Projects/TestProject/TestProject.uproject", sample_identity()
+                )
             ))
             stack.enter_context(mock.patch.object(
                 bridge, "send_request", return_value=server_timeout
@@ -116,7 +135,7 @@ class ModalClientTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertTrue(rendered["blocked_by_modal"])
         self.assertEqual(rendered["modal"]["title"], "Message")
-        probe.assert_called_once_with("127.0.0.1", 12345, None)
+        probe.assert_called_once_with("127.0.0.1", 12345, None, sample_identity())
 
 
 if __name__ == "__main__":

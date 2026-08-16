@@ -25,13 +25,17 @@ Useful for post-hoc audit and failure-mode analysis.
 
 Discovery overrides (rarely needed):
     --project=<name|path>      Pick one of multiple running editors
-    --endpoint=host:port       Skip discovery entirely, connect direct
+    --endpoint=host:port       Skip discovery; requires exact identity flags below
+    --instance-id=<uuid>       Frozen Server-start UUID for direct endpoint
+    --expected-pid=<pid>       Frozen editor PID for direct endpoint
+    --expected-project-path=... Exact discovery/startup project_path for direct endpoint
     --token=<secret>           Required when the server binds non-loopback
     --discovery-timeout=<ms>   Probe wait window (default: 800)
     --discovery-group=a.b.c.d:p  Override the multicast group
 
 Environment variable fallbacks:
     UNREAL_BRIDGE_PROJECT, UNREAL_BRIDGE_ENDPOINT, UNREAL_BRIDGE_TOKEN,
+    UNREAL_BRIDGE_INSTANCE_ID, UNREAL_BRIDGE_PID, UNREAL_BRIDGE_PROJECT_PATH,
     UNREAL_BRIDGE_DISCOVERY_GROUP
 
 Protocol: length-prefixed JSON over TCP
@@ -57,6 +61,8 @@ try:
         DEFAULT_DISCOVERY_TIMEOUT_MS,
         DiscoveryError,
         Endpoint,
+        EXACT_CAPABILITIES,
+        PROTOCOL_VERSION,
         discover,
         load_token,
         select,
@@ -71,6 +77,8 @@ except ImportError:
         DEFAULT_DISCOVERY_TIMEOUT_MS,
         DiscoveryError,
         Endpoint,
+        EXACT_CAPABILITIES,
+        PROTOCOL_VERSION,
         discover,
         load_token,
         select,
@@ -82,14 +90,19 @@ DEFAULT_TIMEOUT = 30
 AUDIT_LOG_MAX_BYTES = 5 * 1024 * 1024   # 5 MB per file
 AUDIT_LOG_BACKUPS = 3                    # 4 files total (1 active + 3 backups) = 20 MB hard cap
 AUDIT_LOG_NAME = "exec.log"
+# 单个 TCP 响应帧的硬上限与 Server 请求上限一致，防止错误 endpoint 宣告无界读取。
+# Hard per-response-frame limit matching the Server request cap, preventing unbounded reads from a wrong endpoint.
+MAX_RESPONSE_FRAME_BYTES = 10 * 1024 * 1024
 
 
 # ── Resolution: turn CLI args into a (host, port, token, project_path) tuple ─
 
-def resolve_target(args) -> "tuple[str, int, str | None, str | None]":
+def resolve_target(args) -> "tuple[str, int, str | None, str | None, Endpoint]":
     """Figure out which editor to talk to.
 
-    Returns (host, port, token, project_path). project_path is the .uproject
+    Returns (host, port, token, project_path, identity). Identity is frozen
+    from protocol-v2 discovery or supplied explicitly for a direct endpoint.
+    project_path is the .uproject
     file path when discovery succeeded — used to locate the per-project audit
     log under Saved/UnrealBridge/. None when --endpoint skipped discovery.
 
@@ -98,14 +111,42 @@ def resolve_target(args) -> "tuple[str, int, str | None, str | None]":
       2. UDP multicast + local-loopback discovery, filtered by --project
          (or UNREAL_BRIDGE_PROJECT)
     """
-    # 1. Explicit endpoint — no discovery, no project_path.
+    # 显式 endpoint 也必须冻结精确的 Server-start identity，禁止只信任可复用端口。
+    # An explicit endpoint must also freeze Server-start identity; a reusable port is insufficient.
     endpoint_str = getattr(args, "endpoint", None) or os.environ.get("UNREAL_BRIDGE_ENDPOINT")
     if endpoint_str:
         if ":" not in endpoint_str:
             raise SystemExit(f"--endpoint must be host:port (got {endpoint_str!r})")
         host, port_s = endpoint_str.rsplit(":", 1)
         token = getattr(args, "token", None) or os.environ.get("UNREAL_BRIDGE_TOKEN")
-        return host, int(port_s), token, None
+        instance_id = (getattr(args, "instance_id", None)
+                       or os.environ.get("UNREAL_BRIDGE_INSTANCE_ID"))
+        project_path = (getattr(args, "expected_project_path", None)
+                        or os.environ.get("UNREAL_BRIDGE_PROJECT_PATH"))
+        pid_value = (getattr(args, "expected_pid", None)
+                     or os.environ.get("UNREAL_BRIDGE_PID"))
+        if not instance_id or not project_path or not pid_value:
+            raise SystemExit(
+                "--endpoint requires --instance-id, --expected-project-path, and "
+                "--expected-pid (or matching UNREAL_BRIDGE_* environment values); "
+                "direct legacy writes are not allowed"
+            )
+        identity = Endpoint(
+            protocol_version=PROTOCOL_VERSION,
+            instance_id=str(instance_id),
+            pid=int(pid_value),
+            project=os.path.splitext(os.path.basename(project_path))[0],
+            # wire project_path 必须逐字复制 discovery/startup 输出，不做平台等价改写。
+            # The wire project_path must be copied verbatim from discovery/startup output.
+            project_path=str(project_path),
+            engine_version="",
+            tcp_bind=host,
+            tcp_port=int(port_s),
+            token_fingerprint="",
+            capabilities=EXACT_CAPABILITIES,
+            response_host=host,
+        )
+        return host, int(port_s), token, identity.project_path, identity
 
     # 2. Discovery.
     project = getattr(args, "project", None) or os.environ.get("UNREAL_BRIDGE_PROJECT") or "*"
@@ -126,7 +167,7 @@ def resolve_target(args) -> "tuple[str, int, str | None, str | None]":
         ep = select(eps, project_filter=project if project != "*" else None)
         token = load_token(ep, explicit_token=getattr(args, "token", None)
                            or os.environ.get("UNREAL_BRIDGE_TOKEN"))
-        return ep.host, ep.port, token, ep.project_path or None
+        return ep.host, ep.port, token, ep.project_path or None, ep
     except DiscoveryError as e:
         raise SystemExit(f"discovery: {e}")
 
@@ -430,12 +471,88 @@ def _audit(project_path: "str | None", mode: str, src: "str | None",
 
 # ── Wire protocol helpers ─────────────────────────────────────────────────
 
-def send_request(host: str, port: int, payload: dict, timeout: float,
-                 token: "str | None" = None) -> dict:
-    """Send a JSON request; return the parsed response."""
+class EndpointIdentityError(ConnectionError):
+    """发现身份与实际 endpoint 不一致时失败。 / Raised when discovery identity and the connected endpoint disagree."""
+
+
+def _build_exact_payload(payload: dict, identity: Endpoint,
+                         token: "str | None" = None) -> dict:
+    """构建旧 Server 无法当作 Python 执行的 wire form。 / Build a wire form a legacy server cannot execute as Python."""
+    request_id = str(payload.get("id") or uuid.uuid4())
+    legacy_command = payload.get("command")
+    command = f"exact_{legacy_command}" if legacy_command else "exact_exec"
+    nested = {key: value for key, value in payload.items()
+              if key not in ("id", "command", "token")}
+    wire = {
+        "id": request_id,
+        "command": command,
+        "expected": {
+            "protocol_version": identity.protocol_version,
+            "instance_id": identity.instance_id,
+            "pid": identity.pid,
+            "project_path": identity.project_path,
+        },
+        "request": nested,
+    }
     if token:
-        payload = dict(payload)
-        payload.setdefault("token", token)
+        wire["token"] = token
+    return wire
+
+
+def _verify_response_identity(response: dict, identity: Endpoint) -> None:
+    """endpoint 复用与 discovery/TCP 竞态时 fail closed。 / Fail closed when endpoint reuse races discovery and TCP."""
+    if (type(response.get("protocol_version")) is not int
+            or type(response.get("pid")) is not int
+            or not isinstance(response.get("instance_id"), str)
+            or not isinstance(response.get("project_path"), str)):
+        raise EndpointIdentityError("endpoint response identity has invalid field types")
+    actual = (
+        response["protocol_version"], response["instance_id"],
+        response["pid"], response["project_path"],
+    )
+    expected = (
+        identity.protocol_version, identity.instance_id, identity.pid,
+        identity.project_path,
+    )
+    if actual != expected:
+        raise EndpointIdentityError(
+            f"endpoint identity mismatch: expected {expected!r}, got {actual!r}"
+        )
+
+
+class BridgeProtocolError(ConnectionError):
+    """响应帧违反边界或 JSON schema 时失败。 / Raised when a response frame violates bounds or its JSON schema."""
+
+
+def _validate_response_frame_length(frame_length: int) -> None:
+    """在读取/分配 body 前验证响应长度。 / Validate response length before reading or allocating its body."""
+    if frame_length <= 0 or frame_length > MAX_RESPONSE_FRAME_BYTES:
+        raise BridgeProtocolError(
+            f"invalid response frame length {frame_length}; "
+            f"expected 1..{MAX_RESPONSE_FRAME_BYTES} bytes"
+        )
+
+
+def _decode_response_frame(frame: bytes) -> dict:
+    """严格解码 UTF-8 JSON object。 / Strictly decode a UTF-8 JSON object."""
+    try:
+        response = json.loads(frame.decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise BridgeProtocolError(f"response is not valid UTF-8: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise BridgeProtocolError(f"response is not valid JSON: {exc}") from exc
+    if not isinstance(response, dict):
+        raise BridgeProtocolError("response JSON root must be an object")
+    return response
+
+
+def send_request(host: str, port: int, payload: dict, timeout: float,
+                 token: "str | None" = None,
+                 identity: "Endpoint | None" = None) -> dict:
+    """发送 exact request 并复核响应身份。 / Send one exact request and verify the echoed Server-start identity."""
+    if identity is None:
+        raise EndpointIdentityError("exact endpoint identity is required; legacy fallback is disabled")
+    payload = _build_exact_payload(payload, identity, token=token)
     data = json.dumps(payload).encode("utf-8")
     header = struct.pack(">I", len(data))
 
@@ -446,8 +563,11 @@ def send_request(host: str, port: int, payload: dict, timeout: float,
 
         resp_header = _recv_all(sock, 4)
         resp_len = struct.unpack(">I", resp_header)[0]
+        _validate_response_frame_length(resp_len)
         resp_data = _recv_all(sock, resp_len)
-        return json.loads(resp_data.decode("utf-8"))
+        response = _decode_response_frame(resp_data)
+        _verify_response_identity(response, identity)
+        return response
 
 
 def _recv_all(sock: socket.socket, num_bytes: int) -> bytes:
@@ -521,7 +641,7 @@ def _print_modal(modal: dict, stream=None) -> None:
     print("\n".join(_modal_lines(modal)), file=stream)
 
 
-def _probe_modal(host: str, port: int, token: "str | None",
+def _probe_modal(host: str, port: int, token: "str | None", identity: Endpoint,
                  timeout: float = 4.0) -> "dict | None":
     """Best-effort bypass probe used after an exec timeout.
 
@@ -531,7 +651,7 @@ def _probe_modal(host: str, port: int, token: "str | None",
     """
     try:
         payload = {"id": str(uuid.uuid4()), "command": "modal_status"}
-        response = send_request(host, port, payload, timeout, token=token)
+        response = send_request(host, port, payload, timeout, token=token, identity=identity)
         modal = response.get("modal")
         if response.get("success") and isinstance(modal, dict):
             return modal
@@ -558,11 +678,11 @@ def _attach_modal_diagnostic(response: dict, modal: "dict | None") -> dict:
 
 
 def _send_modal_command(args, payload: dict) -> "tuple[int, dict]":
-    host, port, token, _project_path = resolve_target(args)
+    host, port, token, _project_path, identity = resolve_target(args)
     payload = dict(payload)
     payload.setdefault("id", str(uuid.uuid4()))
     try:
-        response = send_request(host, port, payload, min(max(args.timeout, 4.0), 15.0), token=token)
+        response = send_request(host, port, payload, min(max(args.timeout, 4.0), 15.0), token=token, identity=identity)
     except Exception as exc:
         response = {"success": False, "error": str(exc)}
         return 1, response
@@ -627,10 +747,10 @@ def cmd_modal_set_checkbox(args):
     return code
 
 def cmd_ping(args):
-    host, port, token, _project_path = resolve_target(args)
+    host, port, token, _project_path, identity = resolve_target(args)
     try:
         payload = {"id": str(uuid.uuid4()), "command": "ping"}
-        resp = send_request(host, port, payload, args.timeout, token=token)
+        resp = send_request(host, port, payload, args.timeout, token=token, identity=identity)
     except ConnectionRefusedError:
         if args.json:
             print(json.dumps({"success": False, "error": "Connection refused"}))
@@ -667,14 +787,14 @@ def cmd_ping(args):
 
 def cmd_gt_ping(args):
     """Probe whether the UE GameThread is responsive."""
-    host, port, token, _project_path = resolve_target(args)
+    host, port, token, _project_path, identity = resolve_target(args)
     payload = {
         "id": str(uuid.uuid4()),
         "command": "gamethread_ping",
         "timeout": args.probe_timeout,
     }
     try:
-        resp = send_request(host, port, payload, args.probe_timeout + 3.0, token=token)
+        resp = send_request(host, port, payload, args.probe_timeout + 3.0, token=token, identity=identity)
     except Exception as e:
         if args.json:
             print(json.dumps({"success": False, "error": str(e)}))
@@ -698,10 +818,10 @@ def cmd_gt_ping(args):
 
 
 def cmd_resume(args):
-    host, port, token, _project_path = resolve_target(args)
+    host, port, token, _project_path, identity = resolve_target(args)
     try:
         payload = {"id": str(uuid.uuid4()), "command": "debug_resume"}
-        resp = send_request(host, port, payload, args.timeout, token=token)
+        resp = send_request(host, port, payload, args.timeout, token=token, identity=identity)
     except Exception as e:
         if args.json:
             print(json.dumps({"success": False, "error": str(e)}))
@@ -745,12 +865,12 @@ def cmd_wait_compile(args):
         " 'ql': str(r.quality_level), 'err': str(r.error)}))\n"
     )
 
-    host, port, token, _project_path = resolve_target(args)
+    host, port, token, _project_path, identity = resolve_target(args)
     last = None
     while _time.time() < deadline:
         payload = {"id": str(uuid.uuid4()), "script": code, "timeout": 5}
         try:
-            resp = send_request(host, port, payload, 10.0, token=token)
+            resp = send_request(host, port, payload, 10.0, token=token, identity=identity)
         except Exception as e:
             if args.json:
                 print(json.dumps({"success": False, "error": f"transport: {e}"}))
@@ -828,12 +948,12 @@ def cmd_wait_pose_index(args):
         "print(json.dumps({'status': str(status)}))\n"
     )
 
-    host, port, token, _project_path = resolve_target(args)
+    host, port, token, _project_path, identity = resolve_target(args)
     last = None
     while _time.time() < deadline:
         payload = {"id": str(uuid.uuid4()), "script": code, "timeout": 5}
         try:
-            resp = send_request(host, port, payload, 10.0, token=token)
+            resp = send_request(host, port, payload, 10.0, token=token, identity=identity)
         except Exception as e:
             if args.json:
                 print(json.dumps({"success": False, "error": f"transport: {e}"}))
@@ -1039,14 +1159,14 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
             for e in errs:
                 print(e, file=sys.stderr)
             try:
-                _, _, _, proj = resolve_target(args)
+                _, _, _, proj, _identity = resolve_target(args)
             except SystemExit:
                 proj = None
             _audit(proj, mode, src, code, ok=False,
                    err=f"preflight: {len(errs)} error(s); first: {errs[0].splitlines()[0]}")
             return 3  # 3 = preflight rejection (distinct from 1 = transport, 2 = arg)
 
-    host, port, token, project_path = resolve_target(args)
+    host, port, token, project_path, identity = resolve_target(args)
 
     # Wrap user code so AttributeError messages get enriched with valid-attrs
     # + did-you-mean before reaching the agent's stderr. UE engine API has
@@ -1061,7 +1181,7 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
     }
 
     try:
-        resp = send_request(host, port, payload, args.timeout + 5, token=token)
+        resp = send_request(host, port, payload, args.timeout + 5, token=token, identity=identity)
     except ConnectionRefusedError:
         msg = (
             f"Cannot connect to {host}:{port}. "
@@ -1081,7 +1201,7 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
             "success": False,
             "error": f"request timed out after {args.timeout + 5:g}s: {e}",
         }
-        _attach_modal_diagnostic(resp, _probe_modal(host, port, token))
+        _attach_modal_diagnostic(resp, _probe_modal(host, port, token, identity))
         if args.json:
             print(json.dumps(resp, ensure_ascii=False))
         else:
@@ -1103,7 +1223,7 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
     # what blocked them and can make a semantic choice.
     if (not resp.get("success")
             and "exec timeout" in (resp.get("error") or "").lower()):
-        _attach_modal_diagnostic(resp, _probe_modal(host, port, token))
+        _attach_modal_diagnostic(resp, _probe_modal(host, port, token, identity))
 
     if args.json:
         print(json.dumps(resp, ensure_ascii=False))
@@ -1135,6 +1255,21 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         "--project",
         help="Select an editor by project name / path when multiple are running "
              "(or set UNREAL_BRIDGE_PROJECT).",
+    )
+    parser.add_argument(
+        "--instance-id",
+        help="Required with --endpoint: frozen Server-start UUID "
+             "(or UNREAL_BRIDGE_INSTANCE_ID).",
+    )
+    parser.add_argument(
+        "--expected-pid",
+        type=int,
+        help="Required with --endpoint: frozen editor PID (or UNREAL_BRIDGE_PID).",
+    )
+    parser.add_argument(
+        "--expected-project-path",
+        help="Required with --endpoint: exact project_path copied from discovery/startup "
+             "(or UNREAL_BRIDGE_PROJECT_PATH).",
     )
     parser.add_argument(
         "--token",
