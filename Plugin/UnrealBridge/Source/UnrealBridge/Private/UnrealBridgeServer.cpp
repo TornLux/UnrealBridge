@@ -8,10 +8,18 @@
 #include "SocketSubsystem.h"
 #include "Misc/Base64.h"
 #include "Misc/DateTime.h"
+#include "Misc/SecureHash.h"
 #include "Misc/ScopeExit.h"
 #include "Editor.h"
 #include "Kismet2/KismetDebugUtilities.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Widgets/SWindow.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableText.h"
+#include "Widgets/Text/SMultiLineEditableText.h"
+#include "Widgets/Text/SRichTextBlock.h"
+#include "Widgets/Text/STextBlock.h"
 #include "UnrealBridgeCallLog.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridge, Log, All);
@@ -22,6 +30,488 @@ namespace UnrealBridgeLimits
 	// the upper bound exists mainly to stop a malicious/buggy client from
 	// triggering an OOM in the editor via blind SetNumUninitialized.
 	constexpr int32 MaxRequestBytes = 10 * 1024 * 1024;
+}
+
+// Modal-dialog inspection and actions deliberately live outside the normal
+// Python exec queue. A Slate modal loop does not tick FTSTicker, so an exec
+// that opened a dialog cannot make forward progress until somebody resolves
+// it. The nested Slate loop does keep pumping GameThread task-graph work,
+// which makes AsyncTask(GameThread) a reliable side channel for observing and
+// interacting with the active modal window.
+namespace UnrealBridgeModal
+{
+	struct FModalButton
+	{
+		int32 Id = INDEX_NONE;
+		FString Label;
+		TSharedPtr<SButton> Widget;
+	};
+
+	struct FModalInput
+	{
+		enum class EKind : uint8
+		{
+			SingleLine,
+			MultiLine,
+		};
+
+		int32 Id = INDEX_NONE;
+		EKind Kind = EKind::SingleLine;
+		TSharedPtr<SEditableText> SingleLineWidget;
+		TSharedPtr<SMultiLineEditableText> MultiLineWidget;
+
+		FString GetValue() const
+		{
+			return Kind == EKind::SingleLine
+				? SingleLineWidget->GetText().ToString()
+				: MultiLineWidget->GetText().ToString();
+		}
+
+		bool IsReadOnly() const
+		{
+			return Kind == EKind::SingleLine
+				? SingleLineWidget->IsTextReadOnly()
+				: MultiLineWidget->IsTextReadOnly();
+		}
+
+		bool IsPassword() const
+		{
+			return Kind == EKind::SingleLine && SingleLineWidget->IsTextPassword();
+		}
+
+		bool IsEnabled() const
+		{
+			return Kind == EKind::SingleLine
+				? SingleLineWidget->IsEnabled()
+				: MultiLineWidget->IsEnabled();
+		}
+
+		void SetValue(const FString& Value) const
+		{
+			if (Kind == EKind::SingleLine)
+			{
+				SingleLineWidget->SetText(FText::FromString(Value));
+			}
+			else
+			{
+				MultiLineWidget->SetText(FText::FromString(Value));
+			}
+		}
+	};
+
+	struct FModalCheckBox
+	{
+		int32 Id = INDEX_NONE;
+		FString Label;
+		TSharedPtr<SCheckBox> Widget;
+	};
+
+	struct FModalSnapshot
+	{
+		bool bPresent = false;
+		uint64 WindowGeneration = 0;
+		FString SnapshotId;
+		FString Title;
+		TArray<FString> BodyText;
+		TArray<FModalButton> Buttons;
+		TArray<FModalInput> Inputs;
+		TArray<FModalCheckBox> CheckBoxes;
+		TSharedPtr<SWindow> Window;
+	};
+
+	uint64 TrackWindowGeneration(const TSharedPtr<SWindow>& Window)
+	{
+		// Content alone is not enough for stale-action protection: two
+		// consecutive dialogs can have identical title/body/buttons. Give each
+		// observed SWindow instance a process-local generation and include it in
+		// the snapshot hash. This state is touched on the GameThread only.
+		static TWeakPtr<SWindow> LastWindow;
+		static uint64 Generation = 0;
+		if (!Window.IsValid())
+		{
+			LastWindow.Reset();
+			return 0;
+		}
+		if (LastWindow.Pin().Get() != Window.Get())
+		{
+			++Generation;
+			LastWindow = Window;
+		}
+		return Generation;
+	}
+
+	bool IsExactWidgetType(const TSharedRef<SWidget>& Widget, const FName ExpectedType)
+	{
+		// SWidget::GetType() is available across UnrealBridge's full UE
+		// 5.3+ support matrix. The newer GetWidgetClass metadata API is not.
+		return Widget->GetType() == ExpectedType;
+	}
+
+	void AppendNonEmptyText(const FText& Text, TArray<FString>& Out)
+	{
+		FString Value = Text.ToString();
+		Value.TrimStartAndEndInline();
+		if (!Value.IsEmpty())
+		{
+			Out.AddUnique(MoveTemp(Value));
+		}
+	}
+
+	void CollectDisplayText(const TSharedRef<SWidget>& Widget, TArray<FString>& Out)
+	{
+		if (!Widget->GetVisibility().IsVisible())
+		{
+			return;
+		}
+		if (IsExactWidgetType(Widget, TEXT("STextBlock")))
+		{
+			AppendNonEmptyText(StaticCastSharedRef<STextBlock>(Widget)->GetText(), Out);
+		}
+		else if (IsExactWidgetType(Widget, TEXT("SRichTextBlock")))
+		{
+			AppendNonEmptyText(StaticCastSharedRef<SRichTextBlock>(Widget)->GetText(), Out);
+		}
+
+		FChildren* Children = Widget->GetChildren();
+		if (Children == nullptr)
+		{
+			return;
+		}
+		for (int32 ChildIndex = 0; ChildIndex < Children->Num(); ++ChildIndex)
+		{
+			CollectDisplayText(Children->GetChildAt(ChildIndex), Out);
+		}
+	}
+
+	FString GetWidgetLabel(const TSharedRef<SWidget>& Widget)
+	{
+		TArray<FString> Parts;
+		CollectDisplayText(Widget, Parts);
+		return FString::Join(Parts, TEXT(" "));
+	}
+
+	void VisitWidgetTree(const TSharedRef<SWidget>& Widget, FModalSnapshot& Out, bool bInsideButton)
+	{
+		if (!Widget->GetVisibility().IsVisible())
+		{
+			return;
+		}
+		const bool bIsButton = IsExactWidgetType(Widget, TEXT("SButton"));
+
+		if (bIsButton)
+		{
+			const FString Label = GetWidgetLabel(Widget);
+			// SWindow's title bar is also composed from SButtons (close,
+			// maximize, etc.) but those icon-only controls are not semantic
+			// dialog choices. Excluding unlabelled buttons keeps agent actions
+			// constrained to explicit choices such as OK / Cancel / Retry.
+			if (!Label.IsEmpty())
+			{
+				FModalButton& Button = Out.Buttons.AddDefaulted_GetRef();
+				Button.Id = Out.Buttons.Num() - 1;
+				Button.Label = Label;
+				Button.Widget = StaticCastSharedRef<SButton>(Widget);
+			}
+		}
+		else if (!bInsideButton && IsExactWidgetType(Widget, TEXT("STextBlock")))
+		{
+			AppendNonEmptyText(StaticCastSharedRef<STextBlock>(Widget)->GetText(), Out.BodyText);
+		}
+		else if (!bInsideButton && IsExactWidgetType(Widget, TEXT("SRichTextBlock")))
+		{
+			AppendNonEmptyText(StaticCastSharedRef<SRichTextBlock>(Widget)->GetText(), Out.BodyText);
+		}
+
+		if (IsExactWidgetType(Widget, TEXT("SEditableText")))
+		{
+			FModalInput& Input = Out.Inputs.AddDefaulted_GetRef();
+			Input.Id = Out.Inputs.Num() - 1;
+			Input.Kind = FModalInput::EKind::SingleLine;
+			Input.SingleLineWidget = StaticCastSharedRef<SEditableText>(Widget);
+		}
+		else if (IsExactWidgetType(Widget, TEXT("SMultiLineEditableText")))
+		{
+			FModalInput& Input = Out.Inputs.AddDefaulted_GetRef();
+			Input.Id = Out.Inputs.Num() - 1;
+			Input.Kind = FModalInput::EKind::MultiLine;
+			Input.MultiLineWidget = StaticCastSharedRef<SMultiLineEditableText>(Widget);
+		}
+
+		if (IsExactWidgetType(Widget, TEXT("SCheckBox")))
+		{
+			FModalCheckBox& CheckBox = Out.CheckBoxes.AddDefaulted_GetRef();
+			CheckBox.Id = Out.CheckBoxes.Num() - 1;
+			CheckBox.Label = GetWidgetLabel(Widget);
+			CheckBox.Widget = StaticCastSharedRef<SCheckBox>(Widget);
+		}
+
+		FChildren* Children = Widget->GetChildren();
+		if (Children == nullptr)
+		{
+			return;
+		}
+		for (int32 ChildIndex = 0; ChildIndex < Children->Num(); ++ChildIndex)
+		{
+			VisitWidgetTree(Children->GetChildAt(ChildIndex), Out, bInsideButton || bIsButton);
+		}
+	}
+
+	FString CheckStateToString(ECheckBoxState State)
+	{
+		switch (State)
+		{
+		case ECheckBoxState::Checked:
+			return TEXT("checked");
+		case ECheckBoxState::Undetermined:
+			return TEXT("undetermined");
+		default:
+			return TEXT("unchecked");
+		}
+	}
+
+	FModalSnapshot CaptureSnapshot()
+	{
+		FModalSnapshot Out;
+		if (!FSlateApplication::IsInitialized())
+		{
+			return Out;
+		}
+
+		Out.Window = FSlateApplication::Get().GetActiveModalWindow();
+		if (!Out.Window.IsValid())
+		{
+			TrackWindowGeneration(nullptr);
+			return Out;
+		}
+
+		Out.bPresent = true;
+		Out.WindowGeneration = TrackWindowGeneration(Out.Window);
+		Out.Title = Out.Window->GetTitle().ToString();
+		VisitWidgetTree(Out.Window.ToSharedRef(), Out, false);
+		// Some message-dialog layouts repeat the window title in their child
+		// tree. Keep title and body separate in the wire format.
+		Out.BodyText.Remove(Out.Title);
+
+		FString Fingerprint = FString::Printf(TEXT("W:%llu\x1e"), Out.WindowGeneration)
+			+ Out.Title + TEXT("\x1e") + FString::Join(Out.BodyText, TEXT("\x1f"));
+		for (const FModalButton& Button : Out.Buttons)
+		{
+			Fingerprint += FString::Printf(TEXT("\x1eB:%d:%s:%d"), Button.Id, *Button.Label,
+				Button.Widget->IsEnabled() ? 1 : 0);
+		}
+		for (const FModalInput& Input : Out.Inputs)
+		{
+			Fingerprint += FString::Printf(TEXT("\x1eI:%d:%s:%s"), Input.Id,
+				Input.IsPassword() ? TEXT("password") : TEXT("plain"),
+				Input.IsPassword() ? TEXT("<redacted>") : *Input.GetValue());
+		}
+		for (const FModalCheckBox& CheckBox : Out.CheckBoxes)
+		{
+			Fingerprint += FString::Printf(TEXT("\x1eC:%d:%s:%s"), CheckBox.Id, *CheckBox.Label,
+				*CheckStateToString(CheckBox.Widget->GetCheckedState()));
+		}
+
+		FTCHARToUTF8 Utf8(*Fingerprint);
+		FSHAHash Hash;
+		FSHA1::HashBuffer(Utf8.Get(), Utf8.Length(), Hash.Hash);
+		Out.SnapshotId = Hash.ToString().Left(16).ToLower();
+		return Out;
+	}
+
+	TSharedPtr<FJsonObject> SnapshotToJson(const FModalSnapshot& Snapshot)
+	{
+		TSharedPtr<FJsonObject> Json = MakeShared<FJsonObject>();
+		Json->SetBoolField(TEXT("present"), Snapshot.bPresent);
+		Json->SetStringField(TEXT("snapshot_id"), Snapshot.SnapshotId);
+		Json->SetStringField(TEXT("title"), Snapshot.Title);
+		Json->SetStringField(TEXT("body"), FString::Join(Snapshot.BodyText, TEXT("\n")));
+
+		TArray<TSharedPtr<FJsonValue>> TextValues;
+		for (const FString& Text : Snapshot.BodyText)
+		{
+			TextValues.Add(MakeShared<FJsonValueString>(Text));
+		}
+		Json->SetArrayField(TEXT("text"), MoveTemp(TextValues));
+
+		TArray<TSharedPtr<FJsonValue>> ButtonValues;
+		for (const FModalButton& Button : Snapshot.Buttons)
+		{
+			TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("id"), Button.Id);
+			Item->SetStringField(TEXT("label"), Button.Label);
+			Item->SetBoolField(TEXT("enabled"), Button.Widget->IsEnabled());
+			Item->SetBoolField(TEXT("visible"), Button.Widget->GetVisibility().IsVisible());
+			ButtonValues.Add(MakeShared<FJsonValueObject>(MoveTemp(Item)));
+		}
+		Json->SetArrayField(TEXT("buttons"), MoveTemp(ButtonValues));
+
+		TArray<TSharedPtr<FJsonValue>> InputValues;
+		for (const FModalInput& Input : Snapshot.Inputs)
+		{
+			TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("id"), Input.Id);
+			Item->SetStringField(TEXT("kind"), Input.Kind == FModalInput::EKind::SingleLine
+				? TEXT("single_line") : TEXT("multi_line"));
+			Item->SetBoolField(TEXT("password"), Input.IsPassword());
+			Item->SetBoolField(TEXT("read_only"), Input.IsReadOnly());
+			Item->SetBoolField(TEXT("enabled"), Input.IsEnabled());
+			if (Input.IsPassword())
+			{
+				Item->SetStringField(TEXT("value"), TEXT("<redacted>"));
+			}
+			else
+			{
+				Item->SetStringField(TEXT("value"), Input.GetValue());
+			}
+			InputValues.Add(MakeShared<FJsonValueObject>(MoveTemp(Item)));
+		}
+		Json->SetArrayField(TEXT("inputs"), MoveTemp(InputValues));
+
+		TArray<TSharedPtr<FJsonValue>> CheckBoxValues;
+		for (const FModalCheckBox& CheckBox : Snapshot.CheckBoxes)
+		{
+			TSharedPtr<FJsonObject> Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("id"), CheckBox.Id);
+			Item->SetStringField(TEXT("label"), CheckBox.Label);
+			Item->SetStringField(TEXT("state"), CheckStateToString(CheckBox.Widget->GetCheckedState()));
+			Item->SetBoolField(TEXT("enabled"), CheckBox.Widget->IsEnabled());
+			Item->SetBoolField(TEXT("visible"), CheckBox.Widget->GetVisibility().IsVisible());
+			CheckBoxValues.Add(MakeShared<FJsonValueObject>(MoveTemp(Item)));
+		}
+		Json->SetArrayField(TEXT("checkboxes"), MoveTemp(CheckBoxValues));
+		return Json;
+	}
+
+	TSharedPtr<FJsonObject> MakeResult(bool bSuccess, const FString& Output, const FString& Error,
+		const FModalSnapshot& Snapshot)
+	{
+		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
+		Result->SetBoolField(TEXT("success"), bSuccess);
+		Result->SetStringField(TEXT("output"), Output);
+		Result->SetStringField(TEXT("error"), Error);
+		Result->SetBoolField(TEXT("ready"), true);
+		Result->SetObjectField(TEXT("modal"), SnapshotToJson(Snapshot));
+		return Result;
+	}
+
+	TSharedPtr<FJsonObject> GetStatus()
+	{
+		const FModalSnapshot Snapshot = CaptureSnapshot();
+		return MakeResult(true, Snapshot.bPresent ? TEXT("modal present") : TEXT("no active modal"),
+			TEXT(""), Snapshot);
+	}
+
+	TSharedPtr<FJsonObject> PerformAction(const FString& ExpectedSnapshot, const FString& Action,
+		int32 ControlId, const FString& Value, bool bChecked, bool bHasChecked)
+	{
+		FModalSnapshot Snapshot = CaptureSnapshot();
+		if (!Snapshot.bPresent)
+		{
+			return MakeResult(false, TEXT(""), TEXT("no active modal"), Snapshot);
+		}
+		if (ExpectedSnapshot.IsEmpty())
+		{
+			return MakeResult(false, TEXT(""), TEXT("missing 'snapshot' field; inspect the modal first"), Snapshot);
+		}
+		if (ExpectedSnapshot != Snapshot.SnapshotId)
+		{
+			return MakeResult(false, TEXT(""),
+				FString::Printf(TEXT("stale modal snapshot: expected %s, current %s; inspect again before acting"),
+					*ExpectedSnapshot, *Snapshot.SnapshotId), Snapshot);
+		}
+
+		if (Action == TEXT("click_button"))
+		{
+			if (!Snapshot.Buttons.IsValidIndex(ControlId))
+			{
+				return MakeResult(false, TEXT(""), TEXT("button id is out of range"), Snapshot);
+			}
+			const FModalButton& Button = Snapshot.Buttons[ControlId];
+			if (!Button.Widget->IsEnabled() || !Button.Widget->GetVisibility().IsVisible())
+			{
+				return MakeResult(false, TEXT(""), TEXT("button is disabled or hidden"), Snapshot);
+			}
+
+			// Build the response before invoking the delegate: the click can close
+			// the window and unwind the nested modal loop immediately.
+			TSharedPtr<FJsonObject> Result = MakeResult(true,
+				FString::Printf(TEXT("clicked button %d (%s)"), ControlId, *Button.Label), TEXT(""), Snapshot);
+			Button.Widget->SimulateClick();
+			return Result;
+		}
+
+		if (Action == TEXT("set_text"))
+		{
+			if (!Snapshot.Inputs.IsValidIndex(ControlId))
+			{
+				return MakeResult(false, TEXT(""), TEXT("input id is out of range"), Snapshot);
+			}
+			const FModalInput& Input = Snapshot.Inputs[ControlId];
+			if (!Input.IsEnabled() || Input.IsReadOnly())
+			{
+				return MakeResult(false, TEXT(""), TEXT("input is disabled or read-only"), Snapshot);
+			}
+			const bool bPassword = Input.IsPassword();
+			Input.SetValue(Value);
+			Snapshot = CaptureSnapshot();
+			if (!bPassword
+				&& (!Snapshot.Inputs.IsValidIndex(ControlId)
+					|| Snapshot.Inputs[ControlId].GetValue() != Value))
+			{
+				return MakeResult(false, TEXT(""), TEXT("input did not accept the requested value"), Snapshot);
+			}
+			return MakeResult(true, FString::Printf(TEXT("updated input %d"), ControlId), TEXT(""), Snapshot);
+		}
+
+		if (Action == TEXT("set_checkbox"))
+		{
+			if (!bHasChecked)
+			{
+				return MakeResult(false, TEXT(""), TEXT("missing boolean 'checked' field"), Snapshot);
+			}
+			if (!Snapshot.CheckBoxes.IsValidIndex(ControlId))
+			{
+				return MakeResult(false, TEXT(""), TEXT("checkbox id is out of range"), Snapshot);
+			}
+			const FModalCheckBox& CheckBox = Snapshot.CheckBoxes[ControlId];
+			if (!CheckBox.Widget->IsEnabled() || !CheckBox.Widget->GetVisibility().IsVisible())
+			{
+				return MakeResult(false, TEXT(""), TEXT("checkbox is disabled or hidden"), Snapshot);
+			}
+			const bool bCurrentlyChecked = CheckBox.Widget->GetCheckedState() == ECheckBoxState::Checked;
+			if (bCurrentlyChecked != bChecked)
+			{
+				CheckBox.Widget->ToggleCheckedState();
+			}
+			Snapshot = CaptureSnapshot();
+			if (!Snapshot.CheckBoxes.IsValidIndex(ControlId)
+				|| (Snapshot.CheckBoxes[ControlId].Widget->GetCheckedState() == ECheckBoxState::Checked) != bChecked)
+			{
+				return MakeResult(false, TEXT(""), TEXT("checkbox did not accept the requested state"), Snapshot);
+			}
+			return MakeResult(true, FString::Printf(TEXT("updated checkbox %d"), ControlId), TEXT(""), Snapshot);
+		}
+
+		return MakeResult(false, TEXT(""), TEXT("unsupported modal action"), Snapshot);
+	}
+
+	bool RunOnGameThread(TFunction<TSharedPtr<FJsonObject>()>&& Work,
+		TSharedPtr<FJsonObject>& OutResult, float TimeoutSeconds = 3.0f)
+	{
+		auto Promise = MakeShared<TPromise<TSharedPtr<FJsonObject>>, ESPMode::ThreadSafe>();
+		TFuture<TSharedPtr<FJsonObject>> Future = Promise->GetFuture();
+		AsyncTask(ENamedThreads::GameThread, [Promise, Work = MoveTemp(Work)]() mutable
+		{
+			Promise->SetValue(Work());
+		});
+
+		if (!Future.WaitFor(FTimespan::FromSeconds(TimeoutSeconds)))
+		{
+			return false;
+		}
+		OutResult = Future.Get();
+		return OutResult.IsValid();
+	}
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -512,8 +1002,10 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		//   - alive, high latency (~hundreds ms): GT mid-exec but TaskGraph
 		//     is being pumped (asset load / BP compile inside Python) —
 		//     editor is not deadlocked but the exec queue may be backed up
-		//   - unresponsive: GT is fully stuck (modal dialog, deadlock,
-		//     pure-Python tight loop holding the GIL with no TG pump). The
+		//   - unresponsive: GT is fully stuck (native OS dialog, deadlock,
+		//     pure-Python tight loop holding the GIL with no TG pump). Slate
+		//     modals normally remain responsive here; use modal_status to
+		//     distinguish them from ordinary long-running work. The
 		//     FTSTicker exec queue cannot drain in this state.
 		double ProbeTimeoutNum = 2.0;
 		Request->TryGetNumberField(TEXT("timeout"), ProbeTimeoutNum);
@@ -538,6 +1030,52 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 			: FString::Printf(TEXT("GameThread did not respond within %.1fs"), ProbeTimeout));
 		Response->SetNumberField(TEXT("latency_ms"), LatencyMs);
 		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+	}
+	else if (Command == TEXT("modal_status") || Command == TEXT("modal_action"))
+	{
+		// This path intentionally bypasses both Python and the FTSTicker exec
+		// queue. It remains callable while an earlier exec is suspended inside
+		// a nested Slate modal loop.
+		FString ExpectedSnapshot;
+		FString Action;
+		FString Value;
+		Request->TryGetStringField(TEXT("snapshot"), ExpectedSnapshot);
+		Request->TryGetStringField(TEXT("action"), Action);
+		Request->TryGetStringField(TEXT("value"), Value);
+
+		double ControlIdNumber = -1.0;
+		Request->TryGetNumberField(TEXT("control_id"), ControlIdNumber);
+		const int32 ControlId = FMath::FloorToInt(ControlIdNumber);
+
+		bool bChecked = false;
+		const bool bHasChecked = Request->TryGetBoolField(TEXT("checked"), bChecked);
+
+		TSharedPtr<FJsonObject> ModalResult;
+		const bool bCompleted = UnrealBridgeModal::RunOnGameThread(
+			[Command, ExpectedSnapshot, Action, ControlId, Value, bChecked, bHasChecked]()
+			{
+				if (Command == TEXT("modal_status"))
+				{
+					return UnrealBridgeModal::GetStatus();
+				}
+				return UnrealBridgeModal::PerformAction(
+					ExpectedSnapshot, Action, ControlId, Value, bChecked, bHasChecked);
+			},
+			ModalResult);
+
+		if (bCompleted)
+		{
+			Response = ModalResult.ToSharedRef();
+			Response->SetStringField(TEXT("id"), RequestId);
+		}
+		else
+		{
+			Response->SetBoolField(TEXT("success"), false);
+			Response->SetStringField(TEXT("output"), TEXT(""));
+			Response->SetStringField(TEXT("error"),
+				TEXT("GameThread did not service the modal request within 3.0s"));
+			Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+		}
 	}
 	else if (!bEditorReady)
 	{

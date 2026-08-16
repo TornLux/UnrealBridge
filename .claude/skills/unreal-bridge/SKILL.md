@@ -83,6 +83,10 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | `suggest [pattern]` | Look up the bridge equivalent for a raw `unreal.*` fallback |
 | `gamethread-ping` | Probe GameThread liveness (bypasses exec queue; use when `exec` hangs) |
 | `resume` | Unstick a paused BP breakpoint |
+| `modal-status` | Inspect a blocking Slate dialog: title, body, buttons, inputs and checkboxes |
+| `modal-click <snapshot> <button>` | Click one reviewed button; stale snapshots are rejected |
+| `modal-set-text <snapshot> <input> <value>` | Fill a reviewed text input (password values are never returned) |
+| `modal-set-checkbox <snapshot> <checkbox> <checked\|unchecked>` | Change a reviewed checkbox |
 | `list-editors` | Print every editor that responded to a discovery probe |
 | `wait-compile <material>` / `wait-pose-index <psd>` | Client-side polling helpers |
 
@@ -94,7 +98,38 @@ Optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or en
 2. **Default to `exec --stdin` heredoc, NOT `exec-file`.** A heredoc is the right mode for ~95% of one-shot work — no temp file to name, no cleanup, prompt stays self-contained, no risk of dangling scripts in `$TEMP` / `.tmp` / project root. **Only reach for `exec-file` when you genuinely intend to re-run the same script multiple times** (iterating on a fix, comparing runs). One-shots like "find X, list Y, build a report" → heredoc. If you find yourself writing `with open("/tmp/foo.py", "w")` followed by `bridge.py exec-file /tmp/foo.py`, stop and rewrite as a heredoc.
 3. `--json` for parseable output.
 4. Exit codes: `0` success · `1` runtime/transport · `2` bad CLI args · `3` AST preflight rejected.
-5. **If `exec` hangs**: from a separate terminal try `gamethread-ping` (high latency = GT mid-exec, queue will drain) or `resume` (BP breakpoint).
+5. **If `exec` hangs**: read the timeout response first. `blocked_by_modal:true`
+   includes the active window and its controls. Otherwise try
+   `gamethread-ping` (high latency = GT mid-exec, queue will drain) or `resume`
+   (BP breakpoint).
+
+## Blocking modal dialogs — inspect, decide, then act
+
+Slate dialogs run a nested event loop that blocks the normal Python exec queue.
+UnrealBridge's modal commands use a separate GameThread task path, so they keep
+working while the original call is suspended.
+
+1. Run `modal-status` (an `exec*` timeout does this automatically).
+2. Read the **title and full body**, then decide whether an action is safe and
+   consistent with the user's request. Never click the first/default/affirmative
+   button merely to unblock the editor.
+3. Use the exact `snapshot_id` and control id returned by that inspection.
+4. After `modal-set-text` or `modal-set-checkbox`, use the new snapshot returned
+   by that command for the next action. A stale id is deliberately rejected.
+5. If the dialog is destructive, ambiguous, requests credentials/consent, or
+   expands the user's authorized scope, leave it open and ask the user.
+
+Example:
+
+```bash
+python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" --json modal-status
+python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" modal-click 8f1a2b3c4d5e6f70 0
+```
+
+Password input contents are reported only as `<redacted>`. These commands cover
+UE Slate modals. A platform-native file picker or crash reporter may stop the
+GameThread before it can pump this bypass; treat a modal-status GameThread
+timeout as a distinct native-window/deadlock diagnosis rather than blind retry.
 
 Multi-line example:
 

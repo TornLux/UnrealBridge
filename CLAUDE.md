@@ -39,6 +39,14 @@ Length-prefixed JSON over TCP on an OS-assigned port (default bind `127.0.0.1`, 
   - `{"id":"...", "command":"ping"}` → `pong` (TCP-only liveness)
   - `{"id":"...", "command":"gamethread_ping", "timeout":2.0}` → `alive`/`unresponsive` + `latency_ms` (GT liveness)
   - `{"id":"...", "command":"debug_resume"}` → unsticks a paused BP breakpoint via `FKismetDebugUtilities::RequestAbortingExecution`
+  - `{"id":"...", "command":"modal_status"}` → structured active-Slate-modal snapshot (title, body, buttons, redacted inputs, checkboxes)
+  - `{"id":"...", "command":"modal_action", "snapshot":"...", "action":"..."}` → guarded click/input/checkbox action; rejects stale snapshots
+
+`bridge.py exec*` automatically calls `modal_status` after an exec timeout and
+adds `blocked_by_modal` plus the snapshot to its response. It never selects an
+action automatically. The caller must read the dialog semantics and act with
+the returned `snapshot_id`; this prevents both blind confirmation and a stale
+action landing on a different dialog.
 
 ### Discovery Protocol
 UDP discovery uses LAN multicast on `239.255.42.99:9876` plus a parallel local-loopback probe to `127.0.0.1:9876`. Both carry the same request id and responses are de-duplicated by editor PID. This preserves LAN discovery while avoiding dependence on Windows multicast loopback. Multiple editors can bind via `SO_REUSEADDR`.

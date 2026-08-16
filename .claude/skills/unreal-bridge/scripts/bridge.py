@@ -12,6 +12,8 @@ Usage:
     python bridge.py exec -                        # `-` is shorthand for --stdin
     python bridge.py exec-file script.py           # Multi-step, will iterate / keep on disk
     python bridge.py exec "code" --json            # Machine-readable output
+    python bridge.py modal-status                  # Inspect a blocking Slate dialog
+    python bridge.py modal-click <snapshot> 0      # Click after semantic review
 
 The client auto-discovers the editor via paired UDP probes: multicast
 (239.255.42.99:9876) for LAN editors plus loopback (127.0.0.1:9876) so local
@@ -462,6 +464,168 @@ def _recv_all(sock: socket.socket, num_bytes: int) -> bytes:
 
 # ── Commands ────────────────────────────────────────────────────────────
 
+def _modal_lines(modal: dict) -> "list[str]":
+    """Render a modal snapshot without ever exposing password contents."""
+    if not modal or not modal.get("present"):
+        return ["No active Slate modal window."]
+
+    snapshot = modal.get("snapshot_id") or "?"
+    title = modal.get("title") or "(untitled)"
+    lines = [f"Active Slate modal [{snapshot}]", f"Title: {title}"]
+    body = (modal.get("body") or "").strip()
+    if body:
+        lines.append("Body:")
+        lines.extend(f"  {line}" for line in body.splitlines())
+
+    buttons = modal.get("buttons") or []
+    if buttons:
+        lines.append("Buttons:")
+        for button in buttons:
+            state = []
+            if not button.get("enabled", True):
+                state.append("disabled")
+            if not button.get("visible", True):
+                state.append("hidden")
+            suffix = f" ({', '.join(state)})" if state else ""
+            lines.append(f"  [{button.get('id')}] {button.get('label') or '(unlabelled)'}{suffix}")
+
+    inputs = modal.get("inputs") or []
+    if inputs:
+        lines.append("Inputs:")
+        for item in inputs:
+            flags = [item.get("kind") or "text"]
+            if item.get("password"):
+                flags.append("password; value redacted")
+                value = "<redacted>"
+            else:
+                value = item.get("value", "")
+            if item.get("read_only"):
+                flags.append("read-only")
+            if not item.get("enabled", True):
+                flags.append("disabled")
+            lines.append(f"  [{item.get('id')}] {value!r} ({', '.join(flags)})")
+
+    checkboxes = modal.get("checkboxes") or []
+    if checkboxes:
+        lines.append("Checkboxes:")
+        for item in checkboxes:
+            lines.append(
+                f"  [{item.get('id')}] {item.get('label') or '(unlabelled)'}: "
+                f"{item.get('state') or 'unknown'}"
+            )
+    return lines
+
+
+def _print_modal(modal: dict, stream=None) -> None:
+    stream = stream or sys.stdout
+    print("\n".join(_modal_lines(modal)), file=stream)
+
+
+def _probe_modal(host: str, port: int, token: "str | None",
+                 timeout: float = 4.0) -> "dict | None":
+    """Best-effort bypass probe used after an exec timeout.
+
+    This opens a fresh connection and uses modal_status, which is serviced by
+    AsyncTask(GameThread) rather than the blocked Python/FTSTicker exec queue.
+    Probe failures intentionally do not replace the original exec error.
+    """
+    try:
+        payload = {"id": str(uuid.uuid4()), "command": "modal_status"}
+        response = send_request(host, port, payload, timeout, token=token)
+        modal = response.get("modal")
+        if response.get("success") and isinstance(modal, dict):
+            return modal
+    except Exception:
+        pass
+    return None
+
+
+def _attach_modal_diagnostic(response: dict, modal: "dict | None") -> dict:
+    """Attach a structured + human-readable blocker diagnosis to a failure."""
+    if not modal or not modal.get("present"):
+        return response
+
+    response["blocked_by_modal"] = True
+    response["modal"] = modal
+    details = "\n".join(_modal_lines(modal))
+    hint = (
+        "Inspect/refresh with `bridge.py modal-status`; act only after reading "
+        "the title/body, using the returned snapshot_id."
+    )
+    existing = response.get("error") or "request timed out"
+    response["error"] = f"{existing}\n{details}\n{hint}"
+    return response
+
+
+def _send_modal_command(args, payload: dict) -> "tuple[int, dict]":
+    host, port, token, _project_path = resolve_target(args)
+    payload = dict(payload)
+    payload.setdefault("id", str(uuid.uuid4()))
+    try:
+        response = send_request(host, port, payload, min(max(args.timeout, 4.0), 15.0), token=token)
+    except Exception as exc:
+        response = {"success": False, "error": str(exc)}
+        return 1, response
+    return (0 if response.get("success") else 1), response
+
+
+def _print_modal_response(args, response: dict, include_snapshot: bool = True) -> None:
+    if args.json:
+        print(json.dumps(response, ensure_ascii=False))
+        return
+    output = response.get("output")
+    error = response.get("error")
+    if output:
+        print(output)
+    if error:
+        print(f"ERROR: {error}", file=sys.stderr)
+    modal = response.get("modal")
+    if include_snapshot and isinstance(modal, dict):
+        _print_modal(modal, stream=sys.stdout if response.get("success") else sys.stderr)
+
+
+def cmd_modal_status(args):
+    code, response = _send_modal_command(args, {"command": "modal_status"})
+    _print_modal_response(args, response)
+    return code
+
+
+def cmd_modal_click(args):
+    code, response = _send_modal_command(args, {
+        "command": "modal_action",
+        "action": "click_button",
+        "snapshot": args.snapshot,
+        "control_id": args.button,
+    })
+    # The action response intentionally contains the pre-click snapshot for
+    # auditability; printing it again after "clicked" is normally just noise.
+    _print_modal_response(args, response, include_snapshot=not response.get("success"))
+    return code
+
+
+def cmd_modal_set_text(args):
+    code, response = _send_modal_command(args, {
+        "command": "modal_action",
+        "action": "set_text",
+        "snapshot": args.snapshot,
+        "control_id": args.input,
+        "value": args.value,
+    })
+    _print_modal_response(args, response)
+    return code
+
+
+def cmd_modal_set_checkbox(args):
+    code, response = _send_modal_command(args, {
+        "command": "modal_action",
+        "action": "set_checkbox",
+        "snapshot": args.snapshot,
+        "control_id": args.checkbox,
+        "checked": args.state == "checked",
+    })
+    _print_modal_response(args, response)
+    return code
+
 def cmd_ping(args):
     host, port, token, _project_path = resolve_target(args)
     try:
@@ -909,6 +1073,22 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
             print(f"ERROR: {msg}", file=sys.stderr)
         _audit(project_path, mode, src, code, ok=False, err=f"transport: {msg}")
         return 1
+    except (socket.timeout, TimeoutError) as e:
+        # A timed-out exec may be suspended inside a Slate modal. Diagnose it
+        # through the bypass channel before reporting a generic transport
+        # failure, but never choose or click an action automatically.
+        resp = {
+            "success": False,
+            "error": f"request timed out after {args.timeout + 5:g}s: {e}",
+        }
+        _attach_modal_diagnostic(resp, _probe_modal(host, port, token))
+        if args.json:
+            print(json.dumps(resp, ensure_ascii=False))
+        else:
+            print(resp["error"], file=sys.stderr)
+        _audit(project_path, mode, src, code, ok=False,
+               err=f"transport: {resp['error']}")
+        return 1
     except Exception as e:
         if args.json:
             print(json.dumps({"success": False, "error": str(e)}))
@@ -916,6 +1096,14 @@ def _execute(args, code: str, mode: str = "exec", src: "str | None" = None) -> i
             print(f"ERROR: {e}", file=sys.stderr)
         _audit(project_path, mode, src, code, ok=False, err=f"transport: {e}")
         return 1
+
+    # Server-side exec timeout is the common modal-block case: the worker
+    # returns on schedule even though the original GameThread call is still
+    # inside the dialog. Attach a fresh snapshot so both humans and agents see
+    # what blocked them and can make a semantic choice.
+    if (not resp.get("success")
+            and "exec timeout" in (resp.get("error") or "").lower()):
+        _attach_modal_diagnostic(resp, _probe_modal(host, port, token))
 
     if args.json:
         print(json.dumps(resp, ensure_ascii=False))
@@ -1041,6 +1229,37 @@ def main():
     )
 
     subparsers.add_parser(
+        "modal-status",
+        help="Inspect the active Slate modal (bypasses the exec queue)",
+    )
+
+    modal_click_parser = subparsers.add_parser(
+        "modal-click",
+        help="Click a modal button after validating a modal-status snapshot",
+    )
+    modal_click_parser.add_argument(
+        "snapshot",
+        help="snapshot_id returned by modal-status (prevents stale-window clicks)",
+    )
+    modal_click_parser.add_argument("button", type=int, help="Button id from modal-status")
+
+    modal_text_parser = subparsers.add_parser(
+        "modal-set-text",
+        help="Set a modal text input after validating its snapshot",
+    )
+    modal_text_parser.add_argument("snapshot", help="snapshot_id returned by modal-status")
+    modal_text_parser.add_argument("input", type=int, help="Input id from modal-status")
+    modal_text_parser.add_argument("value", help="New text value")
+
+    modal_checkbox_parser = subparsers.add_parser(
+        "modal-set-checkbox",
+        help="Set a modal checkbox after validating its snapshot",
+    )
+    modal_checkbox_parser.add_argument("snapshot", help="snapshot_id returned by modal-status")
+    modal_checkbox_parser.add_argument("checkbox", type=int, help="Checkbox id from modal-status")
+    modal_checkbox_parser.add_argument("state", choices=("checked", "unchecked"))
+
+    subparsers.add_parser(
         "list-editors",
         help="Send a discovery probe and list every editor that answered",
     )
@@ -1107,6 +1326,14 @@ def main():
         sys.exit(cmd_resume(args))
     elif args.command == "gamethread-ping":
         sys.exit(cmd_gt_ping(args))
+    elif args.command == "modal-status":
+        sys.exit(cmd_modal_status(args))
+    elif args.command == "modal-click":
+        sys.exit(cmd_modal_click(args))
+    elif args.command == "modal-set-text":
+        sys.exit(cmd_modal_set_text(args))
+    elif args.command == "modal-set-checkbox":
+        sys.exit(cmd_modal_set_checkbox(args))
     elif args.command == "wait-compile":
         sys.exit(cmd_wait_compile(args))
     elif args.command == "wait-pose-index":

@@ -20,6 +20,8 @@
  *
  * Special commands:
  *   {"id":"...", "command":"ping"} -> {"id":"...", "success":true, "output":"pong", "error":""}
+ *   {"id":"...", "command":"modal_status"} -> active Slate modal snapshot
+ *   {"id":"...", "command":"modal_action", "snapshot":"...", ...} -> guarded modal interaction
  */
 class FUnrealBridgeServer : public TSharedFromThis<FUnrealBridgeServer>
 {
