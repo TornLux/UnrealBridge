@@ -1756,6 +1756,19 @@ public:
 		const FString& VariableName, bool bIsSet, int32 NodePosX, int32 NodePosY);
 
 	/**
+	 * 为显式外部类中当前蓝图可访问的属性添加 VariableGet（bIsSet=false）或 VariableSet（bIsSet=true）节点。
+	 * Add a VariableGet (bIsSet=false) or VariableSet (bIsSet=true) node for a property that the
+	 * current Blueprint may access on an explicit external class.
+	 * @param OwnerClassPath 必须为非空类路径；继承属性会绑定到实际声明该属性的类，外部蓝图不能访问 BlueprintPrivate 属性。
+	 *                       Must be a non-empty class path; inherited properties bind to their declaring class, and unrelated Blueprints cannot access BlueprintPrivate properties.
+	 * @return 成功时返回节点 GUID，失败时记录诊断并返回空字符串。Node GUID on success; logs a diagnostic and returns an empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddExternalVariableNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& OwnerClassPath, const FString& VariableName, bool bIsSet,
+		int32 NodePosX, int32 NodePosY);
+
+	/**
 	 * Connect two pins identified by node GUID + pin name. Uses the K2 schema's TryCreateConnection
 	 * so it respects type coercion and exec-link rules.
 	 * @return true on success; false when nodes/pins missing or types incompatible.

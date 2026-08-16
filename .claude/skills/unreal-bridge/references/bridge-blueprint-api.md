@@ -684,6 +684,20 @@ get_guid = lib.add_variable_node('/Game/BP/BP_Hero', 'EventGraph', 'Health', Fal
 set_guid = lib.add_variable_node('/Game/BP/BP_Hero', 'EventGraph', 'Health', True,  400, 200)
 ```
 
+### add_external_variable_node(blueprint_path, graph_name, owner_class_path, variable_name, is_set, node_pos_x, node_pos_y) -> str
+
+Create a Variable Get (`is_set=False`) or Set (`is_set=True`) node whose target is an object of an explicit external class. `owner_class_path` is required and cannot be empty; use `add_variable_node` for self members. The property must exist and be readable or writable from the consumer Blueprint under Unreal Engine's canonical Blueprint access rules; this rejects Blueprint-private properties owned by an unrelated Blueprint, and a Set also rejects Blueprint-read-only properties. When the property is inherited, the node reference binds to the class that actually declares it rather than the requested derived class.
+
+The returned GUID follows the other graph-write APIs: it is a 32-character hex string on success and `""` on failure. Failures emit an `AddExternalVariableNode failed` warning with the requested Blueprint, graph, class, property, operation, and reason. Validation occurs before the single undo transaction, so a failed call does not add a graph node. The target input pin is named `self`; the value pin is named after the property (Set nodes may also expose the engine-provided `Output_Get` pin).
+
+```python
+get_range = lib.add_external_variable_node(
+    '/Game/BP/BP_Consumer', 'EventGraph',
+    '/Script/MyModule.InteractableComponent', 'InteractionRange', False, 0, 200)
+```
+
+This operation does not compile automatically. Connect the `self` and value pins as needed, then call `compile_blueprints` once after the batch of graph edits.
+
 ### connect_graph_pins(blueprint_path, graph_name, src_node_guid, src_pin_name, dst_node_guid, dst_pin_name) -> bool
 
 Connect pins through the K2 schema. Handles type coercion (e.g. int → string auto-inserts a conversion where supported). Returns `False` when nodes/pins are missing or types are incompatible.
