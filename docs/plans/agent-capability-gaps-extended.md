@@ -49,7 +49,7 @@
 
 | # | 项目 | 工程量 | 频次 | 说明 |
 |---|---|---|---|---|
-| 61 | **Headless editor 启动支持** | 中 | 中 | `UnrealEditor-Cmd.exe` 带 bridge 插件跑，纯命令行驱动。CI 里跑 automation tests / golden-image regression / cook validation 的前提。 |
+| 61 | **Headless editor 启动支持** | 中 | 中 | 当前 bridge 仅支持交互式编辑器，模块明确在 UE 实际运行 Commandlet 时排除。`UnrealEditor-Cmd.exe` 不应被笼统视为 Commandlet；未来若要支持 Commandlet 或其他真正的无头会话，需要显式重构模块、拆分 Commandlet-safe 服务与交互式编辑器／Slate 依赖，而不是只切换可执行文件或启动参数。 |
 | 62 | **共享 bridge 服务** | 中-大 | 低-中 | TCP 不再只绑 localhost。团队几个 agent 连一个编辑器实例（读写互斥 + 权限），或每人一个容器跑各自实例。 |
 | 63 | **Job queue 模式** | 中 | 中 | "排 50 个 bridge 脚本，按依赖图跑完，每个有超时"。现在 GameThread 串行 exec，并发全卡。需要把重脚本拆成"快注册 + 慢 tick"，让 bridge 侧排队。 |
 
