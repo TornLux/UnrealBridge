@@ -694,6 +694,9 @@ TArray<FBridgeCompileResult> UUnrealBridgeEditorLibrary::CompileBlueprints(const
 			Out.Add(R);
 			continue;
 		}
+		// 仅做普通修改标记的程序化图编辑不会重建骨架类，因此编译前必须先使结构失效。
+		// Programmatic graph edits marked only as modified do not rebuild the skeleton class, so invalidate structure before compiling.
+		FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(BP);
 		FKismetEditorUtilities::CompileBlueprint(BP);
 		switch (BP->Status)
 		{
