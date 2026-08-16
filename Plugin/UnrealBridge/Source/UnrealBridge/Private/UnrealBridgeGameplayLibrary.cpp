@@ -1,5 +1,6 @@
 #include "UnrealBridgeGameplayLibrary.h"
 
+#include "UnrealBridgeWorldSelection.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "ScopedTransaction.h"
@@ -71,6 +72,9 @@ namespace BridgeAgentImpl
 	{
 		TWeakObjectPtr<UInputAction> Action;
 		FVector Value = FVector::ZeroVector;
+		// 粘滞输入固定到创建它的本地玩家世界，禁止在多 PIE 启动或重连时跨世界切换时钟与注入目标。
+		// Sticky input is pinned to its originating local-player world so PIE startup/reconnect cannot switch its clock or injection target.
+		TWeakObjectPtr<UWorld> World;
 		// Auto-clear deadline in world-time seconds. <= 0 means "no deadline,
 		// caller will call ClearStickyInput". Set by TriggerInputAction() so
 		// a timed hold releases on its own.
@@ -121,21 +125,16 @@ namespace BridgeAgentImpl
 		}
 	}
 
-	/** Return the active PIE world, or nullptr if not playing. */
+	/** 返回首个有效 PIE 世界，保留通用及权威操作原有的上下文顺序语义。 */
 	UWorld* GetPIEWorld()
 	{
-		if (!GEditor)
-		{
-			return nullptr;
-		}
-		for (const FWorldContext& Ctx : GEditor->GetWorldContexts())
-		{
-			if (Ctx.WorldType == EWorldType::PIE && Ctx.World() && Ctx.World()->HasBegunPlay())
-			{
-				return Ctx.World();
-			}
-		}
-		return nullptr;
+		return GEditor ? SelectFirstValidPIEWorld(GEditor->GetWorldContexts()) : nullptr;
+	}
+
+	/** 返回首个已就绪的本地玩家 PIE 世界；客户端启动未就绪及纯服务端场景均显式返回空。 */
+	UWorld* GetLocalPlayerPIEWorld()
+	{
+		return GEditor ? SelectFirstLocalPlayerPIEWorld(GEditor->GetWorldContexts()) : nullptr;
 	}
 
 	APawn* GetPlayerPawn(UWorld* World)
@@ -192,10 +191,10 @@ bool UUnrealBridgeGameplayLibrary::GetAgentObservation(
 {
 	OutObservation = FAgentObservation();
 
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
-		UE_LOG(LogUnrealBridgeAgent, Verbose, TEXT("GetAgentObservation: PIE not running"));
+		UE_LOG(LogUnrealBridgeAgent, Verbose, TEXT("GetAgentObservation: no ready local-player PIE world"));
 		return false;
 	}
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
@@ -351,7 +350,7 @@ bool UUnrealBridgeGameplayLibrary::FindNavPath(
 
 bool UUnrealBridgeGameplayLibrary::ApplyMovementInput(const FVector& WorldDirection, float ScaleValue, bool bForce)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	if (!Pawn)
 	{
@@ -363,7 +362,7 @@ bool UUnrealBridgeGameplayLibrary::ApplyMovementInput(const FVector& WorldDirect
 
 bool UUnrealBridgeGameplayLibrary::ApplyLookInput(float YawDelta, float PitchDelta)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		return false;
@@ -386,7 +385,7 @@ bool UUnrealBridgeGameplayLibrary::ApplyLookInput(float YawDelta, float PitchDel
 
 bool UUnrealBridgeGameplayLibrary::SetControlRotation(const FRotator& NewRotation)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		return false;
@@ -402,7 +401,7 @@ bool UUnrealBridgeGameplayLibrary::SetControlRotation(const FRotator& NewRotatio
 
 bool UUnrealBridgeGameplayLibrary::Jump()
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	ACharacter* Char = Cast<ACharacter>(Pawn);
 	if (!Char)
@@ -415,7 +414,7 @@ bool UUnrealBridgeGameplayLibrary::Jump()
 
 bool UUnrealBridgeGameplayLibrary::StopJumping()
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	ACharacter* Char = Cast<ACharacter>(Pawn);
 	if (!Char)
@@ -428,10 +427,10 @@ bool UUnrealBridgeGameplayLibrary::StopJumping()
 
 bool UUnrealBridgeGameplayLibrary::InjectEnhancedInputAxis(const FString& InputActionPath, const FVector& AxisValue)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
-		UE_LOG(LogUnrealBridgeAgent, Warning, TEXT("InjectEnhancedInputAxis: no PIE world"));
+		UE_LOG(LogUnrealBridgeAgent, Warning, TEXT("InjectEnhancedInputAxis: no ready local-player PIE world"));
 		return false;
 	}
 	APlayerController* PC = World->GetFirstPlayerController();
@@ -481,41 +480,39 @@ namespace BridgeAgentImpl
 			return true; // nothing to do — but keep ticker alive, caller may add more
 		}
 
-		UWorld* World = GetPIEWorld();
-		if (!World)
-		{
-			// PIE not running: drop all sticky entries, leaving a fresh
-			// slate for the next PIE session.
-			GStickyInputs.Reset();
-			return true;
-		}
-		APlayerController* PC = World->GetFirstPlayerController();
-		if (!PC || !PC->GetLocalPlayer())
-		{
-			return true;
-		}
-		UEnhancedInputLocalPlayerSubsystem* Subsystem =
-			PC->GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
-		if (!Subsystem)
-		{
-			return true;
-		}
-
-		const double WorldNow = World->GetTimeSeconds();
 		for (TMap<FString, FStickyEntry>::TIterator It(GStickyInputs); It; ++It)
 		{
 			FStickyEntry& E = It->Value;
+			UWorld* World = E.World.Get();
+			UInputAction* Action = E.Action.Get();
+			if (!World || !World->HasBegunPlay() || !Action)
+			{
+				It.RemoveCurrent();
+				continue;
+			}
+
+			APlayerController* PlayerController = World->GetFirstPlayerController();
+			if (!PlayerController || !PlayerController->GetLocalPlayer())
+			{
+				// 原本地玩家失效后丢弃条目；不得把旧输入迟到注入新客户端或服务端世界。
+				// Drop entries whose original local player disappeared; never inject stale input into a new client or server world.
+				It.RemoveCurrent();
+				continue;
+			}
+
+			UEnhancedInputLocalPlayerSubsystem* Subsystem =
+				PlayerController->GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+			if (!Subsystem)
+			{
+				continue;
+			}
+
+			const double WorldNow = World->GetTimeSeconds();
 			if (E.AutoClearWorldTime > 0.0 && WorldNow >= E.AutoClearWorldTime)
 			{
 				UE_LOG(LogUnrealBridgeAgent, Verbose,
 					TEXT("StickyTick: auto-clear '%s' at world-time %.3f"),
 					*It->Key, WorldNow);
-				It.RemoveCurrent();
-				continue;
-			}
-			UInputAction* Action = E.Action.Get();
-			if (!Action)
-			{
 				It.RemoveCurrent();
 				continue;
 			}
@@ -537,9 +534,17 @@ bool UUnrealBridgeGameplayLibrary::SetStickyInput(const FString& InputActionPath
 			TEXT("SetStickyInput: failed to load IA '%s'"), *InputActionPath);
 		return false;
 	}
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
+	if (!World)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("SetStickyInput: no ready local-player PIE world for '%s'"), *InputActionPath);
+		return false;
+	}
 	BridgeAgentImpl::FStickyEntry Entry;
 	Entry.Action = Action;
 	Entry.Value = AxisValue;
+	Entry.World = World;
 	BridgeAgentImpl::GStickyInputs.Add(InputActionPath, Entry);
 	BridgeAgentImpl::EnsureStickyTickerRunning();
 	UE_LOG(LogUnrealBridgeAgent, Log, TEXT("SetStickyInput: %s = (%.2f, %.2f, %.2f)"),
@@ -676,11 +681,11 @@ bool UUnrealBridgeGameplayLibrary::TriggerInputAction(const FString& InputAction
 	}
 
 	// Sticky-hold path: need a PIE world to anchor the world-time deadline.
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		UE_LOG(LogUnrealBridgeAgent, Warning,
-			TEXT("TriggerInputAction: no PIE world; cannot schedule auto-clear for '%s'"),
+			TEXT("TriggerInputAction: no ready local-player PIE world; cannot schedule auto-clear for '%s'"),
 			*InputActionPath);
 		return false;
 	}
@@ -688,6 +693,7 @@ bool UUnrealBridgeGameplayLibrary::TriggerInputAction(const FString& InputAction
 	BridgeAgentImpl::FStickyEntry Entry;
 	Entry.Action = Action;
 	Entry.Value = FVector(1.0, 0.0, 0.0);
+	Entry.World = World;
 	Entry.AutoClearWorldTime = World->GetTimeSeconds() + EffectiveHold;
 	BridgeAgentImpl::GStickyInputs.Add(InputActionPath, Entry);
 	BridgeAgentImpl::EnsureStickyTickerRunning();
@@ -702,7 +708,7 @@ bool UUnrealBridgeGameplayLibrary::TriggerInputAction(const FString& InputAction
 bool UUnrealBridgeGameplayLibrary::GetControlRotation(FRotator& OutRotation)
 {
 	OutRotation = FRotator::ZeroRotator;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		return false;
@@ -818,7 +824,7 @@ namespace BridgeAgentImpl
 
 FString UUnrealBridgeGameplayLibrary::GetCameraHitActor(float MaxDistance)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	FVector CamLoc; FRotator CamRot;
 	if (!BridgeAgentImpl::GetCameraView(World, CamLoc, CamRot))
 	{
@@ -841,7 +847,7 @@ FString UUnrealBridgeGameplayLibrary::GetCameraHitActor(float MaxDistance)
 bool UUnrealBridgeGameplayLibrary::GetCameraHitLocation(float MaxDistance, FVector& OutHitLocation)
 {
 	OutHitLocation = FVector::ZeroVector;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	FVector CamLoc; FRotator CamRot;
 	if (!BridgeAgentImpl::GetCameraView(World, CamLoc, CamRot))
 	{
@@ -863,7 +869,7 @@ bool UUnrealBridgeGameplayLibrary::GetCameraHitLocation(float MaxDistance, FVect
 
 bool UUnrealBridgeGameplayLibrary::IsActorVisibleFromCamera(const FString& ActorName, float MaxDistance)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	FVector CamLoc; FRotator CamRot;
 	if (!BridgeAgentImpl::GetCameraView(World, CamLoc, CamRot))
 	{
@@ -916,7 +922,7 @@ bool UUnrealBridgeGameplayLibrary::IsActorVisibleFromCamera(const FString& Actor
 
 float UUnrealBridgeGameplayLibrary::GetPawnGroundHeight(float MaxDistance)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	if (!Pawn)
 	{
@@ -1032,7 +1038,7 @@ bool UUnrealBridgeGameplayLibrary::GetRandomReachablePointInRadius(const FVector
 bool UUnrealBridgeGameplayLibrary::GetPIEViewportSize(FVector2D& OutSize)
 {
 	OutSize = FVector2D::ZeroVector;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		return false;
@@ -1057,7 +1063,7 @@ bool UUnrealBridgeGameplayLibrary::DeprojectScreenToWorld(float NormalizedX, flo
 {
 	OutOrigin = FVector::ZeroVector;
 	OutDirection = FVector::ForwardVector;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		return false;
@@ -1081,7 +1087,7 @@ bool UUnrealBridgeGameplayLibrary::DeprojectScreenToWorld(float NormalizedX, flo
 bool UUnrealBridgeGameplayLibrary::ProjectWorldToScreen(const FVector& WorldLocation, FVector2D& OutNormalized)
 {
 	OutNormalized = FVector2D::ZeroVector;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		return false;
@@ -1117,7 +1123,7 @@ namespace BridgeAgentImpl
 {
 	static APlayerCameraManager* GetPIECameraManager()
 	{
-		UWorld* World = GetPIEWorld();
+		UWorld* World = GetLocalPlayerPIEWorld();
 		if (!World) return nullptr;
 		APlayerController* PC = World->GetFirstPlayerController();
 		return PC ? PC->PlayerCameraManager : nullptr;
@@ -1160,9 +1166,12 @@ bool UUnrealBridgeGameplayLibrary::UnlockCameraFOV()
 
 namespace BridgeAgentImpl
 {
-	static UCharacterMovementComponent* GetPIECharMove()
+	/**
+	 * 从显式选择的世界读取玩家角色移动组件，不在辅助函数内隐藏 world policy。
+	 * Reads character movement from an explicitly selected world so the helper cannot hide world policy.
+	 */
+	static UCharacterMovementComponent* GetCharacterMovement(UWorld* World)
 	{
-		UWorld* World = GetPIEWorld();
 		APawn* Pawn = GetPlayerPawn(World);
 		if (ACharacter* Char = Cast<ACharacter>(Pawn))
 		{
@@ -1174,7 +1183,8 @@ namespace BridgeAgentImpl
 
 float UUnrealBridgeGameplayLibrary::GetPawnMaxWalkSpeed()
 {
-	UCharacterMovementComponent* Move = BridgeAgentImpl::GetPIECharMove();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
+	UCharacterMovementComponent* Move = BridgeAgentImpl::GetCharacterMovement(World);
 	return Move ? Move->MaxWalkSpeed : -1.0f;
 }
 
@@ -1184,7 +1194,8 @@ bool UUnrealBridgeGameplayLibrary::SetPawnMaxWalkSpeed(float Speed)
 	{
 		return false;
 	}
-	UCharacterMovementComponent* Move = BridgeAgentImpl::GetPIECharMove();
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UCharacterMovementComponent* Move = BridgeAgentImpl::GetCharacterMovement(World);
 	if (!Move)
 	{
 		return false;
@@ -1199,7 +1210,8 @@ bool UUnrealBridgeGameplayLibrary::SetPawnGravityScale(float Scale)
 	{
 		return false;
 	}
-	UCharacterMovementComponent* Move = BridgeAgentImpl::GetPIECharMove();
+	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UCharacterMovementComponent* Move = BridgeAgentImpl::GetCharacterMovement(World);
 	if (!Move)
 	{
 		return false;
@@ -1210,7 +1222,7 @@ bool UUnrealBridgeGameplayLibrary::SetPawnGravityScale(float Scale)
 
 float UUnrealBridgeGameplayLibrary::GetPawnSpeed()
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	if (!Pawn)
 	{
@@ -1235,7 +1247,7 @@ bool UUnrealBridgeGameplayLibrary::GetPawnCapabilities(
 	bCanCrouch = false;
 	bCanJump = false;
 
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	ACharacter* Char = Cast<ACharacter>(BridgeAgentImpl::GetPlayerPawn(World));
 	if (!Char)
 	{
@@ -1607,7 +1619,7 @@ namespace BridgeAgentImpl
 {
 	static UEnhancedInputLocalPlayerSubsystem* GetEILocalPlayerSub()
 	{
-		UWorld* World = GetPIEWorld();
+		UWorld* World = GetLocalPlayerPIEWorld();
 		if (!World) return nullptr;
 		APlayerController* PC = World->GetFirstPlayerController();
 		if (!PC || !PC->GetLocalPlayer()) return nullptr;
@@ -1718,7 +1730,7 @@ bool UUnrealBridgeGameplayLibrary::FlushPersistentDebugDraws()
 bool UUnrealBridgeGameplayLibrary::GetPawnForwardVector(FVector& OutForward)
 {
 	OutForward = FVector::ForwardVector;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	if (!Pawn) return false;
 	OutForward = Pawn->GetActorForwardVector();
@@ -1728,7 +1740,7 @@ bool UUnrealBridgeGameplayLibrary::GetPawnForwardVector(FVector& OutForward)
 bool UUnrealBridgeGameplayLibrary::GetPawnRightVector(FVector& OutRight)
 {
 	OutRight = FVector::RightVector;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	if (!Pawn) return false;
 	OutRight = Pawn->GetActorRightVector();
@@ -1738,7 +1750,7 @@ bool UUnrealBridgeGameplayLibrary::GetPawnRightVector(FVector& OutRight)
 bool UUnrealBridgeGameplayLibrary::GetPawnUpVector(FVector& OutUp)
 {
 	OutUp = FVector::UpVector;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	if (!Pawn) return false;
 	OutUp = Pawn->GetActorUpVector();
@@ -1747,7 +1759,7 @@ bool UUnrealBridgeGameplayLibrary::GetPawnUpVector(FVector& OutUp)
 
 float UUnrealBridgeGameplayLibrary::GetDistanceToPawn(const FVector& Location)
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	if (!Pawn) return -1.0f;
 	return FVector::Dist(Pawn->GetActorLocation(), Location);
@@ -1942,14 +1954,14 @@ namespace BridgeAgentImpl
 
 FString UUnrealBridgeGameplayLibrary::GetPlayerPawnActorName()
 {
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	return Pawn ? Pawn->GetFName().ToString() : FString();
 }
 
 USkeletalMeshComponent* UUnrealBridgeGameplayLibrary::GetPlayerSkeletalMeshComponent(const FString& ComponentName)
 {
-	return BridgeAgentImpl::GetPlayerSkeletalMeshComponent(BridgeAgentImpl::GetPIEWorld(), ComponentName);
+	return BridgeAgentImpl::GetPlayerSkeletalMeshComponent(BridgeAgentImpl::GetLocalPlayerPIEWorld(), ComponentName);
 }
 
 UAnimInstance* UUnrealBridgeGameplayLibrary::GetPlayerAnimInstance(const FString& ComponentName)
@@ -2079,7 +2091,7 @@ bool UUnrealBridgeGameplayLibrary::GetCameraViewPoint(FVector& OutLocation, FRot
 {
 	OutLocation = FVector::ZeroVector;
 	OutRotation = FRotator::ZeroRotator;
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	if (!World)
 	{
 		return false;
@@ -2100,7 +2112,7 @@ FString UUnrealBridgeGameplayLibrary::GetActorAtScreenPosition(float NormalizedX
 	{
 		return FString();
 	}
-	UWorld* World = BridgeAgentImpl::GetPIEWorld();
+	UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 	APawn* Pawn = BridgeAgentImpl::GetPlayerPawn(World);
 	const FVector End = Origin + Direction * FMath::Max(MaxDistance, 0.0f);
 
@@ -3157,11 +3169,7 @@ namespace BridgeInputRuntimeImpl
 {
 	static UEnhancedInputLocalPlayerSubsystem* GetActiveSubsystem()
 	{
-		UWorld* World = nullptr;
-		for (const FWorldContext& Ctx : GEngine->GetWorldContexts())
-		{
-			if (Ctx.WorldType == EWorldType::PIE) { World = Ctx.World(); break; }
-		}
+		UWorld* World = BridgeAgentImpl::GetLocalPlayerPIEWorld();
 		if (!World) return nullptr;
 		APlayerController* PC = World->GetFirstPlayerController();
 		if (!PC) return nullptr;

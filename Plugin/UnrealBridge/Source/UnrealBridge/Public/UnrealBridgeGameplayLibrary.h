@@ -31,15 +31,16 @@ struct FAgentVisibleActor
 	TArray<FName> Tags;
 };
 
-/** Packed agent-side observation of the PIE world. One UFUNCTION call
- *  assembles this so a Python agent loop doesn't need multiple bridge
- *  round-trips per tick. */
+/**
+ * 打包已就绪本地玩家 PIE 世界的 Agent 观测；一次 UFUNCTION 调用完成采集，减少 Python 循环往返。
+ * Packed observation of the ready local-player PIE world, assembled in one UFUNCTION to reduce Python round trips.
+ */
 USTRUCT(BlueprintType)
 struct FAgentObservation
 {
 	GENERATED_BODY()
 
-	/** False when PIE is not running or there is no player pawn yet. */
+	/** 没有已就绪的本地玩家 PIE 世界或尚未生成其玩家 Pawn 时为 false。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
 	bool bValid = false;
 
@@ -209,7 +210,7 @@ struct FBridgeInputActionState
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
 	float ElapsedProcessedTime = 0.f;
 
-	/** False iff there is no PIE / no active player input / no record for the IA. */
+	/** 没有已就绪的本地玩家 PIE 世界、没有活动 PlayerInput 或找不到该 IA 记录时为 false。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Agent")
 	bool bHasState = false;
 };
@@ -289,13 +290,18 @@ struct FBridgeInputBindingIssue
 };
 
 /**
- * Agent sensors + navigation for PIE automation.
+ * 为 PIE 自动化提供 Agent 传感、输入、相机及通用 Gameplay 操作。
  *
- * MVP scope:
- *   - GetAgentObservation: pawn state + nearby-actor list in one call.
- *   - FindNavPath: wrap UNavigationSystemV1::FindPathToLocationSynchronously.
+ * World policy 分为两个显式边界：
+ * - 本地输入、相机/视口、玩家传感及活动输入状态只使用“首个已 BeginPlay 且 FirstPlayerController 拥有 LocalPlayer”的世界；
+ *   客户端启动尚未就绪或纯服务端 PIE 时返回 false、空结果或约定哨兵，不回退到服务端世界。
+ * - Spawn/Destroy、Damage、Physics、Pause/TimeDilation、GameMode、Teleport/Respawn 及权威属性写入继续使用
+ *   Editor 上下文顺序中的首个有效 BeginPlay PIE 世界，以保留通用/权威语义。
+ * - Sticky input 固定到创建时的本地玩家世界及其 World Time；原世界或本地玩家失效时删除，不迁移到其他世界。
  *
- * Actuators (apply_movement_input, press_action, etc.) are a separate PR.
+ * Provides agent sensing, input, camera, and general gameplay operations for PIE automation.
+ * Local-player operations fail closed until a ready LocalPlayer world exists, while general/authority operations preserve first-valid context order.
+ * Sticky input remains pinned to its originating world and clock.
  */
 UCLASS()
 class UUnrealBridgeGameplayLibrary : public UBlueprintFunctionLibrary
@@ -304,17 +310,13 @@ class UUnrealBridgeGameplayLibrary : public UBlueprintFunctionLibrary
 
 public:
 	/**
-	 * Fill an FAgentObservation for the active PIE player pawn.
+	 * 采集已就绪本地玩家 PIE 世界中玩家 Pawn 的 FAgentObservation；客户端启动未就绪及纯服务端 PIE 显式失败。
 	 *
-	 * @param OutObservation     Populated struct. Check bValid before reading.
-	 * @param MaxActorDistance   Filter radius (cm). Actors farther than this
-	 *                           are dropped from VisibleActors.
-	 * @param bRequireLineOfSight  If true, do a camera-to-actor line trace;
-	 *                           drop actors that are occluded.
-	 * @param ClassFilter        Optional substring match on class name
-	 *                           (case-insensitive). Empty = all pawns+actors.
-	 * @return true when a PIE world + player pawn exist, false otherwise
-	 *         (OutObservation.bValid mirrors the return).
+	 * @param OutObservation 输出观测；读取其他字段前检查 bValid。
+	 * @param MaxActorDistance 过滤半径，单位 cm；更远 Actor 不进入 VisibleActors。
+	 * @param bRequireLineOfSight 为 true 时执行相机到 Actor 的射线检测并排除遮挡目标。
+	 * @param ClassFilter 可选的不区分大小写类名子串；空字符串表示不过滤。
+	 * @return 仅在已就绪本地玩家世界及其玩家 Pawn 均存在时返回 true；bValid 与返回值一致。
 	 *
 	 * Cost: O(N) scan of pawns in the PIE world + one line trace per candidate
 	 * if bRequireLineOfSight. Single GameThread call. Typical <1ms for small
@@ -356,8 +358,8 @@ public:
 
 	// ─── Actuators ────────────────────────────────────────────────────
 	//
-	// All actuators target the PIE world's first player pawn/controller.
-	// They return false when PIE is not running or no pawn exists.
+	// 下列输入执行器只作用于已就绪本地玩家世界的 FirstPlayerController/Pawn；客户端启动未就绪或纯服务端时返回 false。
+	// The input actuators below target only the ready local-player world's first controller/pawn and fail closed during startup or server-only PIE.
 	//
 	// Input is per-frame accumulative (UE's standard APawn pattern):
 	// AddMovementInput is consumed by the movement component once per
@@ -408,8 +410,9 @@ public:
 	static bool StopJumping();
 
 	/**
+	 * 向已就绪本地玩家的 EnhancedInput InputAction 注入单 tick 值；没有该本地玩家世界时返回 false，不回退服务端。
 	 * Inject a single-tick value into an EnhancedInput InputAction for
-	 * the PIE player. Good for discrete "press" actions (IA_Jump,
+	 * the ready local PIE player. Good for discrete "press" actions (IA_Jump,
 	 * IA_Interact) — one call fires the "Pressed"/"Triggered" phase
 	 * for that frame.
 	 *
@@ -429,7 +432,10 @@ public:
 	static bool InjectEnhancedInputAxis(const FString& InputActionPath, const FVector& AxisValue);
 
 	/**
-	 * Set a "sticky" EnhancedInput value: re-injected every GameThread
+	 * 设置粘滞 EnhancedInput 值并固定到当前已就绪本地玩家世界；每 tick 使用同一世界及 World Time 重注入。
+	 * 原世界或本地玩家失效时条目被删除，绝不迁移到其他客户端或服务端；没有已就绪本地玩家时返回 false。
+	 *
+	 * Set a "sticky" EnhancedInput value pinned to the current ready local-player world: re-injected every GameThread
 	 * tick until cleared or overwritten. The caller sets it once and
 	 * movement/look input persists at UE frame rate without Python
 	 * needing to keep up. Multiple IAs can be sticky at the same time
@@ -458,7 +464,8 @@ public:
 	static bool GetControlRotation(FRotator& OutRotation);
 
 	/**
-	 * Hard-reset the pawn's pose. Combines SetActorLocationAndRotation
+	 * 在通用/权威 world policy 的首个有效 PIE 世界中硬重置 Pawn，不使用本地玩家 fail-closed 选择。
+	 * Hard-reset the pawn's pose in the first-valid general/authority PIE world. Combines SetActorLocationAndRotation
 	 * with optional controller re-alignment and velocity clearing so a
 	 * Python agent can drop the pawn at a known state for scenario setup.
 	 *
@@ -651,9 +658,9 @@ public:
 
 	// ─── Character movement tuning ────────────────────────────────────
 	//
-	// All four target the PIE player pawn's UCharacterMovementComponent.
-	// They return a sentinel / false for non-Character pawns (raw APawn
-	// subclasses without CharMove won't respond).
+	// 读取 API 使用已就绪本地玩家 Pawn；MaxWalkSpeed/GravityScale 写入使用首个有效通用/权威 PIE 世界。
+	// Read APIs use the ready local-player pawn; MaxWalkSpeed/GravityScale mutations use the first-valid general/authority PIE world.
+	// 非 Character Pawn 返回哨兵或 false；raw APawn 没有 CharacterMovementComponent。
 
 	/**
 	 * `UCharacterMovementComponent::MaxWalkSpeed` in cm/s.
@@ -979,6 +986,9 @@ public:
 		TArray<float>& OutThresholdSeconds);
 
 	/**
+	 * 自适应触发 Bool IA；仅使用已就绪本地玩家世界。Sticky hold 的截止时间与重注入固定到创建时的同一世界。
+	 * 客户端启动未就绪或纯服务端 PIE 时返回 false，且不会稍后迁移/补发到其他世界。
+	 *
 	 * Adaptive "press a Bool IA" entry point. Inspects the IA's Triggers
 	 * and picks between single-tick inject vs. sticky-then-auto-release so
 	 * callers don't have to know which pattern fits a given action.
@@ -1188,11 +1198,11 @@ public:
 
 	// ─── E1 / E2 / E4 — PIE runtime state ───────────────────────────
 
-	/** Snapshot the LocalPlayer Subsystem's currently-active IMC stack. */
+	/** 读取已就绪本地玩家 Subsystem 的活动 IMC 栈；客户端未就绪或纯服务端 PIE 返回空数组。 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static TArray<FBridgeMappingContextEntry> GetActiveMappingContextStack();
 
-	/** Read live runtime state for an IA (E2). */
+	/** 读取已就绪本地玩家的 IA 运行时状态；客户端未就绪或纯服务端 PIE 返回 bHasState=false。 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Agent")
 	static FBridgeInputActionState GetCurrentInputActionState(const FString& InputActionPath);
 
