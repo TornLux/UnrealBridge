@@ -13,8 +13,18 @@ Each is a separate TCP connection (workers are per-connection, capped at 16). Pr
 | Exact command | CLI | Purpose |
 |---|---|---|
 | `exact_ping` | `bridge.py ping` | TCP-only liveness — proves the server process and accept loop are alive. Returns `pong` plus `ready: bool` (false during the editor's startup window before main frame creation). |
+| `exact_editor_status` | `bridge.py status` | Read-only cached health — reports main-frame readiness, Engine/Slate tick ages and staleness, plus a modal-attention summary. Discovery must advertise this optional capability; otherwise `status` fails before TCP while other base commands remain usable. A successful response must pass schema-v1/type validation. It neither enters the exec queue nor dispatches fresh GameThread work; the TCP worker never touches Slate. See `docs/editor-health-status.md`. |
 | `exact_gamethread_ping` with `request.timeout` | `bridge.py gamethread-ping [--probe-timeout S]` | GameThread liveness — dispatches a no-op `AsyncTask(GameThread)` and waits up to `timeout` seconds (default 2s, max 10s). Response includes `latency_ms`. |
 | `exact_debug_resume` | `bridge.py resume` | Recover from a stuck Blueprint breakpoint. Calls `FKismetDebugUtilities::RequestAbortingExecution` + `FSlateApplication::LeaveDebuggingMode` via `AsyncTask(GameThread)`. Fire-and-forget. |
+
+### `exact_editor_status` versus fresh probes
+
+Use `bridge.py status` (`exact_editor_status` on the wire) first when the editor may be blocked. Its Engine timestamp is
+updated by the server ticker, while its Slate/modal timestamp is updated by the
+Slate pre-tick delegate. A nested Slate modal therefore normally reports a stale
+Engine tick, a fresh Slate tick, and `attention_required:true`. A native dialog
+or deadlock can leave both observations stale. The cached modal summary is for
+diagnosis; run `modal-status` to inspect full current semantics before any action.
 
 ### `gamethread_ping` diagnostic table
 
@@ -1244,7 +1254,7 @@ JSON shape:
           ] } ] } ] }
 ```
 
-**What's covered.** Every BlueprintCallable UFUNCTION whose owning class lives in the `/Script/UnrealBridge` package — i.e. all `UUnrealBridge*Library` classes. Current count: 1384 reflected UFUNCTIONs across 26 libraries (the Python-callable manifest currently exposes 1382 methods).
+**What's covered.** Every BlueprintCallable UFUNCTION whose owning class lives in the `/Script/UnrealBridge` package — i.e. all `UUnrealBridge*Library` classes. Current count: 1388 reflected UFUNCTIONs across 26 libraries (the Python-callable manifest currently exposes 1386 methods).
 
 **What's not covered (yet).**
 - USTRUCT field layouts (return / param types include the struct name, but not its UPROPERTY list).

@@ -6,7 +6,7 @@ allowed-tools: Bash Read Write Edit Glob Grep Monitor
 
 # UnrealBridge
 
-Execute Python directly inside a running UE 5.3+ editor. Protocol-v2 auto-discovery sends paired UDP probes to LAN multicast (`239.255.42.99:9876`) and local loopback (`127.0.0.1:9876`); malformed replies are skipped independently, valid responses are de-duplicated by Server-start UUID, and wildcard binds use the UDP response source IP. The six exact commands are the minimum required capability set, so unique future capabilities remain forward-compatible. Every bounded TCP response is rechecked against the frozen identity. The TCP data port is OS-assigned per editor.
+Execute Python directly inside a running UE 5.3+ editor. Protocol-v2 auto-discovery sends paired UDP probes to LAN multicast (`239.255.42.99:9876`) and local loopback (`127.0.0.1:9876`); malformed replies are skipped independently, valid responses are de-duplicated by Server-start UUID, and wildcard binds use the UDP response source IP. The six pre-existing exact commands remain the minimum capability set; `exact_editor_status` is advertised and negotiated separately, so an older protocol-v2 endpoint remains usable for its supported base commands. Unique future capabilities remain forward-compatible. Every bounded TCP response is rechecked against the frozen identity. The TCP data port is OS-assigned per editor.
 
 ## Preconditions
 
@@ -81,6 +81,7 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | `exec-file <path>` | Execute a .py file (use when iterating, debugging, or keeping the script) |
 | `preflight <path>` | Lint a script for bridge-call errors WITHOUT sending to UE |
 | `suggest [pattern]` | Look up the bridge equivalent for a raw `unreal.*` fallback |
+| `status` | Read cached Engine/Slate tick ages, readiness and modal attention without fresh GameThread dispatch |
 | `gamethread-ping` | Probe GameThread liveness (bypasses exec queue; use when `exec` hangs) |
 | `resume` | Unstick a paused BP breakpoint |
 | `modal-status` | Inspect a blocking Slate dialog: title, body, buttons, inputs and checkboxes |
@@ -99,9 +100,10 @@ Discovery-mode optional flags: `--project=<name|path>` (disambiguate when >1 edi
 3. `--json` for parseable output.
 4. Exit codes: `0` success · `1` runtime/transport · `2` bad CLI args · `3` AST preflight rejected.
 5. **If `exec` hangs**: read the timeout response first. `blocked_by_modal:true`
-   includes the active window and its controls. Otherwise try
-   `gamethread-ping` (high latency = GT mid-exec, queue will drain) or `resume`
-   (BP breakpoint).
+   includes the active window and its controls. Otherwise use `status`
+   first: it reads cached Engine/Slate ages without dispatching fresh GameThread
+   work. Follow with `gamethread-ping` only when a fresh liveness probe is useful,
+   or `resume` for a BP breakpoint.
 
 ## Blocking modal dialogs — inspect, decide, then act
 

@@ -20,6 +20,7 @@ namespace UnrealBridgeProtocol
 	constexpr const TCHAR* ExactPrefix = TEXT("exact_");
 	constexpr const TCHAR* ExactExec = TEXT("exact_exec");
 	constexpr const TCHAR* ExactPing = TEXT("exact_ping");
+	constexpr const TCHAR* ExactEditorStatus = TEXT("exact_editor_status");
 	constexpr const TCHAR* ExactGameThreadPing = TEXT("exact_gamethread_ping");
 	constexpr const TCHAR* ExactDebugResume = TEXT("exact_debug_resume");
 	constexpr const TCHAR* ExactModalStatus = TEXT("exact_modal_status");
@@ -28,6 +29,7 @@ namespace UnrealBridgeProtocol
 	constexpr const TCHAR* ExactCapabilities[] = {
 		ExactExec,
 		ExactPing,
+		ExactEditorStatus,
 		ExactGameThreadPing,
 		ExactDebugResume,
 		ExactModalStatus,

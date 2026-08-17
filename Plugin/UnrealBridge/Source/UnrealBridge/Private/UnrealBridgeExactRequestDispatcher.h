@@ -7,13 +7,14 @@ class FJsonObject;
 struct FUnrealBridgeEndpointIdentity;
 
 /**
- * exact wire 可进入的六种命令；未知别名不映射为 exec。
- * Six commands admitted by the exact wire; unknown aliases never map to exec.
+ * exact wire 可进入的七种命令；未知别名不映射为 exec。
+ * Seven commands admitted by the exact wire; unknown aliases never map to exec.
  */
 enum class EUnrealBridgeExactCommand : uint8
 {
 	Exec,
 	Ping,
+	EditorStatus,
 	GameThreadPing,
 	DebugResume,
 	ModalStatus,

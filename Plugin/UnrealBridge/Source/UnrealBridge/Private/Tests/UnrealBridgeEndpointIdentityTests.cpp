@@ -55,6 +55,7 @@ bool FUnrealBridgeEndpointIdentityPreconditionTest::RunTest(const FString& Param
 	const FCommandCase CommandCases[] = {
 		{UnrealBridgeProtocol::ExactExec, EUnrealBridgeExactCommand::Exec},
 		{UnrealBridgeProtocol::ExactPing, EUnrealBridgeExactCommand::Ping},
+		{UnrealBridgeProtocol::ExactEditorStatus, EUnrealBridgeExactCommand::EditorStatus},
 		{UnrealBridgeProtocol::ExactGameThreadPing, EUnrealBridgeExactCommand::GameThreadPing},
 		{UnrealBridgeProtocol::ExactDebugResume, EUnrealBridgeExactCommand::DebugResume},
 		{UnrealBridgeProtocol::ExactModalStatus, EUnrealBridgeExactCommand::ModalStatus},

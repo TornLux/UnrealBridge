@@ -117,7 +117,7 @@ class EndpointIdentityTests(unittest.TestCase):
         self.assertEqual(wire["expected"]["project_path"], ep.project_path)
 
     def test_every_command_uses_exact_wire_form(self):
-        for command in ("ping", "gamethread_ping", "debug_resume",
+        for command in ("ping", "editor_status", "gamethread_ping", "debug_resume",
                         "modal_status", "modal_action"):
             with self.subTest(command=command):
                 wire = bridge._build_exact_payload({"command": command}, identity())
