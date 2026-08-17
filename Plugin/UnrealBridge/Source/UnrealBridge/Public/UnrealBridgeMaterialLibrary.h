@@ -4,22 +4,35 @@
 #include "Kismet/BlueprintFunctionLibrary.h"
 #include "UnrealBridgeMaterialLibrary.generated.h"
 
-/** A material parameter with its value. */
+/** 材质实例上一个具有完整身份和值的参数覆盖。 / A parameter override on a material instance with its complete identity and value. */
 USTRUCT(BlueprintType)
 struct FBridgeMaterialParam
 {
 	GENERATED_BODY()
 
+	/** 参数名称。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Name;
 
-	/** "Scalar", "Vector", "Texture", "DoubleVector", etc. */
+	/** 参数类型："Scalar"、"Vector"、"Texture"、"DoubleVector" 等。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString ParamType;
 
-	/** String representation of the value */
+	/** 参数值的字符串表示。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Value;
+
+	/** 参数关联："Global"、"LayerParameter" 或 "BlendParameter"。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Association = TEXT("Global");
+
+	/** 关联槽索引；Global 固定为 -1，LayerParameter/BlendParameter 为非负槽索引。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	int32 Index = -1;
+
+	/** 此条目是否为当前实例直接提供的覆盖。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bOverride = true;
 };
 
 /** Overview of a Material Instance. */
@@ -892,45 +905,92 @@ struct FBridgeMaterialGraphOpResult
 	int32 FailedAtIndex = -1;
 };
 
-/** One MI parameter override (for set_mi_params / MPC setter). */
+/** 一个材质实例参数覆盖请求；省略选择器时精确指向 Global/-1。 / One MI parameter override request; an omitted selector targets exactly Global/-1. */
 USTRUCT(BlueprintType)
 struct FBridgeMIParamSet
 {
 	GENERATED_BODY()
 
+	/** 参数名称。 */
 	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Name;
 
-	/** "Scalar" / "Vector" / "Texture" / "StaticSwitch" / "Collection" (MPC scalar auto-detect). */
+	/** 参数类型：MI 调用接受 "Scalar"、"Vector"、"Texture"、"StaticSwitch"；MPC 调用仅接受 "Scalar" 或 "Vector"。 */
 	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Type;
 
 	/**
-	 * ImportText-format value:
-	 *   Scalar        "0.5"
-	 *   Vector        "(R=1,G=0,B=0,A=1)"
-	 *   Texture       "/Game/Textures/T_Base.T_Base"
-	 *   StaticSwitch  "true" / "false"
+	 * ImportText 格式参数值：Scalar 为 "0.5"，Vector 为 "(R=1,G=0,B=0,A=1)"，
+	 * Texture 为完整资产路径，StaticSwitch 为 "true" 或 "false"。
 	 */
 	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
 	FString Value;
+
+	/** 精确关联选择器；空字符串兼容为 "Global"。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	FString Association = TEXT("Global");
+
+	/** 精确关联槽索引；Global 必须为 -1，LayerParameter/BlendParameter 必须为非负值。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	int32 Index = -1;
 };
 
-/** Result of set_mi_params. */
+/** 单个 set_mi_params 请求的结构化结果。 / Structured outcome for one set_mi_params request. */
+USTRUCT(BlueprintType)
+struct FBridgeMIParamOutcome
+{
+	GENERATED_BODY()
+
+	/** 请求的参数名称。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Name;
+
+	/** 请求的参数类型。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Type;
+
+	/** 规范化后的请求关联；非法值保持原文。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Association;
+
+	/** 请求的精确槽索引。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	int32 Index = -1;
+
+	/** 此请求是否在本次调用中实际写入；"Unchanged" 为 false。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bApplied = false;
+
+	/** 稳定状态："Applied"、"Unchanged"、"Duplicate"、"NotFound"、"InvalidSelector"、"InvalidValue"、"InvalidType"、"NotApplied" 或 "Error"。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Status;
+
+	/** 失败原因；成功时为空。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Error;
+};
+
+/** set_mi_params 的批处理结果。 / Batch result of set_mi_params. */
 USTRUCT(BlueprintType)
 struct FBridgeMIParamResult
 {
 	GENERATED_BODY()
 
+	/** 整批验证成功时为 true；全部为 Unchanged 的无操作批次也成功。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bSuccess = false;
 
+	/** 本次实际写入的请求数量；Unchanged 和验证失败的原子批次不计入。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 Applied = 0;
 
-	/** Per-failed-param diagnostic messages. */
+	/** 兼容旧客户端的失败诊断文本。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> Skipped;
+
+	/** 按输入顺序返回的结构化结果；MI 批处理始终与输入等长。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	TArray<FBridgeMIParamOutcome> Outcomes;
 };
 
 /** Metadata for an HLSL snippet shipped in BridgeSnippets.ush (M2.5). */
@@ -1008,8 +1068,11 @@ class UNREALBRIDGE_API UUnrealBridgeMaterialLibrary : public UBlueprintFunctionL
 public:
 
 	/**
-	 * Get all parameter overrides on a Material Instance.
-	 * Returns scalar, vector, texture, and double vector parameters.
+	 * 获取材质实例上显式设置的全部参数覆盖。
+	 * Get every explicitly set parameter override on a Material Instance.
+	 *
+	 * 返回 Scalar、Vector、DoubleVector、Texture、RuntimeVirtualTexture 与 StaticSwitch 参数。
+	 * Returns Scalar, Vector, DoubleVector, Texture, RuntimeVirtualTexture, and StaticSwitch parameters.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMaterialInstanceInfo GetMaterialInstanceParameters(const FString& MaterialPath);
@@ -1462,10 +1525,10 @@ public:
 	static FBridgeShaderSnippet GetSharedSnippet(const FString& Name);
 
 	/**
-	 * M6-1: Write a batch of parameter overrides onto a Material Instance (or MPC).
-	 * Single dispatch covers scalar / vector / texture / static-switch by Type string.
-	 * Each entry is independent — a failed param doesn't abort the rest; failures are
-	 * reported in the Skipped array with reason text.
+	 * M6-1：以完整的 Name/Association/Index 身份原子写入材质实例参数批次。
+	 * M6-1: Atomically write a Material Instance batch using complete Name/Association/Index identity.
+	 * 整批在单个事务和任何变更前完成验证；重复的类型化完整身份会拒绝整批。相同值返回 Unchanged，且不会创建事务、通知或脏标记。
+	 * The whole batch is validated before one transaction and any mutation; duplicate typed complete identities reject the batch. Equal values return Unchanged without a transaction, notification, or dirty mark.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMIParamResult SetMIParams(
@@ -1473,9 +1536,10 @@ public:
 		const TArray<FBridgeMIParamSet>& Params);
 
 	/**
-	 * M6-2: Set MI parameters + render in one atomic call. The inverse of the usual
-	 * "tweak, then render, then tweak again" round-trip. Saves the MI after applying
-	 * so changes persist; use a disposable MI if you want non-destructive sweep.
+	 * M6-2：先以精确选择器原子设置 MI 参数，成功后才渲染预览；设置失败时返回 false 且不渲染旧状态。
+	 * M6-2: Atomically set exact MI selectors and render only after success; a failed set returns false without rendering stale state.
+	 * 成功写入仅标记包为脏，不保存也不等待着色器编译。
+	 * A successful write only dirties the package; it does not save or wait for shader compilation.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static bool SetMIAndPreview(
@@ -1526,11 +1590,10 @@ public:
 		const TArray<FBridgeMIParamSet>& Params);
 
 	/**
-	 * M6-5: Diff two MIs' override values. Text report formatted like:
-	 *   + Scalar Roughness = 0.35     (set in B, absent in A)
-	 *   - Vector Tint = (R=1,...)      (set in A, absent in B)
-	 *   ~ Scalar Metallic: 0.5 -> 0.8  (different value)
-	 * Parent chains are not walked — only each MI's own overrides are compared.
+	 * M6-5：按 Type/Name/Association/Index 完整身份比较两个 MI 自身的 Scalar、Vector、Texture 覆盖值。
+	 * M6-5: Compare two MIs' own Scalar, Vector, and Texture overrides by complete Type/Name/Association/Index identity.
+	 * 文本格式示例：`~ Scalar Metallic [LayerParameter,1]: 0.5 -> 0.8`；不遍历父链。
+	 * Example: `~ Scalar Metallic [LayerParameter,1]: 0.5 -> 0.8`; parent chains are not walked.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FString DiffMIParams(

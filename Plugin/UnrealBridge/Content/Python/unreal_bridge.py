@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-08-16T23:54:12+00:00'
+_GENERATED_AT = '2026-08-18T04:19:33+00:00'
 _UE_VERSION = '5.7.4-51494982+++UE5+Release-5.7'
 
 class Anim:
