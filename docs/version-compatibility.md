@@ -22,12 +22,18 @@ fail with "no such function on UnrealBridgeXxxLibrary".
 |---|---|
 | `UnrealBridgeChooserLibrary` | `OutputObjectColumn.h` doesn't exist in 5.4 (added with the Chooser plugin's output-column rewrite); other Chooser internals shifted heavily 5.4 → 5.7 |
 | `UnrealBridgePoseSearchLibrary` | Core API rewritten: `UPoseSearchSchema::GetRoledSkeletons`, `UPoseSearchDatabase::GetNumAnimationAssets` / `GetDatabaseAnimationAsset`, and `FPoseSearchDatabaseAnimationAsset` are all 5.5+ additions |
-| `UnrealBridgeMaterialLibrary` | `EMaterialDomain::MD_*` enum values differ in scope; `MATUSAGE_Voxels` / `MATUSAGE_StaticMesh` don't exist in 5.4 |
 | `UnrealBridgeNavigationLibrary` | `ARecastNavMesh::GetDebugGeometryForTile` 2nd arg type changed (`int32` → `FNavTileRef`) and the "default tile = aggregate all" sentinel doesn't exist on 5.4 |
 
 ### Whole-library safe-stub gates
 
-`UnrealBridgeMaterialLibrary` keeps its reflected surface on every supported engine, including the material-instance layer-stack snapshot/full replacement/copy API. The real implementation remains gated to UE 5.7+; UE 5.3-5.6 compile generated safe stubs that log the version requirement and return empty result structs. This preserves reflection compatibility without widening the material implementation's engine-version scope.
+`UnrealBridgeMaterialLibrary` keeps its reflected surface on every supported
+engine, including the material-instance layer-stack snapshot/full
+replacement/copy API and `RefreshTextureResource()`. The real implementation
+remains gated to UE 5.7+; UE 5.3-5.6 compile generated safe stubs that log the
+version requirement and return safe empty result structs. In particular, the
+texture-refresh stub returns `bSuccess=false` with an explanatory error. This
+preserves reflection compatibility without widening the material
+implementation's engine-version scope.
 
 `UnrealBridgeStateTreeLibrary` keeps its reflected class and kwargs wrapper on
 all supported engines, but its real implementation is gated by

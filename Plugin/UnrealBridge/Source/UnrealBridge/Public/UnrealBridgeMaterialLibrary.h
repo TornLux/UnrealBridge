@@ -1058,6 +1058,32 @@ struct FBridgeAddExpressionResult
 };
 
 /**
+ * 贴图内存资源刷新结果；描述路径解析、刷新执行与调用前的异步编译状态。
+ * Texture in-memory resource refresh result; reports path resolution, execution, and pre-call async compilation state.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeTextureRefreshResult
+{
+	GENERATED_BODY()
+
+	/** 路径是否解析到一个对象；非贴图对象也会为 true，并通过 Error 明确拒绝。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Texture")
+	bool bFound = false;
+
+	/** 是否已提交所请求的内存资源刷新；不表示异步编译已完成、资产已保存或缩略图已刷新。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Texture")
+	bool bSuccess = false;
+
+	/** 调用开始时该贴图是否正在异步编译。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Texture")
+	bool bWasCompiling = false;
+
+	/** 失败原因；成功时为空。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Texture")
+	FString Error;
+};
+
+/**
  * Material introspection via UnrealBridge.
  */
 UCLASS()
@@ -1534,6 +1560,23 @@ public:
 	static FBridgeMIParamResult SetMIParams(
 		const FString& MaterialInstancePath,
 		const TArray<FBridgeMIParamSet>& Params);
+
+	/**
+	 * 按路径刷新贴图的内存派生数据与渲染资源；默认使用贴图自身的普通 UpdateResource 路径。
+	 * Refresh a texture's in-memory derived/platform data and render resource by path; ordinary UpdateResource is the default.
+	 *
+	 * 强制模式会先等待该贴图已有的异步构建，再以 ForceRebuild 重建派生数据，可能长时间阻塞游戏线程。
+	 * Forced mode first waits for that texture's current async build, then requests ForceRebuild and may block the game thread for a long time.
+	 * 此操作不会调用 Modify、标脏、保存、修改配置，也不承诺刷新内容浏览器缩略图。
+	 * This operation does not call Modify, dirty or save a package, change configuration, or claim Content Browser thumbnail refresh.
+	 *
+	 * @param TexturePath  要刷新的贴图对象路径；无效路径和非贴图对象会明确失败。
+	 * @param bForceDerivedDataRebuild  为 true 时等待已有异步构建并强制重建派生数据；默认为普通刷新。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Texture")
+	static FBridgeTextureRefreshResult RefreshTextureResource(
+		const FString& TexturePath,
+		bool bForceDerivedDataRebuild = false);
 
 	/**
 	 * M6-2：先以精确选择器原子设置 MI 参数，成功后才渲染预览；设置失败时返回 false 且不渲染旧状态。

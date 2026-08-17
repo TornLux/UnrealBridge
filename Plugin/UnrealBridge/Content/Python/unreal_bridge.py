@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-08-18T04:19:33+00:00'
+_GENERATED_AT = '2026-08-18T06:50:21+00:00'
 _UE_VERSION = '5.7.4-51494982+++UE5+Release-5.7'
 
 class Anim:
@@ -4564,6 +4564,11 @@ class Material:
     def preview_material_complexity(*, material_path, mesh, lighting, resolution, camera_yaw_deg, camera_pitch_deg, camera_distance, out_png_path):
         """X.preview_material_complexity(material_path, mesh, lighting, resolution, camera_yaw_deg, camera_pitch_deg, camera_distance, out_png_path) -> bool"""
         return unreal.UnrealBridgeMaterialLibrary.preview_material_complexity(material_path, mesh, lighting, resolution, camera_yaw_deg, camera_pitch_deg, camera_distance, out_png_path)
+
+    @staticmethod
+    def refresh_texture_resource(*, texture_path, force_derived_data_rebuild=False):
+        """X.refresh_texture_resource(texture_path, force_derived_data_rebuild=False) -> BridgeTextureRefreshResult"""
+        return unreal.UnrealBridgeMaterialLibrary.refresh_texture_resource(texture_path, force_derived_data_rebuild)
 
     @staticmethod
     def remove_post_process_material(*, volume_actor, material_path):

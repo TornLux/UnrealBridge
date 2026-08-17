@@ -10,6 +10,36 @@ Path conventions:
 
 ---
 
+## refresh_texture_resource(texture_path, force_derived_data_rebuild=False) -> FBridgeTextureRefreshResult
+
+Refresh a texture's in-memory derived/platform data and render resource after a caller changes texture properties. Ordinary refresh is the default and calls the texture's owning `UpdateResource()` path. Set `force_derived_data_rebuild=True` only when cached derived data must be discarded: forced mode waits for any existing async build on that texture, then calls `UpdateResourceWithParams(ForceRebuild)`.
+
+```python
+result = unreal.UnrealBridgeMaterialLibrary.refresh_texture_resource(
+    "/Game/Textures/T_Base.T_Base",
+    False,
+)
+if not result.success:
+    raise RuntimeError(result.error)
+```
+
+### FBridgeTextureRefreshResult fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `found` | bool | The path resolved to an object. A non-texture object is found but rejected with `success=False` and an error |
+| `success` | bool | The requested in-memory resource refresh was submitted; it does not mean asynchronous compilation has completed |
+| `was_compiling` | bool | The texture was in the async texture compilation manager when the call began |
+| `error` | str | Clear failure reason; empty on success |
+
+Important behavior:
+- Forced rebuild can block the game thread for a significant time while an in-flight build completes. It does not poll or wait for unrelated assets.
+- This operation does not call `Modify`, mark a package dirty, save an asset, or change texture configuration.
+- It does not claim Content Browser thumbnail refresh. Callers that mutate persistent texture properties remain responsible for the normal editor property transaction and explicit save.
+- The real implementation is available on UE 5.7+; pre-5.7 builds keep a reflected safe stub that logs and returns an explanatory error.
+
+---
+
 ## get_material_instance_parameters(material_path) -> FBridgeMaterialInstanceInfo
 
 Get parameter **overrides** stored directly on a Material Instance (not inherited defaults). Use `get_material_info` if you need the full effective parameter set including master defaults.

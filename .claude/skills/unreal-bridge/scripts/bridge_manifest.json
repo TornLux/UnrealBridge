@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-08-18T04:19:33+00:00",
+  "generated_at": "2026-08-18T06:50:21+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -17197,6 +17197,24 @@
           ],
           "returns": "bool"
         },
+        "refresh_texture_resource": {
+          "doc": "X.refresh_texture_resource(texture_path, force_derived_data_rebuild=False) -> BridgeTextureRefreshResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "texture_path",
+              "type": ""
+            },
+            {
+              "default": "False",
+              "has_default": true,
+              "name": "force_derived_data_rebuild",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeTextureRefreshResult"
+        },
         "remove_post_process_material": {
           "doc": "X.remove_post_process_material(volume_actor, material_path) -> bool",
           "params": [
@@ -29292,7 +29310,7 @@
       }
     }
   },
-  "project_path": "D:/UB/mprhost/MaterialParameterReviewHost.uproject",
+  "project_path": "D:/UB/trrhost/TextureRefreshReviewHost.uproject",
   "structs": {
     "BridgeAbilityCooldownInfo": [
       "ability_class_name",
@@ -31948,6 +31966,12 @@
       "resource_size_bytes",
       "srgb",
       "width"
+    ],
+    "BridgeTextureRefreshResult": [
+      "error",
+      "found",
+      "success",
+      "was_compiling"
     ],
     "BridgeTextureStreamingRow": [
       "force_resident",

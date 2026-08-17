@@ -231,6 +231,14 @@ FBridgeMIParamResult UUnrealBridgeMaterialLibrary::SetMIParams(const FString& Ma
 	return FBridgeMIParamResult{};
 }
 
+FBridgeTextureRefreshResult UUnrealBridgeMaterialLibrary::RefreshTextureResource(const FString& TexturePath, bool bForceDerivedDataRebuild)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::RefreshTextureResource requires UE 5.7+ — call ignored on this engine version"));
+	FBridgeTextureRefreshResult Result;
+	Result.Error = TEXT("Texture resource refresh requires Unreal Engine 5.7+");
+	return Result;
+}
+
 bool UUnrealBridgeMaterialLibrary::SetMIAndPreview(const FString& MaterialInstancePath, const TArray<FBridgeMIParamSet>& Params, const FString& Mesh, const FString& Lighting, int32 Resolution, float CameraYawDeg, float CameraPitchDeg, float CameraDistance, const FString& OutPngPath)
 {
 	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::SetMIAndPreview requires UE 5.7+ — call ignored on this engine version"));
