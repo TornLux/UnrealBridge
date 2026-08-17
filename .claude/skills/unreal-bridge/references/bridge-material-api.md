@@ -2,7 +2,7 @@
 
 Module: `unreal.UnrealBridgeMaterialLibrary`
 
-Covers Material / Material Instance / Material Parameter Collection / Material Function introspection. All calls are read-only in this milestone (M1); writes land in M2.
+Covers Material / Material Instance / Material Parameter Collection / Material Function introspection and editor authoring. Write operations are transactional, dirty the affected package, and save only when their individual contract explicitly says so.
 
 Path conventions:
 - Full object paths (`/Game/Foo/MyMat.MyMat`) or package paths (`/Game/Foo/MyMat`) both work — `LoadObject<UMaterialInterface>` resolves either.
@@ -38,6 +38,84 @@ for p in info.parameters:
 | `name` | str | Parameter name |
 | `param_type` | str | "Scalar" / "Vector" / "Texture" / "DoubleVector" / "RuntimeVirtualTexture" |
 | `value` | str | String representation of the value |
+
+---
+
+## get_material_instance_layer_stack(material_instance_path) -> FBridgeMaterialLayerStack
+
+Read the resolved Material Layers stack of a `UMaterialInstanceConstant`. This is distinct from `set_material_attribute_layers`, which edits a `MaterialAttributeLayers` expression on a **master material graph**.
+
+```python
+stack = unreal.UnrealBridgeMaterialLibrary.get_material_instance_layer_stack(
+    '/Game/Materials/MI_Surface')
+if not stack.found:
+    raise RuntimeError(stack.error)
+if not stack.has_layers:
+    print('valid material instance, but no resolved layer stack')
+for entry in stack.layers:
+    print(entry.index, entry.name, entry.guid, entry.link_state,
+          entry.enabled, entry.restrict_to_layer_relatives,
+          entry.restrict_to_blend_relatives,
+          entry.layer_asset_path, entry.blend_asset_path)
+```
+
+### FBridgeMaterialLayerEntry fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `index` | int | Contiguous zero-based slot order. Slot 0 is the background |
+| `name` | str | Display name shown in the Layers panel |
+| `guid` | FGuid | Stable layer identity. The background uses the engine `BackgroundGuid`; all GUIDs are valid and unique |
+| `link_state` | str | `"Uninitialized"`, `"LinkedToParent"`, `"UnlinkedFromParent"`, or `"NotFromParent"` |
+| `enabled` | bool | Whether the layer participates in composition |
+| `restrict_to_layer_relatives` | bool | The engine `RestrictToLayerRelatives[index]` flag, preserved without adding bridge-specific restriction semantics |
+| `restrict_to_blend_relatives` | bool | The engine `RestrictToBlendRelatives[index - 1]` flag for non-background slots. Slot 0 has no preceding blend and is always false |
+| `layer_asset_path` | str | Material Layer function/instance path, or empty for a null slot |
+| `blend_asset_path` | str | Blend for this slot (`index - 1` in the engine blend array), or empty. Always empty for slot 0 |
+
+`FBridgeMaterialLayerStack` has `found`, `has_layers`, `layers`, and `error`. A valid MIC with no stack returns `found=True`, `has_layers=False`, an empty list, and no error. A malformed resolved stack returns a diagnostic rather than indexing inconsistent engine arrays.
+
+---
+
+## set_material_instance_layer_stack(material_instance_path, layers) -> FBridgeMaterialLayerStackOpResult
+
+Replace the complete resolved stack. The call constructs `FMaterialLayersFunctions` through `AddDefaultBackgroundLayer` / `AppendBlendedLayer`, then restores the requested GUIDs, link states, and both EditorOnly relatives-restriction arrays at their exact engine indices. The bridge preserves those flags without inventing additional restriction behavior. A `LinkedToParent` slot must match the parent slot's enabled and restriction values; use `UnlinkedFromParent` for local changes. Duplicate layer or blend assets are valid because slot identity is the GUID/index, not the asset pointer. Empty layer/blend paths represent null optional assets. Passing an empty `layers` list explicitly creates a valid no-stack override and records every omitted non-background parent GUID in `DeletedParentLayerGuids`, preventing later parent resolution from merging those layers back in.
+
+Before `Modify()`, the call validates:
+
+- the target is a `UMaterialInstanceConstant` with a stable layered root and a parent on that root;
+- all source, parent, current, and constructed `FMaterialLayersFunctions` parallel-array counts and GUID invariants are valid;
+- indices are exactly `0..N-1`, GUIDs are valid/unique, and slot 0 uses the engine background GUID;
+- slot 0 has neither a blend nor a preceding-blend restriction value; non-empty paths load as the correct layer/blend function or function-instance subclasses;
+- link-state text is recognized;
+- `LinkedToParent` slots exactly match the parent slot with that GUID, including enabled and relatives-restriction values; local changes require `UnlinkedFromParent`;
+- `UnlinkedFromParent` GUIDs exist in the parent, while `NotFromParent` GUIDs do not.
+
+All validation completes before mutation. A changed replacement uses one transaction, one `PreEditChange` / `PostEditChange` pair, and marks the package dirty. It does **not** save, wait for shader compilation, or poll. A valid identical replacement returns success with `changed=False` and does not dirty the asset.
+
+```python
+result = unreal.UnrealBridgeMaterialLibrary.set_material_instance_layer_stack(
+    '/Game/Materials/MI_Surface',
+    stack.layers)
+if not result.success:
+    raise RuntimeError(result.error)
+print(result.changed, result.layers_applied)
+```
+
+### FBridgeMaterialLayerStackOpResult fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | Validation and invocation completed |
+| `changed` | bool | The destination stack actually changed |
+| `layers_applied` | int | Number of validated slots on success |
+| `error` | str | Failure diagnostic; empty on success |
+
+---
+
+## copy_material_instance_layer_stack(source_material_instance_path, destination_material_instance_path) -> FBridgeMaterialLayerStackOpResult
+
+Convenience copy for two MICs with the exact same ultimate `UMaterial` root. It rejects different roots before mutation, snapshots the source, and delegates to `set_material_instance_layer_stack`; therefore copy has the same invariant validation, transaction, dirtying, no-save, and no-poll behavior.
 
 ---
 

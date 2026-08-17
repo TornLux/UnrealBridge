@@ -76,6 +76,8 @@
 #include "FileHelpers.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
+#include "Materials/MaterialFunctionMaterialLayer.h"
+#include "Materials/MaterialFunctionMaterialLayerBlend.h"
 #include "Materials/MaterialExpressionMaterialAttributeLayers.h"
 #include "Materials/MaterialLayersFunctions.h"
 #include "Materials/MaterialParameterCollection.h"
@@ -220,6 +222,170 @@ namespace BridgeMaterialImpl
 			default:                              return FString::Printf(TEXT("Usage%d"), (int32)Usage);
 		}
 	}
+
+	// 图层栈必须保持运行时数组与 EditorOnly 并行数组同长，否则引擎验证会触发 check。
+	// Layer stacks must keep runtime and EditorOnly parallel arrays aligned or engine validation will check-fail.
+	static bool ValidateLayerStackArrays(const FMaterialLayersFunctions& Stack, FString& OutError)
+	{
+		const int32 LayerCount = Stack.Layers.Num();
+		const int32 ExpectedBlendCount = FMath::Max(0, LayerCount - 1);
+		if (Stack.Blends.Num() != ExpectedBlendCount
+			|| Stack.EditorOnly.LayerStates.Num() != LayerCount
+			|| Stack.EditorOnly.LayerNames.Num() != LayerCount
+			|| Stack.EditorOnly.RestrictToLayerRelatives.Num() != LayerCount
+			|| Stack.EditorOnly.RestrictToBlendRelatives.Num() != ExpectedBlendCount
+			|| Stack.EditorOnly.LayerGuids.Num() != LayerCount
+			|| Stack.EditorOnly.LayerLinkStates.Num() != LayerCount)
+		{
+			OutError = FString::Printf(
+				TEXT("Layer stack parallel arrays are inconsistent for %d layers."), LayerCount);
+			return false;
+		}
+
+		TSet<FGuid> SeenGuids;
+		for (int32 Index = 0; Index < LayerCount; ++Index)
+		{
+			const FGuid Guid = Stack.EditorOnly.LayerGuids[Index];
+			if (!Guid.IsValid() || SeenGuids.Contains(Guid)
+				|| (Index == 0 && Guid != FMaterialLayersFunctions::BackgroundGuid))
+			{
+				OutError = FString::Printf(
+					TEXT("Layer stack has an invalid, duplicate, or non-background GUID at index %d."),
+					Index);
+				return false;
+			}
+			SeenGuids.Add(Guid);
+		}
+		TSet<FGuid> SeenDeletedGuids;
+		for (const FGuid DeletedGuid : Stack.EditorOnly.DeletedParentLayerGuids)
+		{
+			if (!DeletedGuid.IsValid() || SeenGuids.Contains(DeletedGuid)
+				|| SeenDeletedGuids.Contains(DeletedGuid))
+			{
+				OutError = TEXT("Layer stack has an invalid, active, or duplicate deleted-parent GUID.");
+				return false;
+			}
+			SeenDeletedGuids.Add(DeletedGuid);
+		}
+		return true;
+	}
+
+	static FString LayerLinkStateToString(EMaterialLayerLinkState State)
+	{
+		switch (State)
+		{
+			case EMaterialLayerLinkState::Uninitialized:      return TEXT("Uninitialized");
+			case EMaterialLayerLinkState::LinkedToParent:     return TEXT("LinkedToParent");
+			case EMaterialLayerLinkState::UnlinkedFromParent: return TEXT("UnlinkedFromParent");
+			case EMaterialLayerLinkState::NotFromParent:      return TEXT("NotFromParent");
+			default:                                          return TEXT("Invalid");
+		}
+	}
+
+	static bool ParseLayerLinkState(const FString& Value, EMaterialLayerLinkState& OutState)
+	{
+		if (Value == TEXT("Uninitialized"))
+		{
+			OutState = EMaterialLayerLinkState::Uninitialized;
+			return true;
+		}
+		if (Value == TEXT("LinkedToParent"))
+		{
+			OutState = EMaterialLayerLinkState::LinkedToParent;
+			return true;
+		}
+		if (Value == TEXT("UnlinkedFromParent"))
+		{
+			OutState = EMaterialLayerLinkState::UnlinkedFromParent;
+			return true;
+		}
+		if (Value == TEXT("NotFromParent"))
+		{
+			OutState = EMaterialLayerLinkState::NotFromParent;
+			return true;
+		}
+		return false;
+	}
+
+	template <typename TObjectType>
+	static TObjectType* LoadBridgeObject(const FString& ObjectPath)
+	{
+		if (ObjectPath.IsEmpty() || ObjectPath == TEXT("None"))
+		{
+			return nullptr;
+		}
+		if (TObjectType* Existing = FindObject<TObjectType>(nullptr, *ObjectPath))
+		{
+			return Existing;
+		}
+		return LoadObject<TObjectType>(nullptr, *ObjectPath);
+	}
+
+	// 空本地覆盖会让公开解析入口返回 false；读取本地静态参数才能保留其删除父层 GUID 元数据。
+	// An empty local override makes the resolved getter return false; local static parameters retain its deleted-parent GUID metadata.
+	static bool GetCompleteMaterialLayers(
+		const UMaterialInstanceConstant* MIC,
+		FMaterialLayersFunctions& OutStack)
+	{
+		if (MIC->GetMaterialLayers(OutStack))
+		{
+			return true;
+		}
+		const FStaticParameterSet LocalStaticParameters = MIC->GetStaticParameters();
+		if (!LocalStaticParameters.bHasMaterialLayers)
+		{
+			return false;
+		}
+		// FStaticParameterSet::GetMaterialLayers 未从 Engine DLL 导出；从公开运行时和 EditorOnly 数据重建等价快照。
+		// FStaticParameterSet::GetMaterialLayers is not exported from the Engine DLL; rebuild the equivalent snapshot from its public runtime and EditorOnly data.
+		OutStack.GetRuntime() = LocalStaticParameters.MaterialLayers;
+		OutStack.EditorOnly = LocalStaticParameters.EditorOnly.MaterialLayers;
+		return true;
+	}
+
+	static FBridgeMaterialLayerEntry MakeLayerEntry(const FMaterialLayersFunctions& Stack, int32 Index)
+	{
+		FBridgeMaterialLayerEntry Entry;
+		Entry.Index = Index;
+		Entry.Name = Stack.EditorOnly.LayerNames[Index].ToString();
+		Entry.Guid = Stack.EditorOnly.LayerGuids[Index];
+		Entry.LinkState = LayerLinkStateToString(Stack.EditorOnly.LayerLinkStates[Index]);
+		Entry.bEnabled = Stack.EditorOnly.LayerStates[Index];
+		Entry.bRestrictToLayerRelatives = Stack.EditorOnly.RestrictToLayerRelatives[Index];
+		Entry.bRestrictToBlendRelatives = Index > 0
+			? Stack.EditorOnly.RestrictToBlendRelatives[Index - 1]
+			: false;
+		Entry.LayerAssetPath = Stack.Layers[Index] ? Stack.Layers[Index]->GetPathName() : FString();
+		Entry.BlendAssetPath = Index > 0 && Stack.Blends[Index - 1]
+			? Stack.Blends[Index - 1]->GetPathName()
+			: FString();
+		return Entry;
+	}
+
+	static bool AreLayerStacksEqual(
+		const FMaterialLayersFunctions& A,
+		const FMaterialLayersFunctions& B)
+	{
+		if (A.Layers != B.Layers || A.Blends != B.Blends
+			|| A.EditorOnly.LayerStates != B.EditorOnly.LayerStates
+			|| A.EditorOnly.RestrictToLayerRelatives != B.EditorOnly.RestrictToLayerRelatives
+			|| A.EditorOnly.RestrictToBlendRelatives != B.EditorOnly.RestrictToBlendRelatives
+			|| A.EditorOnly.LayerGuids != B.EditorOnly.LayerGuids
+			|| A.EditorOnly.LayerLinkStates != B.EditorOnly.LayerLinkStates
+			|| A.EditorOnly.DeletedParentLayerGuids != B.EditorOnly.DeletedParentLayerGuids
+			|| A.EditorOnly.LayerNames.Num() != B.EditorOnly.LayerNames.Num())
+		{
+			return false;
+		}
+		for (int32 Index = 0; Index < A.EditorOnly.LayerNames.Num(); ++Index)
+		{
+			if (!A.EditorOnly.LayerNames[Index].EqualTo(B.EditorOnly.LayerNames[Index]))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
 }
 
 FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstanceParameters(
@@ -289,6 +455,341 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	}
 
 	return Result;
+}
+
+FBridgeMaterialLayerStack UUnrealBridgeMaterialLibrary::GetMaterialInstanceLayerStack(
+	const FString& MaterialInstancePath)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialLayerStack Out;
+	UMaterialInstanceConstant* MIC = LoadBridgeObject<UMaterialInstanceConstant>(MaterialInstancePath);
+	if (!MIC)
+	{
+		Out.Error = FString::Printf(
+			TEXT("MaterialInstanceConstant not loadable: %s"), *MaterialInstancePath);
+		return Out;
+	}
+	Out.bFound = true;
+
+	FMaterialLayersFunctions Stack;
+	const bool bResolvedLayers = GetCompleteMaterialLayers(MIC, Stack);
+	if (!ValidateLayerStackArrays(Stack, Out.Error))
+	{
+		return Out;
+	}
+	if (!bResolvedLayers || Stack.Layers.Num() == 0)
+	{
+		return Out;
+	}
+	Out.bHasLayers = true;
+
+	TSet<FGuid> SeenGuids;
+	for (int32 Index = 0; Index < Stack.Layers.Num(); ++Index)
+	{
+		const FGuid Guid = Stack.EditorOnly.LayerGuids[Index];
+		if (!Guid.IsValid() || SeenGuids.Contains(Guid))
+		{
+			Out.Layers.Reset();
+			Out.Error = FString::Printf(
+				TEXT("Resolved layer stack has an invalid or duplicate GUID at index %d."), Index);
+			return Out;
+		}
+		SeenGuids.Add(Guid);
+		Out.Layers.Add(MakeLayerEntry(Stack, Index));
+	}
+	return Out;
+}
+
+FBridgeMaterialLayerStackOpResult UUnrealBridgeMaterialLibrary::SetMaterialInstanceLayerStack(
+	const FString& MaterialInstancePath,
+	const TArray<FBridgeMaterialLayerEntry>& Layers)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialLayerStackOpResult Out;
+	UMaterialInstanceConstant* MIC = LoadBridgeObject<UMaterialInstanceConstant>(MaterialInstancePath);
+	if (!MIC)
+	{
+		Out.Error = FString::Printf(
+			TEXT("MaterialInstanceConstant not loadable: %s"), *MaterialInstancePath);
+		return Out;
+	}
+
+	UMaterial* RootMaterial = MIC->GetMaterial();
+	if (!RootMaterial || !MIC->Parent || MIC->Parent->GetMaterial() != RootMaterial)
+	{
+		Out.Error = TEXT("The target has no stable ultimate root material.");
+		return Out;
+	}
+
+	FMaterialLayersFunctions RootStack;
+	if (!RootMaterial->GetMaterialLayers(RootStack) || RootStack.Layers.Num() == 0)
+	{
+		Out.Error = FString::Printf(
+			TEXT("Root material '%s' does not define a material-layer stack."),
+			*RootMaterial->GetPathName());
+		return Out;
+	}
+	if (!ValidateLayerStackArrays(RootStack, Out.Error))
+	{
+		Out.Error = FString::Printf(TEXT("Root material layer stack is invalid: %s"), *Out.Error);
+		return Out;
+	}
+
+	FMaterialLayersFunctions ParentStack;
+	if (!MIC->Parent->GetMaterialLayers(ParentStack) || ParentStack.Layers.Num() == 0)
+	{
+		Out.Error = TEXT("The target parent does not resolve a material-layer stack.");
+		return Out;
+	}
+	if (!ValidateLayerStackArrays(ParentStack, Out.Error))
+	{
+		Out.Error = FString::Printf(TEXT("Parent material layer stack is invalid: %s"), *Out.Error);
+		return Out;
+	}
+
+	FMaterialLayersFunctions NewStack;
+	NewStack.Empty();
+	if (Layers.Num() > 0)
+	{
+		NewStack.AddDefaultBackgroundLayer();
+		for (int32 Index = 1; Index < Layers.Num(); ++Index)
+		{
+			NewStack.AppendBlendedLayer();
+		}
+	}
+
+	TSet<FGuid> SeenGuids;
+	for (int32 Index = 0; Index < Layers.Num(); ++Index)
+	{
+		const FBridgeMaterialLayerEntry& Entry = Layers[Index];
+		if (Entry.Index != Index)
+		{
+			Out.Error = FString::Printf(
+				TEXT("Layer entry %d declares Index=%d; indices must be contiguous and match array order."),
+				Index, Entry.Index);
+			return Out;
+		}
+		if (!Entry.Guid.IsValid() || SeenGuids.Contains(Entry.Guid))
+		{
+			Out.Error = FString::Printf(
+				TEXT("Layer entry %d has an invalid or duplicate GUID."), Index);
+			return Out;
+		}
+		if (Index == 0 && Entry.Guid != FMaterialLayersFunctions::BackgroundGuid)
+		{
+			Out.Error = TEXT("Layer entry 0 must use FMaterialLayersFunctions::BackgroundGuid.");
+			return Out;
+		}
+		if (Index == 0 && Entry.bRestrictToBlendRelatives)
+		{
+			Out.Error = TEXT("Background layer entry 0 has no preceding blend restriction slot.");
+			return Out;
+		}
+		SeenGuids.Add(Entry.Guid);
+
+		EMaterialLayerLinkState LinkState = EMaterialLayerLinkState::Uninitialized;
+		if (!ParseLayerLinkState(Entry.LinkState, LinkState))
+		{
+			Out.Error = FString::Printf(
+				TEXT("Layer entry %d has unsupported LinkState '%s'."), Index, *Entry.LinkState);
+			return Out;
+		}
+
+		UMaterialFunctionInterface* LayerFunction = nullptr;
+		if (!Entry.LayerAssetPath.IsEmpty() && Entry.LayerAssetPath != TEXT("None"))
+		{
+			LayerFunction = LoadBridgeObject<UMaterialFunctionInterface>(Entry.LayerAssetPath);
+			if (!LayerFunction
+				|| (!LayerFunction->IsA<UMaterialFunctionMaterialLayer>()
+					&& !LayerFunction->IsA<UMaterialFunctionMaterialLayerInstance>()))
+			{
+				Out.Error = FString::Printf(
+					TEXT("Layer entry %d path is not a material-layer function or instance: %s"),
+					Index, *Entry.LayerAssetPath);
+				return Out;
+			}
+		}
+
+		UMaterialFunctionInterface* BlendFunction = nullptr;
+		if (!Entry.BlendAssetPath.IsEmpty() && Entry.BlendAssetPath != TEXT("None"))
+		{
+			if (Index == 0)
+			{
+				Out.Error = TEXT("Background layer entry 0 must not specify a blend asset.");
+				return Out;
+			}
+			BlendFunction = LoadBridgeObject<UMaterialFunctionInterface>(Entry.BlendAssetPath);
+			if (!BlendFunction
+				|| (!BlendFunction->IsA<UMaterialFunctionMaterialLayerBlend>()
+					&& !BlendFunction->IsA<UMaterialFunctionMaterialLayerBlendInstance>()))
+			{
+				Out.Error = FString::Printf(
+					TEXT("Layer entry %d path is not a material-layer-blend function or instance: %s"),
+					Index, *Entry.BlendAssetPath);
+				return Out;
+			}
+		}
+
+		const int32 ParentIndex = ParentStack.EditorOnly.LayerGuids.Find(Entry.Guid);
+		if (LinkState == EMaterialLayerLinkState::LinkedToParent)
+		{
+			if (ParentIndex == INDEX_NONE
+				|| ParentStack.Layers[ParentIndex] != LayerFunction
+				|| ParentStack.EditorOnly.LayerStates[ParentIndex] != Entry.bEnabled
+				|| ParentStack.EditorOnly.RestrictToLayerRelatives[ParentIndex] != Entry.bRestrictToLayerRelatives
+				|| (Index > 0 && (ParentIndex == 0
+					|| ParentStack.Blends[ParentIndex - 1] != BlendFunction
+					|| ParentStack.EditorOnly.RestrictToBlendRelatives[ParentIndex - 1]
+						!= Entry.bRestrictToBlendRelatives))
+				|| !ParentStack.EditorOnly.LayerNames[ParentIndex].EqualTo(FText::FromString(Entry.Name)))
+			{
+				Out.Error = FString::Printf(
+					TEXT("Layer entry %d is LinkedToParent but does not exactly match its parent GUID slot; use UnlinkedFromParent for local changes."),
+					Index);
+				return Out;
+			}
+		}
+		else if (LinkState == EMaterialLayerLinkState::UnlinkedFromParent && ParentIndex == INDEX_NONE)
+		{
+			Out.Error = FString::Printf(
+				TEXT("Layer entry %d is UnlinkedFromParent but its GUID is absent from the parent stack."),
+				Index);
+			return Out;
+		}
+		else if (LinkState == EMaterialLayerLinkState::NotFromParent && ParentIndex != INDEX_NONE)
+		{
+			Out.Error = FString::Printf(
+				TEXT("Layer entry %d is NotFromParent but reuses a parent layer GUID."), Index);
+			return Out;
+		}
+
+		NewStack.Layers[Index] = LayerFunction;
+		if (Index > 0)
+		{
+			NewStack.Blends[Index - 1] = BlendFunction;
+		}
+		NewStack.EditorOnly.LayerNames[Index] = FText::FromString(Entry.Name);
+		NewStack.EditorOnly.LayerGuids[Index] = Entry.Guid;
+		NewStack.EditorOnly.LayerLinkStates[Index] = LinkState;
+		NewStack.EditorOnly.RestrictToLayerRelatives[Index] = Entry.bRestrictToLayerRelatives;
+		if (Index > 0)
+		{
+			NewStack.EditorOnly.RestrictToBlendRelatives[Index - 1] = Entry.bRestrictToBlendRelatives;
+		}
+		NewStack.SetBlendedLayerVisibility(Index, Entry.bEnabled);
+	}
+
+	// 完整替换省略父层时必须记录其 GUID，否则父材质下次变化会把已删除层重新合并回来。
+	// A full replacement must record omitted parent GUIDs or a later parent update can merge deleted layers back in.
+	for (int32 ParentIndex = 1; ParentIndex < ParentStack.EditorOnly.LayerGuids.Num(); ++ParentIndex)
+	{
+		const FGuid ParentGuid = ParentStack.EditorOnly.LayerGuids[ParentIndex];
+		if (!SeenGuids.Contains(ParentGuid))
+		{
+			NewStack.EditorOnly.DeletedParentLayerGuids.Add(ParentGuid);
+		}
+	}
+
+	if (!ValidateLayerStackArrays(NewStack, Out.Error))
+	{
+		return Out;
+	}
+
+	FMaterialLayersFunctions CurrentStack;
+	GetCompleteMaterialLayers(MIC, CurrentStack);
+	if (!ValidateLayerStackArrays(CurrentStack, Out.Error))
+	{
+		Out.Error = FString::Printf(TEXT("Current material layer stack is invalid: %s"), *Out.Error);
+		return Out;
+	}
+
+	Out.LayersApplied = Layers.Num();
+	if (AreLayerStacksEqual(CurrentStack, NewStack))
+	{
+		Out.bSuccess = true;
+		return Out;
+	}
+
+	const bool bPackageWasDirty = MIC->GetPackage()->IsDirty();
+	FScopedTransaction Transaction(NSLOCTEXT(
+		"UnrealBridge", "SetMaterialInstanceLayerStack",
+		"替换材质实例图层栈 / Replace Material Instance Layer Stack"));
+	MIC->Modify();
+	MIC->PreEditChange(nullptr);
+	if (!MIC->SetMaterialLayers(NewStack))
+	{
+		// 仅名称或 GUID 变化时，引擎的编译等价比较可能忽略 EditorOnly 元数据；先清空再设置可强制完整赋值。
+		// Engine compilation equality can ignore EditorOnly metadata-only name/GUID changes; clear then set to force a complete assignment.
+		FMaterialLayersFunctions EmptyStack;
+		EmptyStack.Empty();
+		MIC->SetMaterialLayers(EmptyStack);
+		MIC->SetMaterialLayers(NewStack);
+	}
+
+	FMaterialLayersFunctions AppliedStack;
+	FString AppliedError;
+	const bool bApplied = GetCompleteMaterialLayers(MIC, AppliedStack)
+		&& ValidateLayerStackArrays(AppliedStack, AppliedError)
+		&& AreLayerStacksEqual(AppliedStack, NewStack);
+	if (!bApplied)
+	{
+		// 引擎若规范化或拒绝了请求，恢复预事务快照并取消 Undo 条目，绝不报告虚假的成功。
+		// If the engine normalized or rejected the request, restore the pre-transaction snapshot and cancel the Undo entry rather than report false success.
+		MIC->SetMaterialLayers(CurrentStack);
+		MIC->PostEditChange();
+		MIC->GetPackage()->SetDirtyFlag(bPackageWasDirty);
+		Transaction.Cancel();
+		Out.LayersApplied = 0;
+		Out.Error = AppliedError.IsEmpty()
+			? TEXT("The engine did not preserve the requested material-layer stack; the previous stack was restored.")
+			: FString::Printf(TEXT("The applied material-layer stack is invalid: %s"), *AppliedError);
+		return Out;
+	}
+
+	MIC->PostEditChange();
+	MIC->MarkPackageDirty();
+
+	Out.bSuccess = true;
+	Out.bChanged = true;
+	return Out;
+}
+
+FBridgeMaterialLayerStackOpResult UUnrealBridgeMaterialLibrary::CopyMaterialInstanceLayerStack(
+	const FString& SourceMaterialInstancePath,
+	const FString& DestinationMaterialInstancePath)
+{
+	using namespace BridgeMaterialImpl;
+
+	FBridgeMaterialLayerStackOpResult Out;
+	UMaterialInstanceConstant* Source = LoadBridgeObject<UMaterialInstanceConstant>(SourceMaterialInstancePath);
+	UMaterialInstanceConstant* Destination = LoadBridgeObject<UMaterialInstanceConstant>(DestinationMaterialInstancePath);
+	if (!Source || !Destination)
+	{
+		Out.Error = FString::Printf(
+			TEXT("Source or destination MaterialInstanceConstant is not loadable: '%s' -> '%s'."),
+			*SourceMaterialInstancePath, *DestinationMaterialInstancePath);
+		return Out;
+	}
+
+	UMaterial* SourceRoot = Source->GetMaterial();
+	UMaterial* DestinationRoot = Destination->GetMaterial();
+	if (!SourceRoot || SourceRoot != DestinationRoot)
+	{
+		Out.Error = TEXT("Source and destination must share the same ultimate root material.");
+		return Out;
+	}
+
+	const FBridgeMaterialLayerStack Snapshot = GetMaterialInstanceLayerStack(SourceMaterialInstancePath);
+	if (!Snapshot.bFound || !Snapshot.Error.IsEmpty())
+	{
+		Out.Error = Snapshot.Error.IsEmpty()
+			? TEXT("Source material-instance layer stack could not be read.")
+			: Snapshot.Error;
+		return Out;
+	}
+	return SetMaterialInstanceLayerStack(DestinationMaterialInstancePath, Snapshot.Layers);
 }
 
 FBridgeMaterialInfo UUnrealBridgeMaterialLibrary::GetMaterialInfo(const FString& MaterialPath)

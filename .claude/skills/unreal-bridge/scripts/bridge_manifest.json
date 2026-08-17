@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-08-06T15:18:20+00:00",
+  "generated_at": "2026-08-16T23:54:12+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -16617,6 +16617,24 @@
           ],
           "returns": "bool"
         },
+        "copy_material_instance_layer_stack": {
+          "doc": "X.copy_material_instance_layer_stack(source_material_instance_path, destination_material_instance_path) -> BridgeMaterialLayerStackOpResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "source_material_instance_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "destination_material_instance_path",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeMaterialLayerStackOpResult"
+        },
         "create_material": {
           "doc": "X.create_material(path, domain, shading_model, blend_mode, two_sided, use_material_attributes) -> BridgeCreateAssetResult",
           "params": [
@@ -16886,6 +16904,18 @@
             }
           ],
           "returns": "BridgeMaterialInfo"
+        },
+        "get_material_instance_layer_stack": {
+          "doc": "X.get_material_instance_layer_stack(material_instance_path) -> BridgeMaterialLayerStack",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "material_instance_path",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeMaterialLayerStack"
         },
         "get_material_instance_parameters": {
           "doc": "X.get_material_instance_parameters(material_path) -> BridgeMaterialInstanceInfo",
@@ -17226,6 +17256,24 @@
             }
           ],
           "returns": "bool"
+        },
+        "set_material_instance_layer_stack": {
+          "doc": "X.set_material_instance_layer_stack(material_instance_path, layers) -> BridgeMaterialLayerStackOpResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "material_instance_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "layers",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeMaterialLayerStackOpResult"
         },
         "set_material_parameter_collection": {
           "doc": "X.set_material_parameter_collection(collection_path, params) -> BridgeMIParamResult",
@@ -29196,7 +29244,7 @@
       }
     }
   },
-  "project_path": "G:/UEProjects/GameplayLocomotion/GameplayLocomotion.uproject",
+  "project_path": "D:/UB/ml2host/MaterialLayerTestHost.uproject",
   "structs": {
     "BridgeAbilityCooldownInfo": [
       "ability_class_name",
@@ -30336,6 +30384,29 @@
       "name",
       "override_parameters",
       "path"
+    ],
+    "BridgeMaterialLayerEntry": [
+      "blend_asset_path",
+      "enabled",
+      "guid",
+      "index",
+      "layer_asset_path",
+      "link_state",
+      "name",
+      "restrict_to_blend_relatives",
+      "restrict_to_layer_relatives"
+    ],
+    "BridgeMaterialLayerStack": [
+      "error",
+      "found",
+      "has_layers",
+      "layers"
+    ],
+    "BridgeMaterialLayerStackOpResult": [
+      "changed",
+      "error",
+      "layers_applied",
+      "success"
     ],
     "BridgeMaterialParam": [
       "name",
@@ -32006,5 +32077,5 @@
       "wired"
     ]
   },
-  "ue_version": "5.7.1-48512491+++UE5+Release-5.7"
+  "ue_version": "5.7.4-51494982+++UE5+Release-5.7"
 }
