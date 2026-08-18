@@ -84,6 +84,8 @@
 #include "Materials/MaterialLayersFunctions.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Engine/Texture.h"
+#include "TextureCompiler.h"
+#include "UnrealBridgeTextureRefreshOperations.h"
 #include "Engine/SubsurfaceProfile.h"
 #include "VT/RuntimeVirtualTexture.h"
 #include "SceneTypes.h"
@@ -134,6 +136,34 @@ namespace BridgeMaterialImpl
 			OutParameters.Add(MoveTemp(Param));
 		}
 	}
+
+	/**
+	 * 将贴图刷新操作转发到引擎真实实现；实例仅在单次调用栈上存在，避免可变全局测试钩子。
+	 * Forwards texture-refresh operations to the real engine implementation; the instance is call-local to avoid mutable global test hooks.
+	 */
+	class FTextureRefreshOperations final : public IUnrealBridgeTextureRefreshOperations
+	{
+	public:
+		virtual bool IsCompilingTexture(UTexture& Texture) const override
+		{
+			return FTextureCompilingManager::Get().IsCompilingTexture(&Texture);
+		}
+
+		virtual void BlockOnAnyAsyncBuild(UTexture& Texture) const override
+		{
+			Texture.BlockOnAnyAsyncBuild();
+		}
+
+		virtual void UpdateResource(UTexture& Texture) const override
+		{
+			Texture.UpdateResource();
+		}
+
+		virtual void UpdateResourceWithParams(UTexture& Texture, UTexture::EUpdateResourceFlags Flags) const override
+		{
+			Texture.UpdateResourceWithParams(Flags);
+		}
+	};
 
 	static FString DomainToString(EMaterialDomain Domain)
 	{
@@ -4095,6 +4125,67 @@ FBridgeMIParamResult UUnrealBridgeMaterialLibrary::SetMIParams(
 
 	Result.Applied = ChangedCount;
 	Result.bSuccess = true;
+	return Result;
+}
+
+void UnrealBridgeTextureRefresh::Submit(
+	UTexture& Texture,
+	bool bForceDerivedDataRebuild,
+	const IUnrealBridgeTextureRefreshOperations& Operations,
+	FBridgeTextureRefreshResult& OutResult)
+{
+	OutResult.bWasCompiling = Operations.IsCompilingTexture(Texture);
+	if (bForceDerivedDataRebuild)
+	{
+		// 强制重建必须先排空该贴图已有的构建，避免并发写入派生数据；普通刷新保留引擎自身的异步策略。
+		// Forced rebuild drains this texture's current build to avoid racing derived-data writes; ordinary refresh preserves the engine's async policy.
+		Operations.BlockOnAnyAsyncBuild(Texture);
+		Operations.UpdateResourceWithParams(Texture, UTexture::EUpdateResourceFlags::ForceRebuild);
+	}
+	else
+	{
+		Operations.UpdateResource(Texture);
+	}
+
+	OutResult.bSuccess = true;
+}
+
+FBridgeTextureRefreshResult UUnrealBridgeMaterialLibrary::RefreshTextureResource(
+	const FString& TexturePath,
+	bool bForceDerivedDataRebuild)
+{
+	FBridgeTextureRefreshResult Result;
+
+	if (TexturePath.IsEmpty())
+	{
+		Result.Error = TEXT("TexturePath is empty.");
+		return Result;
+	}
+
+	UObject* Object = LoadObject<UObject>(nullptr, *TexturePath, nullptr, LOAD_NoWarn | LOAD_Quiet);
+	if (!Object)
+	{
+		Result.Error = FString::Printf(TEXT("Object not loadable: %s"), *TexturePath);
+		return Result;
+	}
+	Result.bFound = true;
+
+	UTexture* Texture = Cast<UTexture>(Object);
+	if (!Texture)
+	{
+		Result.Error = FString::Printf(
+			TEXT("Object is not a texture: %s (found %s)"),
+			*TexturePath,
+			*Object->GetClass()->GetName());
+		return Result;
+	}
+
+#if WITH_EDITOR
+	const BridgeMaterialImpl::FTextureRefreshOperations Operations;
+	UnrealBridgeTextureRefresh::Submit(*Texture, bForceDerivedDataRebuild, Operations, Result);
+#else
+	Result.Error = TEXT("Texture resource refresh requires an Editor build.");
+#endif
 	return Result;
 }
 

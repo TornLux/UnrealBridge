@@ -157,6 +157,12 @@ def render_stub(class_name: str, func: dict) -> str:
         body = '\treturn TEXT("Control Rig / IK Rig authoring API requires Unreal Engine 5.7+");\n'
     elif class_name == "UUnrealBridgeNiagaraLibrary" and name == "GetLastNiagaraError":
         body = '\treturn TEXT("Niagara authoring API requires Unreal Engine 5.7+");\n'
+    elif class_name == "UUnrealBridgeMaterialLibrary" and name == "RefreshTextureResource":
+        body = (
+            '\tFBridgeTextureRefreshResult Result;\n'
+            '\tResult.Error = TEXT("Texture resource refresh requires Unreal Engine 5.7+");\n'
+            '\treturn Result;\n'
+        )
     else:
         body = stub_body(rt)
     return f"{rt} {class_name}::{name}({params})\n{{\n{log}{body}}}\n\n"

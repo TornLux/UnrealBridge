@@ -223,7 +223,7 @@ Signatures are now mechanically enforced (preflight). References carry semantic 
 | **Control Rig / IK Rig / IK Retargeter** | `references/bridge-rig-api.md` | **Read before any rig or retarget asset write.** Type discovery, hierarchy and RigVM authoring, solver/goal/chain setup, retarget ops/mapping/poses/profiles, batch retargeting, compile/processor validation, transient evaluation, animation-quality review, and cleanup. Functional on UE 5.7+. |
 | **Niagara / VFX** | `references/bridge-niagara-api.md` | **Read before any Niagara asset write.** Template/script discovery, System/Emitter recipes, module inputs, User parameters, renderers/materials/bindings, compile/audit gates, Trail/Sparks/Explosion/Dissolve presets, moving transient previews, and cleanup. Functional on UE 5.7+. |
 | DataTable | `references/bridge-datatable-api.md` | Schema, rows, fields, search, CSV |
-| Material | `references/bridge-material-api.md` | Material instance parameters |
+| Material | `references/bridge-material-api.md` | Material instance parameters and texture resource refresh |
 | Level / Actor | `references/bridge-level-api.md` | Level queries, spawn/destroy/move, property get/set, selection |
 | Editor session | `references/bridge-editor-api.md` | Asset open/save, viewport camera, PIE start/stop, console/CVars, BP compile |
 | GameplayAbility | `references/bridge-gameplayability-api.md` | GA Blueprint metadata |
