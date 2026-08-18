@@ -13,6 +13,7 @@
 #include "Materials/MaterialExpressionVectorParameter.h"
 #include "Materials/MaterialInstanceConstant.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "UnrealBridgeMaterialLibrary.h"
 #include "UnrealBridgeMaterialParameterHelpers.h"
 #include "UObject/Package.h"
@@ -253,7 +254,26 @@ bool FUnrealBridgeMaterialParameterProductionTest::RunTest(const FString& Parame
 {
 	using namespace UnrealBridgeMaterialParameterTests;
 
+	if (!TestNotNull(TEXT("Editor transaction subsystem is available"), GEditor))
+	{
+		return false;
+	}
+	// 参数事务验证必须拥有独立的全局 Undo 边界，避免前序瞬态测试的记录被错误消费。
+	// Parameter transaction coverage needs an isolated global Undo boundary so records from earlier transient tests are never consumed.
+	GEditor->ResetTransaction(NSLOCTEXT(
+		"UnrealBridgeTests", "MaterialParameterResetBefore",
+		"隔离材质参数测试事务 / Isolate material-parameter test transactions"));
+
 	FTransientMaterialFixture Fixture;
+	ON_SCOPE_EXIT
+	{
+		if (GEditor)
+		{
+			GEditor->ResetTransaction(NSLOCTEXT(
+				"UnrealBridgeTests", "MaterialParameterResetAfter",
+				"清理材质参数测试事务 / Clear material-parameter test transactions"));
+		}
+	};
 	const FMaterialParameterInfo ScalarInfo(FName(TEXT("ScalarParam")));
 	const FMaterialParameterInfo SwitchInfo(FName(TEXT("StaticSwitchParam")));
 

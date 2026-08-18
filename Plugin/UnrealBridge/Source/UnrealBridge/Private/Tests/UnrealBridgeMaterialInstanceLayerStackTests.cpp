@@ -153,6 +153,16 @@ bool FUnrealBridgeMaterialInstanceLayerStackTransientTest::RunTest(const FString
 	using namespace UnrealBridgeMaterialInstanceLayerStackTests;
 	(void)Parameters;
 
+	if (!TestNotNull(TEXT("Editor transaction subsystem is available"), GEditor))
+	{
+		return false;
+	}
+	// Undo/Redo 断言只允许消费本用例创建的事务，不能依赖全局栈顶恰好来自材质操作。
+	// Undo/Redo assertions may consume only transactions created by this test, never whichever entry happens to be on the global stack.
+	GEditor->ResetTransaction(NSLOCTEXT(
+		"UnrealBridgeTests", "MaterialLayerStackResetBefore",
+		"隔离材质图层栈测试事务 / Isolate material-layer-stack test transactions"));
+
 	UPackage* TransientPackage = GetTransientPackage();
 	const bool bTransientPackageWasDirty = TransientPackage->IsDirty();
 	ON_SCOPE_EXIT
@@ -164,6 +174,17 @@ bool FUnrealBridgeMaterialInstanceLayerStackTransientTest::RunTest(const FString
 	ON_SCOPE_EXIT
 	{
 		CleanupFixture(Fixture);
+	};
+	// 在夹具标记为垃圾前先清空其 Undo 记录，防止后续测试触发悬空 Blueprint/材质引用。
+	// Clear this fixture's Undo records before garbage-marking it so later tests cannot traverse stale Blueprint/material references.
+	ON_SCOPE_EXIT
+	{
+		if (GEditor)
+		{
+			GEditor->ResetTransaction(NSLOCTEXT(
+				"UnrealBridgeTests", "MaterialLayerStackResetAfter",
+				"清理材质图层栈测试事务 / Clear material-layer-stack test transactions"));
+		}
 	};
 
 	const FString InstancePath = Fixture.Instance->GetPathName();

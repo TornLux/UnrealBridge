@@ -91,6 +91,16 @@ bool FUnrealBridgeAddExternalVariableNodeTransientTest::RunTest(const FString& P
 	using namespace UnrealBridgeAddExternalVariableNodeTests;
 	(void)Parameters;
 
+	if (!TestNotNull(TEXT("Editor transaction subsystem is available"), GEditor))
+	{
+		return false;
+	}
+	// 自动化对象会在用例末尾销毁；先清空全局 Undo 栈，避免前序测试留下的事务取得本用例瞬态对象所有权。
+	// Automation objects are destroyed at test end; reset the global Undo stack first so earlier tests cannot own this fixture's transient objects.
+	GEditor->ResetTransaction(NSLOCTEXT(
+		"UnrealBridgeTests", "AddExternalVariableResetBefore",
+		"隔离外部变量节点测试事务 / Isolate external-variable-node test transactions"));
+
 	const FName BlueprintName = MakeUniqueObjectName(
 		GetTransientPackage(), UBlueprint::StaticClass(), TEXT("UB_AddExternalVariableNode_Consumer"));
 	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
@@ -117,6 +127,17 @@ bool FUnrealBridgeAddExternalVariableNodeTransientTest::RunTest(const FString& P
 	ON_SCOPE_EXIT
 	{
 		CleanupTransientBlueprint(ProviderBlueprint);
+	};
+	// 该 guard 后声明、先于蓝图清理执行，确保 Undo 记录不会引用随后标垃圾的瞬态图对象。
+	// Declared after fixture cleanup guards, this runs first so no Undo record can reference graph objects that are about to be garbage-marked.
+	ON_SCOPE_EXIT
+	{
+		if (GEditor)
+		{
+			GEditor->ResetTransaction(NSLOCTEXT(
+				"UnrealBridgeTests", "AddExternalVariableResetAfter",
+				"清理外部变量节点测试事务 / Clear external-variable-node test transactions"));
+		}
 	};
 
 	const FName PrivateVariableName(TEXT("PrivateExternalValue"));
