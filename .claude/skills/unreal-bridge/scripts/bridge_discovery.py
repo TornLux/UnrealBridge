@@ -4,29 +4,34 @@ Replaces the old "assume 127.0.0.1:9876" wiring: the client sends the same
 probe to the multicast group 239.255.42.99:9876 and to the local loopback
 responder. Editors on the same host or subnet that have the UnrealBridge
 plugin loaded answer with their project name + TCP bind + TCP port. The
-client de-duplicates responses by process id, then picks one (single match
+client de-duplicates responses by Server-start instance UUID, then picks one (single match
 → auto, multiple → by --project filter or error).
 
 Wire format:
 
     probe (client → group):
-        {"v":1, "type":"probe",
+        {"v":2, "type":"probe",
          "request_id": "<uuid>",
          "filter": {"project": "<name|path|*>"}}
 
     response (server → probe source):
-        {"v":1, "type":"response",
-         "request_id": "<uuid>",
-         "pid": 1234, "project": "MyGame",
+        {"v":2, "protocol_version":2, "type":"response",
+         "request_id":"<uuid>", "instance_id":"<uuid>",
+         "pid":1234, "project":"MyGame",
          "project_path": "C:/.../MyGame.uproject",
          "engine_version": "5.7.0",
          "tcp_bind": "127.0.0.1", "tcp_port": 54321,
-         "token_fingerprint": "a1b2c3d4e5f60718"}    # "" when no token
+         "token_fingerprint": "a1b2c3d4e5f60718",
+         "capabilities": ["exact_exec", ...]}    # minimum required set; unique extras allowed
+
+Malformed datagrams are discarded independently. For wildcard tcp_bind values,
+the response source IP becomes the TCP host instead of client loopback.
 """
 
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import socket
@@ -42,11 +47,18 @@ DEFAULT_DISCOVERY_GROUP = "239.255.42.99"
 DEFAULT_DISCOVERY_PORT = 9876
 DEFAULT_DISCOVERY_TIMEOUT_MS = 800
 LOCAL_DISCOVERY_HOST = "127.0.0.1"
+PROTOCOL_VERSION = 2
+EXACT_CAPABILITIES = (
+    "exact_exec", "exact_ping", "exact_gamethread_ping",
+    "exact_debug_resume", "exact_modal_status", "exact_modal_action",
+)
 
 
 @dataclass
 class Endpoint:
-    """One running UnrealBridge editor, as seen via discovery."""
+    """discovery 冻结的一次精确 Server 启动。 / One exact Server start frozen from discovery."""
+    protocol_version: int
+    instance_id: str
     pid: int
     project: str
     project_path: str
@@ -54,12 +66,14 @@ class Endpoint:
     tcp_bind: str
     tcp_port: int
     token_fingerprint: str
+    capabilities: Tuple[str, ...]
+    response_host: str
 
     @property
     def host(self) -> str:
-        """Best host to connect to — loopback if the server reported 0.0.0.0."""
+        """通配 bind 使用响应源 IP；否则使用广告地址。 / Use response source IP for wildcard binds, otherwise the advertised address."""
         if self.tcp_bind in ("0.0.0.0", "::"):
-            return "127.0.0.1"
+            return self.response_host
         return self.tcp_bind
 
     @property
@@ -68,7 +82,8 @@ class Endpoint:
 
     def __str__(self) -> str:
         token = " [token]" if self.token_fingerprint else ""
-        return f"{self.project} @ {self.host}:{self.port} (pid {self.pid}){token}"
+        return (f"{self.project} @ {self.host}:{self.port} "
+                f"(pid {self.pid}, instance {self.instance_id}){token}")
 
 
 def _parse_group(group: str) -> Tuple[str, int]:
@@ -77,6 +92,82 @@ def _parse_group(group: str) -> Tuple[str, int]:
         addr, port = group.rsplit(":", 1)
         return addr, int(port)
     return group, DEFAULT_DISCOVERY_PORT
+
+
+def _parse_endpoint_response(resp, request_id: str, response_host: str) -> "Endpoint | None":
+    """严格解析单个响应；畸形数据只丢弃当前 datagram。 / Strictly parse one response; malformed data drops only that datagram."""
+    if not isinstance(resp, dict):
+        return None
+    if type(resp.get("v")) is not int or resp["v"] != PROTOCOL_VERSION:
+        return None
+    if (type(resp.get("protocol_version")) is not int
+            or resp["protocol_version"] != PROTOCOL_VERSION):
+        return None
+    if resp.get("type") != "response" or resp.get("request_id") != request_id:
+        return None
+
+    instance_id = resp.get("instance_id")
+    if not isinstance(instance_id, str) or not instance_id:
+        return None
+    try:
+        parsed_uuid = uuid.UUID(instance_id)
+    except (ValueError, AttributeError, TypeError):
+        return None
+    if str(parsed_uuid) != instance_id.lower() or instance_id != instance_id.lower():
+        return None
+
+    pid = resp.get("pid")
+    tcp_port = resp.get("tcp_port")
+    if type(pid) is not int or not (1 <= pid <= 2_147_483_647):
+        return None
+    if type(tcp_port) is not int or not (1 <= tcp_port <= 65_535):
+        return None
+
+    required_strings = ("project", "project_path", "engine_version", "tcp_bind", "token_fingerprint")
+    if any(not isinstance(resp.get(field), str) for field in required_strings):
+        return None
+    project = resp["project"]
+    project_path = resp["project_path"]
+    engine_version = resp["engine_version"]
+    tcp_bind = resp["tcp_bind"]
+    token_fingerprint = resp["token_fingerprint"]
+    if not project or not project_path or not engine_version or not tcp_bind:
+        return None
+    try:
+        ipaddress.ip_address(tcp_bind)
+        ipaddress.ip_address(response_host)
+    except ValueError:
+        return None
+    if token_fingerprint:
+        if (len(token_fingerprint) != 16
+                or token_fingerprint != token_fingerprint.lower()
+                or any(ch not in "0123456789abcdef" for ch in token_fingerprint)):
+            return None
+
+    raw_capabilities = resp.get("capabilities")
+    if not isinstance(raw_capabilities, list):
+        return None
+    if any(not isinstance(item, str) or not item for item in raw_capabilities):
+        return None
+    if len(set(raw_capabilities)) != len(raw_capabilities):
+        return None
+    capabilities = tuple(raw_capabilities)
+    if not set(EXACT_CAPABILITIES).issubset(capabilities):
+        return None
+
+    return Endpoint(
+        protocol_version=PROTOCOL_VERSION,
+        instance_id=instance_id,
+        pid=pid,
+        project=project,
+        project_path=project_path,
+        engine_version=engine_version,
+        tcp_bind=tcp_bind,
+        tcp_port=tcp_port,
+        token_fingerprint=token_fingerprint,
+        capabilities=capabilities,
+        response_host=response_host,
+    )
 
 
 def discover(project_filter: str = "*",
@@ -91,7 +182,7 @@ def discover(project_filter: str = "*",
     """
     request_id = str(uuid.uuid4())
     probe_payload = json.dumps({
-        "v": 1,
+        "v": PROTOCOL_VERSION,
         "type": "probe",
         "request_id": request_id,
         "filter": {"project": project_filter or "*"},
@@ -108,7 +199,7 @@ def discover(project_filter: str = "*",
         # NICs, or Public firewall policy even while LAN multicast remains
         # useful. Send the identical request from the same ephemeral socket to
         # loopback as a local-only fallback. Both responders reply to this
-        # socket and the collection loop de-duplicates them by editor PID.
+        # socket and the collection loop de-duplicates them by Server-start UUID.
         probe_targets = [(group, group_port)]
         loopback_target = (LOCAL_DISCOVERY_HOST, group_port)
         if loopback_target not in probe_targets:
@@ -126,7 +217,7 @@ def discover(project_filter: str = "*",
 
         deadline = time.monotonic() + (timeout_ms / 1000.0)
         results: List[Endpoint] = []
-        seen_pids: set = set()
+        seen_instances: set = set()
 
         while True:
             remaining = deadline - time.monotonic()
@@ -134,33 +225,24 @@ def discover(project_filter: str = "*",
                 break
             sock.settimeout(remaining)
             try:
-                data, _addr = sock.recvfrom(64 * 1024)
+                data, source_addr = sock.recvfrom(64 * 1024)
             except socket.timeout:
                 break
 
             try:
                 resp = json.loads(data.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
+                response_host = source_addr[0]
+                endpoint = _parse_endpoint_response(resp, request_id, response_host)
+            except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError, IndexError):
+                endpoint = None
+            if endpoint is None:
                 continue
-
-            if resp.get("type") != "response":
+            if endpoint.instance_id in seen_instances:
+                # 同一次 Server 启动可能同时经 multicast 与 loopback 响应。
+                # One Server start may answer through both multicast and loopback.
                 continue
-            if resp.get("request_id") != request_id:
-                continue
-            pid = int(resp.get("pid", 0))
-            if pid and pid in seen_pids:
-                continue  # same editor answering on two interfaces — dedup
-            seen_pids.add(pid)
-
-            results.append(Endpoint(
-                pid=pid,
-                project=str(resp.get("project", "")),
-                project_path=str(resp.get("project_path", "")),
-                engine_version=str(resp.get("engine_version", "")),
-                tcp_bind=str(resp.get("tcp_bind", "127.0.0.1")),
-                tcp_port=int(resp.get("tcp_port", 0)),
-                token_fingerprint=str(resp.get("token_fingerprint", "")),
-            ))
+            seen_instances.add(endpoint.instance_id)
+            results.append(endpoint)
 
         return results
     finally:
@@ -184,9 +266,9 @@ def select(endpoints: List[Endpoint],
             "  2. The UnrealBridge plugin is installed in that project's "
             "Plugins/ folder AND enabled in the .uproject.\n"
             "  3. UDP discovery isn't being blocked locally — if everything "
-            "else is fine, pass --endpoint=127.0.0.1:<port>, "
-            "reading <port> from the editor log line "
-            "`LogUnrealBridge: Listening on 127.0.0.1:<port>`."
+            "else is fine, direct mode requires the complete --endpoint, "
+            "--instance-id, --expected-pid, and --expected-project-path tuple "
+            "printed by the Server startup log."
         )
 
     if project_filter and project_filter != "*":

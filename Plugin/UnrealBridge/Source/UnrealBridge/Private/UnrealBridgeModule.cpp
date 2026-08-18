@@ -117,17 +117,6 @@ namespace
 		return BytesToHex(Digest, 8).ToLower();
 	}
 
-	/**
-	 * Find the editor's .uproject path for the running session. Used by the
-	 * discovery responder so clients can match by path as well as by name.
-	 */
-	FString ResolveProjectPath()
-	{
-		FString Path = FPaths::ConvertRelativePathToFull(
-			FPaths::Combine(FPaths::ProjectDir(), FString::Printf(TEXT("%s.uproject"), FApp::GetProjectName())));
-		Path.ReplaceInline(TEXT("\\"), TEXT("/"));
-		return Path;
-	}
 }
 
 void FUnrealBridgeModule::StartupModule()
@@ -206,9 +195,12 @@ void FUnrealBridgeModule::StartupModule()
 		return;
 	}
 
-	UE_LOG(LogUnrealBridgeModule, Log, TEXT("Server up on %s:%d%s"),
+	UE_LOG(LogUnrealBridgeModule, Log,
+		TEXT("Server up on %s:%d%s (protocol=%d instance=%s pid=%d project=%s)"),
 		*Server->GetBoundAddress(), Server->GetBoundPort(),
-		Server->HasToken() ? TEXT(" (token enforced)") : TEXT(""));
+		Server->HasToken() ? TEXT(" (token enforced)") : TEXT(""),
+		Server->GetProtocolVersion(), *Server->GetInstanceId(), Server->GetProcessId(),
+		*Server->GetProjectPath());
 
 	if (Server->HasToken())
 	{
@@ -232,7 +224,10 @@ void FUnrealBridgeModule::StartupModule()
 		DiscCfg.TcpBindAddress = Server->GetBoundAddress();
 		DiscCfg.TcpPort = Server->GetBoundPort();
 		DiscCfg.ProjectName = FApp::GetProjectName();
-		DiscCfg.ProjectPath = ResolveProjectPath();
+		DiscCfg.ProjectPath = Server->GetProjectPath();
+		DiscCfg.ProtocolVersion = Server->GetProtocolVersion();
+		DiscCfg.InstanceId = Server->GetInstanceId();
+		DiscCfg.ProcessId = Server->GetProcessId();
 		DiscCfg.EngineVersion = FEngineVersion::Current().ToString();
 		DiscCfg.TokenFingerprint = TokenFingerprint(Token);
 
@@ -240,14 +235,14 @@ void FUnrealBridgeModule::StartupModule()
 		if (!Discovery->StartService())
 		{
 			UE_LOG(LogUnrealBridgeModule, Warning,
-				TEXT("discovery failed to start — clients will need an explicit --endpoint=%s:%d"),
-				*Server->GetBoundAddress(), Server->GetBoundPort());
+				TEXT("discovery failed to start — direct clients need the full endpoint/instance/pid/project tuple from the Server up line"));
 			Discovery.Reset();
 		}
 	}
 	else
 	{
-		UE_LOG(LogUnrealBridgeModule, Log, TEXT("discovery disabled (opt-out) — clients need --endpoint="));
+		UE_LOG(LogUnrealBridgeModule, Log,
+			TEXT("discovery disabled (opt-out) — direct clients need the full endpoint/instance/pid/project tuple from the Server up line"));
 	}
 
 	// ---- editor-ready gate --------------------------------------------

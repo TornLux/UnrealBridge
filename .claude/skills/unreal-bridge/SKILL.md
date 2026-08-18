@@ -6,7 +6,7 @@ allowed-tools: Bash Read Write Edit Glob Grep Monitor
 
 # UnrealBridge
 
-Execute Python directly inside a running UE 5.3+ editor. Auto-discovery sends paired UDP probes to LAN multicast (`239.255.42.99:9876`) and local loopback (`127.0.0.1:9876`); responses are de-duplicated by editor PID. The TCP data port is OS-assigned per editor.
+Execute Python directly inside a running UE 5.3+ editor. Protocol-v2 auto-discovery sends paired UDP probes to LAN multicast (`239.255.42.99:9876`) and local loopback (`127.0.0.1:9876`); malformed replies are skipped independently, valid responses are de-duplicated by Server-start UUID, and wildcard binds use the UDP response source IP. The six exact commands are the minimum required capability set, so unique future capabilities remain forward-compatible. Every bounded TCP response is rechecked against the frozen identity. The TCP data port is OS-assigned per editor.
 
 ## Preconditions
 
@@ -16,7 +16,7 @@ If `bridge.py` returns `discovery: no UnrealBridge editors found`, walk these in
 2. **Plugin enabled** — check `<UEProject>/<Project>.uproject` `"Plugins"` block for `{"Name":"UnrealBridge", "Enabled":false}` and flip if present.
 3. **Editor up and ready** — `bridge.py ping` returns `"ready": true`. `false` means MainFrame still loading; wait 10–60s.
 
-The loopback probe keeps local discovery working when multicast is blocked by a VPN, virtual NIC, or Windows firewall policy. Last resort if UDP discovery itself is blocked: use `--endpoint=127.0.0.1:<port>` from the editor log line `LogUnrealBridge: Listening on 127.0.0.1:<port>`. Python 3.7+ stdlib only.
+The loopback probe keeps local discovery working when multicast is blocked by a VPN, virtual NIC, or Windows firewall policy. Direct mode is intentionally fail-closed: `--endpoint`, `--instance-id`, `--expected-pid`, and `--expected-project-path` (or matching `UNREAL_BRIDGE_*` variables) are one inseparable tuple. Copy the identity values verbatim from one discovery response or Server startup line; `project_path` is case- and representation-sensitive on every OS. A host/port alone can be stale and is never used as a legacy fallback. Python 3.7+ stdlib only.
 
 ## Waiting for the editor to become ready (post-launch / post-relaunch)
 
@@ -90,7 +90,7 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | `list-editors` | Print every editor that responded to a discovery probe |
 | `wait-compile <material>` / `wait-pose-index <psd>` | Client-side polling helpers |
 
-Optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or env `UNREAL_BRIDGE_PROJECT`), `--endpoint=host:port`, `--token=<secret>`, `--timeout=<s>`, `--json`, `--no-preflight`.
+Discovery-mode optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or env `UNREAL_BRIDGE_PROJECT`), `--token=<secret>`, `--timeout=<s>`, `--json`, `--no-preflight`. Direct mode requires the complete `--endpoint=host:port --instance-id=<uuid> --expected-pid=<pid> --expected-project-path=<uproject>` tuple; none of its four fields is optional.
 
 ## Workflow
 

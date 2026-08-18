@@ -1,4 +1,5 @@
 #include "UnrealBridgeDiscovery.h"
+#include "UnrealBridgeProtocol.h"
 
 #include "Common/UdpSocketBuilder.h"
 #include "Dom/JsonObject.h"
@@ -220,7 +221,9 @@ void FBridgeDiscoveryService::HandleDatagram(const uint8* Bytes, int32 Length, c
 	}
 
 	double Version = 0.0;
-	if (!Root->TryGetNumberField(TEXT("v"), Version) || FMath::RoundToInt(Version) != 1)
+	if (!Root->TryGetNumberField(TEXT("v"), Version)
+		|| !FMath::IsFinite(Version)
+		|| Version != static_cast<double>(Config.ProtocolVersion))
 	{
 		return;
 	}
@@ -272,16 +275,24 @@ bool FBridgeDiscoveryService::FilterMatchesUs(const FString& Filter) const
 FString FBridgeDiscoveryService::BuildResponseJson(const FString& RequestId) const
 {
 	const TSharedRef<FJsonObject> Root = MakeShared<FJsonObject>();
-	Root->SetNumberField(TEXT("v"), 1);
+	Root->SetNumberField(TEXT("v"), Config.ProtocolVersion);
+	Root->SetNumberField(TEXT("protocol_version"), Config.ProtocolVersion);
 	Root->SetStringField(TEXT("type"), TEXT("response"));
 	Root->SetStringField(TEXT("request_id"), RequestId);
-	Root->SetNumberField(TEXT("pid"), (int32)FPlatformProcess::GetCurrentProcessId());
+	Root->SetStringField(TEXT("instance_id"), Config.InstanceId);
+	Root->SetNumberField(TEXT("pid"), Config.ProcessId);
 	Root->SetStringField(TEXT("project"), Config.ProjectName);
 	Root->SetStringField(TEXT("project_path"), Config.ProjectPath);
 	Root->SetStringField(TEXT("engine_version"), Config.EngineVersion);
 	Root->SetStringField(TEXT("tcp_bind"), Config.TcpBindAddress);
 	Root->SetNumberField(TEXT("tcp_port"), CurrentTcpPort.GetValue());
 	Root->SetStringField(TEXT("token_fingerprint"), Config.TokenFingerprint);
+	TArray<TSharedPtr<FJsonValue>> Capabilities;
+	for (const TCHAR* Capability : UnrealBridgeProtocol::ExactCapabilities)
+	{
+		Capabilities.Add(MakeShared<FJsonValueString>(Capability));
+	}
+	Root->SetArrayField(TEXT("capabilities"), MoveTemp(Capabilities));
 
 	FString Out;
 	const TSharedRef<TJsonWriter<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>> Writer =

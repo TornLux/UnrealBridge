@@ -170,12 +170,13 @@ bridge.py exec "print('hello from UE')"
 bridge.py exec-file my_script.py
 ```
 
-Flags (all optional — the common case works with no flags):
+Discovery-mode flags are optional — the common case works with no flags:
 
 - `--project=<name|path>` — disambiguate when >1 editors are running
-- `--endpoint=host:port` — skip discovery, connect directly (also env `UNREAL_BRIDGE_ENDPOINT`)
 - `--token=<secret>` — only when the server binds non-loopback (also env `UNREAL_BRIDGE_TOKEN`)
 - `--timeout` (default 30s), `--json`, `--discovery-timeout=<ms>` (default 800)
+
+Direct mode is one inseparable tuple: `--endpoint=host:port --instance-id=<uuid> --expected-pid=<pid> --expected-project-path=<uproject>`. Copy the instance, PID, and project-path strings verbatim from one discovery response or Server startup line; do not change path separators or letter case. Matching `UNREAL_BRIDGE_ENDPOINT`, `UNREAL_BRIDGE_INSTANCE_ID`, `UNREAL_BRIDGE_PID`, and `UNREAL_BRIDGE_PROJECT_PATH` environment variables are also supported.
 
 `bridge.py list-editors` sends a probe and lists every editor that answered — handy for multi-editor setups.
 
@@ -241,15 +242,17 @@ source checkout invalidated the recorded path.
 
 Two channels:
 
-1. **UDP discovery** on port `9876`. The client sends the same request-id-bearing `probe` to LAN multicast `239.255.42.99` and local loopback `127.0.0.1`, then de-duplicates replies by editor PID. Multicast preserves LAN/multi-editor discovery; loopback keeps local discovery reliable when Windows, a VPN, or a virtual NIC drops multicast loopback. Every editor replies with its bound TCP address + port + token fingerprint. Multiple editors coexist via `SO_REUSEADDR`.
+1. **UDP discovery v2** on port `9876`. The client sends the same request-id-bearing `probe` to LAN multicast `239.255.42.99` and local loopback `127.0.0.1`, rejects malformed/legacy/incomplete replies, then de-duplicates by Server-start UUID. Every editor replies with `protocol_version`, `instance_id`, PID, one wire-canonical project-path string, TCP endpoint, capabilities, and token fingerprint. The six listed exact commands are the minimum required capability set; unique future capabilities are allowed. When a Server advertises a wildcard TCP bind, the client connects to the UDP response source IP. Multiple editors coexist via `SO_REUSEADDR`.
 
-2. **TCP data** on the port the editor reports in its discovery response (OS-assigned; `127.0.0.1` by default). Length-prefixed JSON:
+2. **TCP data** on the port the editor reports in its discovery response (OS-assigned; `127.0.0.1` by default). Every request freezes the discovered identity; every response echoes it and is rechecked. Length-prefixed JSON:
 
 ```
-Request :  [4-byte big-endian length][{"id","script","timeout","token?"}]
-Response:  [4-byte big-endian length][{"id","success","output","error"}]
-Ping    :  {"id","command":"ping"}  →  pong
+Request :  [4-byte big-endian length][{"id","command":"exact_exec","expected":{...},"request":{"script","timeout"},"token?"}]
+Response:  [4-byte big-endian length][{"id","success","output","error","protocol_version","instance_id","pid","project_path"}]
+Ping    :  {"command":"exact_ping","expected":{...},"request":{}}  →  pong
 ```
+
+The nested `request` object makes exact commands fail safely against a legacy server: no Python script exists at the legacy top level. Missing/mismatched identity and unknown/legacy wire forms are rejected by the production dispatcher before any command body, work admission, or GameThread dispatch. `project_path` is a wire identity, not a filesystem equivalence check: every OS requires the exact discovery/startup string. Client response frames are limited to 10 MiB and must contain a non-empty UTF-8 JSON object.
 
 Token auth kicks in automatically when the server binds non-loopback; the client reads the token from `<Project>/Saved/UnrealBridge/token.txt` and includes it in every request.
 
@@ -295,7 +298,7 @@ UnrealBridge/
 ## Safety
 
 - Every level-edit op is wrapped in `FScopedTransaction` — Ctrl+Z in the editor reverts anything the bridge did.
-- The TCP server binds to `127.0.0.1` only; it is not reachable from the network.
+- The TCP server binds to `127.0.0.1` by default. Non-loopback binding is explicitly supported only with token authentication and makes the endpoint reachable from the selected network interfaces.
 
 ## License
 

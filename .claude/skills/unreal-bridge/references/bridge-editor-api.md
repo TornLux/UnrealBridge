@@ -8,13 +8,13 @@ Editor session control: state query, asset open/save, Content Browser, viewport,
 
 These are **server-level** commands, not Library functions — they're handled directly by `FUnrealBridgeServer::HandleClient` and bypass the FTSTicker exec queue. Use them when an `exec` is hung and you need to know *why* without queueing behind the stuck script.
 
-Each is a separate TCP connection (workers are per-connection, capped at 16). Send via `bridge.py` subcommand or by hand-crafting the JSON request:
+Each is a separate TCP connection (workers are per-connection, capped at 16). Prefer the `bridge.py` subcommand. A hand-crafted request must use protocol v2: `{"command":"exact_<name>","expected":{"protocol_version":2,"instance_id":"...","pid":...,"project_path":"..."},"request":{...}}`. Copy every identity value, including the case and separators of `project_path`, verbatim from one discovery response or Server startup line. The production dispatcher rejects malformed identity/request objects and legacy or unknown commands before any command body or GameThread dispatch.
 
-| Command JSON | CLI | Purpose |
+| Exact command | CLI | Purpose |
 |---|---|---|
-| `{"command":"ping"}` | `bridge.py ping` | TCP-only liveness — proves the server process and accept loop are alive. Returns `pong` plus `ready: bool` (false during the editor's startup window before main frame creation). |
-| `{"command":"gamethread_ping","timeout":2.0}` | `bridge.py gamethread-ping [--probe-timeout S]` | GameThread liveness — dispatches a no-op `AsyncTask(GameThread)` and waits up to `timeout` seconds (default 2s, max 10s). Response includes `latency_ms`. |
-| `{"command":"debug_resume"}` | `bridge.py resume` | Recover from a stuck Blueprint breakpoint. Calls `FKismetDebugUtilities::RequestAbortingExecution` + `FSlateApplication::LeaveDebuggingMode` via `AsyncTask(GameThread)`. Fire-and-forget. |
+| `exact_ping` | `bridge.py ping` | TCP-only liveness — proves the server process and accept loop are alive. Returns `pong` plus `ready: bool` (false during the editor's startup window before main frame creation). |
+| `exact_gamethread_ping` with `request.timeout` | `bridge.py gamethread-ping [--probe-timeout S]` | GameThread liveness — dispatches a no-op `AsyncTask(GameThread)` and waits up to `timeout` seconds (default 2s, max 10s). Response includes `latency_ms`. |
+| `exact_debug_resume` | `bridge.py resume` | Recover from a stuck Blueprint breakpoint. Calls `FKismetDebugUtilities::RequestAbortingExecution` + `FSlateApplication::LeaveDebuggingMode` via `AsyncTask(GameThread)`. Fire-and-forget. |
 
 ### `gamethread_ping` diagnostic table
 

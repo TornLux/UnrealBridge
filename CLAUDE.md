@@ -32,15 +32,17 @@ python .claude/skills/unreal-bridge/scripts/bridge.py exec-file script.py
 
 ### TCP Protocol
 Length-prefixed JSON over TCP on an OS-assigned port (default bind `127.0.0.1`, port auto-allocated at startup). Clients find the editor via the UDP multicast discovery service (see next section) — port 9876 is no longer hardcoded on the TCP data channel.
-- Request: `[4 bytes big-endian length][JSON: {"id":"...", "script":"...", "timeout":30, "token":"..." (optional)}]`
-- Response: `[4 bytes big-endian length][JSON: {"id":"...", "success":bool, "output":"...", "error":"..."}]`
+- Request: `[4 bytes big-endian length][JSON: {"id":"...", "command":"exact_exec", "expected":{"protocol_version":2,"instance_id":"...","pid":...,"project_path":"..."}, "request":{"script":"...","timeout":30}, "token":"..." (optional)}]`
+- Response: `[4 bytes big-endian length][JSON: {"id":"...", "success":bool, "output":"...", "error":"...", "protocol_version":2, "instance_id":"...", "pid":..., "project_path":"..."}]`
 - Token auth: required when the server binds non-loopback. The token is written to `<Project>/Saved/UnrealBridge/token.txt`; clients read it and add `"token":"<value>"` to every request. Constant-time compared on the server.
-- Special commands (handled inline on the worker thread, bypass the Python exec queue):
-  - `{"id":"...", "command":"ping"}` → `pong` (TCP-only liveness)
-  - `{"id":"...", "command":"gamethread_ping", "timeout":2.0}` → `alive`/`unresponsive` + `latency_ms` (GT liveness)
-  - `{"id":"...", "command":"debug_resume"}` → unsticks a paused BP breakpoint via `FKismetDebugUtilities::RequestAbortingExecution`
-  - `{"id":"...", "command":"modal_status"}` → structured active-Slate-modal snapshot (title, body, buttons, redacted inputs, checkboxes)
-  - `{"id":"...", "command":"modal_action", "snapshot":"...", "action":"..."}` → guarded click/input/checkbox action; rejects stale snapshots
+- Every request uses an `exact_*` command with frozen discovery identity. Payload fields live under `request`, so a legacy server cannot mistake `exact_exec` for an ordinary script request. The production dispatcher rejects missing/malformed identity, request objects, and unknown/legacy commands before any command body, work admission, or GameThread dispatch; the client rejects response identity drift. `project_path` is one wire-canonical string and must match discovery/startup output exactly on every OS.
+- Client response frames are bounded to `MAX_RESPONSE_FRAME_BYTES` (10 MiB), must be non-empty, valid UTF-8, and decode to a JSON object before identity fields are read.
+- Special exact commands (handled inline on the worker thread, bypass the Python exec queue):
+  - `exact_ping` → `pong` (TCP-only liveness)
+  - `exact_gamethread_ping` → `alive`/`unresponsive` + `latency_ms` (GT liveness)
+  - `exact_debug_resume` → unsticks a paused BP breakpoint via `FKismetDebugUtilities::RequestAbortingExecution`
+  - `exact_modal_status` → structured active-Slate-modal snapshot (title, body, buttons, redacted inputs, checkboxes)
+  - `exact_modal_action` → guarded click/input/checkbox action; rejects stale snapshots
 
 `bridge.py exec*` automatically calls `modal_status` after an exec timeout and
 adds `blocked_by_modal` plus the snapshot to its response. It never selects an
@@ -57,10 +59,10 @@ uses the same queued cancellation path, and drains tracked worker/GameThread clo
 module unload; each result/event therefore has exactly one terminal publisher.
 
 ### Discovery Protocol
-UDP discovery uses LAN multicast on `239.255.42.99:9876` plus a parallel local-loopback probe to `127.0.0.1:9876`. Both carry the same request id and responses are de-duplicated by editor PID. This preserves LAN discovery while avoiding dependence on Windows multicast loopback. Multiple editors can bind via `SO_REUSEADDR`.
-- Probe (client → group): `{"v":1, "type":"probe", "request_id":"<uuid>", "filter":{"project":"<name|path|*>"}}`
-- Response (server → probe source, unicast): `{"v":1, "type":"response", "request_id":"<uuid>", "pid":..., "project":"...", "project_path":"...", "engine_version":"...", "tcp_bind":"...", "tcp_port":..., "token_fingerprint":"<sha1(token)[:16]>"}`
-- Client loop: send the same probe to multicast + loopback → collect for `--discovery-timeout` ms (default 800) → de-duplicate by PID → filter by `--project=...` → connect TCP. Empty `token_fingerprint` means no token required.
+UDP discovery uses LAN multicast on `239.255.42.99:9876` plus a parallel local-loopback probe to `127.0.0.1:9876`. Both carry the same request id and responses are de-duplicated by Server-start UUID. This preserves LAN discovery while avoiding dependence on Windows multicast loopback. Multiple editors can bind via `SO_REUSEADDR`.
+- Probe (client → group): `{"v":2, "type":"probe", "request_id":"<uuid>", "filter":{"project":"<name|path|*>"}}`
+- Response (server → probe source, unicast): `{"v":2, "protocol_version":2, "type":"response", "request_id":"<uuid>", "instance_id":"<uuid>", "pid":..., "project":"...", "project_path":"...", "engine_version":"...", "tcp_bind":"...", "tcp_port":..., "token_fingerprint":"<sha1(token)[:16]>", "capabilities":["exact_exec",...]}`. The six exact commands are the minimum required capability set; unique forward-compatible extras are allowed.
+- Client loop: send the same probe to multicast + loopback → collect for `--discovery-timeout` ms (default 800) → discard each malformed/incomplete/legacy datagram without aborting collection → de-duplicate by instance UUID → filter by `--project=...` → freeze identity → connect TCP. A wildcard advertised bind resolves to that response's source IP. Empty `token_fingerprint` means no token required. Direct mode requires the inseparable `--endpoint`, `--instance-id`, `--expected-pid`, and `--expected-project-path` tuple, copied verbatim from discovery/startup output.
 
 ### Server configuration (CLI / env / editor ini)
 Priority CLI > env > `EditorPerProjectUserSettings.ini [UnrealBridge]` > default.
