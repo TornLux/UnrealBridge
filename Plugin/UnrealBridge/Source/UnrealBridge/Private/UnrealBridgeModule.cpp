@@ -191,7 +191,7 @@ void FUnrealBridgeModule::StartupModule()
 	}
 
 	// ---- start the TCP server -----------------------------------------
-	Server = MakeShared<FUnrealBridgeServer>();
+	Server = MakeShared<FUnrealBridgeServer, ESPMode::ThreadSafe>();
 	FUnrealBridgeServer::FStartConfig StartCfg;
 	StartCfg.BindAddress = BindAddress;
 	StartCfg.Port = Port;
@@ -251,10 +251,10 @@ void FUnrealBridgeModule::StartupModule()
 	}
 
 	// ---- editor-ready gate --------------------------------------------
-	TWeakPtr<FUnrealBridgeServer> WeakServer = Server;
+	TWeakPtr<FUnrealBridgeServer, ESPMode::ThreadSafe> WeakServer = Server;
 	auto OnMainFrameReady = [WeakServer](TSharedPtr<SWindow>, bool)
 	{
-		if (TSharedPtr<FUnrealBridgeServer> Pinned = WeakServer.Pin())
+		if (TSharedPtr<FUnrealBridgeServer, ESPMode::ThreadSafe> Pinned = WeakServer.Pin())
 		{
 			Pinned->SetEditorReady(true);
 		}
@@ -267,12 +267,19 @@ void FUnrealBridgeModule::StartupModule()
 	}
 	else
 	{
-		MainFrame.OnMainFrameCreationFinished().AddLambda(OnMainFrameReady);
+		MainFrameReadyHandle = MainFrame.OnMainFrameCreationFinished().AddLambda(OnMainFrameReady);
 	}
 }
 
 void FUnrealBridgeModule::ShutdownModule()
 {
+	if (MainFrameReadyHandle.IsValid() && FModuleManager::Get().IsModuleLoaded(TEXT("MainFrame")))
+	{
+		IMainFrameModule& MainFrame = FModuleManager::GetModuleChecked<IMainFrameModule>(TEXT("MainFrame"));
+		MainFrame.OnMainFrameCreationFinished().Remove(MainFrameReadyHandle);
+		MainFrameReadyHandle.Reset();
+	}
+
 	BridgePerfSampler::Shutdown();
 	BridgePerfFrameHook::Unregister();
 	BridgeDebugState::Unregister();

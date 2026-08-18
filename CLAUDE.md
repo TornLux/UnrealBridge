@@ -48,6 +48,14 @@ action automatically. The caller must read the dialog semantics and act with
 the returned `snapshot_id`; this prevents both blind confirmation and a stale
 action landing on a different dialog.
 
+Exec and modal GameThread work share a cancellable lifecycle. If the server-side
+deadline expires while work is still queued, the response reports `cancelled before execution`
+and a later ticker/task-graph consumer cannot run the body. If the GameThread already claimed
+the work, it is not safely retractable; the response reports `already started and outcome is unknown`
+instead of claiming a successful cancellation. Shutdown first closes a shared admission gate,
+uses the same queued cancellation path, and drains tracked worker/GameThread closures before
+module unload; each result/event therefore has exactly one terminal publisher.
+
 ### Discovery Protocol
 UDP discovery uses LAN multicast on `239.255.42.99:9876` plus a parallel local-loopback probe to `127.0.0.1:9876`. Both carry the same request id and responses are de-duplicated by editor PID. This preserves LAN discovery while avoiding dependence on Windows multicast loopback. Multiple editors can bind via `SO_REUSEADDR`.
 - Probe (client → group): `{"v":1, "type":"probe", "request_id":"<uuid>", "filter":{"project":"<name|path|*>"}}`
