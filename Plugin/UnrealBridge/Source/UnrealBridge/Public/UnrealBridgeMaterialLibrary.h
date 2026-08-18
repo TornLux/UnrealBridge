@@ -43,6 +43,104 @@ struct FBridgeMaterialInstanceInfo
 	TArray<FBridgeMaterialParam> Parameters;
 };
 
+/**
+ * 材质实例图层栈中的一个有序槽位；索引零是背景层，后续槽位各自携带前置混合函数。
+ * One ordered slot in a material-instance layer stack; index zero is the background and later slots carry their preceding blend.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialLayerEntry
+{
+	GENERATED_BODY()
+
+	/** 槽位索引，必须从零开始并与数组顺序一致。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	int32 Index = 0;
+
+	/** Layers 面板中的可见名称；空字符串会保留为空。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	FString Name;
+
+	/** 图层身份 GUID；背景必须使用引擎 BackgroundGuid，其他槽位必须有效且唯一。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	FGuid Guid;
+
+	/** 与父栈的链接状态：Uninitialized、LinkedToParent、UnlinkedFromParent 或 NotFromParent。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	FString LinkState;
+
+	/** 此槽位是否参与材质图层合成。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	bool bEnabled = true;
+
+	/** 保留引擎对该图层槽位的 RestrictToLayerRelatives 标志；桥接层不解释或施加额外限制规则。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	bool bRestrictToLayerRelatives = false;
+
+	/** 保留此前置混合槽位的 RestrictToBlendRelatives 标志；索引零没有前置混合且必须为 false。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	bool bRestrictToBlendRelatives = false;
+
+	/** Material Layer 函数或其实例资产路径；空字符串表示空槽位。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	FString LayerAssetPath;
+
+	/** 此槽位的 Material Layer Blend 函数或其实例路径；背景必须为空，其他槽位可为空。 */
+	UPROPERTY(BlueprintReadWrite, Category = "UnrealBridge|Material")
+	FString BlendAssetPath;
+};
+
+/**
+ * 材质实例的已解析图层栈快照；找不到资产与有效的无栈状态彼此区分。
+ * Resolved material-instance layer-stack snapshot that distinguishes a missing asset from a valid no-stack state.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialLayerStack
+{
+	GENERATED_BODY()
+
+	/** 路径是否解析为 UMaterialInstanceConstant。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bFound = false;
+
+	/** 该实例是否解析出至少一个材质图层槽位。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bHasLayers = false;
+
+	/** 按 Index 升序排列的完整可见栈。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	TArray<FBridgeMaterialLayerEntry> Layers;
+
+	/** 快照失败原因；成功时为空。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Error;
+};
+
+/**
+ * 材质实例图层栈替换结果；成功不代表资产已保存或着色器编译已完成。
+ * Result of replacing a material-instance layer stack; success does not imply save or shader-compilation completion.
+ */
+USTRUCT(BlueprintType)
+struct FBridgeMaterialLayerStackOpResult
+{
+	GENERATED_BODY()
+
+	/** 输入与目标均通过验证且调用已完成。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bSuccess = false;
+
+	/** 目标栈是否实际发生变化；相同替换会成功但保持 false。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bChanged = false;
+
+	/** 成功时验证并应用的图层槽位数量。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	int32 LayersApplied = 0;
+
+	/** 验证或应用失败原因；成功时为空。 */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString Error;
+};
+
 /** Default-value parameter entry (as declared on a Master Material). */
 USTRUCT(BlueprintType)
 struct FBridgeMaterialParamDefault
@@ -915,6 +1013,40 @@ public:
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMaterialInstanceInfo GetMaterialInstanceParameters(const FString& MaterialPath);
+
+	/**
+	 * 读取 UMaterialInstanceConstant 的已解析图层栈，不修改或保存资产。
+	 * Snapshot the resolved layer stack of a UMaterialInstanceConstant without modifying or saving it.
+	 *
+	 * 返回值会保留槽位顺序、名称、GUID、父链接状态、启用状态、引擎 relatives 限制标志以及可空的图层/混合资产路径。
+	 * The result preserves slot order, names, GUIDs, parent-link states, enabled states, engine relatives-restriction flags, and nullable layer/blend asset paths.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialLayerStack GetMaterialInstanceLayerStack(const FString& MaterialInstancePath);
+
+	/**
+	 * 以完整快照替换材质实例图层栈；所有索引、GUID、链接、根材质及资产类型会在 Modify 前验证。
+	 * Replace the complete material-instance layer stack; indices, GUIDs, links, root compatibility, and asset types are validated before Modify.
+	 *
+	 * relatives 限制标志按引擎并行数组索引保留；LinkedToParent 槽必须匹配父槽，局部修改需使用 UnlinkedFromParent。空替换会记录所有省略的非背景父层 GUID。
+	 * Relatives-restriction flags are preserved by engine parallel-array index; LinkedToParent slots must match the parent and local changes require UnlinkedFromParent. Empty replacement records every omitted non-background parent GUID.
+	 *
+	 * 使用一个事务并发送一次 PreEditChange/PostEditChange，随后标记包为脏；不会保存或轮询编译。
+	 * Uses one transaction and one PreEditChange/PostEditChange notification pair, then dirties the package; it does not save or poll compilation.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialLayerStackOpResult SetMaterialInstanceLayerStack(
+		const FString& MaterialInstancePath,
+		const TArray<FBridgeMaterialLayerEntry>& Layers);
+
+	/**
+	 * 仅在源与目标拥有同一最终根材质时复制已解析图层栈，并委托给完整替换入口。
+	 * Copy a resolved layer stack only when source and destination share the same ultimate root material, delegating to full replacement.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialLayerStackOpResult CopyMaterialInstanceLayerStack(
+		const FString& SourceMaterialInstancePath,
+		const FString& DestinationMaterialInstancePath);
 
 	/**
 	 * M1-1: Full metadata for a Material or Material Instance — domain, blend mode, shading models,

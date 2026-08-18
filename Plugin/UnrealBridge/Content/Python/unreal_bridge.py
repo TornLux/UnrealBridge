@@ -16,8 +16,8 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-08-06T15:18:20+00:00'
-_UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
+_GENERATED_AT = '2026-08-16T23:54:12+00:00'
+_UE_VERSION = '5.7.4-51494982+++UE5+Release-5.7'
 
 class Anim:
     """Wraps unreal.UnrealBridgeAnimLibrary (kwargs-only)."""
@@ -4436,6 +4436,11 @@ class Material:
         return unreal.UnrealBridgeMaterialLibrary.connect_material_output(material_path, src_guid, src_output_name, property_name)
 
     @staticmethod
+    def copy_material_instance_layer_stack(*, source_material_instance_path, destination_material_instance_path):
+        """X.copy_material_instance_layer_stack(source_material_instance_path, destination_material_instance_path) -> BridgeMaterialLayerStackOpResult"""
+        return unreal.UnrealBridgeMaterialLibrary.copy_material_instance_layer_stack(source_material_instance_path, destination_material_instance_path)
+
+    @staticmethod
     def create_material(*, path, domain, shading_model, blend_mode, two_sided, use_material_attributes):
         """X.create_material(path, domain, shading_model, blend_mode, two_sided, use_material_attributes) -> BridgeCreateAssetResult"""
         return unreal.UnrealBridgeMaterialLibrary.create_material(path, domain, shading_model, blend_mode, two_sided, use_material_attributes)
@@ -4499,6 +4504,11 @@ class Material:
     def get_material_info(*, material_path):
         """X.get_material_info(material_path) -> BridgeMaterialInfo"""
         return unreal.UnrealBridgeMaterialLibrary.get_material_info(material_path)
+
+    @staticmethod
+    def get_material_instance_layer_stack(*, material_instance_path):
+        """X.get_material_instance_layer_stack(material_instance_path) -> BridgeMaterialLayerStack"""
+        return unreal.UnrealBridgeMaterialLibrary.get_material_instance_layer_stack(material_instance_path)
 
     @staticmethod
     def get_material_instance_parameters(*, material_path):
@@ -4574,6 +4584,11 @@ class Material:
     def set_material_expression_property(*, material_path, guid, property_name, value):
         """X.set_material_expression_property(material_path, guid, property_name, value) -> bool"""
         return unreal.UnrealBridgeMaterialLibrary.set_material_expression_property(material_path, guid, property_name, value)
+
+    @staticmethod
+    def set_material_instance_layer_stack(*, material_instance_path, layers):
+        """X.set_material_instance_layer_stack(material_instance_path, layers) -> BridgeMaterialLayerStackOpResult"""
+        return unreal.UnrealBridgeMaterialLibrary.set_material_instance_layer_stack(material_instance_path, layers)
 
     @staticmethod
     def set_material_parameter_collection(*, collection_path, params):

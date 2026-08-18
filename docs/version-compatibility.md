@@ -27,6 +27,8 @@ fail with "no such function on UnrealBridgeXxxLibrary".
 
 ### Whole-library safe-stub gates
 
+`UnrealBridgeMaterialLibrary` keeps its reflected surface on every supported engine, including the material-instance layer-stack snapshot/full replacement/copy API. The real implementation remains gated to UE 5.7+; UE 5.3-5.6 compile generated safe stubs that log the version requirement and return empty result structs. This preserves reflection compatibility without widening the material implementation's engine-version scope.
+
 `UnrealBridgeStateTreeLibrary` keeps its reflected class and kwargs wrapper on
 all supported engines, but its real implementation is gated by
 `!UE_VERSION_OLDER_THAN(5, 7, 0)`. UE 5.3-5.6 compile generated safe stubs;

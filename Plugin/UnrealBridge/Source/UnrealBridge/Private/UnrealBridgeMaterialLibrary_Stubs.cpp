@@ -15,6 +15,24 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	return FBridgeMaterialInstanceInfo{};
 }
 
+FBridgeMaterialLayerStack UUnrealBridgeMaterialLibrary::GetMaterialInstanceLayerStack(const FString& MaterialInstancePath)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::GetMaterialInstanceLayerStack requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgeMaterialLayerStack{};
+}
+
+FBridgeMaterialLayerStackOpResult UUnrealBridgeMaterialLibrary::SetMaterialInstanceLayerStack(const FString& MaterialInstancePath, const TArray<FBridgeMaterialLayerEntry>& Layers)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::SetMaterialInstanceLayerStack requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgeMaterialLayerStackOpResult{};
+}
+
+FBridgeMaterialLayerStackOpResult UUnrealBridgeMaterialLibrary::CopyMaterialInstanceLayerStack(const FString& SourceMaterialInstancePath, const FString& DestinationMaterialInstancePath)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::CopyMaterialInstanceLayerStack requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgeMaterialLayerStackOpResult{};
+}
+
 FBridgeMaterialInfo UUnrealBridgeMaterialLibrary::GetMaterialInfo(const FString& MaterialPath)
 {
 	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::GetMaterialInfo requires UE 5.7+ — call ignored on this engine version"));
