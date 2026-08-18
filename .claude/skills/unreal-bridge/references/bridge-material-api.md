@@ -19,7 +19,7 @@ info = unreal.UnrealBridgeMaterialLibrary.get_material_instance_parameters(
     '/Engine/EngineMaterials/Widget3DPassThrough_Opaque')
 print(f'{info.name} (parent: {info.parent_name})')
 for p in info.parameters:
-    print(f'  [{p.param_type}] {p.name} = {p.value}')
+    print(f'  [{p.param_type}] {p.name} [{p.association},{p.index}] = {p.value}')
 ```
 
 ### FBridgeMaterialInstanceInfo fields
@@ -36,8 +36,11 @@ for p in info.parameters:
 | Field | Type | Description |
 |-------|------|-------------|
 | `name` | str | Parameter name |
-| `param_type` | str | "Scalar" / "Vector" / "Texture" / "DoubleVector" / "RuntimeVirtualTexture" |
+| `param_type` | str | `"Scalar"` / `"Vector"` / `"Texture"` / `"DoubleVector"` / `"RuntimeVirtualTexture"` / `"StaticSwitch"` |
 | `value` | str | String representation of the value |
+| `association` | str | Stable complete-identity field: `"Global"` / `"LayerParameter"` / `"BlendParameter"` |
+| `index` | int | `-1` for Global; non-negative layer/blend slot index otherwise |
+| `override` | bool | Whether this instance directly overrides the exact parameter identity (all returned dynamic entries and returned static switches are direct overrides) |
 
 ---
 
@@ -290,7 +293,7 @@ for i, layer in enumerate(chain.layers):
 |-------|------|-------------|
 | `name` / `path` | str | This layer's asset |
 | `is_base_material` | bool | `True` for the final `UMaterial` leaf of the chain |
-| `override_parameters` | list[FBridgeMaterialParam] | Parameters *explicitly set on this layer*. Always empty for the base `UMaterial` (defaults for master parameters are reported by `get_material_info`, not here). Covers all 5 override tables: Scalar / Vector / DoubleVector / Texture / RuntimeVirtualTexture. |
+| `override_parameters` | list[FBridgeMaterialParam] | Parameters *explicitly set on this layer*. Always empty for the base `UMaterial` (defaults for master parameters are reported by `get_material_info`, not here). Covers all 6 override categories: Scalar / Vector / DoubleVector / Texture / RuntimeVirtualTexture / StaticSwitch. |
 
 ### Notes
 
@@ -1087,22 +1090,28 @@ All M6 calls work on **Material Instances** (`UMaterialInstanceConstant`). If yo
 
 ## set_mi_params(material_instance_path, params) -> FBridgeMIParamResult
 
-**M6-1.** Batch-write scalar / vector / texture / static-switch override values onto a Material Instance Constant. Each entry validates against the parent material — params that don't exist upstream are reported in `skipped` rather than silently failing.
+**M6-1.** Atomically batch-write scalar / vector / texture / static-switch overrides onto a Material Instance Constant. Identity is the complete `(name, association, index)` tuple. Omitting `association` and `index` preserves the original behavior and targets exactly `Global/-1`; it never broad-matches same-named layer or blend parameters.
+
+The complete batch is validated before mutation. If any selector, type, value, or texture path is invalid, nothing changes. Duplicate requests resolving to the same complete `(type, name, association, index)` identity reject the whole batch, including aliases such as `bool`/`StaticSwitch` and empty type/`Scalar`. Duplicate inputs report `Duplicate`; otherwise-valid inputs report `NotApplied` because the atomic batch was rejected.
+
+An input whose exact explicit override already has the requested value reports `Unchanged`: it is successful, is not counted in `applied`, and does not transact, notify, or dirty the MI. An all-`Unchanged` batch performs no mutation. A mixed batch uses one transaction and mutates only `Applied` entries, followed by one editor notification/dirty mark. Static-switch changes update the resolved entry in place (preserving `ExpressionGUID`) and update the static permutation once per changed batch. The call marks the package dirty but does **not** save or wait for shader compilation; use `get_material_shader_compile_status` if readiness matters.
 
 ```python
-def ps(name, type, value):
-    p = unreal.BridgeMIParamSet(); p.name = name; p.type = type; p.value = value
+def ps(name, type, value, association="Global", index=-1):
+    p = unreal.BridgeMIParamSet()
+    p.name, p.type, p.value = name, type, value
+    p.association, p.index = association, index
     return p
 
 r = unreal.UnrealBridgeMaterialLibrary.set_mi_params(
     "/Game/Materials/MI_Bronze_Scratched",
     [ps("Roughness", "Scalar", "0.65"),
-     ps("BaseColor", "Vector", "(R=0.78,G=0.45,B=0.2,A=1)"),
-     ps("WearMask",  "Texture", "/Game/Textures/T_Wear.T_Wear"),
-     ps("UseDetail", "StaticSwitch", "true")])
+     ps("Tint", "Vector", "(R=0.78,G=0.45,B=0.2,A=1)", "LayerParameter", 1),
+     ps("UseDetail", "StaticSwitch", "true", "BlendParameter", 0)])
 
-print(f"applied {r.applied}, skipped {len(r.skipped)}")
-for s in r.skipped: print(f"  {s}")
+print(f"applied {r.applied}, success={r.success}")
+for outcome in r.outcomes:
+    print(outcome.name, outcome.association, outcome.index, outcome.status, outcome.error)
 ```
 
 ### FBridgeMIParamSet fields
@@ -1112,24 +1121,32 @@ for s in r.skipped: print(f"  {s}")
 | `name` | str | Parameter name on the parent |
 | `type` | str | `"Scalar"` / `"Vector"` / `"Texture"` / `"StaticSwitch"` (aliases: `"bool"`, `"switch"`) |
 | `value` | str | ImportText-format: floats as `"0.5"`, colors as `"(R=,G=,B=,A=)"`, texture as full asset path, bool as `"true"`/`"false"` |
+| `association` | str | `"Global"` (default), `"LayerParameter"`, or `"BlendParameter"`; matching is case-insensitive and outcomes normalize valid values |
+| `index` | int | `-1` for Global (default); required non-negative slot for LayerParameter/BlendParameter |
 
 ### FBridgeMIParamResult fields
 
 | Field | Type | Description |
 |---|---|---|
-| `success` | bool | True only if every param applied |
-| `applied` | int | Count of params that wrote successfully |
-| `skipped` | list[str] | Diagnostic messages for failures ("not found on parent" / "vector unparseable" / etc.) |
+| `success` | bool | True when the whole atomic batch validates; empty and all-`Unchanged` batches succeed without a transaction |
+| `applied` | int | Number of entries actually changed; excludes `Unchanged`, and is `0` after any validation failure |
+| `skipped` | list[str] | Compatibility diagnostics; prefer `outcomes` for machine-readable handling |
+| `outcomes` | list[FBridgeMIParamOutcome] | One result per input, in input order |
 
-### UE 5.7 gotcha — ignore the engine's bool return
+### FBridgeMIParamOutcome fields
 
-`UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue` has a documented engine bug where `bResult = false` is returned unconditionally — the value *does* get applied via `SetScalarParameterValueEditorOnly`. This wrapper works around that by probing the parent first and always treating the setter call as advisory; clients don't see the raw bool.
+| Field | Type | Description |
+|---|---|---|
+| `name` / `type` / `association` / `index` | str / str / str / int | Echoed exact request identity (valid association spellings are normalized) |
+| `applied` | bool | True only when this entry was changed and committed; false for successful `Unchanged` entries |
+| `status` | str | `"Applied"`, `"Unchanged"`, `"Duplicate"`, `"NotFound"`, `"InvalidSelector"`, `"InvalidValue"`, `"InvalidType"`, `"NotApplied"`, or `"Error"` |
+| `error` | str | Empty for `Applied`/`Unchanged`; otherwise a diagnostic. `Duplicate` identifies every repeated typed complete identity, while `NotApplied` means another entry invalidated the atomic batch |
 
 ---
 
 ## set_mi_and_preview(mi_path, params, mesh, lighting, resolution, yaw, pitch, distance, out_png) -> bool
 
-**M6-2.** `set_mi_params` followed by `preview_material` in one atomic call. The MI is saved after applying (persist the override values), then the preview renders.
+**M6-2.** `set_mi_params` followed by `preview_material` in one call. Parameter application has the same exact-selector and atomic-validation behavior. If the atomic parameter batch fails, the function returns `False` without rendering the unchanged old state. A successful mutation marks the MI dirty but does not save it; preview rendering does not wait for static shader compilation.
 
 ```python
 ok = unreal.UnrealBridgeMaterialLibrary.set_mi_and_preview(
@@ -1190,19 +1207,19 @@ L.set_material_parameter_collection("/Game/MPC/MPC_Weather", [
 
 ## diff_mi_params(path_a, path_b) -> str
 
-**M6-5.** Text diff of MI override values. Line prefixes:
+**M6-5.** Text diff of MI override values. Every key is the complete `(Type, Name, Association, Index)` identity, so same-named Global, Layer, Blend, Scalar, Vector, and Texture entries cannot overwrite one another. Line prefixes:
 
-- `+ Type Name = value` — override in B that A lacks
-- `- Type Name = value` — override in A that B lacks
-- `~ Type Name: oldValue -> newValue` — same param, different value
+- `+ Type Name [Association,Index] = value` — exact override in B that A lacks
+- `- Type Name [Association,Index] = value` — exact override in A that B lacks
+- `~ Type Name [Association,Index]: oldValue -> newValue` — same exact override, different value
 - `(no override differences)` — identical overrides
 
 Walks Scalar / Vector / Texture tables. Does not walk parent chains — only each MI's own override table is compared.
 
 ```python
 print(L.diff_mi_params(mi_bronze_a, mi_bronze_b))
-# ~ Scalar Roughness: 0.5 -> 0.75
-# ~ Vector BaseColor: (R=1.0,G=0.2,B=0.2,A=1.0) -> (R=0.3,G=0.3,B=0.35,A=1.0)
+# ~ Scalar Roughness [Global,-1]: 0.5 -> 0.75
+# ~ Vector BaseColor [LayerParameter,1]: (R=1.0,G=0.2,B=0.2,A=1.0) -> (R=0.3,G=0.3,B=0.35,A=1.0)
 ```
 
 ---

@@ -5,6 +5,8 @@
 
 #if !UE_VERSION_OLDER_THAN(5, 7, 0)
 
+#include "UnrealBridgeMaterialParameterHelpers.h"
+
 #include "Materials/Material.h"
 #include "Materials/MaterialInstance.h"
 #include "Materials/MaterialInterface.h"
@@ -89,9 +91,50 @@
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/ARFilter.h"
+#include "String/LexFromString.h"
 
 namespace BridgeMaterialImpl
 {
+	using namespace BridgeMaterialParameterHelpers;
+
+	/**
+	 * 将引擎参数身份复制到稳定的反射字段，避免同名的全局、层和混合参数失去区别。
+	 * Copy engine parameter identity into stable reflected fields so same-named global, layer, and blend parameters remain distinct.
+	 */
+	static void SetMaterialParamIdentity(
+		FBridgeMaterialParam& Param,
+		const FMaterialParameterInfo& Info,
+		bool bOverride = true)
+	{
+		Param.Name = Info.Name.ToString();
+		Param.Association = AssociationToString(Info.Association);
+		Param.Index = Info.Index;
+		Param.bOverride = bOverride;
+	}
+
+	static void AppendStaticSwitchOverrides(
+		const UMaterialInstance* MI,
+		TArray<FBridgeMaterialParam>& OutParameters)
+	{
+		FStaticParameterSet StaticParameters;
+		// 引擎读取接口缺少 const 限定但不会修改实例；仅在这个只读边界移除 const。
+		// The engine read API is not const-qualified but does not mutate the instance; remove const only at this read boundary.
+		const_cast<UMaterialInstance*>(MI)->GetStaticParameterValues(StaticParameters);
+		for (const FStaticSwitchParameter& P : StaticParameters.StaticSwitchParameters)
+		{
+			if (!P.bOverride)
+			{
+				continue;
+			}
+
+			FBridgeMaterialParam Param;
+			SetMaterialParamIdentity(Param, P.ParameterInfo, P.bOverride);
+			Param.ParamType = TEXT("StaticSwitch");
+			Param.Value = P.Value ? TEXT("True") : TEXT("False");
+			OutParameters.Add(MoveTemp(Param));
+		}
+	}
+
 	static FString DomainToString(EMaterialDomain Domain)
 	{
 		switch (Domain)
@@ -391,6 +434,8 @@ namespace BridgeMaterialImpl
 FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstanceParameters(
 	const FString& MaterialPath)
 {
+	using namespace BridgeMaterialImpl;
+
 	FBridgeMaterialInstanceInfo Result;
 
 	UMaterialInstance* MI = LoadObject<UMaterialInstance>(nullptr, *MaterialPath);
@@ -411,7 +456,7 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	for (const FScalarParameterValue& P : MI->ScalarParameterValues)
 	{
 		FBridgeMaterialParam Param;
-		Param.Name = P.ParameterInfo.Name.ToString();
+		SetMaterialParamIdentity(Param, P.ParameterInfo);
 		Param.ParamType = TEXT("Scalar");
 		Param.Value = FString::SanitizeFloat(P.ParameterValue);
 		Result.Parameters.Add(Param);
@@ -420,7 +465,7 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	for (const FVectorParameterValue& P : MI->VectorParameterValues)
 	{
 		FBridgeMaterialParam Param;
-		Param.Name = P.ParameterInfo.Name.ToString();
+		SetMaterialParamIdentity(Param, P.ParameterInfo);
 		Param.ParamType = TEXT("Vector");
 		Param.Value = FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"),
 			P.ParameterValue.R, P.ParameterValue.G, P.ParameterValue.B, P.ParameterValue.A);
@@ -430,7 +475,7 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	for (const FDoubleVectorParameterValue& P : MI->DoubleVectorParameterValues)
 	{
 		FBridgeMaterialParam Param;
-		Param.Name = P.ParameterInfo.Name.ToString();
+		SetMaterialParamIdentity(Param, P.ParameterInfo);
 		Param.ParamType = TEXT("DoubleVector");
 		Param.Value = P.ParameterValue.ToString();
 		Result.Parameters.Add(Param);
@@ -439,7 +484,7 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	for (const FTextureParameterValue& P : MI->TextureParameterValues)
 	{
 		FBridgeMaterialParam Param;
-		Param.Name = P.ParameterInfo.Name.ToString();
+		SetMaterialParamIdentity(Param, P.ParameterInfo);
 		Param.ParamType = TEXT("Texture");
 		Param.Value = P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None");
 		Result.Parameters.Add(Param);
@@ -448,12 +493,13 @@ FBridgeMaterialInstanceInfo UUnrealBridgeMaterialLibrary::GetMaterialInstancePar
 	for (const FRuntimeVirtualTextureParameterValue& P : MI->RuntimeVirtualTextureParameterValues)
 	{
 		FBridgeMaterialParam Param;
-		Param.Name = P.ParameterInfo.Name.ToString();
+		SetMaterialParamIdentity(Param, P.ParameterInfo);
 		Param.ParamType = TEXT("RuntimeVirtualTexture");
 		Param.Value = P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None");
 		Result.Parameters.Add(Param);
 	}
 
+	AppendStaticSwitchOverrides(MI, Result.Parameters);
 	return Result;
 }
 
@@ -1073,7 +1119,7 @@ namespace BridgeMaterialImpl
 		for (const FScalarParameterValue& P : MI->ScalarParameterValues)
 		{
 			FBridgeMaterialParam Param;
-			Param.Name = P.ParameterInfo.Name.ToString();
+			SetMaterialParamIdentity(Param, P.ParameterInfo);
 			Param.ParamType = TEXT("Scalar");
 			Param.Value = FString::SanitizeFloat(P.ParameterValue);
 			Layer.OverrideParameters.Add(MoveTemp(Param));
@@ -1081,7 +1127,7 @@ namespace BridgeMaterialImpl
 		for (const FVectorParameterValue& P : MI->VectorParameterValues)
 		{
 			FBridgeMaterialParam Param;
-			Param.Name = P.ParameterInfo.Name.ToString();
+			SetMaterialParamIdentity(Param, P.ParameterInfo);
 			Param.ParamType = TEXT("Vector");
 			Param.Value = FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"),
 				P.ParameterValue.R, P.ParameterValue.G, P.ParameterValue.B, P.ParameterValue.A);
@@ -1090,7 +1136,7 @@ namespace BridgeMaterialImpl
 		for (const FDoubleVectorParameterValue& P : MI->DoubleVectorParameterValues)
 		{
 			FBridgeMaterialParam Param;
-			Param.Name = P.ParameterInfo.Name.ToString();
+			SetMaterialParamIdentity(Param, P.ParameterInfo);
 			Param.ParamType = TEXT("DoubleVector");
 			Param.Value = P.ParameterValue.ToString();
 			Layer.OverrideParameters.Add(MoveTemp(Param));
@@ -1098,7 +1144,7 @@ namespace BridgeMaterialImpl
 		for (const FTextureParameterValue& P : MI->TextureParameterValues)
 		{
 			FBridgeMaterialParam Param;
-			Param.Name = P.ParameterInfo.Name.ToString();
+			SetMaterialParamIdentity(Param, P.ParameterInfo);
 			Param.ParamType = TEXT("Texture");
 			Param.Value = P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None");
 			Layer.OverrideParameters.Add(MoveTemp(Param));
@@ -1106,11 +1152,12 @@ namespace BridgeMaterialImpl
 		for (const FRuntimeVirtualTextureParameterValue& P : MI->RuntimeVirtualTextureParameterValues)
 		{
 			FBridgeMaterialParam Param;
-			Param.Name = P.ParameterInfo.Name.ToString();
+			SetMaterialParamIdentity(Param, P.ParameterInfo);
 			Param.ParamType = TEXT("RuntimeVirtualTexture");
 			Param.Value = P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None");
 			Layer.OverrideParameters.Add(MoveTemp(Param));
 		}
+		AppendStaticSwitchOverrides(MI, Layer.OverrideParameters);
 	}
 }
 
@@ -3691,98 +3738,83 @@ FBridgeShaderSnippet UUnrealBridgeMaterialLibrary::GetSharedSnippet(const FStrin
 
 namespace BridgeMaterialImpl
 {
-	/**
-	 * Apply one FBridgeMIParamSet to a UMaterialInstanceConstant. Returns true on success.
-	 * Dispatches on Type — each handler parses Value with the format documented on the
-	 * FBridgeMIParamSet struct.
-	 */
-	static bool ApplyMIParam(
-		UMaterialInstanceConstant* MIC,
-		const FBridgeMIParamSet& P,
-		FString& OutError)
+	using namespace BridgeMaterialParameterHelpers;
+
+	enum class EMIParamKind : uint8
 	{
-		if (!MIC)
-		{
-			OutError = TEXT("null MI");
-			return false;
-		}
+		Scalar,
+		Vector,
+		Texture,
+		StaticSwitch
+	};
 
-		const FName ParamName(*P.Name);
-		const FString TypeLower = P.Type.ToLower();
+	/**
+	 * 已验证的请求持有解析后的值，确保事务开始后不会再发生加载或解析失败。
+	 * A validated request owns its parsed value so no loading or parsing can fail after the transaction starts.
+	 */
+	struct FValidatedMIParam
+	{
+		EMIParamKind Kind = EMIParamKind::Scalar;
+		FMaterialParameterInfo Info;
+		float Scalar = 0.0f;
+		FLinearColor Vector = FLinearColor::Black;
+		UTexture* Texture = nullptr;
+		bool bSelectorAndTypeValid = false;
+		bool bDuplicate = false;
+		bool bChanged = false;
+	};
 
-		// NOTE: UE 5.7's UMaterialEditingLibrary::SetMaterialInstance*ParameterValue
-		// functions have a stub `bool bResult = false` that is never updated — the return
-		// value is effectively meaningless (always false). The setter *does* mutate the MI
-		// via SetScalarParameterValueEditorOnly. We rely on that side effect and verify
-		// parameter existence up-front via a GetScalarParameterValue probe.
-		const FMaterialParameterInfo Info(ParamName);
-
+	static bool TryParseMIParamKind(const FString& Type, EMIParamKind& OutKind)
+	{
+		const FString TypeLower = Type.ToLower();
 		if (TypeLower == TEXT("scalar") || TypeLower.IsEmpty())
 		{
-			float Probe;
-			if (!MIC->GetScalarParameterValue(Info, Probe))
-			{
-				OutError = FString::Printf(TEXT("scalar param '%s' not found on parent"), *P.Name);
-				return false;
-			}
-			const float V = FCString::Atof(*P.Value);
-			UMaterialEditingLibrary::SetMaterialInstanceScalarParameterValue(MIC, ParamName, V);
+			OutKind = EMIParamKind::Scalar;
 			return true;
 		}
 		if (TypeLower == TEXT("vector"))
 		{
-			FLinearColor Probe;
-			if (!MIC->GetVectorParameterValue(Info, Probe))
-			{
-				OutError = FString::Printf(TEXT("vector param '%s' not found on parent"), *P.Name);
-				return false;
-			}
-			FLinearColor V(FLinearColor::Black);
-			if (!V.InitFromString(P.Value))
-			{
-				OutError = FString::Printf(TEXT("vector value '%s' not parseable — expected (R=,G=,B=,A=)"), *P.Value);
-				return false;
-			}
-			UMaterialEditingLibrary::SetMaterialInstanceVectorParameterValue(MIC, ParamName, V);
+			OutKind = EMIParamKind::Vector;
 			return true;
 		}
 		if (TypeLower == TEXT("texture"))
 		{
-			UTexture* ProbeTex = nullptr;
-			if (!MIC->GetTextureParameterValue(Info, ProbeTex))
-			{
-				OutError = FString::Printf(TEXT("texture param '%s' not found on parent"), *P.Name);
-				return false;
-			}
-			UTexture* Tex = nullptr;
-			if (!P.Value.IsEmpty() && P.Value.ToLower() != TEXT("none"))
-			{
-				Tex = LoadObject<UTexture>(nullptr, *P.Value);
-				if (!Tex)
-				{
-					OutError = FString::Printf(TEXT("texture '%s' failed to load"), *P.Value);
-					return false;
-				}
-			}
-			UMaterialEditingLibrary::SetMaterialInstanceTextureParameterValue(MIC, ParamName, Tex);
+			OutKind = EMIParamKind::Texture;
 			return true;
 		}
 		if (TypeLower == TEXT("staticswitch") || TypeLower == TEXT("switch") || TypeLower == TEXT("bool"))
 		{
-			bool ProbeBool;
-			FGuid ProbeGuid;
-			if (!MIC->GetStaticSwitchParameterValue(Info, ProbeBool, ProbeGuid))
-			{
-				OutError = FString::Printf(TEXT("static-switch param '%s' not found on parent"), *P.Name);
-				return false;
-			}
-			const FString Lower = P.Value.ToLower();
-			const bool V = (Lower == TEXT("true") || Lower == TEXT("1") || Lower == TEXT("yes"));
-			UMaterialEditingLibrary::SetMaterialInstanceStaticSwitchParameterValue(MIC, ParamName, V);
+			OutKind = EMIParamKind::StaticSwitch;
 			return true;
 		}
+		return false;
+	}
 
-		OutError = FString::Printf(TEXT("unknown param type '%s' — expected Scalar/Vector/Texture/StaticSwitch"), *P.Type);
+	static void SetOutcomeFailure(
+		FBridgeMIParamOutcome& Outcome,
+		const FString& Status,
+		const FString& Error)
+	{
+		Outcome.Status = Status;
+		Outcome.Error = Error;
+	}
+
+	static bool ParseStaticSwitchValue(const FString& Text, bool& OutValue)
+	{
+		if (Text.Equals(TEXT("true"), ESearchCase::IgnoreCase)
+			|| Text == TEXT("1")
+			|| Text.Equals(TEXT("yes"), ESearchCase::IgnoreCase))
+		{
+			OutValue = true;
+			return true;
+		}
+		if (Text.Equals(TEXT("false"), ESearchCase::IgnoreCase)
+			|| Text == TEXT("0")
+			|| Text.Equals(TEXT("no"), ESearchCase::IgnoreCase))
+		{
+			OutValue = false;
+			return true;
+		}
 		return false;
 	}
 }
@@ -3792,33 +3824,277 @@ FBridgeMIParamResult UUnrealBridgeMaterialLibrary::SetMIParams(
 	const TArray<FBridgeMIParamSet>& Params)
 {
 	using namespace BridgeMaterialImpl;
+	using namespace BridgeMaterialParameterHelpers;
 
 	FBridgeMIParamResult Result;
+	Result.Outcomes.Reserve(Params.Num());
+	for (const FBridgeMIParamSet& P : Params)
+	{
+		FBridgeMIParamOutcome& Outcome = Result.Outcomes.AddDefaulted_GetRef();
+		Outcome.Name = P.Name;
+		Outcome.Type = P.Type;
+		Outcome.Association = P.Association.IsEmpty() ? TEXT("Global") : P.Association;
+		Outcome.Index = P.Index;
+	}
 
 	UMaterialInstanceConstant* MIC = LoadObject<UMaterialInstanceConstant>(nullptr, *MaterialInstancePath);
 	if (!MIC)
 	{
-		Result.Skipped.Add(FString::Printf(TEXT("could not load MI '%s'"), *MaterialInstancePath));
+		const FString Error = FString::Printf(TEXT("could not load MI '%s'"), *MaterialInstancePath);
+		Result.Skipped.Add(Error);
+		for (FBridgeMIParamOutcome& Outcome : Result.Outcomes)
+		{
+			SetOutcomeFailure(Outcome, TEXT("Error"), Error);
+		}
 		return Result;
 	}
 
-	for (const FBridgeMIParamSet& P : Params)
+	TArray<FMaterialParameterInfo> ScalarInfos;
+	TArray<FMaterialParameterInfo> VectorInfos;
+	TArray<FMaterialParameterInfo> TextureInfos;
+	TArray<FGuid> ParameterIds;
+	MIC->GetAllParameterInfoOfType(EMaterialParameterType::Scalar, ScalarInfos, ParameterIds);
+	ParameterIds.Reset();
+	MIC->GetAllParameterInfoOfType(EMaterialParameterType::Vector, VectorInfos, ParameterIds);
+	ParameterIds.Reset();
+	MIC->GetAllParameterInfoOfType(EMaterialParameterType::Texture, TextureInfos, ParameterIds);
+
+	FStaticParameterSet StaticParameters;
+	MIC->GetStaticParameterValues(StaticParameters);
+	TArray<FValidatedMIParam> Validated;
+	Validated.SetNum(Params.Num());
+	bool bValidationFailed = false;
+
+	// 第一遍只规范化身份和类型，以便在任何值加载或对象变更前拒绝整批重复目标。
+	// The first pass only normalizes identity and type so duplicate batch targets are rejected before value loading or object mutation.
+	for (int32 ParamIndex = 0; ParamIndex < Params.Num(); ++ParamIndex)
 	{
-		FString Err;
-		if (ApplyMIParam(MIC, P, Err))
+		const FBridgeMIParamSet& P = Params[ParamIndex];
+		FBridgeMIParamOutcome& Outcome = Result.Outcomes[ParamIndex];
+		FValidatedMIParam& Candidate = Validated[ParamIndex];
+		FString Error;
+		if (!TryMakeParameterInfo(P.Name, P.Association, P.Index, Candidate.Info, Error))
 		{
-			++Result.Applied;
+			SetOutcomeFailure(Outcome, TEXT("InvalidSelector"), Error);
+			bValidationFailed = true;
+			continue;
 		}
-		else
+		Outcome.Association = AssociationToString(Candidate.Info.Association);
+		if (!TryParseMIParamKind(P.Type, Candidate.Kind))
 		{
-			Result.Skipped.Add(FString::Printf(TEXT("%s = %s: %s"), *P.Name, *P.Value, *Err));
+			SetOutcomeFailure(Outcome, TEXT("InvalidType"), FString::Printf(TEXT("unknown param type '%s' — expected Scalar/Vector/Texture/StaticSwitch"), *P.Type));
+			bValidationFailed = true;
+			continue;
+		}
+		Candidate.bSelectorAndTypeValid = true;
+	}
+
+	for (int32 FirstIndex = 0; FirstIndex < Validated.Num(); ++FirstIndex)
+	{
+		if (!Validated[FirstIndex].bSelectorAndTypeValid)
+		{
+			continue;
+		}
+		for (int32 SecondIndex = FirstIndex + 1; SecondIndex < Validated.Num(); ++SecondIndex)
+		{
+			if (Validated[SecondIndex].bSelectorAndTypeValid
+				&& Validated[FirstIndex].Kind == Validated[SecondIndex].Kind
+				&& Validated[FirstIndex].Info == Validated[SecondIndex].Info)
+			{
+				Validated[FirstIndex].bDuplicate = true;
+				Validated[SecondIndex].bDuplicate = true;
+			}
+		}
+	}
+	for (int32 ParamIndex = 0; ParamIndex < Validated.Num(); ++ParamIndex)
+	{
+		if (Validated[ParamIndex].bDuplicate)
+		{
+			SetOutcomeFailure(Result.Outcomes[ParamIndex], TEXT("Duplicate"),
+				TEXT("duplicate parameter type and exact selector in the same batch"));
+			bValidationFailed = true;
 		}
 	}
 
+	// 第二遍解析值并判断是否真的改变显式覆盖；这里只修改静态参数集副本。
+	// The second pass parses values and detects real override changes; only the static-parameter copy is mutated here.
+	for (int32 ParamIndex = 0; ParamIndex < Params.Num(); ++ParamIndex)
+	{
+		const FBridgeMIParamSet& P = Params[ParamIndex];
+		FBridgeMIParamOutcome& Outcome = Result.Outcomes[ParamIndex];
+		FValidatedMIParam& Candidate = Validated[ParamIndex];
+		if (!Candidate.bSelectorAndTypeValid || Candidate.bDuplicate)
+		{
+			continue;
+		}
+
+		switch (Candidate.Kind)
+		{
+			case EMIParamKind::Scalar:
+			{
+				if (!ContainsExactInfo(ScalarInfos, Candidate.Info))
+				{
+					SetOutcomeFailure(Outcome, TEXT("NotFound"), TEXT("exact scalar selector not found on parent"));
+					bValidationFailed = true;
+					continue;
+				}
+				if (!LexTryParseString(Candidate.Scalar, *P.Value))
+				{
+					SetOutcomeFailure(Outcome, TEXT("InvalidValue"), FString::Printf(TEXT("scalar value '%s' is not parseable"), *P.Value));
+					bValidationFailed = true;
+					continue;
+				}
+				const FScalarParameterValue* Existing = MIC->ScalarParameterValues.FindByPredicate([&Candidate](const FScalarParameterValue& Value)
+				{
+					return Value.ParameterInfo == Candidate.Info;
+				});
+				Candidate.bChanged = !Existing || Existing->ParameterValue != Candidate.Scalar;
+				break;
+			}
+			case EMIParamKind::Vector:
+			{
+				if (!ContainsExactInfo(VectorInfos, Candidate.Info))
+				{
+					SetOutcomeFailure(Outcome, TEXT("NotFound"), TEXT("exact vector selector not found on parent"));
+					bValidationFailed = true;
+					continue;
+				}
+				if (!Candidate.Vector.InitFromString(P.Value))
+				{
+					SetOutcomeFailure(Outcome, TEXT("InvalidValue"), FString::Printf(TEXT("vector value '%s' is not parseable; expected (R=,G=,B=,A=)"), *P.Value));
+					bValidationFailed = true;
+					continue;
+				}
+				const FVectorParameterValue* Existing = MIC->VectorParameterValues.FindByPredicate([&Candidate](const FVectorParameterValue& Value)
+				{
+					return Value.ParameterInfo == Candidate.Info;
+				});
+				Candidate.bChanged = !Existing || Existing->ParameterValue != Candidate.Vector;
+				break;
+			}
+			case EMIParamKind::Texture:
+			{
+				if (!ContainsExactInfo(TextureInfos, Candidate.Info))
+				{
+					SetOutcomeFailure(Outcome, TEXT("NotFound"), TEXT("exact texture selector not found on parent"));
+					bValidationFailed = true;
+					continue;
+				}
+				if (!P.Value.IsEmpty() && !P.Value.Equals(TEXT("none"), ESearchCase::IgnoreCase))
+				{
+					Candidate.Texture = LoadObject<UTexture>(nullptr, *P.Value);
+					if (!Candidate.Texture)
+					{
+						SetOutcomeFailure(Outcome, TEXT("InvalidValue"), FString::Printf(TEXT("texture '%s' failed to load"), *P.Value));
+						bValidationFailed = true;
+						continue;
+					}
+				}
+				const FTextureParameterValue* Existing = MIC->TextureParameterValues.FindByPredicate([&Candidate](const FTextureParameterValue& Value)
+				{
+					return Value.ParameterInfo == Candidate.Info;
+				});
+				Candidate.bChanged = !Existing || Existing->ParameterValue != Candidate.Texture;
+				break;
+			}
+			case EMIParamKind::StaticSwitch:
+			{
+				FStaticSwitchParameter* Switch = FindExactStaticSwitch(StaticParameters, Candidate.Info);
+				if (!Switch)
+				{
+					SetOutcomeFailure(Outcome, TEXT("NotFound"), TEXT("exact static-switch selector not found on parent"));
+					bValidationFailed = true;
+					continue;
+				}
+				bool bValue = false;
+				if (!ParseStaticSwitchValue(P.Value, bValue))
+				{
+					SetOutcomeFailure(Outcome, TEXT("InvalidValue"), FString::Printf(TEXT("static-switch value '%s' is not parseable"), *P.Value));
+					bValidationFailed = true;
+					continue;
+				}
+				Candidate.bChanged = !Switch->bOverride || Switch->Value != bValue;
+				if (Candidate.bChanged)
+				{
+					// 保留引擎提供的 ExpressionGUID，仅改变显式覆盖值。
+					// Preserve the engine-provided ExpressionGUID while changing only the explicit override value.
+					Switch->Value = bValue;
+					Switch->bOverride = true;
+				}
+				break;
+			}
+		}
+		Outcome.Status = Candidate.bChanged ? TEXT("Validated") : TEXT("Unchanged");
+	}
+
+	if (bValidationFailed)
+	{
+		for (int32 ParamIndex = 0; ParamIndex < Result.Outcomes.Num(); ++ParamIndex)
+		{
+			FBridgeMIParamOutcome& Outcome = Result.Outcomes[ParamIndex];
+			if (Outcome.Status == TEXT("Validated") || Outcome.Status == TEXT("Unchanged"))
+			{
+				SetOutcomeFailure(Outcome, TEXT("NotApplied"), TEXT("batch validation failed; no parameters were changed"));
+			}
+			if (!Outcome.Error.IsEmpty())
+			{
+				Result.Skipped.Add(FString::Printf(TEXT("%s [%s,%d] = %s: %s"),
+					*Outcome.Name, *Outcome.Association, Outcome.Index, *Params[ParamIndex].Value, *Outcome.Error));
+			}
+		}
+		return Result;
+	}
+
+	int32 ChangedCount = 0;
+	bool bHasStaticChanges = false;
+	for (const FValidatedMIParam& Candidate : Validated)
+	{
+		ChangedCount += Candidate.bChanged ? 1 : 0;
+		bHasStaticChanges |= Candidate.bChanged && Candidate.Kind == EMIParamKind::StaticSwitch;
+	}
+	if (ChangedCount == 0)
+	{
+		Result.bSuccess = true;
+		return Result;
+	}
+
+	const FScopedTransaction Transaction(NSLOCTEXT("UnrealBridge", "SetMIParams", "Set material instance parameters"));
+	MIC->Modify();
+	for (int32 ParamIndex = 0; ParamIndex < Validated.Num(); ++ParamIndex)
+	{
+		const FValidatedMIParam& P = Validated[ParamIndex];
+		if (!P.bChanged)
+		{
+			continue;
+		}
+		switch (P.Kind)
+		{
+			case EMIParamKind::Scalar:
+				MIC->SetScalarParameterValueEditorOnly(P.Info, P.Scalar);
+				break;
+			case EMIParamKind::Vector:
+				MIC->SetVectorParameterValueEditorOnly(P.Info, P.Vector);
+				break;
+			case EMIParamKind::Texture:
+				MIC->SetTextureParameterValueEditorOnly(P.Info, P.Texture);
+				break;
+			case EMIParamKind::StaticSwitch:
+				break;
+		}
+		FBridgeMIParamOutcome& Outcome = Result.Outcomes[ParamIndex];
+		Outcome.bApplied = true;
+		Outcome.Status = TEXT("Applied");
+		Outcome.Error.Reset();
+	}
+	if (bHasStaticChanges)
+	{
+		MIC->UpdateStaticPermutation(StaticParameters);
+	}
 	MIC->PostEditChange();
 	MIC->MarkPackageDirty();
 
-	Result.bSuccess = Result.Skipped.Num() == 0;
+	Result.Applied = ChangedCount;
+	Result.bSuccess = true;
 	return Result;
 }
 
@@ -3835,16 +4111,18 @@ bool UUnrealBridgeMaterialLibrary::SetMIAndPreview(
 	float CameraDistance,
 	const FString& OutPngPath)
 {
-	FBridgeMIParamResult PR = SetMIParams(MaterialInstancePath, Params);
-	if (!PR.bSuccess)
-	{
-		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: SetMIAndPreview skipped %d params — rendering anyway"), PR.Skipped.Num());
-	}
-
-	return BridgeMaterialImpl::RenderMaterialPreview(
-		MaterialInstancePath, Mesh, Lighting, Resolution,
-		CameraYawDeg, CameraPitchDeg, CameraDistance,
-		OutPngPath, /*bShaderComplexity=*/ false);
+	return BridgeMaterialParameterHelpers::SetMIAndPreviewAfterSuccessfulSet(
+		[&]()
+		{
+			return SetMIParams(MaterialInstancePath, Params);
+		},
+		[&]()
+		{
+			return BridgeMaterialImpl::RenderMaterialPreview(
+				MaterialInstancePath, Mesh, Lighting, Resolution,
+				CameraYawDeg, CameraPitchDeg, CameraDistance,
+				OutPngPath, /*bShaderComplexity=*/ false);
+		});
 }
 
 // ─── M6-3: sweep one param over a list of values ──────────────────
@@ -4155,61 +4433,96 @@ FBridgeMIParamResult UUnrealBridgeMaterialLibrary::SetMaterialParameterCollectio
 
 // ─── M6-5: diff two MI parameter sets ─────────────────────────────
 
+namespace BridgeMaterialImpl
+{
+	/**
+	 * 材质实例差异键使用类型和完整引擎参数身份，避免同名跨类型、层或混合槽互相覆盖。
+	 * Material-instance diff keys use type plus complete engine identity so names cannot collide across types, layers, or blend slots.
+	 */
+	struct FMIParameterDiffIdentity
+	{
+		FName Type;
+		FMaterialParameterInfo ParameterInfo;
+
+		bool operator==(const FMIParameterDiffIdentity& Other) const
+		{
+			return Type.IsEqual(Other.Type) && ParameterInfo == Other.ParameterInfo;
+		}
+
+		friend uint32 GetTypeHash(const FMIParameterDiffIdentity& Identity)
+		{
+			return HashCombine(GetTypeHash(Identity.Type), GetTypeHash(Identity.ParameterInfo));
+		}
+	};
+
+	static FString FormatMIParameterDiffIdentity(const FMIParameterDiffIdentity& Identity)
+	{
+		return FString::Printf(TEXT("%s %s [%s,%d]"),
+			*Identity.Type.ToString(),
+			*Identity.ParameterInfo.Name.ToString(),
+			*AssociationToString(Identity.ParameterInfo.Association),
+			Identity.ParameterInfo.Index);
+	}
+}
+
 FString UUnrealBridgeMaterialLibrary::DiffMIParams(
 	const FString& PathA,
 	const FString& PathB)
 {
+	using namespace BridgeMaterialImpl;
+
 	UMaterialInstance* A = LoadObject<UMaterialInstance>(nullptr, *PathA);
 	UMaterialInstance* B = LoadObject<UMaterialInstance>(nullptr, *PathB);
 	if (!A) return FString::Printf(TEXT("diff error: could not load A '%s'"), *PathA);
 	if (!B) return FString::Printf(TEXT("diff error: could not load B '%s'"), *PathB);
 
-	struct FEntry { FString Type; FString Value; };
-
-	auto Collect = [](UMaterialInstance* MI) -> TMap<FString, FEntry>
+	auto Collect = [](UMaterialInstance* MI) -> TMap<FMIParameterDiffIdentity, FString>
 	{
-		TMap<FString, FEntry> Out;
+		TMap<FMIParameterDiffIdentity, FString> Out;
 		for (const FScalarParameterValue& P : MI->ScalarParameterValues)
 		{
-			Out.Add(P.ParameterInfo.Name.ToString(), {TEXT("Scalar"), FString::SanitizeFloat(P.ParameterValue)});
+			Out.Add({FName(TEXT("Scalar")), P.ParameterInfo}, FString::SanitizeFloat(P.ParameterValue));
 		}
 		for (const FVectorParameterValue& P : MI->VectorParameterValues)
 		{
-			Out.Add(P.ParameterInfo.Name.ToString(), {TEXT("Vector"),
+			Out.Add({FName(TEXT("Vector")), P.ParameterInfo},
 				FString::Printf(TEXT("(R=%.4f,G=%.4f,B=%.4f,A=%.4f)"),
-					P.ParameterValue.R, P.ParameterValue.G, P.ParameterValue.B, P.ParameterValue.A)});
+					P.ParameterValue.R, P.ParameterValue.G, P.ParameterValue.B, P.ParameterValue.A));
 		}
 		for (const FTextureParameterValue& P : MI->TextureParameterValues)
 		{
-			Out.Add(P.ParameterInfo.Name.ToString(), {TEXT("Texture"),
-				P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None")});
+			Out.Add({FName(TEXT("Texture")), P.ParameterInfo},
+				P.ParameterValue ? P.ParameterValue->GetPathName() : TEXT("None"));
 		}
 		return Out;
 	};
 
-	TMap<FString, FEntry> MapA = Collect(A);
-	TMap<FString, FEntry> MapB = Collect(B);
+	const TMap<FMIParameterDiffIdentity, FString> MapA = Collect(A);
+	const TMap<FMIParameterDiffIdentity, FString> MapB = Collect(B);
 
 	TArray<FString> Lines;
-	// Added in B
-	for (const TPair<FString, FEntry>& KV : MapB)
+	// B 中新增的完整参数身份。 / Complete parameter identities added in B.
+	for (const TPair<FMIParameterDiffIdentity, FString>& Pair : MapB)
 	{
-		if (!MapA.Contains(KV.Key))
+		if (!MapA.Contains(Pair.Key))
 		{
-			Lines.Add(FString::Printf(TEXT("+ %s %s = %s"), *KV.Value.Type, *KV.Key, *KV.Value.Value));
+			Lines.Add(FString::Printf(TEXT("+ %s = %s"),
+				*FormatMIParameterDiffIdentity(Pair.Key), *Pair.Value));
 		}
 	}
-	// Removed / changed
-	for (const TPair<FString, FEntry>& KV : MapA)
+	// B 中删除或改变的完整参数身份。 / Complete parameter identities removed from or changed in B.
+	for (const TPair<FMIParameterDiffIdentity, FString>& Pair : MapA)
 	{
-		if (!MapB.Contains(KV.Key))
+		const FString* ValueB = MapB.Find(Pair.Key);
+		if (!ValueB)
 		{
-			Lines.Add(FString::Printf(TEXT("- %s %s = %s"), *KV.Value.Type, *KV.Key, *KV.Value.Value));
+			Lines.Add(FString::Printf(TEXT("- %s = %s"),
+				*FormatMIParameterDiffIdentity(Pair.Key), *Pair.Value));
 		}
-		else if (MapB[KV.Key].Value != KV.Value.Value)
+		else if (*ValueB != Pair.Value)
 		{
-			Lines.Add(FString::Printf(TEXT("~ %s %s: %s -> %s"),
-				*KV.Value.Type, *KV.Key, *KV.Value.Value, *MapB[KV.Key].Value));
+			Lines.Add(FString::Printf(TEXT("~ %s: %s -> %s"),
+				*FormatMIParameterDiffIdentity(Pair.Key), *Pair.Value, **ValueB));
 		}
 	}
 

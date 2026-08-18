@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-08-16T23:54:12+00:00",
+  "generated_at": "2026-08-18T04:19:33+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -29292,7 +29292,7 @@
       }
     }
   },
-  "project_path": "D:/UB/ml2host/MaterialLayerTestHost.uproject",
+  "project_path": "D:/UB/mprhost/MaterialParameterReviewHost.uproject",
   "structs": {
     "BridgeAbilityCooldownInfo": [
       "ability_class_name",
@@ -30244,12 +30244,24 @@
       "lumen_reflections_enabled",
       "visualization_modes"
     ],
+    "BridgeMIParamOutcome": [
+      "applied",
+      "association",
+      "error",
+      "index",
+      "name",
+      "status",
+      "type"
+    ],
     "BridgeMIParamResult": [
       "applied",
+      "outcomes",
       "skipped",
       "success"
     ],
     "BridgeMIParamSet": [
+      "association",
+      "index",
       "name",
       "type",
       "value"
@@ -30457,7 +30469,10 @@
       "success"
     ],
     "BridgeMaterialParam": [
+      "association",
+      "index",
       "name",
+      "override",
       "param_type",
       "value"
     ],
