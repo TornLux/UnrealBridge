@@ -1,6 +1,7 @@
 #include "UnrealBridgeDataTableLibrary.h"
 #include "Misc/EngineVersionComparison.h"
 #include "Engine/DataTable.h"
+#include "DataTableUtils.h"
 #include "DataTableEditorUtils.h"
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetRegistry/ARFilter.h"
@@ -79,7 +80,9 @@ namespace BridgeDataTableImpl
 		return After != nullptr;
 	}
 
-	/** Build a DataTable JSON string without using UDataTable::GetTableAsJSON(). */
+	/** Build a DataTable JSON string without using UDataTable::GetTableAsJSON().
+	 *  Match the native DataTable exporter/importer contract for authored column
+	 *  names and the configurable row-name key. */
 	bool BuildDataTableJSONString(const UDataTable* DT, FString& OutJson)
 	{
 		OutJson.Reset();
@@ -93,6 +96,19 @@ namespace BridgeDataTableImpl
 		{
 			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: DataTable '%s' has no row struct"), *DT->GetPathName());
 			return false;
+		}
+
+		const FString RowNameField = DT->ImportKeyField.IsEmpty() ? TEXT("Name") : DT->ImportKeyField;
+		for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
+		{
+			const FProperty* Prop = *It;
+			if (Prop && DataTableUtils::GetPropertyExportName(Prop) == RowNameField)
+			{
+				UE_LOG(LogTemp, Warning,
+					TEXT("UnrealBridge: DataTable '%s' JSON row-key field '%s' conflicts with row property '%s'; preserving row keys and omitting that property value. Set ImportKeyField to a non-conflicting name to export both."),
+					*DT->GetPathName(), *RowNameField, *DataTableUtils::GetPropertyExportName(Prop));
+				break;
+			}
 		}
 
 		TArray<TSharedPtr<FJsonValue>> Rows;
@@ -109,7 +125,7 @@ namespace BridgeDataTableImpl
 			}
 
 			TSharedRef<FJsonObject> RowObject = MakeShared<FJsonObject>();
-			RowObject->SetStringField(TEXT("Name"), Pair.Key.ToString());
+			RowObject->SetStringField(RowNameField, Pair.Key.ToString());
 
 			for (TFieldIterator<FProperty> It(RowStruct); It; ++It)
 			{
@@ -119,17 +135,25 @@ namespace BridgeDataTableImpl
 					continue;
 				}
 
+				const FString ExportName = DataTableUtils::GetPropertyExportName(Prop);
+				if (ExportName == RowNameField)
+				{
+					// The native exporter gives the row key priority too. A caller that
+					// needs both fields must choose a non-conflicting ImportKeyField.
+					continue;
+				}
+
 				const void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(RowData);
 				TSharedPtr<FJsonValue> JsonValue = FJsonObjectConverter::UPropertyToJsonValue(Prop, ValuePtr, 0, 0);
 				if (JsonValue.IsValid())
 				{
-					RowObject->SetField(Prop->GetName(), JsonValue);
+					RowObject->SetField(ExportName, JsonValue);
 				}
 				else
 				{
 					FString ExportedText;
 					Prop->ExportTextItem_Direct(ExportedText, ValuePtr, nullptr, nullptr, PPF_None);
-					RowObject->SetStringField(Prop->GetName(), ExportedText);
+					RowObject->SetStringField(ExportName, ExportedText);
 				}
 			}
 

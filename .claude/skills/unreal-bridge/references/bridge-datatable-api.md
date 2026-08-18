@@ -171,11 +171,15 @@ unreal.UnrealBridgeDataTableLibrary.set_data_table_row_fields(
 
 Return the full DataTable as a pretty-printed JSON string. Empty string on failure.
 
+JSON column keys use each property's **authored name**, so Blueprint `UserDefinedStruct` columns remain `Damage`, `ItemName`, etc. instead of exposing their GUID-mangled internal names. The row-key field follows the DataTable's `import_key_field`; when that setting is empty, Unreal's standard `Name` key is used.
+
 > ⚠️ **Token cost: HIGH.** Returns the entire table inline in the response — scales with rows × struct depth. On large tables (hundreds of rows, nested structs) this can easily cost tens of thousands of tokens. Prefer `export_data_table_to_json(path, file)` + file read, or use the row/field/column accessors.
 
 ### export_data_table_to_json(data_table_path, out_json_file_path) -> bool
 
-Export to a JSON file (absolute filesystem path).
+Export to a JSON file (absolute filesystem path), encoded as UTF-8 without BOM.
+
+If a row property has the same authored name as the row-key field (most commonly a `Name` property while `import_key_field` is empty), the row key takes priority to prevent it from being overwritten. The exporter logs a warning and omits the conflicting property value, matching Unreal's native conflict rule. To preserve both values for export→import round trips, set the DataTable's `import_key_field` to an unused name such as `__RowName` before exporting, and use the same setting when importing.
 
 ### import_data_table_from_json(data_table_path, json_file_path) -> bool
 
