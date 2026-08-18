@@ -169,6 +169,15 @@ class DiscoveryTests(unittest.TestCase):
         ))
         self.assertEqual(endpoints[0].capabilities, tuple(capabilities))
 
+    def test_optional_editor_status_capability_does_not_hide_base_v2_endpoint(self):
+        capabilities = list(bridge_discovery.REQUIRED_EXACT_CAPABILITIES)
+        endpoints = self.run_discovery(FakeDiscoverySocket(
+            response_overrides={"capabilities": capabilities}
+        ))
+        self.assertEqual(len(endpoints), 1)
+        self.assertEqual(endpoints[0].capabilities, tuple(capabilities))
+        self.assertNotIn(bridge_discovery.EXACT_EDITOR_STATUS_CAPABILITY, capabilities)
+
     def test_legacy_and_incomplete_v2_responses_are_ignored(self):
         fake_socket = FakeDiscoverySocket(response_sequence=[
             {"v": 1, "protocol_version": 1},

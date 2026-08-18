@@ -12,6 +12,7 @@ Usage:
     python bridge.py exec -                        # `-` is shorthand for --stdin
     python bridge.py exec-file script.py           # Multi-step, will iterate / keep on disk
     python bridge.py exec "code" --json            # Machine-readable output
+    python bridge.py status                        # Read cached Engine/Slate health
     python bridge.py modal-status                  # Inspect a blocking Slate dialog
     python bridge.py modal-click <snapshot> 0      # Click after semantic review
 
@@ -47,6 +48,7 @@ import argparse
 import datetime
 import json
 import logging
+import math
 import os
 import socket
 import struct
@@ -62,6 +64,7 @@ try:
         DiscoveryError,
         Endpoint,
         EXACT_CAPABILITIES,
+        EXACT_EDITOR_STATUS_CAPABILITY,
         PROTOCOL_VERSION,
         discover,
         load_token,
@@ -78,6 +81,7 @@ except ImportError:
         DiscoveryError,
         Endpoint,
         EXACT_CAPABILITIES,
+        EXACT_EDITOR_STATUS_CAPABILITY,
         PROTOCOL_VERSION,
         discover,
         load_token,
@@ -584,6 +588,109 @@ def _recv_all(sock: socket.socket, num_bytes: int) -> bytes:
 
 # ── Commands ────────────────────────────────────────────────────────────
 
+def _require_status_type(status: dict, field: str, expected_type: type):
+    value = status.get(field)
+    if type(value) is not expected_type:
+        raise BridgeProtocolError(
+            f"editor_status.{field} has invalid type; expected {expected_type.__name__}"
+        )
+    return value
+
+
+def _require_status_number(status: dict, field: str, minimum: float) -> float:
+    value = status.get(field)
+    if type(value) not in (int, float) or not math.isfinite(value) or value < minimum:
+        raise BridgeProtocolError(
+            f"editor_status.{field} must be a finite number >= {minimum}"
+        )
+    return float(value)
+
+
+def _require_status_age(status: dict, field: str) -> float:
+    value = _require_status_number(status, field, -1.0)
+    if value < 0.0 and value != -1.0:
+        raise BridgeProtocolError(
+            f"editor_status.{field} must be -1 or a non-negative number"
+        )
+    return value
+
+
+def _validate_editor_status_response(response: dict) -> None:
+    """Fail closed on a successful but malformed cached-status schema."""
+    if type(response.get("success")) is not bool:
+        raise BridgeProtocolError("editor status response success must be a boolean")
+    if not response["success"]:
+        return
+    for field in ("output", "error", "ui_state"):
+        if type(response.get(field)) is not str:
+            raise BridgeProtocolError(f"editor status response {field} must be a string")
+    if type(response.get("ready")) is not bool:
+        raise BridgeProtocolError("editor status response ready must be a boolean")
+
+    status = response.get("editor_status")
+    if not isinstance(status, dict):
+        raise BridgeProtocolError("successful editor status response is missing editor_status object")
+    if type(status.get("schema_version")) is not int or status["schema_version"] != 1:
+        raise BridgeProtocolError("unsupported editor_status schema_version; expected integer 1")
+
+    for field in ("editor_ready", "slate_stale", "engine_stale", "stale", "attention_required"):
+        _require_status_type(status, field, bool)
+    for field in ("last_slate_tick_utc", "last_engine_tick_utc", "ui_state"):
+        _require_status_type(status, field, str)
+    if not status["ui_state"]:
+        raise BridgeProtocolError("editor_status.ui_state must not be empty")
+    for field in ("slate_tick_sequence", "engine_tick_sequence", "attention_id"):
+        value = _require_status_type(status, field, int)
+        if value < 0:
+            raise BridgeProtocolError(f"editor_status.{field} must be non-negative")
+    for field in ("slate_tick_age_ms", "engine_tick_age_ms"):
+        _require_status_age(status, field)
+    _require_status_number(status, "stale_after_ms", 0.0)
+
+    modal = status.get("active_modal")
+    if not isinstance(modal, dict):
+        raise BridgeProtocolError("editor_status.active_modal must be an object")
+    _require_status_type(modal, "present", bool)
+    for field in ("title", "first_seen_utc", "snapshot_id"):
+        _require_status_type(modal, field, str)
+    for field in ("button_count", "input_count", "checkbox_count"):
+        value = _require_status_type(modal, field, int)
+        if value < 0:
+            raise BridgeProtocolError(f"editor_status.active_modal.{field} must be non-negative")
+
+    if response["ready"] != status["editor_ready"]:
+        raise BridgeProtocolError("editor status ready fields disagree")
+    if response["ui_state"] != status["ui_state"]:
+        raise BridgeProtocolError("editor status ui_state fields disagree")
+    if status["attention_required"] != modal["present"]:
+        raise BridgeProtocolError("editor status attention fields disagree")
+
+
+def _status_lines(response: dict) -> "list[str]":
+    """Render a validated version-1 cached editor-status envelope."""
+    status = response["editor_status"]
+    lines = [
+        f"ui={status.get('ui_state') or 'unknown'} "
+        f"ready={bool(status.get('editor_ready'))} "
+        f"stale={bool(status.get('stale'))} "
+        f"attention={status.get('attention_id', 0)} "
+        f"slate_age_ms={status.get('slate_tick_age_ms', -1)} "
+        f"engine_age_ms={status.get('engine_tick_age_ms', -1)}"
+    ]
+
+    modal = status.get("active_modal") or {}
+    if modal.get("present"):
+        lines.append(
+            f"modal_title={modal.get('title') or '<untitled>'!r} "
+            f"first_seen_utc={modal.get('first_seen_utc') or ''} "
+            f"snapshot={modal.get('snapshot_id') or '?'} "
+            f"buttons={modal.get('button_count', 0)} "
+            f"inputs={modal.get('input_count', 0)} "
+            f"checkboxes={modal.get('checkbox_count', 0)}"
+        )
+    return lines
+
+
 def _modal_lines(modal: dict) -> "list[str]":
     """Render a modal snapshot without ever exposing password contents."""
     if not modal or not modal.get("present"):
@@ -702,6 +809,31 @@ def _print_modal_response(args, response: dict, include_snapshot: bool = True) -
     modal = response.get("modal")
     if include_snapshot and isinstance(modal, dict):
         _print_modal(modal, stream=sys.stdout if response.get("success") else sys.stderr)
+
+
+def cmd_status(args):
+    """Read cached native Editor attention without dispatching GameThread work."""
+    try:
+        host, port, token, _project_path, identity = resolve_target(args)
+        if EXACT_EDITOR_STATUS_CAPABILITY not in identity.capabilities:
+            raise BridgeProtocolError(
+                "selected endpoint does not advertise exact_editor_status"
+            )
+        payload = {"id": str(uuid.uuid4()), "command": "editor_status"}
+        response = send_request(
+            host, port, payload, args.timeout, token=token, identity=identity
+        )
+        _validate_editor_status_response(response)
+    except Exception as exc:
+        response = {"success": False, "error": str(exc)}
+
+    if args.json:
+        print(json.dumps(response, ensure_ascii=False))
+    elif response.get("success"):
+        print("\n".join(_status_lines(response)))
+    else:
+        print(f"ERROR: {response.get('error') or 'unexpected'}", file=sys.stderr)
+    return 0 if response.get("success") else 1
 
 
 def cmd_modal_status(args):
@@ -1325,6 +1457,10 @@ def main():
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("ping", help="Check if UE is connected")
+    subparsers.add_parser(
+        "status",
+        help="Read cached Engine/Slate health (no exec queue or fresh GameThread dispatch)",
+    )
 
     exec_parser = subparsers.add_parser(
         "exec",
@@ -1453,6 +1589,8 @@ def main():
 
     if args.command == "ping":
         sys.exit(cmd_ping(args))
+    elif args.command == "status":
+        sys.exit(cmd_status(args))
     elif args.command == "exec":
         sys.exit(cmd_exec(args))
     elif args.command == "exec-file":

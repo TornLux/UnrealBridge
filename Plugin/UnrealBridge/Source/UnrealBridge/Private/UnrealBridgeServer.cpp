@@ -1,5 +1,6 @@
 #include "UnrealBridgeServer.h"
 #include "UnrealBridgeCancellableWork.h"
+#include "UnrealBridgeEditorHealth.h"
 #include "UnrealBridgeEndpointIdentity.h"
 #include "UnrealBridgeExactRequestDispatcher.h"
 #include "UnrealBridgeProtocol.h"
@@ -566,12 +567,35 @@ namespace UnrealBridgeModal
 	}
 }
 
+void FUnrealBridgeServer::TickUpdateSlateHealth(float /*DeltaTime*/)
+{
+	RefreshCachedSlateHealth();
+}
+
+void FUnrealBridgeServer::RefreshCachedSlateHealth()
+{
+	check(IsInGameThread());
+	const UnrealBridgeModal::FModalSnapshot Snapshot = UnrealBridgeModal::CaptureSnapshot();
+
+	FUnrealBridgeModalAttention Attention;
+	Attention.bPresent = Snapshot.bPresent;
+	Attention.bDebugging = FSlateApplication::Get().InKismetDebuggingMode();
+	Attention.WindowGeneration = Snapshot.WindowGeneration;
+	Attention.SnapshotId = Snapshot.SnapshotId;
+	Attention.Title = Snapshot.Title;
+	Attention.ButtonCount = Snapshot.Buttons.Num();
+	Attention.InputCount = Snapshot.Inputs.Num();
+	Attention.CheckBoxCount = Snapshot.CheckBoxes.Num();
+	EditorHealthCache->RecordSlateTick(Attention);
+}
+
 // ─────────────────────────────────────────────────────────────
 // Server lifecycle
 // ─────────────────────────────────────────────────────────────
 
 FUnrealBridgeServer::FUnrealBridgeServer()
 	: WorkAdmission(MakeUnique<FUnrealBridgeWorkAdmissionGate>())
+	, EditorHealthCache(MakeUnique<FUnrealBridgeEditorHealthCache>())
 {
 }
 
@@ -593,6 +617,8 @@ bool FUnrealBridgeServer::Start(const FStartConfig& Config)
 	{
 		return true;
 	}
+
+	EditorHealthCache->Reset();
 
 	// Safety gate: binding to a non-localhost interface exposes Python exec to
 	// the LAN. Refuse if the caller didn't supply a token.
@@ -664,6 +690,17 @@ bool FUnrealBridgeServer::Start(const FStartConfig& Config)
 		0.0f /* tick every frame */
 	);
 
+	// Slate 模态循环会暂停 FTSTicker，但仍广播 Slate tick；在所属线程缓存摘要，
+	// TCP worker 只读取普通值，绝不访问 SWindow/SWidget。
+	// Slate modal loops pause FTSTicker but still broadcast Slate ticks; cache the
+	// summary on the owning thread so TCP workers never access SWindow/SWidget.
+	if (FSlateApplication::IsInitialized())
+	{
+		SlatePreTickHandle = FSlateApplication::Get().OnPreTick().AddRaw(
+			this, &FUnrealBridgeServer::TickUpdateSlateHealth);
+		RefreshCachedSlateHealth();
+	}
+
 	// PIE transition guard (item #11). The transition *window* is:
 	//   BeginPIE  ─────────→  PostPIEStarted   (editor subsystems torn
 	//       [unsafe to exec]                   down and rebuilt here)
@@ -724,6 +761,14 @@ void FUnrealBridgeServer::Stop()
 		FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
 		TickHandle.Reset();
 	}
+	if (SlatePreTickHandle.IsValid())
+	{
+		if (FSlateApplication::IsInitialized())
+		{
+			FSlateApplication::Get().OnPreTick().Remove(SlatePreTickHandle);
+		}
+		SlatePreTickHandle.Reset();
+	}
 	if (PieBeginHandle.IsValid())
 	{
 		FEditorDelegates::BeginPIE.Remove(PieBeginHandle);
@@ -783,6 +828,7 @@ void FUnrealBridgeServer::Stop()
 	checkf(ActiveClients.GetValue() == 0,
 		TEXT("UnrealBridge client graph events completed with %d active clients"),
 		ActiveClients.GetValue());
+	EditorHealthCache->Reset();
 	UE_LOG(LogUnrealBridge, Log, TEXT("Stop(): all client workers and GameThread closures drained cleanly"));
 }
 
@@ -799,6 +845,7 @@ int32 FUnrealBridgeServer::GetProtocolVersion()
 void FUnrealBridgeServer::SetEditorReady(bool bReady)
 {
 	bEditorReady = bReady;
+	EditorHealthCache->SetReady(bReady);
 	if (bReady)
 	{
 		UE_LOG(LogUnrealBridge, Log, TEXT("Editor reported ready — Python exec now accepted"));
@@ -1071,6 +1118,50 @@ void FUnrealBridgeServer::HandleClient(FSocket* ClientSocket, const FString& End
 		Response->SetStringField(TEXT("output"), TEXT("pong"));
 		Response->SetStringField(TEXT("error"), TEXT(""));
 		Response->SetBoolField(TEXT("ready"), (bool)bEditorReady);
+	}
+	else if (Command == EUnrealBridgeExactCommand::EditorStatus)
+	{
+		// 该分支只读取加锁缓存；不会排队 exec、派发 GameThread 任务或访问 Slate。
+		// This branch only reads the locked cache; it never queues exec work,
+		// dispatches a fresh GameThread task, or touches Slate.
+		constexpr double StaleAfterSeconds = 2.0;
+		const FUnrealBridgeEditorHealthReadout Health = EditorHealthCache->Read(StaleAfterSeconds);
+
+		TSharedPtr<FJsonObject> Status = MakeShared<FJsonObject>();
+		Status->SetNumberField(TEXT("schema_version"), 1);
+		Status->SetBoolField(TEXT("editor_ready"), Health.bReady);
+		Status->SetNumberField(TEXT("slate_tick_sequence"), static_cast<double>(Health.SlateTickSequence));
+		Status->SetStringField(TEXT("last_slate_tick_utc"), Health.LastSlateTickUtc);
+		Status->SetNumberField(TEXT("slate_tick_age_ms"),
+			Health.bSlateTickObserved ? Health.SlateTickAgeMs : -1.0);
+		Status->SetBoolField(TEXT("slate_stale"), Health.bSlateStale);
+		Status->SetNumberField(TEXT("engine_tick_sequence"), static_cast<double>(Health.EngineTickSequence));
+		Status->SetStringField(TEXT("last_engine_tick_utc"), Health.LastEngineTickUtc);
+		Status->SetNumberField(TEXT("engine_tick_age_ms"),
+			Health.bEngineTickObserved ? Health.EngineTickAgeMs : -1.0);
+		Status->SetBoolField(TEXT("engine_stale"), Health.bEngineStale);
+		Status->SetBoolField(TEXT("stale"), Health.bStale);
+		Status->SetNumberField(TEXT("stale_after_ms"), StaleAfterSeconds * 1000.0);
+		Status->SetStringField(TEXT("ui_state"), Health.UiState);
+		Status->SetNumberField(TEXT("attention_id"), static_cast<double>(Health.AttentionId));
+		Status->SetBoolField(TEXT("attention_required"), Health.Modal.bPresent);
+
+		TSharedPtr<FJsonObject> Modal = MakeShared<FJsonObject>();
+		Modal->SetBoolField(TEXT("present"), Health.Modal.bPresent);
+		Modal->SetStringField(TEXT("title"), Health.Modal.Title);
+		Modal->SetStringField(TEXT("first_seen_utc"), Health.ActiveModalFirstSeenUtc);
+		Modal->SetStringField(TEXT("snapshot_id"), Health.Modal.SnapshotId);
+		Modal->SetNumberField(TEXT("button_count"), Health.Modal.ButtonCount);
+		Modal->SetNumberField(TEXT("input_count"), Health.Modal.InputCount);
+		Modal->SetNumberField(TEXT("checkbox_count"), Health.Modal.CheckBoxCount);
+		Status->SetObjectField(TEXT("active_modal"), MoveTemp(Modal));
+
+		Response->SetBoolField(TEXT("success"), true);
+		Response->SetStringField(TEXT("output"), Health.UiState);
+		Response->SetStringField(TEXT("error"), TEXT(""));
+		Response->SetBoolField(TEXT("ready"), Health.bReady);
+		Response->SetStringField(TEXT("ui_state"), Health.UiState);
+		Response->SetObjectField(TEXT("editor_status"), MoveTemp(Status));
 	}
 	else if (Command == EUnrealBridgeExactCommand::DebugResume)
 	{
@@ -1444,6 +1535,14 @@ bool FUnrealBridgeServer::TickConsumeQueue(float /*DeltaTime*/)
 	if (!bIsRunning)
 	{
 		return true; // still ticking; will be removed by Stop()
+	}
+
+	EditorHealthCache->RecordEngineTick();
+	if (!SlatePreTickHandle.IsValid() && FSlateApplication::IsInitialized())
+	{
+		SlatePreTickHandle = FSlateApplication::Get().OnPreTick().AddRaw(
+			this, &FUnrealBridgeServer::TickUpdateSlateHealth);
+		RefreshCachedSlateHealth();
 	}
 	if (bExecInFlight)
 	{

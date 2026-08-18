@@ -11,6 +11,7 @@
 #include "Misc/ScopeLock.h"
 #include "Interfaces/IPv4/IPv4Address.h"
 
+class FUnrealBridgeEditorHealthCache;
 class FUnrealBridgeWorkAdmissionGate;
 
 /**
@@ -23,6 +24,8 @@ class FUnrealBridgeWorkAdmissionGate;
  *
  * 所有命令必须使用 exact_* wire form，并在任何副作用调度前通过启动实例身份验证。
  * Every command must use the exact_* wire form and pass Server-start identity validation before side-effect dispatch.
+ * `exact_editor_status` 只读取缓存的 Engine/Slate 健康快照。
+ * `exact_editor_status` only reads the cached Engine/Slate health snapshot.
  */
 class FUnrealBridgeServer : public TSharedFromThis<FUnrealBridgeServer, ESPMode::ThreadSafe>
 {
@@ -129,8 +132,14 @@ private:
 	/** Enqueue a script for GameThread execution and block on the future. */
 	FExecResult EnqueueAndWaitForExec(const FString& Script, float TimeoutSeconds, const FString& RequestId);
 
-	/** GameThread ticker callback: drains at most one pending exec per frame. */
+	/** GameThread ticker callback: records health and drains at most one pending exec per frame. */
 	bool TickConsumeQueue(float DeltaTime);
+
+	/** Slate 所属线程回调：更新无控件指针的模态健康摘要。 / Slate-owner callback: update the widget-free modal health summary. */
+	void TickUpdateSlateHealth(float DeltaTime);
+
+	/** 仅在 Slate 所属线程捕获当前模态摘要。 / Capture the current modal summary on the Slate-owning thread only. */
+	void RefreshCachedSlateHealth();
 
 	/** Actual Python exec (GameThread only, called by ticker). */
 	FExecResult DoPythonExec(const FString& Script);
@@ -148,6 +157,12 @@ private:
 	// exec admission 与 shutdown 由同一 gate 排序；Close 后 queue 不能再收到新 work。
 	// One gate orders exec admission against shutdown; no work can enter the queue after Close.
 	TUniquePtr<FUnrealBridgeWorkAdmissionGate> WorkAdmission;
+
+	// 健康缓存隔离 Slate 所属线程与 TCP 工作线程；工作线程只复制普通值。
+	// The health cache isolates the Slate-owning thread from TCP workers; workers only copy plain values.
+	TUniquePtr<FUnrealBridgeEditorHealthCache> EditorHealthCache;
+	FDelegateHandle SlatePreTickHandle;
+
 	TQueue<TSharedPtr<FPendingExec, ESPMode::ThreadSafe>, EQueueMode::Mpsc> ExecQueue;
 	FTSTicker::FDelegateHandle TickHandle;
 	bool bExecInFlight = false; // GameThread-only, no atomic needed

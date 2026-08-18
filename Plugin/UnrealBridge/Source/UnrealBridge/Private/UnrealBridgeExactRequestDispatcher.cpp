@@ -16,6 +16,10 @@ namespace
 		{
 			OutCommand = EUnrealBridgeExactCommand::Ping;
 		}
+		else if (WireCommand == UnrealBridgeProtocol::ExactEditorStatus)
+		{
+			OutCommand = EUnrealBridgeExactCommand::EditorStatus;
+		}
 		else if (WireCommand == UnrealBridgeProtocol::ExactGameThreadPing)
 		{
 			OutCommand = EUnrealBridgeExactCommand::GameThreadPing;

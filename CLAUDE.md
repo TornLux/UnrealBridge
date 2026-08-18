@@ -39,6 +39,7 @@ Length-prefixed JSON over TCP on an OS-assigned port (default bind `127.0.0.1`, 
 - Client response frames are bounded to `MAX_RESPONSE_FRAME_BYTES` (10 MiB), must be non-empty, valid UTF-8, and decode to a JSON object before identity fields are read.
 - Special exact commands (handled inline on the worker thread, bypass the Python exec queue):
   - `exact_ping` → `pong` (TCP-only liveness)
+  - `exact_editor_status` → cached Engine/Slate tick ages, readiness, staleness and modal-attention summary (no fresh GameThread dispatch)
   - `exact_gamethread_ping` → `alive`/`unresponsive` + `latency_ms` (GT liveness)
   - `exact_debug_resume` → unsticks a paused BP breakpoint via `FKismetDebugUtilities::RequestAbortingExecution`
   - `exact_modal_status` → structured active-Slate-modal snapshot (title, body, buttons, redacted inputs, checkboxes)
@@ -61,7 +62,7 @@ module unload; each result/event therefore has exactly one terminal publisher.
 ### Discovery Protocol
 UDP discovery uses LAN multicast on `239.255.42.99:9876` plus a parallel local-loopback probe to `127.0.0.1:9876`. Both carry the same request id and responses are de-duplicated by Server-start UUID. This preserves LAN discovery while avoiding dependence on Windows multicast loopback. Multiple editors can bind via `SO_REUSEADDR`.
 - Probe (client → group): `{"v":2, "type":"probe", "request_id":"<uuid>", "filter":{"project":"<name|path|*>"}}`
-- Response (server → probe source, unicast): `{"v":2, "protocol_version":2, "type":"response", "request_id":"<uuid>", "instance_id":"<uuid>", "pid":..., "project":"...", "project_path":"...", "engine_version":"...", "tcp_bind":"...", "tcp_port":..., "token_fingerprint":"<sha1(token)[:16]>", "capabilities":["exact_exec",...]}`. The six exact commands are the minimum required capability set; unique forward-compatible extras are allowed.
+- Response (server → probe source, unicast): `{"v":2, "protocol_version":2, "type":"response", "request_id":"<uuid>", "instance_id":"<uuid>", "pid":..., "project":"...", "project_path":"...", "engine_version":"...", "tcp_bind":"...", "tcp_port":..., "token_fingerprint":"<sha1(token)[:16]>", "capabilities":["exact_exec",...]}`. The six pre-existing exact commands are the minimum required capability set; `exact_editor_status` is an advertised optional capability required only by the status command, and unique forward-compatible extras are allowed.
 - Client loop: send the same probe to multicast + loopback → collect for `--discovery-timeout` ms (default 800) → discard each malformed/incomplete/legacy datagram without aborting collection → de-duplicate by instance UUID → filter by `--project=...` → freeze identity → connect TCP. A wildcard advertised bind resolves to that response's source IP. Empty `token_fingerprint` means no token required. Direct mode requires the inseparable `--endpoint`, `--instance-id`, `--expected-pid`, and `--expected-project-path` tuple, copied verbatim from discovery/startup output.
 
 ### Server configuration (CLI / env / editor ini)

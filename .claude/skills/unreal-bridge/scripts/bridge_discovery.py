@@ -22,7 +22,7 @@ Wire format:
          "engine_version": "5.7.0",
          "tcp_bind": "127.0.0.1", "tcp_port": 54321,
          "token_fingerprint": "a1b2c3d4e5f60718",
-         "capabilities": ["exact_exec", ...]}    # minimum required set; unique extras allowed
+         "capabilities": ["exact_exec", ...]}    # base exact set required; unique optional commands advertised
 
 Malformed datagrams are discarded independently. For wildcard tcp_bind values,
 the response source IP becomes the TCP host instead of client loopback.
@@ -48,9 +48,19 @@ DEFAULT_DISCOVERY_PORT = 9876
 DEFAULT_DISCOVERY_TIMEOUT_MS = 800
 LOCAL_DISCOVERY_HOST = "127.0.0.1"
 PROTOCOL_VERSION = 2
+EXACT_EDITOR_STATUS_CAPABILITY = "exact_editor_status"
 EXACT_CAPABILITIES = (
-    "exact_exec", "exact_ping", "exact_gamethread_ping",
-    "exact_debug_resume", "exact_modal_status", "exact_modal_action",
+    "exact_exec", "exact_ping", EXACT_EDITOR_STATUS_CAPABILITY,
+    "exact_gamethread_ping", "exact_debug_resume", "exact_modal_status",
+    "exact_modal_action",
+)
+# protocol-v2 的既有基础命令仍是 discovery 最低门槛；新增只读命令按 capability 单独协商，
+# 避免新版客户端把仍可安全执行基础命令的旧 v2 endpoint 整体丢弃。
+# Existing protocol-v2 base commands remain the discovery floor; new read-only
+# commands are negotiated per capability so newer clients retain safe base access.
+REQUIRED_EXACT_CAPABILITIES = tuple(
+    capability for capability in EXACT_CAPABILITIES
+    if capability != EXACT_EDITOR_STATUS_CAPABILITY
 )
 
 
@@ -152,7 +162,7 @@ def _parse_endpoint_response(resp, request_id: str, response_host: str) -> "Endp
     if len(set(raw_capabilities)) != len(raw_capabilities):
         return None
     capabilities = tuple(raw_capabilities)
-    if not set(EXACT_CAPABILITIES).issubset(capabilities):
+    if not set(REQUIRED_EXACT_CAPABILITIES).issubset(capabilities):
         return None
 
     return Endpoint(
