@@ -701,6 +701,11 @@ class Blueprint:
         return unreal.UnrealBridgeBlueprintLibrary.add_event_node(blueprint_path, graph_name, parent_class_path, event_name, node_pos_x, node_pos_y)
 
     @staticmethod
+    def add_external_variable_node(*, blueprint_path, graph_name, owner_class_path, variable_name, is_set, node_pos_x, node_pos_y):
+        """X.add_external_variable_node(blueprint_path, graph_name, owner_class_path, variable_name, is_set, node_pos_x, node_pos_y) -> str"""
+        return unreal.UnrealBridgeBlueprintLibrary.add_external_variable_node(blueprint_path, graph_name, owner_class_path, variable_name, is_set, node_pos_x, node_pos_y)
+
+    @staticmethod
     def add_for_loop_node(*, blueprint_path, graph_name, with_break, x, y):
         """X.add_for_loop_node(blueprint_path, graph_name, with_break, x, y) -> str"""
         return unreal.UnrealBridgeBlueprintLibrary.add_for_loop_node(blueprint_path, graph_name, with_break, x, y)

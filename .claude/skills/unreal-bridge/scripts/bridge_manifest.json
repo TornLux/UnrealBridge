@@ -3264,6 +3264,54 @@
           ],
           "returns": "str"
         },
+        "add_external_variable_node": {
+          "doc": "X.add_external_variable_node(blueprint_path, graph_name, owner_class_path, variable_name, is_set, node_pos_x, node_pos_y) -> str",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blueprint_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "owner_class_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "variable_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "is_set",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_pos_x",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_pos_y",
+              "type": ""
+            }
+          ],
+          "returns": "str"
+        },
         "add_for_loop_node": {
           "doc": "X.add_for_loop_node(blueprint_path, graph_name, with_break, x, y) -> str",
           "params": [

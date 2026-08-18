@@ -77,8 +77,10 @@
 #include "K2Node_Tunnel.h"
 #include "K2Node_Composite.h"
 #include "Misc/SecureHash.h"
+#include "Misc/ScopeExit.h"
 #include "UObject/Script.h"
 #include "UObject/Stack.h"
+#include "ScopedTransaction.h"
 #if !UE_VERSION_OLDER_THAN(5, 4, 0)
 #include "Blueprint/BlueprintExceptionInfo.h"
 #endif
@@ -96,6 +98,8 @@
 #include "InputMappingContext.h"
 #include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
+
+DEFINE_LOG_CATEGORY_STATIC(LogUnrealBridgeBlueprintGraph, Log, All);
 
 // ─── Helpers ─────────────────────────────────────────────────
 
@@ -2134,6 +2138,130 @@ FString UUnrealBridgeBlueprintLibrary::AddVariableNode(
 		: (UK2Node_Variable*)NewObject<UK2Node_VariableGet>(Graph);
 	Node->CreateNewGuid();
 	Node->VariableReference.SetSelfMember(VarFName);
+	Node->NodePosX = NodePosX;
+	Node->NodePosY = NodePosY;
+	Graph->AddNode(Node, false, false);
+	Node->PostPlacedNewNode();
+	Node->AllocateDefaultPins();
+
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddExternalVariableNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& OwnerClassPath, const FString& VariableName, bool bIsSet,
+	int32 NodePosX, int32 NodePosY)
+{
+	const TCHAR* Operation = bIsSet ? TEXT("Set") : TEXT("Get");
+	const auto Fail = [&](const TCHAR* Reason) -> FString
+	{
+		UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+			TEXT("AddExternalVariableNode failed: Reason='%s' Blueprint='%s' Graph='%s' OwnerClass='%s' Property='%s' Operation='%s'"),
+			Reason, *BlueprintPath, *GraphName, *OwnerClassPath, *VariableName, Operation);
+		return FString();
+	};
+
+	if (OwnerClassPath.TrimStartAndEnd().IsEmpty())
+	{
+		return Fail(TEXT("OwnerClassPath must be explicitly provided"));
+	}
+	if (VariableName.TrimStartAndEnd().IsEmpty())
+	{
+		return Fail(TEXT("VariableName must not be empty"));
+	}
+
+	UBlueprint* BP = LoadBP(BlueprintPath);
+	if (!BP)
+	{
+		return Fail(TEXT("Blueprint could not be loaded"));
+	}
+
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph)
+	{
+		return Fail(TEXT("Graph was not found"));
+	}
+	if (!Cast<UEdGraphSchema_K2>(Graph->GetSchema()))
+	{
+		return Fail(TEXT("Graph does not use a K2 schema"));
+	}
+
+	UClass* RequestedOwnerClass = BridgeBlueprintGraphWriteImpl::ResolveTargetClass(BP, OwnerClassPath);
+	if (!RequestedOwnerClass)
+	{
+		return Fail(TEXT("Owner class could not be resolved"));
+	}
+
+	const FName VarFName(*VariableName);
+	FProperty* Property = FindFProperty<FProperty>(RequestedOwnerClass, VarFName);
+	if (!Property)
+	{
+		return Fail(TEXT("Property was not found on the owner class"));
+	}
+	// 使用引擎的权威访问检查，让 consumer Blueprint 的身份参与 private/read-only/visible 判定。
+	// Use the engine's canonical access checks so the consumer Blueprint identity participates in private/read-only/visible decisions.
+	if (bIsSet)
+	{
+		const FBlueprintEditorUtils::EPropertyWritableState WritableState =
+			FBlueprintEditorUtils::IsPropertyWritableInBlueprint(BP, Property);
+		if (WritableState != FBlueprintEditorUtils::EPropertyWritableState::Writable)
+		{
+			return Fail(TEXT("Property is not writable from the consumer Blueprint"));
+		}
+	}
+	else
+	{
+		const FBlueprintEditorUtils::EPropertyReadableState ReadableState =
+			FBlueprintEditorUtils::IsPropertyReadableInBlueprint(BP, Property);
+		if (ReadableState != FBlueprintEditorUtils::EPropertyReadableState::Readable)
+		{
+			return Fail(TEXT("Property is not readable from the consumer Blueprint"));
+		}
+	}
+
+	UClass* DeclaringOwnerClass = Property->GetOwner<UClass>();
+	if (!DeclaringOwnerClass)
+	{
+		return Fail(TEXT("Property does not have a declaring UClass"));
+	}
+
+	// 先用未加入图的候选节点验证 K2 引脚契约，确保所有失败都发生在事务和图修改之前。
+	// Validate the K2 pin contract on an unregistered candidate so every failure precedes the transaction and graph mutation.
+	UK2Node_Variable* CandidateNode = bIsSet
+		? static_cast<UK2Node_Variable*>(NewObject<UK2Node_VariableSet>(Graph, NAME_None, RF_Transient))
+		: static_cast<UK2Node_Variable*>(NewObject<UK2Node_VariableGet>(Graph, NAME_None, RF_Transient));
+	ON_SCOPE_EXIT
+	{
+		CandidateNode->MarkAsGarbage();
+	};
+	CandidateNode->VariableReference.SetExternalMember(VarFName, DeclaringOwnerClass);
+	CandidateNode->AllocateDefaultPins();
+
+	UEdGraphPin* TargetPin = CandidateNode->FindPin(TEXT("self"));
+	UEdGraphPin* ValuePin = CandidateNode->FindPin(VarFName);
+	const EEdGraphPinDirection ExpectedValueDirection = bIsSet ? EGPD_Input : EGPD_Output;
+	if (!TargetPin || TargetPin->Direction != EGPD_Input)
+	{
+		return Fail(TEXT("Variable node did not allocate the required 'self' input pin"));
+	}
+	if (!ValuePin || ValuePin->Direction != ExpectedValueDirection)
+	{
+		return Fail(TEXT("Variable node did not allocate a value pin with the expected direction"));
+	}
+
+	const FScopedTransaction Transaction(NSLOCTEXT(
+		"UnrealBridge", "AddExternalVariableNode", "UnrealBridge: Add External Variable Node"));
+	BP->Modify();
+	Graph->Modify();
+
+	UK2Node_Variable* Node = bIsSet
+		? static_cast<UK2Node_Variable*>(NewObject<UK2Node_VariableSet>(Graph))
+		: static_cast<UK2Node_Variable*>(NewObject<UK2Node_VariableGet>(Graph));
+	Node->SetFlags(RF_Transactional);
+	Node->Modify();
+	Node->CreateNewGuid();
+	Node->VariableReference.SetExternalMember(VarFName, DeclaringOwnerClass);
 	Node->NodePosX = NodePosX;
 	Node->NodePosY = NodePosY;
 	Graph->AddNode(Node, false, false);
