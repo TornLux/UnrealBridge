@@ -50,3 +50,8 @@ __pycache__/
 tools/engines.local.json
 tools/build_engines/
 build_matrix_report.md
+
+# Unreal Engine artifacts generated when a host project builds the plugin
+/Plugin/*/Binaries/
+/Plugin/*/Intermediate/
+/Plugin/*/Saved/
