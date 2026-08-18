@@ -61,17 +61,25 @@ namespace UnrealBridgeWorldSelectionTests
 
 		~FScopedPIEWorld()
 		{
-			if (LocalPlayer && PlayerController && PlayerController->Player == LocalPlayer)
+			if (PlayerController)
 			{
 				// SetPlayer 不接受空指针；先清除控制器侧测试引用，再销毁世界并回收 Engine-owned LocalPlayer。
 				// SetPlayer rejects null, so clear the controller-side test reference before destroying the world and collecting the engine-owned LocalPlayer.
 				PlayerController->Player = nullptr;
+			}
+			if (ReplacementPlayerController)
+			{
+				ReplacementPlayerController->Player = nullptr;
 			}
 			if (World)
 			{
 				if (PlayerController)
 				{
 					World->RemoveController(PlayerController);
+				}
+				if (ReplacementPlayerController)
+				{
+					World->RemoveController(ReplacementPlayerController);
 				}
 #if ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION < 4
 				World->bBegunPlay = false;
@@ -85,15 +93,51 @@ namespace UnrealBridgeWorldSelectionTests
 			{
 				LocalPlayer->MarkAsGarbage();
 			}
+			if (ReplacementLocalPlayer)
+			{
+				ReplacementLocalPlayer->MarkAsGarbage();
+			}
 		}
 
 		UWorld* GetWorld() const { return World; }
 		APlayerController* GetPlayerController() const { return PlayerController; }
+		ULocalPlayer* GetLocalPlayer() const { return LocalPlayer; }
+
+		ULocalPlayer* ReplaceLocalPlayer()
+		{
+			if (!PlayerController || !GEngine)
+			{
+				return nullptr;
+			}
+			ReplacementLocalPlayer = NewObject<ULocalPlayer>(GEngine, NAME_None, RF_Transient);
+			PlayerController->SetPlayer(ReplacementLocalPlayer);
+			return ReplacementLocalPlayer;
+		}
+
+		APlayerController* ReplacePlayerController()
+		{
+			if (!World || !GEngine)
+			{
+				return nullptr;
+			}
+			World->RemoveController(PlayerController);
+			ReplacementPlayerController = World->SpawnActor<APlayerController>();
+			if (!ReplacementPlayerController)
+			{
+				return nullptr;
+			}
+			World->AddController(ReplacementPlayerController);
+			ReplacementLocalPlayer = NewObject<ULocalPlayer>(GEngine, NAME_None, RF_Transient);
+			ReplacementPlayerController->SetPlayer(ReplacementLocalPlayer);
+			return ReplacementPlayerController;
+		}
 
 	private:
 		UWorld* World = nullptr;
 		APlayerController* PlayerController = nullptr;
 		ULocalPlayer* LocalPlayer = nullptr;
+		APlayerController* ReplacementPlayerController = nullptr;
+		ULocalPlayer* ReplacementLocalPlayer = nullptr;
 	};
 
 	void AddPIEContext(TIndirectArray<FWorldContext>& Contexts, UWorld* World)
@@ -223,6 +267,43 @@ bool FUnrealBridgeServerOnlyHasNoLocalWorldTest::RunTest(const FString& Paramete
 		BridgeAgentImpl::SelectFirstValidPIEWorld(Contexts), ServerWorld.GetWorld());
 	TestNull(TEXT("server-only sessions intentionally expose no local-player world"),
 		BridgeAgentImpl::SelectFirstLocalPlayerPIEWorld(Contexts));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FUnrealBridgeStickyInputReplacementFailsClosedTest,
+	"UnrealBridge.Gameplay.StickyInput.ProductionWiring.ReplacementFailsClosed",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FUnrealBridgeStickyInputReplacementFailsClosedTest::RunTest(const FString& Parameters)
+{
+	using namespace UnrealBridgeWorldSelectionTests;
+	(void)Parameters;
+
+	// 分别替换同一 PIE 世界中的 LocalPlayer 与 FirstPlayerController，确定旧粘滞身份不会被新对象继承。
+	// Replace the LocalPlayer and FirstPlayerController in separate same-world fixtures so a stale sticky identity cannot transfer to either new object.
+	FScopedPIEWorld LocalPlayerReplacementWorld(
+		/*bHasBegunPlay=*/ true, /*bAddPlayerController=*/ true, /*bAttachLocalPlayer=*/ true);
+	UWorld* FirstWorld = LocalPlayerReplacementWorld.GetWorld();
+	APlayerController* FirstController = LocalPlayerReplacementWorld.GetPlayerController();
+	ULocalPlayer* FirstLocalPlayer = LocalPlayerReplacementWorld.GetLocalPlayer();
+	TestTrue(TEXT("captured local-player identity starts valid"),
+		BridgeAgentImpl::IsSameLocalPlayerPIEIdentity(FirstWorld, FirstController, FirstLocalPlayer));
+	TestNotNull(TEXT("replacement LocalPlayer was created"), LocalPlayerReplacementWorld.ReplaceLocalPlayer());
+	TestFalse(TEXT("replacing LocalPlayer in the same world invalidates the captured sticky identity"),
+		BridgeAgentImpl::IsSameLocalPlayerPIEIdentity(FirstWorld, FirstController, FirstLocalPlayer));
+
+	FScopedPIEWorld ControllerReplacementWorld(
+		/*bHasBegunPlay=*/ true, /*bAddPlayerController=*/ true, /*bAttachLocalPlayer=*/ true);
+	UWorld* SecondWorld = ControllerReplacementWorld.GetWorld();
+	APlayerController* SecondController = ControllerReplacementWorld.GetPlayerController();
+	ULocalPlayer* SecondLocalPlayer = ControllerReplacementWorld.GetLocalPlayer();
+	TestTrue(TEXT("second captured local-player identity starts valid"),
+		BridgeAgentImpl::IsSameLocalPlayerPIEIdentity(SecondWorld, SecondController, SecondLocalPlayer));
+	TestNotNull(TEXT("replacement FirstPlayerController was created"),
+		ControllerReplacementWorld.ReplacePlayerController());
+	TestFalse(TEXT("replacing FirstPlayerController in the same world invalidates the captured sticky identity"),
+		BridgeAgentImpl::IsSameLocalPlayerPIEIdentity(SecondWorld, SecondController, SecondLocalPlayer));
 	return true;
 }
 

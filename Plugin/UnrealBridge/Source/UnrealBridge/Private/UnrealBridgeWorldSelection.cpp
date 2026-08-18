@@ -52,4 +52,19 @@ namespace BridgeAgentImpl
 		}
 		return nullptr;
 	}
+
+	bool IsSameLocalPlayerPIEIdentity(
+		const UWorld* World,
+		const APlayerController* ExpectedPlayerController,
+		const ULocalPlayer* ExpectedLocalPlayer)
+	{
+		if (!World || !World->HasBegunPlay() || !ExpectedPlayerController || !ExpectedLocalPlayer)
+		{
+			return false;
+		}
+
+		const APlayerController* CurrentPlayerController = World->GetFirstPlayerController();
+		return CurrentPlayerController == ExpectedPlayerController
+			&& CurrentPlayerController->GetLocalPlayer() == ExpectedLocalPlayer;
+	}
 }

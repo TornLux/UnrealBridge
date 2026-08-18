@@ -861,8 +861,10 @@ Pass `(1, 0, 0)` for a bool "pressed"; for Axis2D WASD pass `(x, y, 0)`.
 ### set_sticky_input(input_action_path, axis_value) -> bool  /  clear_sticky_input(input_action_path="") -> bool
 
 Register a sticky injection: a server-side FTSTicker re-injects the
-registered IA/value **every GameThread frame** until cleared. Set once
-from Python, input persists at engine frame rate.
+registered IA/value **every GameThread frame** until explicitly cleared,
+overwritten, or automatically removed after the captured action/world/player
+identity becomes invalid. Set once from Python, input persists at engine frame
+rate while that identity remains valid.
 
 - `set_sticky_input(path, value)` — register or overwrite one entry.
 - `clear_sticky_input(path)` — remove one entry by path.
@@ -873,8 +875,11 @@ all held). Passing a zero vector does NOT clear — it injects zero
 every frame (useful to keep the binding alive while temporarily
 suspending input without losing the subscription).
 
-Sticky entries are auto-dropped when PIE ends, so each fresh PIE
-session starts with no sticky input. The server-side ticker stops
+Sticky entries are pinned to the originating PIE world, its world-time
+clock, FirstPlayerController, and LocalPlayer. They are auto-dropped
+without injection if PIE ends or either local-player identity object is
+replaced in the same world, so stale input cannot transfer during
+reconnect or controller replacement. The server-side ticker stops
 running when the registry is empty.
 
 **Example — hold forward for 2s:**

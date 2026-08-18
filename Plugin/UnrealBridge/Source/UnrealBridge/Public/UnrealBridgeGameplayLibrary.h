@@ -297,11 +297,11 @@ struct FBridgeInputBindingIssue
  *   客户端启动尚未就绪或纯服务端 PIE 时返回 false、空结果或约定哨兵，不回退到服务端世界。
  * - Spawn/Destroy、Damage、Physics、Pause/TimeDilation、GameMode、Teleport/Respawn 及权威属性写入继续使用
  *   Editor 上下文顺序中的首个有效 BeginPlay PIE 世界，以保留通用/权威语义。
- * - Sticky input 固定到创建时的本地玩家世界及其 World Time；原世界或本地玩家失效时删除，不迁移到其他世界。
+ * - Sticky input 固定到创建时的本地玩家世界、FirstPlayerController、LocalPlayer 及 World Time；任一身份变化时删除，不迁移到替代对象。
  *
  * Provides agent sensing, input, camera, and general gameplay operations for PIE automation.
  * Local-player operations fail closed until a ready LocalPlayer world exists, while general/authority operations preserve first-valid context order.
- * Sticky input remains pinned to its originating world and clock.
+ * Sticky input remains pinned to its originating world, first controller, local player, and world clock.
  */
 UCLASS()
 class UUnrealBridgeGameplayLibrary : public UBlueprintFunctionLibrary
@@ -436,9 +436,8 @@ public:
 	 * 原世界或本地玩家失效时条目被删除，绝不迁移到其他客户端或服务端；没有已就绪本地玩家时返回 false。
 	 *
 	 * Set a "sticky" EnhancedInput value pinned to the current ready local-player world: re-injected every GameThread
-	 * tick until cleared or overwritten. The caller sets it once and
-	 * movement/look input persists at UE frame rate without Python
-	 * needing to keep up. Multiple IAs can be sticky at the same time
+	 * tick until explicitly cleared, overwritten, or automatically removed when the captured action/world/player identity becomes invalid.
+	 * The caller sets it once and movement/look input persists at UE frame rate while that identity remains valid, without Python needing to keep up. Multiple IAs can be sticky at the same time
 	 * (e.g. hold forward + look yaw continuously).
 	 *
 	 * Calling SetStickyInput with the same InputActionPath overwrites

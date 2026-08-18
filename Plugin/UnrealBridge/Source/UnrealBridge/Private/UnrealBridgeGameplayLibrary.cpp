@@ -8,6 +8,7 @@
 
 #include "Editor.h"
 #include "Engine/World.h"
+#include "Engine/LocalPlayer.h"
 #include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
@@ -72,9 +73,11 @@ namespace BridgeAgentImpl
 	{
 		TWeakObjectPtr<UInputAction> Action;
 		FVector Value = FVector::ZeroVector;
-		// 粘滞输入固定到创建它的本地玩家世界，禁止在多 PIE 启动或重连时跨世界切换时钟与注入目标。
-		// Sticky input is pinned to its originating local-player world so PIE startup/reconnect cannot switch its clock or injection target.
+		// 粘滞输入固定到创建时的世界、首个控制器和本地玩家；任一身份变化都必须丢弃，禁止旧输入重定向。
+		// Sticky input is pinned to its originating world, first controller, and local player; any identity change drops it instead of redirecting stale input.
 		TWeakObjectPtr<UWorld> World;
+		TWeakObjectPtr<APlayerController> PlayerController;
+		TWeakObjectPtr<ULocalPlayer> LocalPlayer;
 		// Auto-clear deadline in world-time seconds. <= 0 means "no deadline,
 		// caller will call ClearStickyInput". Set by TriggerInputAction() so
 		// a timed hold releases on its own.
@@ -491,17 +494,18 @@ namespace BridgeAgentImpl
 				continue;
 			}
 
-			APlayerController* PlayerController = World->GetFirstPlayerController();
-			if (!PlayerController || !PlayerController->GetLocalPlayer())
+			APlayerController* PlayerController = E.PlayerController.Get();
+			ULocalPlayer* LocalPlayer = E.LocalPlayer.Get();
+			if (!IsSameLocalPlayerPIEIdentity(World, PlayerController, LocalPlayer))
 			{
-				// 原本地玩家失效后丢弃条目；不得把旧输入迟到注入新客户端或服务端世界。
-				// Drop entries whose original local player disappeared; never inject stale input into a new client or server world.
+				// 原世界中的首控制器或本地玩家被替换后丢弃条目；不得把旧输入迟到注入替代身份。
+				// Drop the entry when the originating world's first controller or local player is replaced; never inject stale input into the replacement identity.
 				It.RemoveCurrent();
 				continue;
 			}
 
 			UEnhancedInputLocalPlayerSubsystem* Subsystem =
-				PlayerController->GetLocalPlayer()->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
+				LocalPlayer->GetSubsystem<UEnhancedInputLocalPlayerSubsystem>();
 			if (!Subsystem)
 			{
 				continue;
@@ -541,10 +545,20 @@ bool UUnrealBridgeGameplayLibrary::SetStickyInput(const FString& InputActionPath
 			TEXT("SetStickyInput: no ready local-player PIE world for '%s'"), *InputActionPath);
 		return false;
 	}
+	APlayerController* PlayerController = World->GetFirstPlayerController();
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (!PlayerController || !LocalPlayer)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("SetStickyInput: local-player identity became unavailable for '%s'"), *InputActionPath);
+		return false;
+	}
 	BridgeAgentImpl::FStickyEntry Entry;
 	Entry.Action = Action;
 	Entry.Value = AxisValue;
 	Entry.World = World;
+	Entry.PlayerController = PlayerController;
+	Entry.LocalPlayer = LocalPlayer;
 	BridgeAgentImpl::GStickyInputs.Add(InputActionPath, Entry);
 	BridgeAgentImpl::EnsureStickyTickerRunning();
 	UE_LOG(LogUnrealBridgeAgent, Log, TEXT("SetStickyInput: %s = (%.2f, %.2f, %.2f)"),
@@ -690,10 +704,20 @@ bool UUnrealBridgeGameplayLibrary::TriggerInputAction(const FString& InputAction
 		return false;
 	}
 
+	APlayerController* PlayerController = World->GetFirstPlayerController();
+	ULocalPlayer* LocalPlayer = PlayerController ? PlayerController->GetLocalPlayer() : nullptr;
+	if (!PlayerController || !LocalPlayer)
+	{
+		UE_LOG(LogUnrealBridgeAgent, Warning,
+			TEXT("TriggerInputAction: local-player identity became unavailable for '%s'"), *InputActionPath);
+		return false;
+	}
 	BridgeAgentImpl::FStickyEntry Entry;
 	Entry.Action = Action;
 	Entry.Value = FVector(1.0, 0.0, 0.0);
 	Entry.World = World;
+	Entry.PlayerController = PlayerController;
+	Entry.LocalPlayer = LocalPlayer;
 	Entry.AutoClearWorldTime = World->GetTimeSeconds() + EffectiveHold;
 	BridgeAgentImpl::GStickyInputs.Add(InputActionPath, Entry);
 	BridgeAgentImpl::EnsureStickyTickerRunning();

@@ -152,13 +152,22 @@ class GameplayWorldRoutingContractTests(unittest.TestCase):
         self.assertEqual(SOURCE.count("GetWorldContexts()"), 2)
         self.assertNotIn("EWorldType::PIE", SOURCE)
 
-    def test_sticky_input_is_pinned_to_its_originating_world(self) -> None:
+    def test_sticky_input_is_pinned_to_its_originating_local_player_identity(self) -> None:
         sticky_tick = _function_body("StickyTick")
         self.assertIn("E.World.Get()", sticky_tick)
+        self.assertIn("E.PlayerController.Get()", sticky_tick)
+        self.assertIn("E.LocalPlayer.Get()", sticky_tick)
+        self.assertIn("IsSameLocalPlayerPIEIdentity(World, PlayerController, LocalPlayer)", sticky_tick)
+        self.assertIn("const double WorldNow = World->GetTimeSeconds()", sticky_tick)
+        self.assertNotIn("GetFirstPlayerController()", sticky_tick)
         self.assertNotIn("GetPIEWorld()", sticky_tick)
         self.assertNotIn("GetLocalPlayerPIEWorld()", sticky_tick)
         self.assertIn("TWeakObjectPtr<UWorld> World;", SOURCE)
+        self.assertIn("TWeakObjectPtr<APlayerController> PlayerController;", SOURCE)
+        self.assertIn("TWeakObjectPtr<ULocalPlayer> LocalPlayer;", SOURCE)
         self.assertEqual(SOURCE.count("Entry.World = World;"), 2)
+        self.assertEqual(SOURCE.count("Entry.PlayerController = PlayerController;"), 2)
+        self.assertEqual(SOURCE.count("Entry.LocalPlayer = LocalPlayer;"), 2)
 
 
 if __name__ == "__main__":
