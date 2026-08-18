@@ -1,11 +1,11 @@
 """UDP discovery for UnrealBridge.
 
-Replaces the old "assume 127.0.0.1:9876" wiring: the client sends the same
-probe to the multicast group 239.255.42.99:9876 and to the local loopback
-responder. Editors on the same host or subnet that have the UnrealBridge
-plugin loaded answer with their project name + TCP bind + TCP port. The
-client de-duplicates responses by Server-start instance UUID, then picks one (single match
-→ auto, multiple → by --project filter or error).
+Replaces the old "assume 127.0.0.1:9876" wiring. By default the client sends
+the same probe to host-local multicast (TTL 0) and to the local loopback
+responder. LAN discovery is an explicit opt-in that raises multicast TTL to 1.
+Editors that receive the probe answer with their project name + TCP bind + TCP
+port. The client de-duplicates responses by Server-start instance UUID, then
+picks one (single match → auto, multiple → by --project filter or error).
 
 Wire format:
 
@@ -47,6 +47,10 @@ DEFAULT_DISCOVERY_GROUP = "239.255.42.99"
 DEFAULT_DISCOVERY_PORT = 9876
 DEFAULT_DISCOVERY_TIMEOUT_MS = 800
 LOCAL_DISCOVERY_HOST = "127.0.0.1"
+DEFAULT_DISCOVERY_SCOPE = "local"
+DISCOVERY_SCOPES = ("local", "lan")
+LOCAL_MULTICAST_TTL = 0
+LAN_MULTICAST_TTL = 1
 PROTOCOL_VERSION = 2
 EXACT_EDITOR_STATUS_CAPABILITY = "exact_editor_status"
 EXACT_CAPABILITIES = (
@@ -102,6 +106,28 @@ def _parse_group(group: str) -> Tuple[str, int]:
         addr, port = group.rsplit(":", 1)
         return addr, int(port)
     return group, DEFAULT_DISCOVERY_PORT
+
+
+def _normalize_discovery_scope(scope: str) -> str:
+    normalized = (scope or DEFAULT_DISCOVERY_SCOPE).strip().lower()
+    if normalized not in DISCOVERY_SCOPES:
+        raise DiscoveryError(
+            f"invalid discovery scope {scope!r}; expected one of: "
+            + ", ".join(DISCOVERY_SCOPES)
+        )
+    return normalized
+
+
+def _validate_multicast_group(group: str) -> None:
+    try:
+        address = ipaddress.ip_address(group)
+    except ValueError as error:
+        raise DiscoveryError(f"invalid IPv4 discovery group {group!r}") from error
+    if address.version != 4 or not address.is_multicast:
+        raise DiscoveryError(
+            f"discovery group {group!r} is not an IPv4 multicast address; "
+            "use --endpoint for direct unicast connections"
+        )
 
 
 def _parse_endpoint_response(resp, request_id: str, response_host: str) -> "Endpoint | None":
@@ -183,13 +209,20 @@ def _parse_endpoint_response(resp, request_id: str, response_host: str) -> "Endp
 def discover(project_filter: str = "*",
              group: str = DEFAULT_DISCOVERY_GROUP,
              group_port: int = DEFAULT_DISCOVERY_PORT,
-             timeout_ms: int = DEFAULT_DISCOVERY_TIMEOUT_MS) -> List[Endpoint]:
-    """Probe the multicast group and local loopback; collect every response.
+             timeout_ms: int = DEFAULT_DISCOVERY_TIMEOUT_MS,
+             scope: str = DEFAULT_DISCOVERY_SCOPE) -> List[Endpoint]:
+    """Probe host-local or LAN multicast plus loopback; collect responses.
 
     Returns a list of Endpoint objects — empty if no editors responded.
     A failure on one send path does not suppress the other path. Never raises
     on "not found"; only when every probe send fails at the socket level.
     """
+    normalized_scope = _normalize_discovery_scope(scope)
+    _validate_multicast_group(group)
+    multicast_ttl = (LAN_MULTICAST_TTL
+                     if normalized_scope == "lan"
+                     else LOCAL_MULTICAST_TTL)
+
     request_id = str(uuid.uuid4())
     probe_payload = json.dumps({
         "v": PROTOCOL_VERSION,
@@ -200,8 +233,19 @@ def discover(project_filter: str = "*",
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
     try:
-        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, multicast_ttl)
         sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_LOOP, 1)
+        # An unanswered UDP loopback send can surface as WSAECONNRESET on the
+        # next recvfrom() call. Disable that Windows-only behavior when the
+        # socket API exposes the control code, and retain a receive-side guard
+        # below for Python/runtime combinations where ioctl is unavailable.
+        if (sys.platform == "win32"
+                and hasattr(socket, "SIO_UDP_CONNRESET")
+                and hasattr(sock, "ioctl")):
+            try:
+                sock.ioctl(socket.SIO_UDP_CONNRESET, False)
+            except OSError:
+                pass
         # Bind ephemeral — responses arrive as unicast to this port.
         sock.bind(("0.0.0.0", 0))
 
@@ -238,6 +282,15 @@ def discover(project_filter: str = "*",
                 data, source_addr = sock.recvfrom(64 * 1024)
             except socket.timeout:
                 break
+            except ConnectionResetError:
+                # Windows reports an ICMP port-unreachable from the loopback
+                # fallback as WinError 10054. It means that path did not answer;
+                # multicast responses may still be pending on this socket.
+                continue
+            except OSError as error:
+                if getattr(error, "winerror", None) == 10054:
+                    continue
+                raise
 
             try:
                 resp = json.loads(data.decode("utf-8"))
@@ -390,6 +443,11 @@ def _cli():
     parser.add_argument("--timeout-ms", type=int,
                         default=DEFAULT_DISCOVERY_TIMEOUT_MS,
                         help="Probe collection window (ms)")
+    parser.add_argument("--discovery-scope", choices=DISCOVERY_SCOPES,
+                        default=os.environ.get(
+                            "UNREAL_BRIDGE_DISCOVERY_SCOPE",
+                            DEFAULT_DISCOVERY_SCOPE),
+                        help="local (TTL 0, default) or lan (TTL 1)")
     parser.add_argument("--json", action="store_true",
                         help="Emit endpoints as a JSON list")
     args = parser.parse_args()
@@ -397,8 +455,9 @@ def _cli():
     try:
         eps = discover(project_filter=args.project,
                        group=args.group, group_port=args.group_port,
-                       timeout_ms=args.timeout_ms)
-    except OSError as e:
+                       timeout_ms=args.timeout_ms,
+                       scope=args.discovery_scope)
+    except (DiscoveryError, OSError) as e:
         print(f"discovery failed: {e}", file=sys.stderr)
         sys.exit(2)
 

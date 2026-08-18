@@ -6,7 +6,7 @@ allowed-tools: Bash Read Write Edit Glob Grep Monitor
 
 # UnrealBridge
 
-Execute Python directly inside a running UE 5.3+ editor. Protocol-v2 auto-discovery sends paired UDP probes to LAN multicast (`239.255.42.99:9876`) and local loopback (`127.0.0.1:9876`); malformed replies are skipped independently, valid responses are de-duplicated by Server-start UUID, and wildcard binds use the UDP response source IP. The six pre-existing exact commands remain the minimum capability set; `exact_editor_status` is advertised and negotiated separately, so an older protocol-v2 endpoint remains usable for its supported base commands. Unique future capabilities remain forward-compatible. Every bounded TCP response is rechecked against the frozen identity. The TCP data port is OS-assigned per editor.
+Execute Python directly inside a running UE 5.3+ editor. Protocol-v2 auto-discovery defaults to paired host-local UDP probes: multicast `239.255.42.99:9876` with TTL 0 plus loopback `127.0.0.1:9876`. Use `--discovery-scope=lan` only when another host must be discovered; it raises multicast TTL to 1 while retaining loopback. Malformed replies and Windows UDP reset notifications are skipped independently, valid responses are de-duplicated by Server-start UUID, and wildcard binds use the UDP response source IP. The six pre-existing exact commands remain the minimum capability set; `exact_editor_status` is advertised and negotiated separately, so an older protocol-v2 endpoint remains usable for its supported base commands. Unique future capabilities remain forward-compatible. Every bounded TCP response is rechecked against the frozen identity. The TCP data port is OS-assigned per editor.
 
 ## Preconditions
 
@@ -16,7 +16,7 @@ If `bridge.py` returns `discovery: no UnrealBridge editors found`, walk these in
 2. **Plugin enabled** — check `<UEProject>/<Project>.uproject` `"Plugins"` block for `{"Name":"UnrealBridge", "Enabled":false}` and flip if present.
 3. **Editor up and ready** — `bridge.py ping` returns `"ready": true`. `false` means MainFrame still loading; wait 10–60s.
 
-The loopback probe keeps local discovery working when multicast is blocked by a VPN, virtual NIC, or Windows firewall policy. Direct mode is intentionally fail-closed: `--endpoint`, `--instance-id`, `--expected-pid`, and `--expected-project-path` (or matching `UNREAL_BRIDGE_*` variables) are one inseparable tuple. Copy the identity values verbatim from one discovery response or Server startup line; `project_path` is case- and representation-sensitive on every OS. A host/port alone can be stale and is never used as a legacy fallback. Python 3.7+ stdlib only.
+The loopback probe keeps local discovery working when multicast is blocked by a VPN, virtual NIC, or Windows firewall policy. The discovery group must be an IPv4 multicast address; direct unicast mode is intentionally fail-closed: `--endpoint`, `--instance-id`, `--expected-pid`, and `--expected-project-path` (or matching `UNREAL_BRIDGE_*` variables) are one inseparable tuple. Copy the identity values verbatim from one discovery response or Server startup line; `project_path` is case- and representation-sensitive on every OS. A host/port alone can be stale and is never used as a legacy fallback. Python 3.7+ stdlib only.
 
 ## Waiting for the editor to become ready (post-launch / post-relaunch)
 
@@ -88,10 +88,10 @@ python "${CLAUDE_SKILL_DIR}/scripts/bridge.py" [options] <command> [args]
 | `modal-click <snapshot> <button>` | Click one reviewed button; stale snapshots are rejected |
 | `modal-set-text <snapshot> <input> <value>` | Fill a reviewed text input (password values are never returned) |
 | `modal-set-checkbox <snapshot> <checkbox> <checked\|unchecked>` | Change a reviewed checkbox |
-| `list-editors` | Print every editor that responded to a discovery probe |
+| `list-editors` | Print every editor that responded in the selected discovery scope (host-local by default) |
 | `wait-compile <material>` / `wait-pose-index <psd>` | Client-side polling helpers |
 
-Discovery-mode optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or env `UNREAL_BRIDGE_PROJECT`), `--token=<secret>`, `--timeout=<s>`, `--json`, `--no-preflight`. Direct mode requires the complete `--endpoint=host:port --instance-id=<uuid> --expected-pid=<pid> --expected-project-path=<uproject>` tuple; none of its four fields is optional.
+Discovery-mode optional flags: `--project=<name|path>` (disambiguate when >1 editors run; or env `UNREAL_BRIDGE_PROJECT`), `--discovery-scope=local|lan` (`local` default; or env `UNREAL_BRIDGE_DISCOVERY_SCOPE`), `--token=<secret>`, `--timeout=<s>`, `--json`, `--no-preflight`. Global flags precede the subcommand, for example `bridge.py --discovery-scope=lan list-editors`. Direct mode requires the complete `--endpoint=host:port --instance-id=<uuid> --expected-pid=<pid> --expected-project-path=<uproject>` tuple; none of its four fields is optional.
 
 ## Workflow
 
@@ -223,7 +223,7 @@ Signatures are now mechanically enforced (preflight). References carry semantic 
 | **Control Rig / IK Rig / IK Retargeter** | `references/bridge-rig-api.md` | **Read before any rig or retarget asset write.** Type discovery, hierarchy and RigVM authoring, solver/goal/chain setup, retarget ops/mapping/poses/profiles, batch retargeting, compile/processor validation, transient evaluation, animation-quality review, and cleanup. Functional on UE 5.7+. |
 | **Niagara / VFX** | `references/bridge-niagara-api.md` | **Read before any Niagara asset write.** Template/script discovery, System/Emitter recipes, module inputs, User parameters, renderers/materials/bindings, compile/audit gates, Trail/Sparks/Explosion/Dissolve presets, moving transient previews, and cleanup. Functional on UE 5.7+. |
 | DataTable | `references/bridge-datatable-api.md` | Schema, rows, fields, search, CSV |
-| Material | `references/bridge-material-api.md` | Material instance parameters and texture resource refresh |
+| Material | `references/bridge-material-api.md` | Material/master/function inspection and delivery: dependency-complete local graph reads, fail-closed/preflighted graph mutation, compile diagnostics, instances, layers, textures, templates, and previews |
 | Level / Actor | `references/bridge-level-api.md` | Level queries, spawn/destroy/move, property get/set, selection |
 | Editor session | `references/bridge-editor-api.md` | Asset open/save, viewport camera, PIE start/stop, console/CVars, BP compile |
 | GameplayAbility | `references/bridge-gameplayability-api.md` | GA Blueprint metadata |

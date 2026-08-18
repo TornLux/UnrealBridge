@@ -455,6 +455,10 @@ struct FBridgeMaterialGraphNode
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString Desc;
 
+	/** Owning composite/subgraph expression, or an invalid guid for a root-graph node. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FGuid ParentSubgraphGuid;
+
 	/** Named output pins on this node (empty string if anonymous default output). */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FString> OutputNames;
@@ -498,6 +502,10 @@ struct FBridgeMaterialGraphConnection
 	/** For wires into main material outputs ("BaseColor" / "Metallic" / ...), the property name. Empty for expression→expression. */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	FString DstPropertyName;
+
+	/** "direct" / "material_output" / "named_reroute" / "composite_input" / "composite_output". */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString EdgeKind;
 };
 
 /** Result of get_material_graph. */
@@ -515,6 +523,22 @@ struct FBridgeMaterialGraph
 	/** True if the asset is a UMaterialFunction (in which case OutputConnections will be empty). */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bIsMaterialFunction = false;
+
+	/** True only when every local dependency kind covered by CompletenessScope was resolved. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bGraphComplete = false;
+
+	/** Explicit boundary of the completeness guarantee; external material-function internals are not expanded. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString CompletenessScope;
+
+	/** Human-readable unresolved dependency diagnostics. Empty when bGraphComplete is true. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	TArray<FString> OpaqueDependencies;
+
+	/** Composite guids whose gateway/member relationship could not be expanded safely. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	TArray<FGuid> UnexpandedComposites;
 
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	TArray<FBridgeMaterialGraphNode> Nodes;
@@ -883,8 +907,25 @@ struct FBridgeMaterialGraphOpResult
 {
 	GENERATED_BODY()
 
+	/** Final outcome: ops succeeded and, when requested, the material compiled validly. */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	bool bSuccess = false;
+
+	/** True when the ordered batch succeeded against an isolated duplicate before live mutation. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bPreflightPassed = false;
+
+	/** True when every requested op was applied to the target (or simulated by ValidateMaterialGraphOps). */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bOpsSuccess = false;
+
+	/** True only for an unexpected live failure after at least one op was applied. User-input failures preflight to zero mutation. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bPartialApplied = false;
+
+	/** True when returned by ValidateMaterialGraphOps; no live asset was changed and Guids are intentionally invalid. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bPreflightOnly = false;
 
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 OpsApplied = 0;
@@ -903,6 +944,26 @@ struct FBridgeMaterialGraphOpResult
 
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
 	int32 FailedAtIndex = -1;
+
+	/** "not_requested" / "succeeded" / "failed". */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString CompileState = TEXT("not_requested");
+
+	/** Meaningful after compile was requested: compile errors are empty and a current shader map exists. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bMaterialValid = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	bool bShaderMapReady = false;
+
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	TArray<FString> CompileErrors;
+
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString CompileFeatureLevel;
+
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Material")
+	FString CompileQualityLevel;
 };
 
 /** 一个材质实例参数覆盖请求；省略选择器时精确指向 Global/-1。 / One MI parameter override request; an omitted selector targets exactly Global/-1. */
@@ -1177,10 +1238,11 @@ public:
 	static FBridgeMaterialParameterCollectionInfo GetMaterialParameterCollection(const FString& CollectionPath);
 
 	/**
-	 * M1-2: Full expression graph for a UMaterial or UMaterialFunction —
+	 * M1-2: Dependency-complete local expression graph for a UMaterial or UMaterialFunction —
 	 * nodes (class / position / caption / key properties / pin names) + connection edges +
-	 * main-output wiring (UMaterial only). Connections identify source/destination by
-	 * MaterialExpressionGuid and pin *name* (not index — names are stable across reorders).
+	 * main-output wiring (UMaterial only). Named-reroute and composite gateway dependencies
+	 * are emitted explicitly; bGraphComplete must be checked before destructive analysis.
+	 * External material-function internals remain outside the documented completeness scope.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static FBridgeMaterialGraph GetMaterialGraph(const FString& MaterialPath);
@@ -1351,7 +1413,8 @@ public:
 		const FString& PropertyName);
 
 	/**
-	 * M2-4 companion: Delete an expression by guid. Wires to/from it go away with it.
+	 * M2-4 companion: Delete an unreferenced expression by guid. Fails closed when local
+	 * dependency data is incomplete or any direct/logical/composite consumer remains.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
 	static bool DeleteMaterialExpression(
@@ -1458,7 +1521,10 @@ public:
 	 *   "set_prop"       — dst_ref, property, value               (ImportText-format)
 	 *   "delete"         — dst_ref
 	 *
-	 * bCompile=true runs compile_material (synchronous) at the end if every op succeeded.
+	 * The exact sequence is preflighted against an isolated duplicate before the live
+	 * transaction. User-input/dependency failures therefore leave the target unchanged.
+	 * bCompile=true performs a targeted synchronous compile at the end and bSuccess also
+	 * requires an error-free current shader map; inspect bOpsSuccess separately.
 	 *
 	 * Example (Python):
 	 *   ops = [
@@ -1475,6 +1541,15 @@ public:
 		const FString& MaterialPath,
 		const TArray<FBridgeMaterialGraphOp>& Ops,
 		bool bCompile);
+
+	/**
+	 * Validate the exact ordered graph-op batch against an isolated duplicate. No live
+	 * asset is changed. This also rejects incomplete dependency data and connected deletes.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Material")
+	static FBridgeMaterialGraphOpResult ValidateMaterialGraphOps(
+		const FString& MaterialPath,
+		const TArray<FBridgeMaterialGraphOp>& Ops);
 
 	/**
 	 * M2-9: Topologically arrange all expressions based on distance from the main outputs.

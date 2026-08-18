@@ -181,6 +181,37 @@ class EndpointIdentityTests(unittest.TestCase):
         self.assertEqual(project_path, exact_path)
         self.assertEqual(ep.project_path, exact_path)
 
+    def test_discovery_scope_precedence_is_cli_then_env_then_local_default(self):
+        def resolve(cli_scope, environment):
+            args = SimpleNamespace(
+                endpoint=None, project="TestProject", discovery_group=None,
+                discovery_timeout=10, discovery_scope=cli_scope, token=None,
+            )
+            with (mock.patch.dict(bridge.os.environ, environment, clear=True),
+                  mock.patch.object(bridge, "discover", return_value=[identity()]) as discover,
+                  mock.patch.object(bridge, "load_token", return_value=None)):
+                bridge.resolve_target(args)
+            return discover.call_args.kwargs["scope"]
+
+        self.assertEqual(resolve(None, {}), "local")
+        self.assertEqual(resolve(None, {"UNREAL_BRIDGE_DISCOVERY_SCOPE": "lan"}), "lan")
+        self.assertEqual(
+            resolve("local", {"UNREAL_BRIDGE_DISCOVERY_SCOPE": "lan"}), "local"
+        )
+
+    def test_invalid_environment_discovery_scope_fails_before_probe(self):
+        args = SimpleNamespace(
+            endpoint=None, project="TestProject", discovery_group=None,
+            discovery_timeout=10, discovery_scope=None, token=None,
+        )
+        with (mock.patch.dict(
+                  bridge.os.environ,
+                  {"UNREAL_BRIDGE_DISCOVERY_SCOPE": "internet"}, clear=True),
+              mock.patch.object(bridge, "discover") as discover):
+            with self.assertRaisesRegex(SystemExit, "invalid scope"):
+                bridge.resolve_target(args)
+        discover.assert_not_called()
+
     def test_response_frame_length_boundaries(self):
         for accepted in (1, bridge.MAX_RESPONSE_FRAME_BYTES):
             bridge._validate_response_frame_length(accepted)

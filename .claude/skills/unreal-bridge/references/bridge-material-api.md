@@ -379,14 +379,20 @@ for vp in info.vector_parameters:
 
 ## get_material_graph(material_path) -> FBridgeMaterialGraph
 
-**M1-2.** The full expression graph for a `UMaterial` or `UMaterialFunction`: every node with its class, position, caption, pin names, and key properties, plus every wire between expressions, plus — for `UMaterial` — the main-property wiring (BaseColor / Metallic / Normal / WorldPositionOffset / ...).
+**M1-2.** A dependency-complete graph within an explicit **local expression-collection scope** for a `UMaterial` or `UMaterialFunction`: every local node with its class, position, caption, pin names, key properties, and parent subgraph, plus physical wires and logical named-reroute/composite gateway edges. For `UMaterial`, main-property wiring (BaseColor / Metallic / Normal / WorldPositionOffset / ...) is included too.
 
 This is the primary "read the shader" function. Use it before any optimization / edit task to know what you're modifying; use it after an edit to diff what changed.
 
-Connections reference expressions by `MaterialExpressionGuid` and pins by **name** (not index). Output connections reference the material property by enum name (`"BaseColor"` / `"Metallic"` / etc.).
+Connections reference expressions by `MaterialExpressionGuid` and pins by **name** (not index). `edge_kind` distinguishes ordinary physical wires from the logical dependencies that UE stores outside `FExpressionInput`. Output connections reference the material property by enum name (`"BaseColor"` / `"Metallic"` / etc.).
+
+Always require `g.graph_complete` before destructive analysis or mutation. A graph with unresolved local dependency metadata is returned for diagnosis, but mutation APIs reject it rather than treating a plausible-looking partial graph as complete. Material-function-call internals are separate assets and are deliberately not recursively expanded; this boundary is stated in `completeness_scope`.
 
 ```python
 g = unreal.UnrealBridgeMaterialLibrary.get_material_graph('/Game/Materials/M_MyMaster')
+if not g.found:
+    raise RuntimeError("material not found")
+if not g.graph_complete:
+    raise RuntimeError("incomplete local graph: " + " | ".join(g.opaque_dependencies))
 
 # Per-node summary
 for n in g.nodes:
@@ -402,7 +408,7 @@ for c in g.output_connections:
 
 # All expression→expression edges
 for c in g.connections:
-    print(f"{c.src_guid}[{c.src_output_name or 'default'}] --> "
+    print(f"[{c.edge_kind}] {c.src_guid}[{c.src_output_name or 'default'}] --> "
           f"{c.dst_guid}[{c.dst_input_name}]")
 ```
 
@@ -413,9 +419,13 @@ for c in g.connections:
 | `found` | bool | `False` if the path could not be loaded or the asset is neither `UMaterial` nor `UMaterialFunction` |
 | `path` | str | Full object path |
 | `is_material_function` | bool | `True` if the asset is a `UMaterialFunction` — in that case `output_connections` will be empty |
+| `graph_complete` | bool | `True` only when every dependency kind named by `completeness_scope` resolved safely. Require this before destructive work |
+| `completeness_scope` | str | The guaranteed boundary: `local_expression_collection+direct_inputs+material_outputs+named_reroutes+composite_gateways`. External function internals are outside this scope |
+| `opaque_dependencies` | list[str] | Human-readable unresolved dependency diagnostics; empty when `graph_complete=True` |
+| `unexpanded_composites` | list[FGuid] | Composite guids whose gateway/member mapping could not be expanded safely |
 | `nodes` | list[FBridgeMaterialGraphNode] | All expression nodes, in declaration order |
-| `connections` | list[FBridgeMaterialGraphConnection] | Expression → expression wires |
-| `output_connections` | list[FBridgeMaterialGraphConnection] | For `UMaterial` only: wires into `BaseColor` / `Metallic` / etc. `dst_guid` is the invalid (all-zero) GUID; `dst_property_name` is the enum name without the `MP_` prefix |
+| `connections` | list[FBridgeMaterialGraphConnection] | Physical expression wires plus explicit named-reroute and composite-gateway dependency edges; inspect `edge_kind` |
+| `output_connections` | list[FBridgeMaterialGraphConnection] | For `UMaterial` only: wires into `BaseColor` / `Metallic` / etc. `dst_guid` is the invalid (all-zero) GUID; `dst_property_name` is the enum name without the `MP_` prefix; `edge_kind="material_output"` |
 
 ### FBridgeMaterialGraphNode fields
 
@@ -426,6 +436,7 @@ for c in g.connections:
 | `x` / `y` | int | Editor-space position (`MaterialExpressionEditorX` / `Y`) |
 | `caption` | str | First line of `UMaterialExpression::GetCaption()` — what the node displays as its title (class-dependent; subclasses override) |
 | `desc` | str | The comment set on the node (`UMaterialExpression::Desc`) |
+| `parent_subgraph_guid` | FGuid | Owning composite/subgraph expression, or invalid (all-zero) for a root-graph node |
 | `input_names` | list[str] | Input pin names. `"None"` (string) = anonymous default input |
 | `output_names` | list[str] | Output pin names. Single-output nodes typically list `["None"]`. Multi-output nodes like `TextureSample` list `["RGB", "R", "G", "B", "A", "RGBA"]` |
 | `key_properties` | str | Class-specific k=v pairs (semicolon-separated) covering the most relevant fields. See "Supported key_properties" below |
@@ -441,6 +452,9 @@ for c in g.connections:
 | `dst_input_name` | str | Destination pin name |
 | `dst_input_index` | int | Destination pin index (secondary — prefer name) |
 | `dst_property_name` | str | For `output_connections` only: `"BaseColor"` / `"Metallic"` / `"Roughness"` / `"Normal"` / `"EmissiveColor"` / `"Opacity"` / `"OpacityMask"` / `"WorldPositionOffset"` / `"AmbientOcclusion"` / `"Refraction"` / `"PixelDepthOffset"` / `"SubsurfaceColor"` / `"Tangent"` / `"Anisotropy"` / `"CustomizedUVs0..7"` / `"MaterialAttributes"` / etc. Empty for expression→expression edges |
+| `edge_kind` | str | `"direct"`, `"material_output"`, `"named_reroute"`, `"composite_input"`, or `"composite_output"` |
+
+`named_reroute` is a logical declaration → usage edge. `composite_input` maps a composite UI input to its internal reroute; `composite_output` maps an internal reroute back to the composite UI output. These edges are dependency facts, not ordinary editable `FExpressionInput` wires.
 
 ### Supported `key_properties`
 
@@ -721,7 +735,7 @@ L.connect_material_output(mat, basecolor.guid, "", "BaseColor")
 
 ## delete_material_expression(material_path, guid) -> bool
 
-**M2-4 companion.** Remove a node by guid. Any wires to/from it go away with it (including main-output wires that sourced from the deleted node).
+**M2-4 companion.** Remove an **unreferenced** node by guid. The call fails closed (`False` + an Unreal log reason) when the local graph is incomplete or any direct input, material output, named-reroute usage, composite member, or composite gateway still depends on the node. Disconnect the consumer or delete consumers first; the API never silently severs a wire as a side effect of deletion.
 
 ---
 
@@ -871,6 +885,20 @@ Same `FBridgeCreateAssetResult` contract as `create_material`.
 
 ---
 
+## validate_material_graph_ops(material_path, ops) -> FBridgeMaterialGraphOpResult
+
+Validate the exact ordered batch against an isolated transient duplicate. The live material is never modified, `preflight_only=True`, and every entry in `guids` is intentionally invalid because sandbox-created guids cannot target the live graph.
+
+```python
+check = L.validate_material_graph_ops(mat, ops)
+if not check.success:
+    raise RuntimeError(f"op {check.failed_at_index}: {check.error}")
+```
+
+Validation includes the graph-completeness gate, `$N` reference parsing, class/property/pin resolution, exact sequence effects, and connected-delete checks. It does not compile shaders; `compile_state` remains `"not_requested"`.
+
+---
+
 ## apply_material_graph_ops(material_path, ops, compile) -> FBridgeMaterialGraphOpResult
 
 **M2-10.** Apply an ordered batch of graph ops in a single call with `$N` back-references to previously-created nodes. Dramatically reduces round-trips when generating template graphs — a 30-node PBR master can ship in one call.
@@ -920,18 +948,32 @@ References in `src_ref` / `dst_ref`:
 - `"$N"` — back-reference to the guid produced by op N (0-based index into the same batch)
 - A literal guid string — targets an existing node not created in this batch
 
-If `compile=True`, runs `compile_material` (sync, blocks on shader compile) after all ops succeed.
+Every call first runs the same ordered batch against an isolated duplicate. A deterministic/user-input failure returns with `preflight_passed=False`, `ops_applied=0`, `partial_applied=False`, and the live material unchanged. The live pass runs only after preflight succeeds and is wrapped in one `FScopedTransaction`.
+
+`delete` follows the same fail-closed rule as `delete_material_expression`: place the required `disconnect_in` / `disconnect_out` or consumer `delete` earlier in the same batch. Incomplete local dependency data rejects the entire batch during preflight.
+
+If `compile=True`, the API recompiles only the target material, waits for that target, then requires both an empty compile-error list and a current shader map. Operation success and shader validity are separate: `ops_success` can be `True` while final `success` is `False` because HLSL compilation failed; inspect `compile_errors`.
 
 ### FBridgeMaterialGraphOpResult fields
 | Field | Type | Description |
 |---|---|---|
-| `success` | bool | All ops applied |
-| `ops_applied` | int | Number of ops that ran before success or failure |
+| `success` | bool | Final result: all ops succeeded and, when `compile=True`, the material compiled validly |
+| `preflight_passed` | bool | The exact ordered batch succeeded against the isolated duplicate |
+| `ops_success` | bool | Every requested op succeeded on the target (or in the validation sandbox) |
+| `partial_applied` | bool | An unexpected live divergence happened after at least one op. Deterministic/user-input failures preflight to zero live mutation |
+| `preflight_only` | bool | Result came from `validate_material_graph_ops`; no live asset was changed |
+| `ops_applied` | int | Live ops applied, or sandbox ops evaluated by validation. An apply preflight failure reports `0` |
 | `guids` | list[FGuid] | Same length as input. Each index holds the node guid for `add`/`comment`/`reroute` ops; invalid (all-zero) guid otherwise |
 | `failed_at_index` | int | Index of the first failed op, or -1 on success |
 | `error` | str | Human-readable failure message |
+| `compile_state` | str | `"not_requested"`, `"succeeded"`, or `"failed"` |
+| `material_valid` | bool | After requested compilation: no compile errors and a current shader map exists |
+| `shader_map_ready` | bool | A current shader map exists for `compile_feature_level` / `compile_quality_level` |
+| `compile_errors` | list[str] | Concrete compiler diagnostics from the target material resource |
+| `compile_feature_level` | str | Feature level used for validation (for example `"SM6"`) |
+| `compile_quality_level` | str | Quality level used for validation (`"High"`) |
 
-Ops are executed in order, and failure at index N leaves ops 0..N-1 applied. Re-run the batch after fixing the offending op — existing nodes persist (apply_ops is not transactional).
+An unexpected live-only failure after successful preflight can still leave a prefix applied; that rare state is reported truthfully with `partial_applied=True` and remains one editor Undo transaction. The API does not claim automatic rollback after arbitrary engine-side divergence.
 
 ### Python attribute name gotcha
 UE's Python bindings rename UPROPERTY `Property` → attribute `property_` (trailing underscore) because `property` is a Python builtin. When setting ops programmatically, use `o.property_ = "BaseColor"`, not `o.property`.
@@ -1336,7 +1378,7 @@ Fails (returns `False`) if the target material isn't `MaterialDomain=PostProcess
 | Rule | Checks |
 |---|---|
 | `M5-2` | Instruction count or distinct-texture count exceeds the supplied budget. Skipped when the respective budget is 0. |
-| `M5-3` | Expressions with no path back to any main material output (ignores comments + function-input/output nodes). |
+| `M5-3` | Expressions with no path back to any main material output (ignores comments + function-input/output nodes). Reachability follows direct wires plus named-reroute and composite-gateway edges. If local dependency data is incomplete, the rule emits one warning that analysis was skipped instead of false “unused” findings. |
 | `M5-4` | Two or more `TextureSample` / `TextureSampleParameter2D` nodes reading the same texture with the same UV wire — candidate for a shared sample + reroute. |
 | `M5-5` | Mixing `SSM_FromTextureAsset` with `SSM_Wrap_WorldGroupSettings` sibling samples (wastes slots), or dense (≥4) sample blocks all using `SSM_FromTextureAsset` (suggest switching to the shared wrap sampler). |
 | `M5-7` | Expensive Surface/Translucent/Decal material (≥1 Custom node OR ≥4 texture lookups counting TextureSample + SceneTexture) with no `FeatureLevelSwitch` / `QualitySwitch` anywhere in the graph — hint that UE can't emit a cheaper Low/Medium variant for weaker hardware. PostProcess domain is silently exempt (PP materials have fewer sane gating paths). |
@@ -1396,13 +1438,13 @@ if r.found:
 
 ### When `shader_stats_ready` is false
 
-Freshly-built masters report `shader_stats_ready=False` and `max_instructions=0` until at least one representative variant is compiled. This is a UE quirk — variants populate lazily on first use / when the material is opened in the editor. In that state the graph-structure rules (M5-3/4/5/8) still fire with accurate results; re-run `analyze_material` after the editor has had a chance to settle to get trustworthy instruction counts.
+Freshly-built masters report `shader_stats_ready=False` and `max_instructions=0` until at least one representative variant is compiled. This is a UE quirk — variants populate lazily on first use / when the material is opened in the editor. In that state the graph-structure rules (M5-3/4/5/8) still fire with accurate results; M5-3 uses the dependency-complete local graph and skips rather than guesses when that graph is incomplete. Re-run `analyze_material` after the editor has had a chance to settle to get trustworthy instruction counts.
 
 ---
 
 ## auto_fix_material(material_path, fixes, save_after) -> FBridgeMaterialAutoFixResult
 
-**M5-14.** Mechanical auto-fixes for the subset of lint findings that can be safely resolved without changing shader behavior. Each requested fix ID targets the matching rule's findings from a fresh `analyze_material` pass.
+**M5-14.** Mechanical auto-fixes for the subset of lint findings that can be safely resolved without changing shader behavior. Each requested fix ID targets the matching rule's findings from a fresh `analyze_material` pass. The entire call fails closed before opening a transaction when local dependency data is incomplete; no requested fix is applied in that case.
 
 ```python
 L = unreal.UnrealBridgeMaterialLibrary
@@ -1420,7 +1462,7 @@ for line in r.log:
 
 | Fix | Targets | Action |
 |---|---|---|
-| `"drop_unused"` | `M5-3` findings | Call `delete_material_expression` on every unreachable node. Safe: the node contributes nothing to the compiled shader. |
+| `"drop_unused"` | `M5-3` findings | Delete every node proven unreachable by the complete direct + named-reroute + composite-gateway dependency graph. Incomplete dependency data refuses the whole auto-fix. |
 | `"samplersource_share"` | `M5-5` findings | Flip each flagged `TextureSample`'s `SamplerSource` to `SSM_Wrap_WorldGroupSettings` so it feeds UE's global shared sampler. Frees up sampler slots on dense masters. |
 | `"static_switch_conversion"` | `M5-6` Pattern 2 findings (Lerp with a boolean-intent ScalarParameter Alpha, `Detail == "Candidate for StaticSwitch conversion"`) | Replace the Lerp with a `StaticSwitchParameter` of the same name (Lerp `B`→switch `A` True branch, Lerp `A`→switch `B` False branch; ScalarParameter default ≥0.5 → switch default `true`). Drops the ScalarParameter if nothing else references it. Rewires every downstream input + main output. Pattern 1 (Lerp with a Constant 0/1 Alpha) is **not** handled by this fix — those want inlining, not a switch. |
 | `"inline_trivial_custom"` | `M5-11` findings | Replace a `Custom` node whose body is a single-op `return …;` with the equivalent native expression (preserves const-folding / CSE / DCE). Recognised patterns: `return A + B;` / `A - B;` / `A * B;` / `A / B;` / `1 - A;` → Add/Sub/Mul/Div/OneMinus; `return saturate(A);` / `abs(A);` / `frac(A);` / `floor(A);` / `ceil(A);` / `normalize(A);` → Saturate/Abs/Frac/Floor/Ceil/Normalize; `return lerp(A,B,C);` / `min(A,B);` / `max(A,B);` / `pow(A,B);` / `dot(A,B);` → LinearInterpolate/Min/Max/Power/DotProduct. Tokens inside the return are matched against the Custom's `Inputs[i].InputName` (case-insensitive) or against literal `0` / `1` / `1.0`. Any body that doesn't match a pattern is skipped with a log line. |
@@ -1546,7 +1588,7 @@ VertexColor.R is the artist-facing mask — drive it per-vertex via UE's VertexP
 | `OpList` | Accumulates `FBridgeMaterialGraphOp` entries with symbolic names → resolved to `$N` refs at flush time. Supports `add` / `comment` / `reroute` / `setp` / `connect` / `connect_out` / `add_literal` (for guids produced by calls outside the batch, e.g. Custom nodes). |
 | `add_scalar_param` / `add_vector_param` / `add_static_switch_param` / `add_texture_param_2d` | One-liner parameter-node factories that set ParameterName / Group / SortPriority / defaults / sampler config in a single `set_prop` burst. |
 | `ensure_master_material(path, ..., rebuild=False)` | Create-or-clear helper. Raises on pre-existing master unless `rebuild=True`, in which case it wipes every expression (safe for dependent MIs — overrides re-resolve by name). |
-| `clear_material_graph(path) -> int` | Iterates `get_material_graph` + `delete_material_expression`; returns deletion count. |
+| `clear_material_graph(path) -> int` | Requires a complete dependency graph, orders every node consumer-first, and submits one preflighted batch after disconnecting material outputs. Raises without live mutation when a safe delete order cannot be proven. |
 | `collect_stats(path)` | Reads `get_material_stats` + `get_material_info`, returns `{max_instructions, sampler_count, vt_stack_count, compile_errors, shaders, num_expressions, ...}`. |
 | `check_budget(stats, instr, sampler)` | Compares collected stats to a template budget and returns `{over_instr, over_sampler, compile_clean, ok, ...}`. |
 

@@ -16,9 +16,9 @@ Usage:
     python bridge.py modal-status                  # Inspect a blocking Slate dialog
     python bridge.py modal-click <snapshot> 0      # Click after semantic review
 
-The client auto-discovers the editor via paired UDP probes: multicast
-(239.255.42.99:9876) for LAN editors plus loopback (127.0.0.1:9876) so local
-discovery does not depend on multicast loopback working.
+The client auto-discovers the editor via paired UDP probes: host-local
+multicast (239.255.42.99:9876, TTL 0) plus loopback (127.0.0.1:9876).
+LAN multicast (TTL 1) is opt-in through --discovery-scope=lan.
 
 Every exec / exec-file invocation is recorded as one JSONL line in the project's
 Saved/UnrealBridge/exec.log (ring-buffered, 5 MB × 3 backups = 20 MB hard cap).
@@ -33,11 +33,12 @@ Discovery overrides (rarely needed):
     --token=<secret>           Required when the server binds non-loopback
     --discovery-timeout=<ms>   Probe wait window (default: 800)
     --discovery-group=a.b.c.d:p  Override the multicast group
+    --discovery-scope=<local|lan>  Keep probes local (default) or allow LAN
 
 Environment variable fallbacks:
     UNREAL_BRIDGE_PROJECT, UNREAL_BRIDGE_ENDPOINT, UNREAL_BRIDGE_TOKEN,
     UNREAL_BRIDGE_INSTANCE_ID, UNREAL_BRIDGE_PID, UNREAL_BRIDGE_PROJECT_PATH,
-    UNREAL_BRIDGE_DISCOVERY_GROUP
+    UNREAL_BRIDGE_DISCOVERY_GROUP, UNREAL_BRIDGE_DISCOVERY_SCOPE
 
 Protocol: length-prefixed JSON over TCP
     Request:  [4 bytes big-endian length][JSON payload]
@@ -60,7 +61,9 @@ try:
     from bridge_discovery import (
         DEFAULT_DISCOVERY_GROUP,
         DEFAULT_DISCOVERY_PORT,
+        DEFAULT_DISCOVERY_SCOPE,
         DEFAULT_DISCOVERY_TIMEOUT_MS,
+        DISCOVERY_SCOPES,
         DiscoveryError,
         Endpoint,
         EXACT_CAPABILITIES,
@@ -77,7 +80,9 @@ except ImportError:
     from bridge_discovery import (  # noqa: E402
         DEFAULT_DISCOVERY_GROUP,
         DEFAULT_DISCOVERY_PORT,
+        DEFAULT_DISCOVERY_SCOPE,
         DEFAULT_DISCOVERY_TIMEOUT_MS,
+        DISCOVERY_SCOPES,
         DiscoveryError,
         Endpoint,
         EXACT_CAPABILITIES,
@@ -101,6 +106,19 @@ MAX_RESPONSE_FRAME_BYTES = 10 * 1024 * 1024
 
 # ── Resolution: turn CLI args into a (host, port, token, project_path) tuple ─
 
+def _resolve_discovery_scope(args) -> str:
+    """Resolve CLI > environment > safe local default, including env validation."""
+    raw_scope = (getattr(args, "discovery_scope", None)
+                 or os.environ.get("UNREAL_BRIDGE_DISCOVERY_SCOPE")
+                 or DEFAULT_DISCOVERY_SCOPE)
+    scope = raw_scope.strip().lower()
+    if scope not in DISCOVERY_SCOPES:
+        raise SystemExit(
+            f"discovery: invalid scope {raw_scope!r}; expected one of: "
+            + ", ".join(DISCOVERY_SCOPES)
+        )
+    return scope
+
 def resolve_target(args) -> "tuple[str, int, str | None, str | None, Endpoint]":
     """Figure out which editor to talk to.
 
@@ -112,7 +130,7 @@ def resolve_target(args) -> "tuple[str, int, str | None, str | None, Endpoint]":
 
     Precedence:
       1. --endpoint=host:port (or UNREAL_BRIDGE_ENDPOINT)
-      2. UDP multicast + local-loopback discovery, filtered by --project
+      2. Host-local UDP multicast + loopback discovery, filtered by --project
          (or UNREAL_BRIDGE_PROJECT)
     """
     # 显式 endpoint 也必须冻结精确的 Server-start identity，禁止只信任可复用端口。
@@ -164,10 +182,12 @@ def resolve_target(args) -> "tuple[str, int, str | None, str | None, Endpoint]":
         group_addr, group_port = group_str, DEFAULT_DISCOVERY_PORT
 
     timeout_ms = getattr(args, "discovery_timeout", None) or DEFAULT_DISCOVERY_TIMEOUT_MS
+    discovery_scope = _resolve_discovery_scope(args)
 
     try:
         eps = discover(project_filter=project, group=group_addr,
-                       group_port=group_port, timeout_ms=timeout_ms)
+                       group_port=group_port, timeout_ms=timeout_ms,
+                       scope=discovery_scope)
         ep = select(eps, project_filter=project if project != "*" else None)
         token = load_token(ep, explicit_token=getattr(args, "token", None)
                            or os.environ.get("UNREAL_BRIDGE_TOKEN"))
@@ -1263,9 +1283,13 @@ def cmd_list_editors(args):
         group_addr, group_port = group_str, DEFAULT_DISCOVERY_PORT
 
     timeout_ms = getattr(args, "discovery_timeout", None) or DEFAULT_DISCOVERY_TIMEOUT_MS
+    discovery_scope = _resolve_discovery_scope(args)
 
-    eps = discover(project_filter="*", group=group_addr, group_port=group_port,
-                   timeout_ms=timeout_ms)
+    try:
+        eps = discover(project_filter="*", group=group_addr, group_port=group_port,
+                       timeout_ms=timeout_ms, scope=discovery_scope)
+    except DiscoveryError as error:
+        raise SystemExit(f"discovery: {error}")
 
     if args.json:
         print(json.dumps([ep.__dict__ for ep in eps], indent=2))
@@ -1415,9 +1439,15 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--discovery-group",
-        help=f"LAN multicast group host:port; the local-loopback fallback uses "
+        help=f"IPv4 multicast group host:port; the local-loopback fallback uses "
              f"the same port (default: {DEFAULT_DISCOVERY_GROUP}:"
              f"{DEFAULT_DISCOVERY_PORT}).",
+    )
+    parser.add_argument(
+        "--discovery-scope",
+        choices=DISCOVERY_SCOPES,
+        help="local keeps multicast at TTL 0 (default); lan opts into TTL 1 "
+             "(or set UNREAL_BRIDGE_DISCOVERY_SCOPE).",
     )
 
 

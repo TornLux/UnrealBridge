@@ -34,10 +34,15 @@ class FakeDiscoverySocket:
         self.source_host = source_host
         self.request_id = ""
         self.targets = []
+        self.sockopts = []
+        self.ioctls = []
         self.closed = False
 
-    def setsockopt(self, *_args):
-        pass
+    def setsockopt(self, *args):
+        self.sockopts.append(args)
+
+    def ioctl(self, *args):
+        self.ioctls.append(args)
 
     def bind(self, _address):
         pass
@@ -72,6 +77,8 @@ class FakeDiscoverySocket:
         if not self.response_sequence:
             raise socket.timeout()
         item = self.response_sequence.pop(0)
+        if isinstance(item, BaseException):
+            raise item
         if isinstance(item, bytes):
             payload = item
         elif isinstance(item, tuple) and item[0] == "root":
@@ -87,9 +94,63 @@ class FakeDiscoverySocket:
 
 
 class DiscoveryTests(unittest.TestCase):
-    def run_discovery(self, fake_socket):
+    def run_discovery(self, fake_socket, **kwargs):
         with mock.patch.object(bridge_discovery.socket, "socket", return_value=fake_socket):
-            return bridge_discovery.discover(timeout_ms=10)
+            return bridge_discovery.discover(timeout_ms=10, **kwargs)
+
+    def test_local_scope_is_default_and_uses_zero_multicast_ttl(self):
+        fake_socket = FakeDiscoverySocket(response_count=0)
+        self.run_discovery(fake_socket)
+        self.assertIn(
+            (socket.IPPROTO_IP, socket.IP_MULTICAST_TTL,
+             bridge_discovery.LOCAL_MULTICAST_TTL),
+            fake_socket.sockopts,
+        )
+
+    def test_lan_scope_is_explicit_and_uses_one_multicast_ttl(self):
+        fake_socket = FakeDiscoverySocket(response_count=0)
+        self.run_discovery(fake_socket, scope="lan")
+        self.assertIn(
+            (socket.IPPROTO_IP, socket.IP_MULTICAST_TTL,
+             bridge_discovery.LAN_MULTICAST_TTL),
+            fake_socket.sockopts,
+        )
+
+    def test_non_multicast_group_and_invalid_scope_fail_before_socket_creation(self):
+        with mock.patch.object(bridge_discovery.socket, "socket") as socket_factory:
+            with self.assertRaises(bridge_discovery.DiscoveryError):
+                bridge_discovery.discover(group="192.0.2.10")
+            with self.assertRaises(bridge_discovery.DiscoveryError):
+                bridge_discovery.discover(scope="wide-area")
+        socket_factory.assert_not_called()
+
+    def test_windows_connection_reset_does_not_hide_later_response(self):
+        fake_socket = FakeDiscoverySocket(
+            response_sequence=[ConnectionResetError("simulated WSAECONNRESET"), {}]
+        )
+        endpoints = self.run_discovery(fake_socket)
+        self.assertEqual(len(endpoints), 1)
+
+    def test_windows_10054_oserror_does_not_hide_later_response(self):
+        reset_error = OSError("simulated WSAECONNRESET")
+        reset_error.winerror = 10054
+        fake_socket = FakeDiscoverySocket(response_sequence=[reset_error, {}])
+        endpoints = self.run_discovery(fake_socket)
+        self.assertEqual(len(endpoints), 1)
+
+    def test_unrelated_receive_error_is_not_swallowed(self):
+        fake_socket = FakeDiscoverySocket(response_sequence=[OSError("unrelated")])
+        with self.assertRaisesRegex(OSError, "unrelated"):
+            self.run_discovery(fake_socket)
+        self.assertTrue(fake_socket.closed)
+
+    def test_windows_udp_connreset_behavior_is_disabled_when_supported(self):
+        fake_socket = FakeDiscoverySocket(response_count=0)
+        with (mock.patch.object(bridge_discovery.sys, "platform", "win32"),
+              mock.patch.object(bridge_discovery.socket, "SIO_UDP_CONNRESET",
+                                0x9800000C, create=True)):
+            self.run_discovery(fake_socket)
+        self.assertEqual(fake_socket.ioctls, [(0x9800000C, False)])
 
     def test_multicast_and_loopback_responses_are_deduplicated_by_instance(self):
         fake_socket = FakeDiscoverySocket(response_count=2)

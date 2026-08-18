@@ -35,6 +35,9 @@
 #include "Materials/MaterialExpressionComment.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionReroute.h"
+#include "Materials/MaterialExpressionNamedReroute.h"
+#include "Materials/MaterialExpressionComposite.h"
+#include "Materials/MaterialExpressionPinBase.h"
 #include "MaterialExpressionIO.h"
 #include "MaterialShared.h"
 #include "MaterialShaderType.h"
@@ -94,6 +97,8 @@
 #include "AssetRegistry/IAssetRegistry.h"
 #include "AssetRegistry/ARFilter.h"
 #include "String/LexFromString.h"
+#include "UObject/StrongObjectPtr.h"
+#include "UObject/UObjectGlobals.h"
 
 namespace BridgeMaterialImpl
 {
@@ -1384,6 +1389,10 @@ namespace BridgeMaterialImpl
 		Node.X = Expr->MaterialExpressionEditorX;
 		Node.Y = Expr->MaterialExpressionEditorY;
 		Node.Desc = Expr->Desc;
+		if (Expr->SubgraphExpression)
+		{
+			Node.ParentSubgraphGuid = Expr->SubgraphExpression->MaterialExpressionGuid;
+		}
 
 		TArray<FString> Captions;
 		Expr->GetCaption(Captions);
@@ -1413,10 +1422,63 @@ namespace BridgeMaterialImpl
 		return Node;
 	}
 
-	static void CollectConnectionsFromExpressions(
-		const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions,
-		TArray<FBridgeMaterialGraphConnection>& OutConnections)
+	static void AddOpaqueDependency(FBridgeMaterialGraph& Graph, const FString& Diagnostic)
 	{
+		Graph.OpaqueDependencies.AddUnique(Diagnostic);
+	}
+
+	static void MarkCompositeUnexpanded(
+		FBridgeMaterialGraph& Graph,
+		const UMaterialExpressionComposite* Composite,
+		const FString& Diagnostic)
+	{
+		AddOpaqueDependency(Graph, Diagnostic);
+		if (Composite && Composite->MaterialExpressionGuid.IsValid())
+		{
+			Graph.UnexpandedComposites.AddUnique(Composite->MaterialExpressionGuid);
+		}
+	}
+
+	/**
+	 * Collect both physical FExpressionInput wires and the two engine dependency
+	 * mechanisms that are not represented by ordinary inputs: named-reroute
+	 * declaration links and composite gateway mappings. Any unresolved local
+	 * reference makes the graph explicitly incomplete instead of silently
+	 * returning a plausible-looking partial topology.
+	 */
+	static void CollectLocalGraphDependencies(
+		const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions,
+		FBridgeMaterialGraph& Graph)
+	{
+		TSet<UMaterialExpression*> KnownExpressions;
+		TMap<FGuid, UMaterialExpression*> GuidOwners;
+		for (const TObjectPtr<UMaterialExpression>& ExprPtr : Expressions)
+		{
+			UMaterialExpression* Expr = ExprPtr.Get();
+			if (!Expr)
+			{
+				AddOpaqueDependency(Graph, TEXT("expression collection contains a null entry"));
+				continue;
+			}
+			KnownExpressions.Add(Expr);
+			if (!Expr->MaterialExpressionGuid.IsValid())
+			{
+				AddOpaqueDependency(Graph, FString::Printf(
+					TEXT("%s has no valid MaterialExpressionGuid"), *Expr->GetPathName()));
+			}
+			else if (UMaterialExpression** Existing = GuidOwners.Find(Expr->MaterialExpressionGuid))
+			{
+				AddOpaqueDependency(Graph, FString::Printf(
+					TEXT("duplicate MaterialExpressionGuid %s on %s and %s"),
+					*Expr->MaterialExpressionGuid.ToString(), *(*Existing)->GetPathName(),
+					*Expr->GetPathName()));
+			}
+			else
+			{
+				GuidOwners.Add(Expr->MaterialExpressionGuid, Expr);
+			}
+		}
+
 		for (const TObjectPtr<UMaterialExpression>& ExprPtr : Expressions)
 		{
 			UMaterialExpression* Expr = ExprPtr.Get();
@@ -1434,6 +1496,7 @@ namespace BridgeMaterialImpl
 				}
 
 				FBridgeMaterialGraphConnection Conn;
+				Conn.EdgeKind = TEXT("direct");
 				Conn.SrcGuid = Input->Expression->MaterialExpressionGuid;
 				Conn.SrcOutputIndex = Input->OutputIndex;
 				TArray<FExpressionOutput>& SrcOutputs = Input->Expression->GetOutputs();
@@ -1449,9 +1512,183 @@ namespace BridgeMaterialImpl
 					Conn.DstInputName = ShortDst.IsNone() ? FString() : ShortDst.ToString();
 				}
 
-				OutConnections.Add(MoveTemp(Conn));
+				Graph.Connections.Add(MoveTemp(Conn));
+
+				if (!KnownExpressions.Contains(Input->Expression))
+				{
+					AddOpaqueDependency(Graph, FString::Printf(
+						TEXT("input %s.%s references expression outside the local collection: %s"),
+						*Expr->GetPathName(), *Expr->GetInputName(It.Index).ToString(),
+						*Input->Expression->GetPathName()));
+				}
+			}
+
+			if (Expr->SubgraphExpression)
+			{
+				UMaterialExpression* Parent = Expr->SubgraphExpression.Get();
+				if (!KnownExpressions.Contains(Parent) || !Cast<UMaterialExpressionComposite>(Parent))
+				{
+					AddOpaqueDependency(Graph, FString::Printf(
+						TEXT("%s has an unresolved/non-composite SubgraphExpression %s"),
+						*Expr->GetPathName(), Parent ? *Parent->GetPathName() : TEXT("None")));
+				}
+			}
+
+			if (UMaterialExpressionNamedRerouteUsage* Usage =
+				Cast<UMaterialExpressionNamedRerouteUsage>(Expr))
+			{
+				UMaterialExpressionNamedRerouteDeclaration* Declaration = Usage->Declaration.Get();
+				// IsDeclarationValid is MinimalAPI but not exported from Engine;
+				// mirror its implementation (IsValid(Declaration)) to stay link-safe.
+				if (!Declaration || !IsValid(Declaration)
+					|| !KnownExpressions.Contains(Declaration)
+					|| !Declaration->MaterialExpressionGuid.IsValid())
+				{
+					AddOpaqueDependency(Graph, FString::Printf(
+						TEXT("named reroute usage %s has an unresolved declaration"),
+						*Usage->GetPathName()));
+				}
+				else
+				{
+					FBridgeMaterialGraphConnection Logical;
+					Logical.EdgeKind = TEXT("named_reroute");
+					Logical.SrcGuid = Declaration->MaterialExpressionGuid;
+					Logical.SrcOutputName = Declaration->Name.ToString();
+					Logical.DstGuid = Usage->MaterialExpressionGuid;
+					Logical.DstInputName = TEXT("Declaration");
+					Graph.Connections.Add(MoveTemp(Logical));
+					if (Usage->DeclarationGuid.IsValid()
+						&& Usage->DeclarationGuid != Declaration->VariableGuid)
+					{
+						AddOpaqueDependency(Graph, FString::Printf(
+							TEXT("named reroute usage %s has a stale DeclarationGuid"),
+							*Usage->GetPathName()));
+					}
+				}
+			}
+
+			if (UMaterialExpressionComposite* Composite = Cast<UMaterialExpressionComposite>(Expr))
+			{
+				auto CollectGateway = [&](UMaterialExpressionPinBase* PinBase, bool bInput)
+				{
+					const TCHAR* Side = bInput ? TEXT("input") : TEXT("output");
+					if (!PinBase || !KnownExpressions.Contains(PinBase))
+					{
+						MarkCompositeUnexpanded(Graph, Composite, FString::Printf(
+							TEXT("composite %s has an unresolved %s pin base"),
+							*Composite->GetPathName(), Side));
+						return;
+					}
+					if (PinBase->SubgraphExpression != Composite)
+					{
+						MarkCompositeUnexpanded(Graph, Composite, FString::Printf(
+							TEXT("composite %s %s pin base has stale parent metadata"),
+							*Composite->GetPathName(), Side));
+					}
+
+					for (int32 PinIndex = 0; PinIndex < PinBase->ReroutePins.Num(); ++PinIndex)
+					{
+						const FCompositeReroute& Pin = PinBase->ReroutePins[PinIndex];
+						UMaterialExpressionReroute* Reroute = Pin.Expression.Get();
+						if (!Reroute || !KnownExpressions.Contains(Reroute)
+							|| !Reroute->MaterialExpressionGuid.IsValid())
+						{
+							MarkCompositeUnexpanded(Graph, Composite, FString::Printf(
+								TEXT("composite %s %s pin %d ('%s') has an unresolved reroute"),
+								*Composite->GetPathName(), Side, PinIndex, *Pin.Name.ToString()));
+							continue;
+						}
+						if (Reroute->SubgraphExpression != Composite)
+						{
+							MarkCompositeUnexpanded(Graph, Composite, FString::Printf(
+								TEXT("composite %s %s pin %d reroute has stale parent metadata"),
+								*Composite->GetPathName(), Side, PinIndex));
+						}
+
+						FBridgeMaterialGraphConnection Mapping;
+						Mapping.EdgeKind = bInput ? TEXT("composite_input") : TEXT("composite_output");
+						if (bInput)
+						{
+							// Value enters the composite UI pin and emerges from the
+							// paired reroute inside the subgraph.
+							Mapping.SrcGuid = Composite->MaterialExpressionGuid;
+							Mapping.SrcOutputName = Pin.Name.ToString();
+							Mapping.SrcOutputIndex = PinIndex;
+							Mapping.DstGuid = Reroute->MaterialExpressionGuid;
+						}
+						else
+						{
+							// Value reaches the internal reroute and emerges from the
+							// corresponding composite UI output pin.
+							Mapping.SrcGuid = Reroute->MaterialExpressionGuid;
+							Mapping.DstGuid = Composite->MaterialExpressionGuid;
+							Mapping.DstInputName = Pin.Name.ToString();
+							Mapping.DstInputIndex = PinIndex;
+						}
+						Graph.Connections.Add(MoveTemp(Mapping));
+					}
+				};
+
+				CollectGateway(Composite->InputExpressions.Get(), true);
+				CollectGateway(Composite->OutputExpressions.Get(), false);
 			}
 		}
+
+		Graph.bGraphComplete = Graph.OpaqueDependencies.IsEmpty();
+	}
+
+	static void ValidateMaterialOutputDependencies(
+		UMaterial* Material,
+		const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions,
+		FBridgeMaterialGraph& Graph)
+	{
+		if (!Material)
+		{
+			return;
+		}
+		TSet<UMaterialExpression*> KnownExpressions;
+		for (const TObjectPtr<UMaterialExpression>& ExprPtr : Expressions)
+		{
+			if (ExprPtr)
+			{
+				KnownExpressions.Add(ExprPtr.Get());
+			}
+		}
+		for (int32 PropertyIndex = 0; PropertyIndex < MP_MAX; ++PropertyIndex)
+		{
+			const EMaterialProperty Property = static_cast<EMaterialProperty>(PropertyIndex);
+			FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+			if (Input && Input->Expression && !KnownExpressions.Contains(Input->Expression))
+			{
+				AddOpaqueDependency(Graph, FString::Printf(
+					TEXT("material output %s references an expression outside the local collection"),
+					*PropertyNameFromEnum(Property)));
+			}
+		}
+		Graph.bGraphComplete = Graph.OpaqueDependencies.IsEmpty();
+	}
+
+	static bool HasCompleteMaterialDependencies(
+		UMaterial* Material,
+		TArray<FString>* OutDiagnostics = nullptr)
+	{
+		if (!Material)
+		{
+			if (OutDiagnostics)
+			{
+				OutDiagnostics->Add(TEXT("material is null"));
+			}
+			return false;
+		}
+		FBridgeMaterialGraph DependencyGraph;
+		const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions = Material->GetExpressions();
+		CollectLocalGraphDependencies(Expressions, DependencyGraph);
+		ValidateMaterialOutputDependencies(Material, Expressions, DependencyGraph);
+		if (OutDiagnostics)
+		{
+			*OutDiagnostics = MoveTemp(DependencyGraph.OpaqueDependencies);
+		}
+		return DependencyGraph.bGraphComplete;
 	}
 }
 
@@ -1701,6 +1938,8 @@ FBridgeMaterialGraph UUnrealBridgeMaterialLibrary::GetMaterialGraph(const FStrin
 
 	Graph.bFound = true;
 	Graph.Path = LoadedObj->GetPathName();
+	Graph.CompletenessScope =
+		TEXT("local_expression_collection+direct_inputs+material_outputs+named_reroutes+composite_gateways");
 
 	TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions;
 
@@ -1727,6 +1966,7 @@ FBridgeMaterialGraph UUnrealBridgeMaterialLibrary::GetMaterialGraph(const FStrin
 					continue;
 				}
 				FBridgeMaterialGraphConnection Conn;
+				Conn.EdgeKind = TEXT("material_output");
 				Conn.SrcGuid = Input->Expression->MaterialExpressionGuid;
 				Conn.SrcOutputIndex = Input->OutputIndex;
 				TArray<FExpressionOutput>& SrcOutputs = Input->Expression->GetOutputs();
@@ -1763,7 +2003,9 @@ FBridgeMaterialGraph UUnrealBridgeMaterialLibrary::GetMaterialGraph(const FStrin
 		}
 	}
 
-	CollectConnectionsFromExpressions(Expressions, Graph.Connections);
+	CollectLocalGraphDependencies(Expressions, Graph);
+
+	ValidateMaterialOutputDependencies(Cast<UMaterial>(LoadedObj), Expressions, Graph);
 
 	return Graph;
 }
@@ -2313,10 +2555,15 @@ namespace BridgeMaterialImpl
 		return Counts;
 	}
 
-	/** Returns true if at least one expression input (anywhere in the material)
-	 *  still references the given expression as its source.
+	/**
+	 * Find one local dependency that would be severed by deleting Target.
+	 * This deliberately includes links that ordinary FExpressionInput traversal
+	 * misses (named reroutes, composite membership, and gateway ownership).
 	 */
-	static bool IsExpressionReferenced(UMaterial* Material, UMaterialExpression* Target)
+	static bool FindExpressionDependencyReason(
+		UMaterial* Material,
+		UMaterialExpression* Target,
+		FString& OutReason)
 	{
 		if (!Material || !Target) return false;
 		for (const TObjectPtr<UMaterialExpression>& EP : Material->GetExpressions())
@@ -2327,6 +2574,53 @@ namespace BridgeMaterialImpl
 			{
 				if (It.Input && It.Input->Expression == Target)
 				{
+					OutReason = FString::Printf(
+						TEXT("direct input %s.%s"), *E->GetName(),
+						*E->GetInputName(It.Index).ToString());
+					return true;
+				}
+			}
+
+			if (const UMaterialExpressionNamedRerouteUsage* Usage =
+				Cast<UMaterialExpressionNamedRerouteUsage>(E))
+			{
+				if (Usage->Declaration == Target)
+				{
+					OutReason = FString::Printf(
+						TEXT("named reroute usage %s"), *Usage->GetName());
+					return true;
+				}
+			}
+
+			if (E->SubgraphExpression == Target)
+			{
+				OutReason = FString::Printf(
+					TEXT("subgraph member %s"), *E->GetName());
+				return true;
+			}
+
+			if (const UMaterialExpressionComposite* Composite = Cast<UMaterialExpressionComposite>(E))
+			{
+				if (Composite->InputExpressions == Target || Composite->OutputExpressions == Target)
+				{
+					OutReason = FString::Printf(
+						TEXT("composite gateway owned by %s"), *Composite->GetName());
+					return true;
+				}
+				auto GatewayOwnsTarget = [&](const UMaterialExpressionPinBase* PinBase)
+				{
+					if (!PinBase) return false;
+					for (const FCompositeReroute& Pin : PinBase->ReroutePins)
+					{
+						if (Pin.Expression == Target) return true;
+					}
+					return false;
+				};
+				if (GatewayOwnsTarget(Composite->InputExpressions)
+					|| GatewayOwnsTarget(Composite->OutputExpressions))
+				{
+					OutReason = FString::Printf(
+						TEXT("composite pin mapping owned by %s"), *Composite->GetName());
 					return true;
 				}
 			}
@@ -2334,9 +2628,21 @@ namespace BridgeMaterialImpl
 		for (int32 P = 0; P < MP_MAX; ++P)
 		{
 			FExpressionInput* MI = Material->GetExpressionInputForProperty((EMaterialProperty)P);
-			if (MI && MI->Expression == Target) return true;
+			if (MI && MI->Expression == Target)
+			{
+				OutReason = FString::Printf(
+					TEXT("material output %s"),
+					*PropertyNameFromEnum(static_cast<EMaterialProperty>(P)));
+				return true;
+			}
 		}
 		return false;
+	}
+
+	static bool IsExpressionReferenced(UMaterial* Material, UMaterialExpression* Target)
+	{
+		FString UnusedReason;
+		return FindExpressionDependencyReason(Material, Target, UnusedReason);
 	}
 
 	/** Find the index of an input pin by name on an expression, or INDEX_NONE. */
@@ -2702,7 +3008,30 @@ bool UUnrealBridgeMaterialLibrary::DeleteMaterialExpression(
 	UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
 	if (!Expr) return false;
 
+	TArray<FString> DependencyDiagnostics;
+	if (!HasCompleteMaterialDependencies(Material, &DependencyDiagnostics))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: DeleteMaterialExpression refused because dependency data is incomplete: %s"),
+			DependencyDiagnostics.Num() > 0 ? *DependencyDiagnostics[0] : TEXT("unknown dependency"));
+		return false;
+	}
+	FString DependencyReason;
+	if (FindExpressionDependencyReason(Material, Expr, DependencyReason))
+	{
+		UE_LOG(LogTemp, Warning,
+			TEXT("UnrealBridge: DeleteMaterialExpression refused; %s is still consumed by %s. "
+				 "Disconnect or delete the consumer first."),
+			*Guid.ToString(), *DependencyReason);
+		return false;
+	}
+
+	const FScopedTransaction Transaction(NSLOCTEXT(
+		"UnrealBridge", "DeleteMaterialExpression", "Delete Material Expression"));
+	Material->Modify();
+	Expr->Modify();
 	UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expr);
+	Material->PostEditChange();
 	Material->MarkPackageDirty();
 	return true;
 }
@@ -2908,7 +3237,12 @@ namespace BridgeMaterialImpl
 		}
 		if (Ref.StartsWith(TEXT("$")))
 		{
-			const int32 Idx = FCString::Atoi(*Ref + 1);
+			const FString IndexText = Ref.Mid(1);
+			if (IndexText.IsEmpty() || !IndexText.IsNumeric())
+			{
+				return false;
+			}
+			const int32 Idx = FCString::Atoi(*IndexText);
 			if (!OpGuids.IsValidIndex(Idx))
 			{
 				return false;
@@ -2918,6 +3252,239 @@ namespace BridgeMaterialImpl
 		}
 		return FGuid::Parse(Ref, Out);
 	}
+
+	static FBridgeMaterialGraphOpResult ExecuteMaterialGraphOps(
+		UMaterial* Material,
+		const TArray<FBridgeMaterialGraphOp>& Ops)
+	{
+		FBridgeMaterialGraphOpResult Result;
+		Result.Guids.SetNum(Ops.Num());
+
+		auto Fail = [&](int32 Index, const FString& Message) -> FBridgeMaterialGraphOpResult&
+		{
+			Result.FailedAtIndex = Index;
+			Result.Error = Message;
+			Result.bOpsSuccess = false;
+			Result.bSuccess = false;
+			return Result;
+		};
+
+		TArray<FString> InitialDiagnostics;
+		if (!HasCompleteMaterialDependencies(Material, &InitialDiagnostics))
+		{
+			return Fail(-1, FString::Printf(
+				TEXT("dependency data is incomplete; mutation refused: %s"),
+				InitialDiagnostics.Num() > 0 ? *InitialDiagnostics[0] : TEXT("unknown dependency")));
+		}
+
+		for (int32 i = 0; i < Ops.Num(); ++i)
+		{
+			const FBridgeMaterialGraphOp& O = Ops[i];
+			const FString Op = O.Op.ToLower();
+
+			if (Op == TEXT("add"))
+			{
+				UClass* Cls = ResolveExpressionClass(O.ClassName);
+				if (!Cls) return Fail(i, FString::Printf(TEXT("op %d (add): could not resolve class '%s'"), i, *O.ClassName));
+
+				UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(Material, Cls, O.X, O.Y);
+				if (!Expr) return Fail(i, FString::Printf(TEXT("op %d (add): CreateMaterialExpression returned null"), i));
+				if (!Expr->MaterialExpressionGuid.IsValid())
+				{
+					Expr->MaterialExpressionGuid = FGuid::NewGuid();
+				}
+				Result.Guids[i] = Expr->MaterialExpressionGuid;
+			}
+			else if (Op == TEXT("comment"))
+			{
+				UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
+					Material, UMaterialExpressionComment::StaticClass(), O.X, O.Y);
+				UMaterialExpressionComment* Comment = Cast<UMaterialExpressionComment>(Expr);
+				if (!Comment) return Fail(i, FString::Printf(TEXT("op %d (comment): create failed"), i));
+				Comment->SizeX = FMath::Max(O.Width, 32);
+				Comment->SizeY = FMath::Max(O.Height, 32);
+				Comment->Text = O.Text;
+				Comment->CommentColor = O.Color;
+				if (!Comment->MaterialExpressionGuid.IsValid())
+				{
+					Comment->MaterialExpressionGuid = FGuid::NewGuid();
+				}
+				Result.Guids[i] = Comment->MaterialExpressionGuid;
+			}
+			else if (Op == TEXT("reroute"))
+			{
+				UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
+					Material, UMaterialExpressionReroute::StaticClass(), O.X, O.Y);
+				if (!Expr) return Fail(i, FString::Printf(TEXT("op %d (reroute): create failed"), i));
+				if (!Expr->MaterialExpressionGuid.IsValid())
+				{
+					Expr->MaterialExpressionGuid = FGuid::NewGuid();
+				}
+				Result.Guids[i] = Expr->MaterialExpressionGuid;
+			}
+			else if (Op == TEXT("connect"))
+			{
+				FGuid SrcGuid, DstGuid;
+				if (!ResolveRef(O.SrcRef, Result.Guids, SrcGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect): bad src_ref '%s'"), i, *O.SrcRef));
+				if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect): bad dst_ref '%s'"), i, *O.DstRef));
+
+				UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
+				UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+				if (!Src || !Dst) return Fail(i, FString::Printf(TEXT("op %d (connect): expression not found"), i));
+				if (!UMaterialEditingLibrary::ConnectMaterialExpressions(
+					Src, NormalizePinName(O.SrcOutput), Dst, NormalizePinName(O.DstInput)))
+				{
+					return Fail(i, FString::Printf(TEXT("op %d (connect): pin mismatch (src_out='%s' dst_in='%s')"),
+						i, *O.SrcOutput, *O.DstInput));
+				}
+			}
+			else if (Op == TEXT("connect_out"))
+			{
+				FGuid SrcGuid;
+				if (!ResolveRef(O.SrcRef, Result.Guids, SrcGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect_out): bad src_ref '%s'"), i, *O.SrcRef));
+
+				UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
+				if (!Src) return Fail(i, FString::Printf(TEXT("op %d (connect_out): source not found"), i));
+				EMaterialProperty Prop;
+				if (!ParseMaterialProperty(O.Property, Prop)) return Fail(i, FString::Printf(TEXT("op %d (connect_out): unknown property '%s'"), i, *O.Property));
+				if (!UMaterialEditingLibrary::ConnectMaterialProperty(Src, NormalizePinName(O.SrcOutput), Prop))
+				{
+					return Fail(i, FString::Printf(TEXT("op %d (connect_out): ConnectMaterialProperty returned false"), i));
+				}
+			}
+			else if (Op == TEXT("disconnect_in"))
+			{
+				FGuid DstGuid;
+				if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): bad dst_ref '%s'"), i, *O.DstRef));
+				UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+				if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): not found"), i));
+
+				const int32 Idx = FindInputIndexByName(Dst, O.DstInput);
+				if (Idx == INDEX_NONE) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): unknown input '%s'"), i, *O.DstInput));
+				FExpressionInput* Input = Dst->GetInput(Idx);
+				if (!Input) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): input storage is unavailable"), i));
+				Dst->Modify();
+				Input->Expression = nullptr;
+				Input->OutputIndex = 0;
+			}
+			else if (Op == TEXT("disconnect_out"))
+			{
+				EMaterialProperty Prop;
+				if (!ParseMaterialProperty(O.Property, Prop)) return Fail(i, FString::Printf(TEXT("op %d (disconnect_out): unknown property '%s'"), i, *O.Property));
+				FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
+				if (!Input) return Fail(i, FString::Printf(TEXT("op %d (disconnect_out): property storage is unavailable"), i));
+				Material->Modify();
+				Input->Expression = nullptr;
+				Input->OutputIndex = 0;
+			}
+			else if (Op == TEXT("set_prop"))
+			{
+				FGuid DstGuid;
+				if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (set_prop): bad dst_ref '%s'"), i, *O.DstRef));
+				UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+				if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (set_prop): not found"), i));
+				Dst->Modify();
+				if (!ApplyPropertyString(Dst, O.Property, O.Value))
+				{
+					return Fail(i, FString::Printf(TEXT("op %d (set_prop): could not set %s = %s"), i, *O.Property, *O.Value));
+				}
+			}
+			else if (Op == TEXT("delete"))
+			{
+				FGuid DstGuid;
+				if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (delete): bad dst_ref '%s'"), i, *O.DstRef));
+				UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
+				if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (delete): not found"), i));
+
+				TArray<FString> DeleteDiagnostics;
+				if (!HasCompleteMaterialDependencies(Material, &DeleteDiagnostics))
+				{
+					return Fail(i, FString::Printf(
+						TEXT("op %d (delete): dependency data is incomplete: %s"), i,
+						DeleteDiagnostics.Num() > 0 ? *DeleteDiagnostics[0] : TEXT("unknown dependency")));
+				}
+				FString DependencyReason;
+				if (FindExpressionDependencyReason(Material, Dst, DependencyReason))
+				{
+					return Fail(i, FString::Printf(
+						TEXT("op %d (delete): expression is still consumed by %s; disconnect or delete the consumer first"),
+						i, *DependencyReason));
+				}
+				Dst->Modify();
+				UMaterialEditingLibrary::DeleteMaterialExpression(Material, Dst);
+			}
+			else
+			{
+				return Fail(i, FString::Printf(TEXT("op %d: unknown op '%s'"), i, *O.Op));
+			}
+
+			Result.OpsApplied = i + 1;
+		}
+
+		TArray<FString> ResultDiagnostics;
+		if (!HasCompleteMaterialDependencies(Material, &ResultDiagnostics))
+		{
+			return Fail(Ops.Num() > 0 ? Ops.Num() - 1 : -1, FString::Printf(
+				TEXT("resulting graph dependency data is incomplete: %s"),
+				ResultDiagnostics.Num() > 0 ? *ResultDiagnostics[0] : TEXT("unknown dependency")));
+		}
+
+		Result.bOpsSuccess = true;
+		Result.bSuccess = true;
+		return Result;
+	}
+
+	static FBridgeMaterialGraphOpResult PreflightMaterialGraphOps(
+		UMaterial* Material,
+		const TArray<FBridgeMaterialGraphOp>& Ops)
+	{
+		FBridgeMaterialGraphOpResult Result;
+		Result.bPreflightOnly = true;
+		Result.Guids.SetNum(Ops.Num());
+		if (!Material)
+		{
+			Result.Error = TEXT("material is null");
+			return Result;
+		}
+
+		const FName SandboxName = MakeUniqueObjectName(
+			GetTransientPackage(), UMaterial::StaticClass(), TEXT("UnrealBridgeMaterialGraphPreflight"));
+		TStrongObjectPtr<UMaterial> Sandbox(
+			DuplicateObject<UMaterial>(Material, GetTransientPackage(), SandboxName));
+		if (!Sandbox.IsValid())
+		{
+			Result.Error = TEXT("could not create isolated material duplicate for preflight");
+			return Result;
+		}
+		Sandbox->ClearFlags(RF_Public | RF_Standalone);
+		Sandbox->SetFlags(RF_Transient);
+
+		Result = ExecuteMaterialGraphOps(Sandbox.Get(), Ops);
+		Result.bPreflightOnly = true;
+		Result.bPreflightPassed = Result.bOpsSuccess;
+		Result.bPartialApplied = false;
+		// Sandbox-created guids cannot be used against the live material.
+		Result.Guids.Init(FGuid(), Ops.Num());
+		return Result;
+	}
+}
+
+FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::ValidateMaterialGraphOps(
+	const FString& MaterialPath,
+	const TArray<FBridgeMaterialGraphOp>& Ops)
+{
+	using namespace BridgeMaterialImpl;
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
+	if (!Material)
+	{
+		FBridgeMaterialGraphOpResult Result;
+		Result.bPreflightOnly = true;
+		Result.Guids.SetNum(Ops.Num());
+		Result.Error = FString::Printf(TEXT("could not load material '%s'"), *MaterialPath);
+		return Result;
+	}
+	return PreflightMaterialGraphOps(Material, Ops);
 }
 
 FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::ApplyMaterialGraphOps(
@@ -2927,174 +3494,82 @@ FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::ApplyMaterialGraphOps
 {
 	using namespace BridgeMaterialImpl;
 
-	FBridgeMaterialGraphOpResult Result;
-
 	UMaterial* Material = LoadObject<UMaterial>(nullptr, *MaterialPath);
 	if (!Material)
 	{
+		FBridgeMaterialGraphOpResult Result;
+		Result.Guids.SetNum(Ops.Num());
 		Result.Error = FString::Printf(TEXT("could not load material '%s'"), *MaterialPath);
 		return Result;
 	}
 
-	Result.Guids.SetNum(Ops.Num());
-
-	auto Fail = [&](int32 Idx, const FString& Msg) -> FBridgeMaterialGraphOpResult&
+	FBridgeMaterialGraphOpResult Preflight = PreflightMaterialGraphOps(Material, Ops);
+	Preflight.bPreflightOnly = false;
+	if (!Preflight.bPreflightPassed)
 	{
-		Result.FailedAtIndex = Idx;
-		Result.Error = Msg;
-		return Result;
-	};
+		Preflight.OpsApplied = 0;
+		Preflight.bPartialApplied = false;
+		Preflight.Error = FString::Printf(TEXT("preflight failed; live material unchanged: %s"), *Preflight.Error);
+		return Preflight;
+	}
 
-	for (int32 i = 0; i < Ops.Num(); ++i)
+	FScopedTransaction Transaction(NSLOCTEXT(
+		"UnrealBridge", "ApplyMaterialGraphOps", "Apply Material Graph Operations"));
+	Material->Modify();
+	FBridgeMaterialGraphOpResult Result = ExecuteMaterialGraphOps(Material, Ops);
+	Result.bPreflightPassed = true;
+	Result.bPreflightOnly = false;
+	if (!Result.bOpsSuccess)
 	{
-		const FBridgeMaterialGraphOp& O = Ops[i];
-		const FString Op = O.Op.ToLower();
-
-		if (Op == TEXT("add"))
+		Result.bPartialApplied = Result.OpsApplied > 0;
+		if (Result.bPartialApplied)
 		{
-			UClass* Cls = ResolveExpressionClass(O.ClassName);
-			if (!Cls) return Fail(i, FString::Printf(TEXT("op %d (add): could not resolve class '%s'"), i, *O.ClassName));
-
-			UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(Material, Cls, O.X, O.Y);
-			if (!Expr) return Fail(i, FString::Printf(TEXT("op %d (add): CreateMaterialExpression returned null"), i));
-
-			if (!Expr->MaterialExpressionGuid.IsValid())
-			{
-				Expr->MaterialExpressionGuid = FGuid::NewGuid();
-			}
-			Result.Guids[i] = Expr->MaterialExpressionGuid;
-		}
-		else if (Op == TEXT("comment"))
-		{
-			UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
-				Material, UMaterialExpressionComment::StaticClass(), O.X, O.Y);
-			UMaterialExpressionComment* Comment = Cast<UMaterialExpressionComment>(Expr);
-			if (!Comment) return Fail(i, FString::Printf(TEXT("op %d (comment): create failed"), i));
-
-			Comment->SizeX = FMath::Max(O.Width, 32);
-			Comment->SizeY = FMath::Max(O.Height, 32);
-			Comment->Text = O.Text;
-			Comment->CommentColor = O.Color;
-			if (!Comment->MaterialExpressionGuid.IsValid())
-			{
-				Comment->MaterialExpressionGuid = FGuid::NewGuid();
-			}
-			Result.Guids[i] = Comment->MaterialExpressionGuid;
-		}
-		else if (Op == TEXT("reroute"))
-		{
-			UMaterialExpression* Expr = UMaterialEditingLibrary::CreateMaterialExpression(
-				Material, UMaterialExpressionReroute::StaticClass(), O.X, O.Y);
-			if (!Expr) return Fail(i, FString::Printf(TEXT("op %d (reroute): create failed"), i));
-			if (!Expr->MaterialExpressionGuid.IsValid())
-			{
-				Expr->MaterialExpressionGuid = FGuid::NewGuid();
-			}
-			Result.Guids[i] = Expr->MaterialExpressionGuid;
-		}
-		else if (Op == TEXT("connect"))
-		{
-			FGuid SrcGuid, DstGuid;
-			if (!ResolveRef(O.SrcRef, Result.Guids, SrcGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect): bad src_ref '%s'"), i, *O.SrcRef));
-			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect): bad dst_ref '%s'"), i, *O.DstRef));
-
-			UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
-			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
-			if (!Src || !Dst) return Fail(i, FString::Printf(TEXT("op %d (connect): expression not found"), i));
-
-			if (!UMaterialEditingLibrary::ConnectMaterialExpressions(
-				Src, NormalizePinName(O.SrcOutput), Dst, NormalizePinName(O.DstInput)))
-			{
-				return Fail(i, FString::Printf(TEXT("op %d (connect): pin mismatch (src_out='%s' dst_in='%s')"),
-					i, *O.SrcOutput, *O.DstInput));
-			}
-		}
-		else if (Op == TEXT("connect_out"))
-		{
-			FGuid SrcGuid;
-			if (!ResolveRef(O.SrcRef, Result.Guids, SrcGuid)) return Fail(i, FString::Printf(TEXT("op %d (connect_out): bad src_ref '%s'"), i, *O.SrcRef));
-
-			UMaterialExpression* Src = FindExpressionByGuid(Material, SrcGuid);
-			if (!Src) return Fail(i, FString::Printf(TEXT("op %d (connect_out): source not found"), i));
-
-			EMaterialProperty Prop;
-			if (!ParseMaterialProperty(O.Property, Prop)) return Fail(i, FString::Printf(TEXT("op %d (connect_out): unknown property '%s'"), i, *O.Property));
-
-			if (!UMaterialEditingLibrary::ConnectMaterialProperty(Src, NormalizePinName(O.SrcOutput), Prop))
-			{
-				return Fail(i, FString::Printf(TEXT("op %d (connect_out): ConnectMaterialProperty returned false"), i));
-			}
-		}
-		else if (Op == TEXT("disconnect_in"))
-		{
-			FGuid DstGuid;
-			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): bad dst_ref '%s'"), i, *O.DstRef));
-
-			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
-			if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): not found"), i));
-
-			const int32 Idx = FindInputIndexByName(Dst, O.DstInput);
-			if (Idx == INDEX_NONE) return Fail(i, FString::Printf(TEXT("op %d (disconnect_in): unknown input '%s'"), i, *O.DstInput));
-
-			FExpressionInput* Input = Dst->GetInput(Idx);
-			if (Input)
-			{
-				Input->Expression = nullptr;
-				Input->OutputIndex = 0;
-			}
-		}
-		else if (Op == TEXT("disconnect_out"))
-		{
-			EMaterialProperty Prop;
-			if (!ParseMaterialProperty(O.Property, Prop)) return Fail(i, FString::Printf(TEXT("op %d (disconnect_out): unknown property '%s'"), i, *O.Property));
-			FExpressionInput* Input = Material->GetExpressionInputForProperty(Prop);
-			if (Input)
-			{
-				Input->Expression = nullptr;
-				Input->OutputIndex = 0;
-			}
-		}
-		else if (Op == TEXT("set_prop"))
-		{
-			FGuid DstGuid;
-			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (set_prop): bad dst_ref '%s'"), i, *O.DstRef));
-
-			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
-			if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (set_prop): not found"), i));
-
-			if (!ApplyPropertyString(Dst, O.Property, O.Value))
-			{
-				return Fail(i, FString::Printf(TEXT("op %d (set_prop): could not set %s = %s"), i, *O.Property, *O.Value));
-			}
-		}
-		else if (Op == TEXT("delete"))
-		{
-			FGuid DstGuid;
-			if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (delete): bad dst_ref '%s'"), i, *O.DstRef));
-
-			UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
-			if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (delete): not found"), i));
-
-			UMaterialEditingLibrary::DeleteMaterialExpression(Material, Dst);
+			Material->PostEditChange();
+			Material->MarkPackageDirty();
+			Result.Error = FString::Printf(
+				TEXT("unexpected live failure after successful preflight: %s"), *Result.Error);
 		}
 		else
 		{
-			return Fail(i, FString::Printf(TEXT("op %d: unknown op '%s'"), i, *O.Op));
+			Transaction.Cancel();
 		}
-
-		Result.OpsApplied = i + 1;
+		return Result;
 	}
 
 	Material->PostEditChange();
 	Material->MarkPackageDirty();
 
-	if (bCompile)
+	if (!bCompile)
 	{
-		UMaterialEditingLibrary::RecompileMaterial(Material);
-		FAssetCompilingManager::Get().FinishAllCompilation();
+		Result.bSuccess = true;
+		return Result;
 	}
 
-	Result.bSuccess = true;
+	const ERHIFeatureLevel::Type FeatureLevel = GMaxRHIFeatureLevel;
+	const EMaterialQualityLevel::Type Quality = EMaterialQualityLevel::High;
+	Result.CompileFeatureLevel = FeatureLevelToString(FeatureLevel);
+	Result.CompileQualityLevel = QualityToString(Quality);
+
+	UMaterialEditingLibrary::RecompileMaterial(Material);
+	TArray<UObject*> CompileTargets;
+	CompileTargets.Add(Material);
+	FAssetCompilingManager::Get().FinishCompilationForObjects(CompileTargets);
+
+	const FMaterialResource* Resource = ResolveMaterialResource(Material, FeatureLevel, Quality);
+	if (Resource)
+	{
+		Result.CompileErrors = Resource->GetCompileErrors();
+		Result.bShaderMapReady = Resource->GetGameThreadShaderMap() != nullptr;
+	}
+	Result.bMaterialValid = Result.bShaderMapReady && Result.CompileErrors.IsEmpty();
+	Result.CompileState = Result.bMaterialValid ? TEXT("succeeded") : TEXT("failed");
+	Result.bSuccess = Result.bOpsSuccess && Result.bMaterialValid;
+	if (!Result.bMaterialValid)
+	{
+		Result.Error = Result.CompileErrors.Num() > 0
+			? FString::Printf(TEXT("material compile failed: %s"), *FString::Join(Result.CompileErrors, TEXT(" | ")))
+			: TEXT("material compile failed: current shader map is unavailable after targeted compilation");
+	}
 	return Result;
 }
 
@@ -5004,38 +5479,72 @@ namespace BridgeMaterialImpl
 		Out.Add(MoveTemp(F));
 	}
 
-	/** Collect the set of expression guids reachable from any main material output. */
-	static void CollectReachableFromMainOutputs(UMaterial* Material, TSet<FGuid>& OutReachable)
+	/**
+	 * Collect the set of expression guids reachable from any main material
+	 * output using the same complete local dependency model as graph mutation.
+	 * Ordinary FExpressionInput traversal alone misses named reroutes and
+	 * composite gateways, which can turn drop_unused into a destructive false
+	 * positive.
+	 */
+	static bool CollectReachableFromMainOutputs(
+		UMaterial* Material,
+		TSet<FGuid>& OutReachable,
+		FString* OutError = nullptr)
 	{
-		if (!Material) return;
+		if (!Material)
+		{
+			if (OutError) *OutError = TEXT("material is null");
+			return false;
+		}
 
-		TArray<UMaterialExpression*> Stack;
+		FBridgeMaterialGraph DependencyGraph;
+		const TConstArrayView<TObjectPtr<UMaterialExpression>> Expressions =
+			Material->GetExpressions();
+		CollectLocalGraphDependencies(Expressions, DependencyGraph);
+		ValidateMaterialOutputDependencies(Material, Expressions, DependencyGraph);
+		if (!DependencyGraph.bGraphComplete)
+		{
+			if (OutError)
+			{
+				*OutError = DependencyGraph.OpaqueDependencies.Num() > 0
+					? FString::Join(DependencyGraph.OpaqueDependencies, TEXT(" | "))
+					: TEXT("unknown dependency");
+			}
+			return false;
+		}
+
+		TMap<FGuid, TArray<FGuid>> UpstreamByConsumer;
+		for (const FBridgeMaterialGraphConnection& Connection : DependencyGraph.Connections)
+		{
+			if (Connection.SrcGuid.IsValid() && Connection.DstGuid.IsValid())
+			{
+				UpstreamByConsumer.FindOrAdd(Connection.DstGuid).AddUnique(Connection.SrcGuid);
+			}
+		}
+
+		TArray<FGuid> Stack;
 
 		for (int32 i = 0; i < MP_MAX; ++i)
 		{
 			const EProp Prop = (EProp)i;
 			FExpressionInput* In = Material->GetExpressionInputForProperty(Prop);
-			if (In && In->Expression)
+			if (In && In->Expression && In->Expression->MaterialExpressionGuid.IsValid())
 			{
-				Stack.Add(In->Expression);
+				Stack.Add(In->Expression->MaterialExpressionGuid);
 			}
 		}
 
 		while (Stack.Num() > 0)
 		{
-			UMaterialExpression* Expr = Stack.Pop(EAllowShrinking::No);
-			if (!Expr) continue;
-			const FGuid& Guid = Expr->MaterialExpressionGuid;
+			const FGuid Guid = Stack.Pop(EAllowShrinking::No);
 			if (!Guid.IsValid() || OutReachable.Contains(Guid)) continue;
 			OutReachable.Add(Guid);
-			for (FExpressionInputIterator It{Expr}; It; ++It)
+			if (const TArray<FGuid>* Upstream = UpstreamByConsumer.Find(Guid))
 			{
-				if (It->Expression)
-				{
-					Stack.Add(It->Expression);
-				}
+				Stack.Append(*Upstream);
 			}
 		}
+		return true;
 	}
 
 	/** Unique key for a TextureSample node — texture asset + UV source guid (or "default"). */
@@ -5198,23 +5707,32 @@ FBridgeMaterialAnalysis UUnrealBridgeMaterialLibrary::AnalyzeMaterial(
 	// ── Rule M5-3: unreachable expressions (back-BFS from main outputs) ─────
 	{
 		TSet<FGuid> Reachable;
-		CollectReachableFromMainOutputs(Material, Reachable);
-
-		for (UMaterialExpression* Expr : Expressions)
+		FString ReachabilityError;
+		if (!CollectReachableFromMainOutputs(Material, Reachable, &ReachabilityError))
 		{
-			if (!Expr->MaterialExpressionGuid.IsValid()) continue;
-			// Ignore function-input / -output (never used in top-level materials
-			// but cheap to guard).
-			if (Expr->IsA<UMaterialExpressionFunctionInput>()) continue;
-			if (Expr->IsA<UMaterialExpressionFunctionOutput>()) continue;
-
-			if (!Reachable.Contains(Expr->MaterialExpressionGuid))
+			EmitFinding(Out.Findings, TEXT("M5-3"), TEXT("warning"),
+				FString::Printf(
+					TEXT("Unreachable-expression analysis skipped because dependency data is incomplete: %s"),
+					*ReachabilityError));
+		}
+		else
+		{
+			for (UMaterialExpression* Expr : Expressions)
 			{
-				EmitFinding(Out.Findings, TEXT("M5-3"), TEXT("info"),
-					FString::Printf(TEXT("Unused expression %s has no path to a main output"),
-						*Expr->GetClass()->GetName()),
-					Expr->MaterialExpressionGuid,
-					Expr->GetClass()->GetName());
+				if (!Expr->MaterialExpressionGuid.IsValid()) continue;
+				// Ignore function-input / -output (never used in top-level materials
+				// but cheap to guard).
+				if (Expr->IsA<UMaterialExpressionFunctionInput>()) continue;
+				if (Expr->IsA<UMaterialExpressionFunctionOutput>()) continue;
+
+				if (!Reachable.Contains(Expr->MaterialExpressionGuid))
+				{
+					EmitFinding(Out.Findings, TEXT("M5-3"), TEXT("info"),
+						FString::Printf(TEXT("Unused expression %s has no path to a main output"),
+							*Expr->GetClass()->GetName()),
+						Expr->MaterialExpressionGuid,
+						Expr->GetClass()->GetName());
+				}
 			}
 		}
 	}
@@ -5833,6 +6351,17 @@ FBridgeMaterialAutoFixResult UUnrealBridgeMaterialLibrary::AutoFixMaterial(
 	if (RequestedFixes.Num() == 0)
 	{
 		Out.bSuccess = Out.SkippedFixes.Num() == 0;
+		return Out;
+	}
+
+	TArray<FString> DependencyDiagnostics;
+	if (!HasCompleteMaterialDependencies(Material, &DependencyDiagnostics))
+	{
+		Out.Log.Add(FString::Printf(
+			TEXT("dependency data is incomplete; no auto-fix was applied: %s"),
+			DependencyDiagnostics.Num() > 0
+				? *FString::Join(DependencyDiagnostics, TEXT(" | "))
+				: TEXT("unknown dependency")));
 		return Out;
 	}
 

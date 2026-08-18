@@ -452,18 +452,87 @@ def clear_material_graph(material_path: str) -> int:
     `UMaterial` itself (and any MIs pointing at it) intact so MI overrides
     re-resolve against the freshly-built graph by ParameterName.
 
+    The graph must be dependency-complete. Main outputs are disconnected first,
+    then nodes are deleted consumer-first in one preflighted batch. If UE exposes
+    a dependency cycle that the public graph ops cannot sever safely (for
+    example an opaque/cyclic composite gateway), the live material is left
+    unchanged and this helper raises instead of producing a partial clear.
+
     Returns the number of expressions deleted.
     """
     L = unreal.UnrealBridgeMaterialLibrary
     graph = L.get_material_graph(material_path)
     if not graph.found:
         return 0
+    if not graph.graph_complete:
+        details = " | ".join(str(item) for item in graph.opaque_dependencies)
+        raise RuntimeError(
+            f"clear_material_graph refused incomplete dependency data: {details}"
+        )
 
-    deleted = 0
+    node_guids = {guid_to_str(node.guid) for node in graph.nodes}
+    if not node_guids:
+        return 0
+
+    # A source must be deleted after every local consumer. Physical inputs,
+    # named-reroute links, and composite gateway mappings are all present in
+    # graph.connections; parent metadata adds composite → member ownership.
+    consumers = {guid: set() for guid in node_guids}
+    for connection in graph.connections:
+        src = guid_to_str(connection.src_guid)
+        dst = guid_to_str(connection.dst_guid)
+        if src in node_guids and dst in node_guids and src != dst:
+            consumers[src].add(dst)
     for node in graph.nodes:
-        if L.delete_material_expression(material_path, node.guid):
-            deleted += 1
-    return deleted
+        child = guid_to_str(node.guid)
+        parent = guid_to_str(node.parent_subgraph_guid)
+        if parent in node_guids and parent != child:
+            consumers[parent].add(child)
+
+    remaining = set(node_guids)
+    delete_order: List[str] = []
+    while remaining:
+        leaves = sorted(
+            guid for guid in remaining
+            if not (consumers[guid] & remaining)
+        )
+        if not leaves:
+            cycle = ", ".join(sorted(remaining))
+            raise RuntimeError(
+                "clear_material_graph refused a dependency cycle that cannot "
+                f"be deleted safely through graph ops: {cycle}"
+            )
+        delete_order.extend(leaves)
+        remaining.difference_update(leaves)
+
+    batch: List[Any] = []
+
+    def append_op(kind: str, **kwargs: Any) -> None:
+        operation = unreal.BridgeMaterialGraphOp()
+        operation.op = kind
+        for key, value in _rename_prop_kwarg(kwargs).items():
+            setattr(operation, key, value)
+        batch.append(operation)
+
+    # Material outputs are consumers outside the expression collection, so
+    # disconnect them explicitly before the consumer-first delete sequence.
+    output_properties = sorted({
+        str(connection.dst_property_name)
+        for connection in graph.output_connections
+        if str(connection.dst_property_name)
+    })
+    for property_name in output_properties:
+        append_op("disconnect_out", property=property_name)
+    for guid in delete_order:
+        append_op("delete", dst_ref=guid)
+
+    result = L.apply_material_graph_ops(material_path, batch, False)
+    if not result.success:
+        raise RuntimeError(
+            "clear_material_graph batch failed with the live material unchanged "
+            f"unless partial_applied is true: {result.error}"
+        )
+    return len(node_guids)
 
 
 def ensure_master_material(path: str,

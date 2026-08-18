@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-08-18T06:50:21+00:00",
+  "generated_at": "2026-08-18T08:43:51+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -17520,6 +17520,24 @@
             }
           ],
           "returns": "Array[str]"
+        },
+        "validate_material_graph_ops": {
+          "doc": "X.validate_material_graph_ops(material_path, ops) -> BridgeMaterialGraphOpResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "material_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "ops",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeMaterialGraphOpResult"
         }
       }
     },
@@ -29310,7 +29328,7 @@
       }
     }
   },
-  "project_path": "D:/UB/trrhost/TextureRefreshReviewHost.uproject",
+  "project_path": "G:/UEProjects/GameplayLocomotion/GameplayLocomotion.uproject",
   "structs": {
     "BridgeAbilityCooldownInfo": [
       "ability_class_name",
@@ -30375,18 +30393,23 @@
       "path"
     ],
     "BridgeMaterialGraph": [
+      "completeness_scope",
       "connections",
       "found",
+      "graph_complete",
       "is_material_function",
       "nodes",
+      "opaque_dependencies",
       "output_connections",
-      "path"
+      "path",
+      "unexpanded_composites"
     ],
     "BridgeMaterialGraphConnection": [
       "dst_guid",
       "dst_input_index",
       "dst_input_name",
       "dst_property_name",
+      "edge_kind",
       "src_guid",
       "src_output_index",
       "src_output_name"
@@ -30399,6 +30422,7 @@
       "input_names",
       "key_properties",
       "output_names",
+      "parent_subgraph_guid",
       "x",
       "y"
     ],
@@ -30419,10 +30443,20 @@
       "y"
     ],
     "BridgeMaterialGraphOpResult": [
+      "compile_errors",
+      "compile_feature_level",
+      "compile_quality_level",
+      "compile_state",
       "error",
       "failed_at_index",
       "guids",
+      "material_valid",
       "ops_applied",
+      "ops_success",
+      "partial_applied",
+      "preflight_only",
+      "preflight_passed",
+      "shader_map_ready",
       "success"
     ],
     "BridgeMaterialInfo": [
@@ -32164,5 +32198,5 @@
       "wired"
     ]
   },
-  "ue_version": "5.7.4-51494982+++UE5+Release-5.7"
+  "ue_version": "5.7.1-48512491+++UE5+Release-5.7"
 }

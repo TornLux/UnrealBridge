@@ -26,7 +26,7 @@ UnrealBridge 是一个面向 AI Agent 的 Unreal Engine 编辑器桥接层，围
 
 ## 亮点
 
-- **基于 AST 的防幻觉契约层。** 用户脚本到达 UE 之前，`bridge_preflight.py` 先用 Python AST 解析，对照自动生成的清单（26 个库 × 1387 UFUNCTION）逐一校验每个 `unreal.UnrealBridge*Library.fn(...)` 调用——**不回到编辑器** 就能拦下不存在的库 / 函数名（带 did-you-mean）、错误的位置参数数量、未知关键字、不存在的桥接枚举成员。第二层把 `AssetRegistry` / `GameplayStatics` 的裸调用模式重定向到桥接等价物，并追踪每个返回值的实际类型，在对 `str` / `SoftObjectPath` 这类绑定类型做属性访问时给出警告；UE 对象抛出真正的 `AttributeError` 时则回查 UE Python，列出该类实际反射的 `UPROPERTY` 并给出可粘贴的修正代码（自动处理 `snake_case` ↔ `PascalCase` 的差异）。第三层 ship 一份纯关键字参数的 Python wrapper 模块，让"位置参数顺序写错"在语法层面就不可能发生。三层叠加把新会话 agent 的桥接调用失败率从 **24% 降到 16%**（A/B 验证）——这是先前仅靠 `SKILL.md` 的"调用前先查文档"提示规则一直没能稳定做到的。
+- **基于 AST 的防幻觉契约层。** 用户脚本到达 UE 之前，`bridge_preflight.py` 先用 Python AST 解析，对照自动生成的清单（26 个库 × 1388 UFUNCTION）逐一校验每个 `unreal.UnrealBridge*Library.fn(...)` 调用——**不回到编辑器** 就能拦下不存在的库 / 函数名（带 did-you-mean）、错误的位置参数数量、未知关键字、不存在的桥接枚举成员。第二层把 `AssetRegistry` / `GameplayStatics` 的裸调用模式重定向到桥接等价物，并追踪每个返回值的实际类型，在对 `str` / `SoftObjectPath` 这类绑定类型做属性访问时给出警告；UE 对象抛出真正的 `AttributeError` 时则回查 UE Python，列出该类实际反射的 `UPROPERTY` 并给出可粘贴的修正代码（自动处理 `snake_case` ↔ `PascalCase` 的差异）。第三层 ship 一份纯关键字参数的 Python wrapper 模块，让"位置参数顺序写错"在语法层面就不可能发生。三层叠加把新会话 agent 的桥接调用失败率从 **24% 降到 16%**（A/B 验证）——这是先前仅靠 `SKILL.md` 的"调用前先查文档"提示规则一直没能稳定做到的。
 
   <p align="center">
     <img src="docs/images/zh/02-preflight.png" alt="本地 AST 预检 · 不让幻觉抵达编辑器">
@@ -38,7 +38,7 @@ UnrealBridge 是一个面向 AI Agent 的 Unreal Engine 编辑器桥接层，围
 - **基于 Reactive 系统的事件订阅。** Agent 可订阅 GAS 事件、属性变化、Actor 生命周期、AnimNotify、输入、定时器，以及编辑器端的资产变更事件。在指定事件触发时由桥接层主动回调，无需 Agent 轮询——这是纯请求 / 响应式协议无法覆盖的场景。
 - **PIE 运行时的 Agent 控制接口。** `UnrealBridgeGameplayLibrary` 提供聚合式世界观测、导航寻路，以及移动 / 视角 / 跳跃等操作输入，适用于 AI 行为验证、自动化测试、游戏内 NPC 原型等运行时工作流。
 - **蓝图工具链。** 不仅仅是自动布局：`auto_layout_graph` 的 `pin_aligned` 策略读取 Slate 实时几何对齐 exec 轨道、`straighten_exec_chain` 把主干拉直、`collapse_nodes_to_function` 提取子图、`lint_blueprint` 按固定规则扫 orphan / 未命名节点 / 过大函数 / 无注释大图，`add_comment_box` + 预设配色（Section / Validation / Danger / Network / UI / Debug / Setup）让图谱分区可读；AnimGraph 与状态机还有专用的 `auto_layout_anim_graph` / `auto_layout_state_machine`（后者递归进入每个状态内部 + 规则图）。
-- **Python 原生执行。** 26 个 `UnrealBridge*Library` 累计 1387 个 `UFUNCTION`，覆盖常见子系统；未封装的能力可直接通过 `unreal.*` 原生 API 调用。相较于固定工具列表的 MCP 方案与仅暴露单一 `call` 命令的反射协议，该设计在灵活性与结构性之间取得了折衷。所有关卡写操作均包裹于 `FScopedTransaction` 内，支持标准 Undo / Redo。
+- **Python 原生执行。** 26 个 `UnrealBridge*Library` 累计 1388 个 `UFUNCTION`，覆盖常见子系统；未封装的能力可直接通过 `unreal.*` 原生 API 调用。相较于固定工具列表的 MCP 方案与仅暴露单一 `call` 命令的反射协议，该设计在灵活性与结构性之间取得了折衷。所有关卡写操作均包裹于 `FScopedTransaction` 内，支持标准 Undo / Redo。
 
 ## 架构
 
@@ -49,7 +49,7 @@ flowchart LR
     subgraph Host["Agent 主机"]
       CLI["bridge.py"]
       Pre["AST preflight<br/>（本地 — 调用前拦截，<br/>不发起 TCP）"]
-      Mani[("bridge_manifest.json<br/>26 个库 · 1387 UFUNCTION")]
+      Mani[("bridge_manifest.json<br/>26 个库 · 1388 UFUNCTION")]
     end
 
     Gen["tools/gen_manifest.py<br/>扫 C++ 头文件"]
@@ -71,7 +71,7 @@ flowchart LR
     Gen -- "生成" --> Mani
     Gen -- "生成" --> Wrap
 
-    CLI -- "UDP 双路探测<br/>多播 + 回环" --> Disc
+    CLI -- "UDP 探测<br/>默认本机；LAN 显式开启" --> Disc
     CLI -- "TCP / JSON<br/>（端口由发现得到）" --> Server
     Server -- "RPC 脚本" --> Exec
     Engine -. "委托触发" .-> Reactive
@@ -122,7 +122,7 @@ sync_project.bat D:\Path\To\YourProject
 
 ### 4. 构建并启动
 
-用 UE 打开 `.uproject` 让它自动重建插件，或从命令行跑项目自带的 `Build.bat`。启动编辑器 —— 插件会在 `PostEngineInit` 拉起服务器，看到日志里出现 `LogUnrealBridge: Listening on 127.0.0.1:<端口>` 就算成功。端口由 OS 分配，客户端同时通过多播和本机回环探测自动找到它，不需要手动配置。
+用 UE 打开 `.uproject` 让它自动重建插件，或从命令行跑项目自带的 `Build.bat`。启动编辑器 —— 插件会在 `PostEngineInit` 拉起服务器，看到日志里出现 `LogUnrealBridge: Listening on 127.0.0.1:<端口>` 就算成功。端口由 OS 分配，客户端默认通过主机内多播与本机回环自动发现同一台机器上的编辑器，不需要手动配置；要发现其他主机上的编辑器，需显式传 `--discovery-scope=lan`。
 
 ### 5. 验证
 
@@ -174,12 +174,13 @@ bridge.py exec-file my_script.py
 发现模式参数均为可选，常规使用可以一个都不传：
 
 - `--project=<名称|路径>` —— 同时跑多个编辑器时用来挑一个
+- `--discovery-scope=local|lan` —— 安全默认值为 `local`（多播 TTL 0 + 回环）；`lan` 显式开启一跳 LAN 多播（也可用 `UNREAL_BRIDGE_DISCOVERY_SCOPE`）
 - `--token=<密钥>` —— 仅当 server 绑定非 loopback 时需要（或 `UNREAL_BRIDGE_TOKEN`）
 - `--timeout`（默认 30 秒）、`--json`、`--discovery-timeout=<ms>`（默认 800）
 
 直连模式必须把四项视为不可拆分的元组：`--endpoint=host:port --instance-id=<uuid> --expected-pid=<pid> --expected-project-path=<uproject>`。instance、PID 与工程路径必须逐字复制同一次 discovery 响应或 Server 启动日志，不得改写路径分隔符或大小写；也可使用对应的 `UNREAL_BRIDGE_ENDPOINT`、`UNREAL_BRIDGE_INSTANCE_ID`、`UNREAL_BRIDGE_PID`、`UNREAL_BRIDGE_PROJECT_PATH` 环境变量。
 
-`bridge.py list-editors` 发一次探测并列出所有响应的编辑器 —— 多编辑器场景的诊断快捷命令。
+`bridge.py list-editors` 默认只发主机内探测并列出响应的编辑器。只有明确需要扫描局域网时才使用 `bridge.py --discovery-scope=lan list-editors`。发现组必须是 IPv4 多播地址；单播 endpoint 应使用完整的直连身份元组。
 
 ### 在 UE 的 Python 里调用
 
@@ -224,10 +225,10 @@ python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # 动到反射
 | `UnrealBridgeStructLibrary` | `UUserDefinedStruct`(UDS) 的作者级写接口 —— 创建 asset、字段 CRUD（增删改名 / 改类型 / 重排 / 改默认值 / tooltip / 每字段 edit on instance）。底层走 `FStructureEditorUtils`，所有写自动触发重编译 + 下游 BP 传播。`UserDefinedStructureFactory` 与 `StructureEditorUtils` 在 native Python 没暴露，这个库是程序化构造 DataTable / BP 变量可引用的 UDS 的唯一通路 |
 | `UnrealBridgeDataTableLibrary` | DataTable 行级读写与条件过滤；CSV / JSON 导入导出 —— 文件路径变体之外，新增 in-memory text 变体（适合 LLM 生成的 CSV/JSON 内容），外加 `create_data_table_from_csv` / `create_data_table_from_json` 一把梭从 row struct 直接造新 DataTable（支持 `/Game/...` 路径或短类名）；表间行复制、行差异比对；按 RowStruct 反查引用该结构的所有表 |
 | `UnrealBridgeCurveLibrary` | 曲线资产（`UCurveFloat` / `UCurveVector` / `UCurveLinearColor`）与 `UCurveTable` 行的读写：asset info、键 CRUD（批量 + 原子切线写）、前 / 后无穷外推模式、Auto 切线重算、批量采样（N 个时间点一次往返）、等距采样；曲线表行的增删改查与重命名。写操作广播 `OnCurveChanged` 让打开的 Curve Editor 即时刷新 |
-| `UnrealBridgeMaterialLibrary` | 材质实例参数查询 |
+| `UnrealBridgeMaterialLibrary` | 材质 / Master / Function 查询与事务式制作，包含依赖完整的本地图读取、隔离批次预检、连接节点的 fail-closed 删除、定向编译验证，以及 `UMaterialInstanceConstant` Layer Stack 的校验式快照 / 整体替换 / 严格根材质复制（UE 5.7+ 为真实实现，UE 5.3-5.6 为安全桩） |
 | `UnrealBridgeUMGLibrary` | Widget Blueprint 完整交付能力：资产创建、控件类发现与层级 CRUD、控件/Slot 反射属性、Canvas 布局和 SlateBrush 资源；批量透明度/颜色/2D Transform 动画；编译、可访问性与陈旧引用校验；UE 5.7+ 的 FieldNotify ViewModel 创建、Source 配置、单向/双向 MVVM 绑定及诊断（5.3-5.6 为带明确日志的安全 no-op）；PIE 实例生成、实时几何/状态回读、Button/Text/Slider/CheckBox/焦点语义操作、动画播放、动态 UI 材质参数与实时 MVVM 写入 |
 | `UnrealBridgeLevelLibrary` | Actor 查询（名称 / Class / Tag / Folder / 半径 / Box / 射线）与编辑（生成 / 销毁 / 变换 / 挂载 / 可见性 / Mobility、嵌套属性读写、函数调用）；地形高度剖面与 Trace 探测；编辑器内自定义 NavGraph（节点、边、最短路径、JSON 持久化）；正交俯视图与动画 Pose / Montage 时间轴截图；所有写操作走事务 |
-| `UnrealBridgeEditorLibrary` | 编辑器会话控制：资产开关 / 保存 / 加载；Content Browser 与视口；PIE 启停 / 模拟 / 暂停；Undo / Redo、控制台命令、CVar；蓝图批量编译、重定向修复；Live Coding 触发；原始视口截图与包含单帧调试覆盖层的所见即所得已呈现窗口截图、GBuffer 通道（Depth / DeviceDepth / Normal / BaseColor）与 HitProxy ID pass；标签页、通知、诊断信息。Bridge 自观测：调用日志（请求 ID、耗时、端点、输出大小的环形缓冲）、性能统计、签名注册表 JSON dump（一次性输出全部 1389 个反射 `UFUNCTION` 的元信息，其中 1387 个进入 Python-callable manifest） |
+| `UnrealBridgeEditorLibrary` | 编辑器会话控制：资产开关 / 保存 / 加载；Content Browser 与视口；PIE 启停 / 模拟 / 暂停；Undo / Redo、控制台命令、CVar；蓝图批量编译、重定向修复；Live Coding 触发；原始视口截图与包含单帧调试覆盖层的所见即所得已呈现窗口截图、GBuffer 通道（Depth / DeviceDepth / Normal / BaseColor）与 HitProxy ID pass；标签页、通知、诊断信息。Bridge 自观测：调用日志（请求 ID、耗时、端点、输出大小的环形缓冲）、性能统计、签名注册表 JSON dump（一次性输出全部 1390 个反射 `UFUNCTION` 的元信息，其中 1388 个进入 Python-callable manifest） |
 | `UnrealBridgeGameplayAbilityLibrary` | GameplayAbility / GameplayEffect / AttributeSet 蓝图元信息；Tag 层级与匹配；按 Tag 列出能力与效果；Actor 的 ASC 状态（属性值、激活 Ability / Effect、Cooldown 检查）；运行时发送 GameplayEvent、修改属性；GA / GE / GC 蓝图作者支持（CDO 编辑、GA 图节点、GE magnitude / component / 继承 Tag、GC Tag 设置） |
 | `UnrealBridgeGameplayTagLibrary` | GameplayTag 重构工作流：`find_assets_referencing_tag`（支持子 tag 展开）、`list_all_registered_tags`、`get_tag_source_info`。Mutation：`add_gameplay_tag` / `rename_gameplay_tag`（自动写 redirect，并针对 UE 5.7 的"redirect 静默丢失"问题做了持久化加固） / `remove_gameplay_tag`。源枚举 `list_tag_source_inis`；redirect 管理 `list_gameplay_tag_redirects` + `remove_gameplay_tag_redirect`，支持 enumerate-then-sweep 清理 |
 | `UnrealBridgePerfLibrary` | AAA 量级性能采集，八个维度。**Point-in-time**：帧时序（FPS / GT / RT / GPU / RHI ms，`FStatUnitData` + RHI globals 双源）、渲染计数器、进程内存、`TObjectIterator` 类直方图、ISO-8601 时间戳聚合快照。**内存 / 资产分解**：texture / mesh / audio / UObject 按 folder / LOD group / compression format / class 分组——支持 disk 或 runtime 两种模式；任意 UClass 下 top-N 最大资产；world-actor 按 class × level 分布（World Partition 部分支持）。**时间序列**：opt-in 周期采样配 ring buffer，常开的 frame-time 直方图与 hitch log（走 `OnEndFrame` hook），CSV 导出，**`get_frame_time_percentiles([50,90,95,99])`** 拿 AAA 项目真实长尾延迟。**渲染细分**：per-actor 渲染成本、LOD 分布、按 material 聚合 primitive、shadow caster、Lumen / Nanite 诊断；**`get_texture_streaming_residency`**（per-texture resident vs wanted mip + pool over-budget）、**`get_render_target_memory`**（per-subclass RT 字节总量）、**`get_per_pass_gpu_timings`**（BasePass / Lumen / Translucency 平均时长，源 `FRealtimeGPUProfiler`；UE 5.7 新 RHI profiler 上优雅降级）、**`analyze_all_materials`**（跨库结构复杂度启发式，找最重的 master）。**Live trace 控制**：`start_trace_capture` / `stop_trace_capture` / `list_trace_channels` / `get_trace_state` 封装 `FTraceAuxiliary`。**Trace summary 解析**（5.7+）：`parse_trace_to_summary` 一次调用从 `.utrace` 解出 CPU + GPU 热点 + per-thread 热点 + counters + load-time 分解 + 帧统计；专项 `parse_alloc_trace_to_summary`（peak commit + tag inventory + alloc/free delta）、`parse_net_trace_to_summary`（per-game-instance + per-connection 流量总量）、`parse_cook_trace_to_summary`（top-N 包按 `BeginCacheCookedPlatformData` 排序——给 4 小时 cook 归因）。**回归工作流**：`compare_perf_snapshots(before, after, threshold)` 返回 per-field delta + flagged regression 列表；`begin_auto_hitch_capture` / `end_auto_hitch_capture` 对每帧 ≥ 阈值的现场抓 rich snapshot 进 ring buffer；`begin_insights_for_trace` shell 出 UnrealInsights.exe 把人接进来 |
@@ -243,7 +244,7 @@ python .claude/skills/unreal-bridge/scripts/rebuild_relaunch.py  # 动到反射
 
 两个通道：
 
-1. **UDP 发现 v2**：端口 `9876`。客户端把带同一 request_id 的 `probe` 同时发往局域网多播 `239.255.42.99` 和本机回环 `127.0.0.1`，拒绝畸形、旧版或字段不完整的响应，再按每次 Server 启动生成的 UUID 去重。每个编辑器返回 `protocol_version`、`instance_id`、PID、唯一 wire-canonical 工程路径、TCP endpoint、capabilities 与 token 指纹。既有六个 exact command 是最低必需 capability 集；`exact_editor_status` 单独广告且只由 status 命令要求，同时允许不重复的未来扩展项。Server 广告通配 TCP bind 时，客户端使用 UDP 响应源 IP。多编辑器通过 `SO_REUSEADDR` 共存。
+1. **UDP 发现 v2**：端口 `9876`。默认 `local` scope 把带同一 request_id 的 `probe` 发往 TTL 0 的主机内多播 `239.255.42.99` 与本机回环 `127.0.0.1`，所以短生命周期 CLI 调用不会向 LAN 发出多播流量。只有 `--discovery-scope=lan`（或 `UNREAL_BRIDGE_DISCOVERY_SCOPE=lan`）才把多播 TTL 提升到 1，同时仍保留回环兜底。客户端拒绝畸形、旧版或字段不完整的响应，容忍 Windows UDP reset 通知，再按每次 Server 启动生成的 UUID 去重。每个编辑器返回 `protocol_version`、`instance_id`、PID、唯一 wire-canonical 工程路径、TCP endpoint、capabilities 与 token 指纹。既有六个 exact command 是最低必需 capability 集；`exact_editor_status` 单独广告且只由 status 命令要求，同时允许不重复的未来扩展项。Server 广告通配 TCP bind 时，客户端使用 UDP 响应源 IP。多编辑器通过 `SO_REUSEADDR` 共存。发现组必须是 IPv4 多播地址；直连单播使用冻结身份的完整直连元组。
 
 2. **TCP 数据通道**：端口由编辑器在发现响应里给出（OS 分配，默认 `127.0.0.1`）。每个请求冻结发现到的身份，每个响应回显并由客户端复核。长度前缀 JSON：
 
@@ -301,6 +302,7 @@ UnrealBridge/
 
 - 所有关卡编辑操作都包在 `FScopedTransaction` 里 —— 编辑器内按 Ctrl+Z 可以撤销桥接做过的任何改动。
 - TCP 服务器**默认绑到 `127.0.0.1`**，外网不可达。要开放 LAN 必须显式 `-UnrealBridgeBind=0.0.0.0 -UnrealBridgeToken=<密钥>`；非 loopback 绑定若未提供 token，server 会拒绝启动以避免 Python RCE 外漏。
+- CLI 发现默认仅限本机；LAN 多播必须显式使用 `--discovery-scope=lan`。
 
 ## 许可证
 

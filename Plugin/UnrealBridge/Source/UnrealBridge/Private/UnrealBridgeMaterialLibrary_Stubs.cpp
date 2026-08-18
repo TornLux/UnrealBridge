@@ -189,6 +189,12 @@ FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::ApplyMaterialGraphOps
 	return FBridgeMaterialGraphOpResult{};
 }
 
+FBridgeMaterialGraphOpResult UUnrealBridgeMaterialLibrary::ValidateMaterialGraphOps(const FString& MaterialPath, const TArray<FBridgeMaterialGraphOp>& Ops)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::ValidateMaterialGraphOps requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgeMaterialGraphOpResult{};
+}
+
 int32 UUnrealBridgeMaterialLibrary::AutoLayoutMaterialGraph(const FString& MaterialPath, int32 ColumnSpacing, int32 RowSpacing)
 {
 	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeMaterialLibrary::AutoLayoutMaterialGraph requires UE 5.7+ — call ignored on this engine version"));

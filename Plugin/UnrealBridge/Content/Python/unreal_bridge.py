@@ -16,8 +16,8 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-08-18T06:50:21+00:00'
-_UE_VERSION = '5.7.4-51494982+++UE5+Release-5.7'
+_GENERATED_AT = '2026-08-18T08:43:51+00:00'
+_UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
     """Wraps unreal.UnrealBridgeAnimLibrary (kwargs-only)."""
@@ -4619,6 +4619,11 @@ class Material:
     def sweep_mi_params(*, material_instance_path, param_name, values, mesh, lighting, resolution, camera_yaw_deg, camera_pitch_deg, camera_distance, grid_cols, out_grid_path):
         """X.sweep_mi_params(material_instance_path, param_name, values, mesh, lighting, resolution, camera_yaw_deg, camera_pitch_deg, camera_distance, grid_cols, out_grid_path) -> Array[str]"""
         return unreal.UnrealBridgeMaterialLibrary.sweep_mi_params(material_instance_path, param_name, values, mesh, lighting, resolution, camera_yaw_deg, camera_pitch_deg, camera_distance, grid_cols, out_grid_path)
+
+    @staticmethod
+    def validate_material_graph_ops(*, material_path, ops):
+        """X.validate_material_graph_ops(material_path, ops) -> BridgeMaterialGraphOpResult"""
+        return unreal.UnrealBridgeMaterialLibrary.validate_material_graph_ops(material_path, ops)
 
 
 class Navigation:
