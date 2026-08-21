@@ -1705,6 +1705,22 @@ public:
 		bool bIsSet, int32 NodePosX, int32 NodePosY);
 
 	/**
+	 * Create a Blueprint Interface asset at a new /Game/.../AssetName path.
+	 * Existing destinations are never overwritten. Returns the canonical object path,
+	 * or an empty string on failure.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString CreateBlueprintInterfaceAsset(const FString& AssetPath, bool bSave = true);
+
+	/**
+	 * Add a named signature graph to a Blueprint Interface asset. Idempotent when the
+	 * exact function already exists. Use AddFunctionParameter / RemoveFunctionParameter /
+	 * ReorderFunctionParameter to edit its signature.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static bool AddBlueprintInterfaceFunction(const FString& InterfacePath, const FString& FunctionName);
+
+	/**
 	 * Add an interface implementation to a Blueprint. InterfacePath can be a content path
 	 * to a Blueprint interface (e.g. "/Game/BPI_Foo") or a native class path
 	 * ("/Script/MyModule.UMyInterface"). Compiles on success.
@@ -1769,8 +1785,11 @@ public:
 		int32 NodePosX, int32 NodePosY);
 
 	/**
-	 * Connect two pins identified by node GUID + pin name. Uses the K2 schema's TryCreateConnection
-	 * so it respects type coercion and exec-link rules.
+	 * Connect two pins identified by node GUID + pin name. Pin lookup accepts the internal
+	 * name, case-insensitive internal name, or the editor-visible friendly name. In particular,
+	 * an interface call/message pin displayed as "Target" may be addressed as either "Target"
+	 * or its internal name "self". Uses the K2 schema's TryCreateConnection so it respects
+	 * type coercion and exec-link rules.
 	 * @return true on success; false when nodes/pins missing or types incompatible.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
@@ -1895,15 +1914,35 @@ public:
 	// ═══ P0 — Interface override ════════════════════════════════════
 
 	/**
-	 * Materialize an interface function as an editable graph on this Blueprint.
-	 * No-op (returns true) if the function is already implemented or is an event-type member.
+	 * Materialize an interface member on this Blueprint. Function-type members are ensured
+	 * as interface function graphs; event-type members are ensured as interface events in
+	 * EventGraph. No-op (returns true) if already implemented.
 	 * The interface must already be added via AddBlueprintInterface.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static bool ImplementInterfaceFunction(const FString& BlueprintPath,
 		const FString& InterfacePath, const FString& FunctionName);
 
-	/** Add a K2Node_Message ("Call Function (Message)") for an interface method. */
+	/**
+	 * Add a strongly-typed interface call node. Its Target/self input is the interface type,
+	 * so the caller must already hold an interface reference.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddInterfaceCallNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& InterfacePath, const FString& FunctionName, int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Add an interface event implementation for an event-type interface member. Reuses the
+	 * existing event when present. The destination graph must be an Ubergraph/EventGraph.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
+	static FString AddInterfaceEventNode(const FString& BlueprintPath, const FString& GraphName,
+		const FString& InterfacePath, const FString& FunctionName, int32 NodePosX, int32 NodePosY);
+
+	/**
+	 * Add a K2Node_Message ("Call Function (Message)") for an interface method. Its visible
+	 * Target pin has internal name "self"; ConnectGraphPins accepts either spelling.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Blueprint")
 	static FString AddInterfaceMessageNode(const FString& BlueprintPath, const FString& GraphName,
 		const FString& InterfacePath, const FString& FunctionName, int32 NodePosX, int32 NodePosY);

@@ -601,6 +601,45 @@ Returns `""` if the name doesn't match any local variable or parameter, or if th
 
 ---
 
+## Blueprint Interface asset and signature authoring
+
+### create_blueprint_interface_asset(asset_path, save=True) -> str
+
+Create a new Blueprint Interface (BPI) at a complete, previously unused
+`/Game/.../AssetName` path. Existing assets and loaded packages are never
+overwritten. Returns the canonical object path (`/Game/.../BPI_X.BPI_X`) or
+`""` on failure.
+
+```python
+from unreal_bridge import Blueprint
+
+bpi = Blueprint.create_blueprint_interface_asset(
+    asset_path='/Game/Interfaces/BPI_Interactable',
+    save=True,
+)
+assert bpi
+```
+
+### add_blueprint_interface_function(interface_path, function_name) -> bool
+
+Add a signature graph to a BPI asset. The operation is idempotent when the
+exact function already exists. Edit the signature with the ordinary function
+parameter APIs:
+
+```python
+Blueprint.add_blueprint_interface_function(
+    interface_path=bpi, function_name='Interact')
+Blueprint.add_function_parameter(
+    blueprint_path=bpi, function_name='Interact',
+    param_name='Instigator', type_string='Actor', is_return=False)
+```
+
+Use `remove_function_parameter` / `reorder_function_parameter` for parameter
+maintenance and `rename_function_graph` / `remove_function_graph` for function
+maintenance. Those generic APIs intentionally work on BPI signature graphs too.
+A member with no output/return parameters is implemented as an interface event;
+adding any output/return parameter makes it a function-graph implementation.
+
 ### add_blueprint_interface(blueprint_path, interface_path) -> bool
 
 Add an interface implementation to a Blueprint and recompile. `interface_path` can be:
@@ -609,7 +648,9 @@ Add an interface implementation to a Blueprint and recompile. `interface_path` c
 - a Blueprint interface asset path: `/Game/Interfaces/BPI_Interactable`
 - a Blueprint interface class path: `/Game/Interfaces/BPI_Interactable.BPI_Interactable_C`
 
-Returns `False` if the path doesn't resolve to a `UINTERFACE` (`CLASS_Interface` flag).
+Returns `False` if the path doesn't resolve to a `UINTERFACE` (`CLASS_Interface`
+flag). Repeating the operation for an already implemented interface is an
+idempotent success.
 
 ```python
 unreal.UnrealBridgeBlueprintLibrary.add_blueprint_interface(
@@ -701,6 +742,12 @@ This operation does not compile automatically. Connect the `self` and value pins
 ### connect_graph_pins(blueprint_path, graph_name, src_node_guid, src_pin_name, dst_node_guid, dst_pin_name) -> bool
 
 Connect pins through the K2 schema. Handles type coercion (e.g. int → string auto-inserts a conversion where supported). Returns `False` when nodes/pins are missing or types are incompatible.
+
+Pin references accept the stable internal name, case-insensitive internal name,
+or the editor-visible friendly name. This matters for interface call/message
+nodes: the pin displayed as `Target` is internally named `self`, and **both**
+spellings are accepted. Prefer internal names in reusable automation; use
+`get_node_pins` when unsure.
 
 Use `get_node_pin_connections` or `get_function_nodes` to look up pin names when unsure.
 
@@ -859,16 +906,83 @@ lib.connect_graph_pins(bp, g, ce, 'OutputDelegate', bind, 'Delegate')
 
 ### implement_interface_function(blueprint_path, interface_path, function_name) -> bool
 
-Materialize an interface function as an editable graph on this BP. Idempotent: returns `True` without duplicating if the function is already implemented.
+Ensure an interface member has an implementation surface on this BP. Idempotent:
+returns `True` without duplicating an existing graph/event.
 
 **Rules**:
 - Interface must already be added via `add_blueprint_interface`.
-- **Event-type interface members** (no return / no out params, `BlueprintImplementableEvent`-style) return `False` — for those use `add_event_node` on the EventGraph instead.
-- **Function-type members** get a new function graph with the interface's signature (auto-created by `add_blueprint_interface` already; this helper is the explicit path for cases where it wasn't).
+- **Event-type members** (no return / no out params) are ensured as a
+  `K2Node_Event` in the default EventGraph.
+- **Function-type members** are ensured as an interface function graph (normally
+  auto-created by `add_blueprint_interface`).
+
+For an event at an intentional coordinate, prefer `add_interface_event_node`.
+For a function implementation, enumerate the entry/result GUIDs with
+`get_function_nodes`, then connect their parameter pins using
+`connect_graph_pins`.
+
+Interface implementation graphs are part of the common graph-name address
+space. `add_call_function_node`, `get_function_nodes`, `connect_graph_pins`,
+`set_pin_default_value`, and the other APIs that accept `graph_name` now search
+`ImplementedInterfaces[].Graphs` as well as ordinary function/event/macro graphs.
+Use the interface function name as `graph_name`.
+
+### add_interface_event_node(blueprint_path, graph_name, interface_path, function_name, x, y) -> str
+
+Add or reuse the implementation event for an event-type interface member. The
+Blueprint must already implement the interface and `graph_name` must address an
+EventGraph/Ubergraph. Returns the event GUID; an existing matching interface
+event is reused and repositioned.
+
+This API checks the interface owner as well as the function name, avoiding the
+common collision where two classes expose identically named events.
+
+```python
+event_guid = lib.add_interface_event_node(
+    bp, 'EventGraph', '/Game/Interfaces/BPI_Interactable',
+    'Interact', 0, 200)
+# Event exec output: 'then'; interface input parameters are output pins.
+lib.connect_graph_pins(bp, 'EventGraph',
+    event_guid, 'then', handler_guid, 'execute')
+```
+
+### add_interface_call_node(blueprint_path, graph_name, interface_path, function_name, x, y) -> str
+
+Add the strongly typed `K2Node_CallFunction` interface-call variant. Its
+`self` / visible `Target` input is typed as the interface, so use this when the
+caller already holds an interface reference. For an arbitrary `Object`/`Actor`
+that might implement the interface, use the message variant instead.
+
+```python
+call_guid = lib.add_interface_call_node(
+    caller_bp, 'EventGraph', bpi, 'Interact', 600, 0)
+lib.connect_graph_pins(caller_bp, 'EventGraph',
+    interface_ref_guid, 'InterfaceValue', call_guid, 'Target')
+```
 
 ### add_interface_message_node(blueprint_path, graph_name, interface_path, function_name, x, y) -> str
 
-Add a `K2Node_Message` — the "Call Function (Message)" variant that dispatches against any object that may-or-may-not implement the interface. Pins include `Target` (object ref input) plus the interface function's params.
+Add a `K2Node_Message` — the "Call Function (Message)" variant that dispatches
+against any object that may or may not implement the interface. A non-implementing
+target is a safe no-op. Its target is object-typed, unlike the strongly typed call.
+
+**Target pin naming:** UE displays the pin as `Target`, but its internal name is
+`self`. `connect_graph_pins` accepts either spelling after this fix. Other stable
+pins are `execute` / `then` for impure execution plus the interface function's
+parameter names.
+
+```python
+msg_guid = lib.add_interface_message_node(
+    caller_bp, 'EventGraph', bpi, 'Interact', 600, 200)
+lib.connect_graph_pins(caller_bp, 'EventGraph',
+    object_guid, 'ReturnValue', msg_guid, 'Target')  # 'self' also works
+lib.connect_graph_pins(caller_bp, 'EventGraph',
+    begin_guid, 'then', msg_guid, 'execute')
+```
+
+Use `get_node_pins` immediately after insertion when a project-defined BPI has
+non-obvious parameter names or overload-like display metadata; never guess a
+localized friendly name for data pins.
 
 ## P0 — Variable metadata / type
 

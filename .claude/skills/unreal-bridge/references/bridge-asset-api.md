@@ -245,6 +245,58 @@ Also: `get_sub_folder_names(folder_path)` — returns FName instead of FString.
 
 ---
 
+## Asset Duplication
+
+### duplicate_asset(source_asset_path, destination_asset_path, save=True) -> FBridgeAssetDuplicateResult
+
+Duplicate one existing UE asset into a new project-content package. The implementation
+uses `UEditorAssetLibrary::DuplicateAsset`, does not modify or save the source asset,
+and refuses to overwrite an existing destination.
+
+The destination must be a complete, previously unused `/Game/.../AssetName` path — not
+just a folder. It may also be supplied as the matching object path
+(`/Game/.../AssetName.AssetName`). Sources may come from any mounted content root.
+
+```python
+from unreal_bridge import Asset
+
+# Copy a discovered Ellie asset without touching the original. Repeat the same call
+# for the PSS, each PSD, and each Chooser that needs an independent working copy.
+result = Asset.duplicate_asset(
+    source_asset_path=source_pss_path,
+    destination_asset_path='/Game/Locomotion/P3P4_Ellie/PSS_Ellie',
+    save=True,
+)
+
+if not result.success:
+    raise RuntimeError(result.error)
+print(result.destination_asset_path, result.asset_class_path, result.saved)
+```
+
+`save=True` is the delivery-safe default. With `save=False`, duplication may succeed
+but the new package stays dirty in memory; `result.saved` remains false. If duplication
+succeeds but saving fails, `success` is false while `destination_asset_path` remains
+populated so the caller can inspect, retry saving, or explicitly clean up.
+
+#### FBridgeAssetDuplicateResult fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `success` | bool | Duplication and the requested save both completed |
+| `saved` | bool | This call wrote the duplicate package to disk |
+| `package_dirty` | bool | Dirty state of the duplicate package after the call |
+| `source_asset_path` | str | Canonical source object path |
+| `destination_asset_path` | str | Canonical duplicate object path; populated after duplication |
+| `asset_class_path` | str | Class path of the duplicate |
+| `error` | str | Empty on success; actionable failure reason otherwise |
+
+> This operation is intentionally non-recursive. References inside the duplicate still
+> point to their existing dependencies until those dependencies are separately copied
+> and the duplicate is explicitly relinked. Existing destination packages are always
+> rejected; there is no overwrite flag.
+
+---
+
 ## Registry Metadata (no load)
 
 These queries hit the AssetRegistry only — no assets are loaded. They are cheap and safe to call on large sweeps.

@@ -554,7 +554,27 @@ def _generate_wrapper(manifest: dict) -> "tuple[str, dict]":
             # Function-name traps (matched by lib + name; a single bridge-X
             # function shouldn't have more than one trap so this stays linear):
             qualname = f"{lib_name}.{fn_name}"
-            if qualname == "UnrealBridgeChooserLibrary.set_chooser_cell_raw":
+            if qualname == "UnrealBridgeAssetLibrary.duplicate_asset":
+                extra_notes.append(
+                    "Destination must be a new /Game/.../AssetName path; existing "
+                    "assets are never overwritten. This is a non-recursive copy. See "
+                    "bridge-asset-api.md.")
+            elif qualname == "UnrealBridgeBlueprintLibrary.create_blueprint_interface_asset":
+                extra_notes.append(
+                    "Destination must be a new /Game/.../AssetName path; existing "
+                    "assets are never overwritten. See bridge-blueprint-api.md.")
+            elif qualname in {
+                    "UnrealBridgeBlueprintLibrary.add_interface_call_node",
+                    "UnrealBridgeBlueprintLibrary.add_interface_message_node"}:
+                extra_notes.append(
+                    "The visible Target pin is internally named 'self'; "
+                    "connect_graph_pins accepts either spelling. See "
+                    "bridge-blueprint-api.md.")
+            elif qualname == "UnrealBridgeBlueprintLibrary.connect_graph_pins":
+                extra_notes.append(
+                    "Accepts internal or editor-visible pin names; interface Target "
+                    "aliases internal 'self'. See bridge-blueprint-api.md.")
+            elif qualname == "UnrealBridgeChooserLibrary.set_chooser_cell_raw":
                 extra_notes.append(
                     "Trap: BoolColumn cells use bare enum text ('MatchTrue'/'MatchFalse'/"
                     "'MatchAny'), NOT a struct like '(Value=True)'. EnumColumn cells need "

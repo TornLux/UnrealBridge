@@ -387,6 +387,11 @@ class Asset:
         return unreal.UnrealBridgeAssetLibrary.does_folder_exist(folder_path)
 
     @staticmethod
+    def duplicate_asset(*, source_asset_path, destination_asset_path, save=True):
+        """X.duplicate_asset(source_asset_path, destination_asset_path, save=True) -> BridgeAssetDuplicateResult  Destination must be a new /Game/.../AssetName path; existing assets are never overwritten. This is a non-recursive copy. See bridge-asset-api.md."""
+        return unreal.UnrealBridgeAssetLibrary.duplicate_asset(source_asset_path, destination_asset_path, save)
+
+    @staticmethod
     def find_assets_referencing_searchable_name(*, struct_type, value_name, package_path_filter, max_results):
         """X.find_assets_referencing_searchable_name(struct_type, value_name, package_path_filter, max_results) -> Array[str]"""
         return unreal.UnrealBridgeAssetLibrary.find_assets_referencing_searchable_name(struct_type, value_name, package_path_filter, max_results)
@@ -621,6 +626,11 @@ class Blueprint:
         return unreal.UnrealBridgeBlueprintLibrary.add_blueprint_interface(blueprint_path, interface_path)
 
     @staticmethod
+    def add_blueprint_interface_function(*, interface_path, function_name):
+        """X.add_blueprint_interface_function(interface_path, function_name) -> bool"""
+        return unreal.UnrealBridgeBlueprintLibrary.add_blueprint_interface_function(interface_path, function_name)
+
+    @staticmethod
     def add_blueprint_variable(*, blueprint_path, name, type_string, default_value):
         """X.add_blueprint_variable(blueprint_path, name, type_string, default_value) -> bool"""
         return unreal.UnrealBridgeBlueprintLibrary.add_blueprint_variable(blueprint_path, name, type_string, default_value)
@@ -746,8 +756,18 @@ class Blueprint:
         return unreal.UnrealBridgeBlueprintLibrary.add_input_key_event_node(blueprint_path, graph_name, key_name, node_pos_x, node_pos_y)
 
     @staticmethod
+    def add_interface_call_node(*, blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y):
+        """X.add_interface_call_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str  Target is internally named 'self'; connect_graph_pins accepts either 'Target' or 'self'."""
+        return unreal.UnrealBridgeBlueprintLibrary.add_interface_call_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y)
+
+    @staticmethod
+    def add_interface_event_node(*, blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y):
+        """X.add_interface_event_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str"""
+        return unreal.UnrealBridgeBlueprintLibrary.add_interface_event_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y)
+
+    @staticmethod
     def add_interface_message_node(*, blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y):
-        """X.add_interface_message_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str"""
+        """X.add_interface_message_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str  Target is internally named 'self'; connect_graph_pins accepts either 'Target' or 'self'."""
         return unreal.UnrealBridgeBlueprintLibrary.add_interface_message_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y)
 
     @staticmethod
@@ -882,8 +902,13 @@ class Blueprint:
 
     @staticmethod
     def connect_graph_pins(*, blueprint_path, graph_name, source_node_guid, source_pin_name, target_node_guid, target_pin_name):
-        """X.connect_graph_pins(blueprint_path, graph_name, source_node_guid, source_pin_name, target_node_guid, target_pin_name) -> bool"""
+        """X.connect_graph_pins(blueprint_path, graph_name, source_node_guid, source_pin_name, target_node_guid, target_pin_name) -> bool  Accepts internal or editor-visible pin names; interface Target aliases internal 'self'."""
         return unreal.UnrealBridgeBlueprintLibrary.connect_graph_pins(blueprint_path, graph_name, source_node_guid, source_pin_name, target_node_guid, target_pin_name)
+
+    @staticmethod
+    def create_blueprint_interface_asset(*, asset_path, save=True):
+        """X.create_blueprint_interface_asset(asset_path, save=True) -> str"""
+        return unreal.UnrealBridgeBlueprintLibrary.create_blueprint_interface_asset(asset_path, save)
 
     @staticmethod
     def create_function_graph(*, blueprint_path, function_name):

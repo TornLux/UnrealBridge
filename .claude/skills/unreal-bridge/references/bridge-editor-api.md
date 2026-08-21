@@ -1254,7 +1254,7 @@ JSON shape:
           ] } ] } ] }
 ```
 
-**What's covered.** Every BlueprintCallable UFUNCTION whose owning class lives in the `/Script/UnrealBridge` package — i.e. all `UUnrealBridge*Library` classes. Current count: 1390 reflected UFUNCTIONs across 26 libraries (the Python-callable manifest currently exposes 1388 methods).
+**What's covered.** Every BlueprintCallable UFUNCTION whose owning class lives in the `/Script/UnrealBridge` package — i.e. all `UUnrealBridge*Library` classes. Current count: 1391 reflected UFUNCTIONs across 26 libraries (the Python-callable manifest currently exposes 1389 methods).
 
 **What's not covered (yet).**
 - USTRUCT field layouts (return / param types include the struct name, but not its UPROPERTY list).

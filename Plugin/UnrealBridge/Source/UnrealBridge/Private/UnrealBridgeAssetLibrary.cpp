@@ -29,6 +29,7 @@
 #include "Rendering/SkeletalMeshLODRenderData.h"
 #include "ScopedTransaction.h"
 #include "FileHelpers.h"
+#include "EditorAssetLibrary.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 
@@ -662,6 +663,144 @@ namespace BridgeAssetOps
 		Out = Parsed;
 		return true;
 	}
+
+	/** Normalize and validate a writable /Game destination without touching the filesystem. */
+	static bool NormalizeDuplicateDestination(
+		const FString& InPath,
+		FString& OutObjectPath,
+		FString& OutPackageName,
+		FString& OutError)
+	{
+		FString ParsedPath;
+		ParsePathToObjectPath(InPath, ParsedPath);
+		if (ParsedPath.IsEmpty())
+		{
+			OutError = TEXT("destination asset path is empty");
+			return false;
+		}
+
+		FString AssetName;
+		int32 DotIndex = INDEX_NONE;
+		if (ParsedPath.FindChar(TEXT('.'), DotIndex))
+		{
+			OutPackageName = ParsedPath.Left(DotIndex);
+			AssetName = ParsedPath.Mid(DotIndex + 1);
+		}
+		else
+		{
+			OutPackageName = ParsedPath;
+			AssetName = FPackageName::GetShortName(OutPackageName);
+		}
+
+		if (!OutPackageName.StartsWith(TEXT("/Game/")))
+		{
+			OutError = TEXT("destination must be a writable /Game asset path");
+			return false;
+		}
+		if (!FPackageName::IsValidLongPackageName(OutPackageName))
+		{
+			OutError = FString::Printf(TEXT("destination package '%s' is not a valid long package name"), *OutPackageName);
+			return false;
+		}
+		if (AssetName.IsEmpty())
+		{
+			OutError = TEXT("destination must include an asset name");
+			return false;
+		}
+
+		OutObjectPath = OutPackageName + TEXT(".") + AssetName;
+		FText InvalidPathReason;
+		if (!FPackageName::IsValidObjectPath(OutObjectPath, &InvalidPathReason))
+		{
+			OutError = FString::Printf(
+				TEXT("destination object path '%s' is invalid: %s"),
+				*OutObjectPath,
+				*InvalidPathReason.ToString());
+			return false;
+		}
+		return true;
+	}
+}
+
+FBridgeAssetDuplicateResult UUnrealBridgeAssetLibrary::DuplicateAsset(
+	const FString& SourceAssetPath,
+	const FString& DestinationAssetPath,
+	bool bSave)
+{
+	FBridgeAssetDuplicateResult Result;
+	auto Fail = [&Result](const FString& Error) -> FBridgeAssetDuplicateResult
+	{
+		Result.Error = Error;
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge Asset.DuplicateAsset: %s"), *Error);
+		return Result;
+	};
+
+	const FSoftObjectPath SourceSoftPath = BridgeAssetOps::MakeSoftPath(SourceAssetPath);
+	if (SourceSoftPath.IsNull())
+	{
+		return Fail(TEXT("source asset path is empty or invalid"));
+	}
+	Result.SourceAssetPath = SourceSoftPath.ToString();
+	if (!UEditorAssetLibrary::DoesAssetExist(Result.SourceAssetPath))
+	{
+		return Fail(FString::Printf(TEXT("source asset '%s' does not exist"), *Result.SourceAssetPath));
+	}
+
+	FString DestinationObjectPath;
+	FString DestinationPackageName;
+	FString DestinationError;
+	if (!BridgeAssetOps::NormalizeDuplicateDestination(
+		DestinationAssetPath,
+		DestinationObjectPath,
+		DestinationPackageName,
+		DestinationError))
+	{
+		return Fail(DestinationError);
+	}
+	if (Result.SourceAssetPath.Equals(DestinationObjectPath, ESearchCase::IgnoreCase))
+	{
+		return Fail(TEXT("source and destination asset paths must be different"));
+	}
+	if (UEditorAssetLibrary::DoesAssetExist(DestinationObjectPath)
+		|| FPackageName::DoesPackageExist(DestinationPackageName)
+		|| FindPackage(nullptr, *DestinationPackageName) != nullptr)
+	{
+		return Fail(FString::Printf(
+			TEXT("destination asset '%s' already exists; UnrealBridge never overwrites assets"),
+			*DestinationObjectPath));
+	}
+
+	UObject* DuplicatedAsset = UEditorAssetLibrary::DuplicateAsset(
+		Result.SourceAssetPath,
+		DestinationObjectPath);
+	if (!DuplicatedAsset)
+	{
+		return Fail(FString::Printf(
+			TEXT("UEditorAssetLibrary::DuplicateAsset failed for '%s' -> '%s'; see the Unreal Output Log for engine diagnostics"),
+			*Result.SourceAssetPath,
+			*DestinationObjectPath));
+	}
+
+	Result.DestinationAssetPath = DuplicatedAsset->GetPathName();
+	Result.AssetClassPath = DuplicatedAsset->GetClass()->GetClassPathName().ToString();
+	UPackage* DuplicatedPackage = DuplicatedAsset->GetOutermost();
+	Result.bPackageDirty = DuplicatedPackage && DuplicatedPackage->IsDirty();
+
+	if (bSave)
+	{
+		if (!UEditorAssetLibrary::SaveLoadedAsset(DuplicatedAsset, false))
+		{
+			Result.bPackageDirty = DuplicatedPackage && DuplicatedPackage->IsDirty();
+			return Fail(FString::Printf(
+				TEXT("asset was duplicated to '%s' but its package could not be saved"),
+				*Result.DestinationAssetPath));
+		}
+		Result.bSaved = true;
+	}
+
+	Result.bPackageDirty = DuplicatedPackage && DuplicatedPackage->IsDirty();
+	Result.bSuccess = true;
+	return Result;
 }
 
 bool UUnrealBridgeAssetLibrary::DoesAssetExist(const FString& AssetPath)

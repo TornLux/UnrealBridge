@@ -11,6 +11,7 @@
 #include "EdGraphSchema_K2.h"
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
+#include "EdGraph/EdGraphPin.h"
 #include "K2Node_CallFunction.h"
 #include "K2Node_Variable.h"
 #include "K2Node_VariableGet.h"
@@ -81,6 +82,10 @@
 #include "UObject/Script.h"
 #include "UObject/Stack.h"
 #include "ScopedTransaction.h"
+#include "FileHelpers.h"
+#include "Misc/PackageName.h"
+#include "UObject/Interface.h"
+#include "UObject/Package.h"
 #if !UE_VERSION_OLDER_THAN(5, 4, 0)
 #include "Blueprint/BlueprintExceptionInfo.h"
 #endif
@@ -585,6 +590,17 @@ static TArray<UEdGraph*> FindGraphs(UBlueprint* BP, const FString& FunctionName)
 			{
 				Graphs.Add(Graph);
 				return Graphs;
+			}
+		}
+		for (const FBPInterfaceDescription& Interface : BP->ImplementedInterfaces)
+		{
+			for (UEdGraph* Graph : Interface.Graphs)
+			{
+				if (Graph && Graph->GetName() == FunctionName)
+				{
+					Graphs.Add(Graph);
+					return Graphs;
+				}
 			}
 		}
 	}
@@ -1836,6 +1852,163 @@ namespace BridgeBpInterfaceOps
 		}
 		return nullptr;
 	}
+
+	static bool IsImplementedByBlueprint(const UBlueprint* BP, const UClass* InterfaceClass)
+	{
+		if (!BP || !InterfaceClass) return false;
+		if (BP->ImplementedInterfaces.ContainsByPredicate(
+			[InterfaceClass](const FBPInterfaceDescription& Description)
+			{
+				return Description.Interface == InterfaceClass;
+			}))
+		{
+			return true;
+		}
+
+		const UClass* BlueprintClass = BP->GeneratedClass ? BP->GeneratedClass : BP->ParentClass;
+		return BlueprintClass && BlueprintClass->ImplementsInterface(InterfaceClass);
+	}
+}
+
+// ─── CreateBlueprintInterfaceAsset ─────────────────────────
+
+FString UUnrealBridgeBlueprintLibrary::CreateBlueprintInterfaceAsset(
+	const FString& AssetPath, bool bSave)
+{
+	auto Fail = [&AssetPath](const FString& Reason) -> FString
+	{
+		UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+			TEXT("CreateBlueprintInterfaceAsset failed: AssetPath='%s' Reason='%s'"),
+			*AssetPath, *Reason);
+		return FString();
+	};
+
+	FString ObjectOrPackagePath = FPackageName::ExportTextPathToObjectPath(
+		AssetPath.TrimStartAndEnd());
+	if (ObjectOrPackagePath.IsEmpty())
+	{
+		return Fail(TEXT("AssetPath must not be empty"));
+	}
+
+	FString PackageName = ObjectOrPackagePath;
+	int32 DotIndex = INDEX_NONE;
+	const int32 LastSlashIndex = PackageName.Find(TEXT("/"), ESearchCase::CaseSensitive,
+		ESearchDir::FromEnd);
+	if (PackageName.FindLastChar(TEXT('.'), DotIndex) && DotIndex > LastSlashIndex)
+	{
+		PackageName.LeftInline(DotIndex, EAllowShrinking::No);
+	}
+
+	if (!PackageName.StartsWith(TEXT("/Game/")))
+	{
+		return Fail(TEXT("destination must be a complete /Game/.../AssetName path"));
+	}
+
+	FText InvalidPathReason;
+	if (!FPackageName::IsValidLongPackageName(PackageName,
+		/*bIncludeReadOnlyRoots*/ false, &InvalidPathReason))
+	{
+		return Fail(FString::Printf(TEXT("invalid package path: %s"),
+			*InvalidPathReason.ToString()));
+	}
+
+	const FString AssetName = FPackageName::GetLongPackageAssetName(PackageName);
+	if (AssetName.IsEmpty())
+	{
+		return Fail(TEXT("AssetPath must include an asset name"));
+	}
+	const FString CanonicalObjectPath = PackageName + TEXT(".") + AssetName;
+
+	if (FPackageName::DoesPackageExist(PackageName)
+		|| FindPackage(nullptr, *PackageName)
+		|| FindObject<UObject>(nullptr, *CanonicalObjectPath))
+	{
+		return Fail(TEXT("destination already exists; overwrite is not supported"));
+	}
+
+	UPackage* Package = CreatePackage(*PackageName);
+	if (!Package)
+	{
+		return Fail(TEXT("CreatePackage returned null"));
+	}
+
+	UBlueprint* InterfaceBlueprint = FKismetEditorUtilities::CreateBlueprint(
+		UInterface::StaticClass(),
+		Package,
+		FName(*AssetName),
+		BPTYPE_Interface,
+		UBlueprint::StaticClass(),
+		UBlueprintGeneratedClass::StaticClass(),
+		FName(TEXT("UnrealBridge")));
+	if (!InterfaceBlueprint)
+	{
+		return Fail(TEXT("FKismetEditorUtilities::CreateBlueprint returned null"));
+	}
+
+	FAssetRegistryModule::AssetCreated(InterfaceBlueprint);
+	Package->MarkPackageDirty();
+	if (bSave && !UEditorLoadingAndSavingUtils::SavePackages(
+		{ Package }, /*bOnlyDirty*/ false))
+	{
+		return Fail(FString::Printf(
+			TEXT("interface was created at '%s' but its package could not be saved"),
+			*CanonicalObjectPath));
+	}
+
+	return InterfaceBlueprint->GetPathName();
+}
+
+// ─── AddBlueprintInterfaceFunction ─────────────────────────
+
+bool UUnrealBridgeBlueprintLibrary::AddBlueprintInterfaceFunction(
+	const FString& InterfacePath, const FString& FunctionName)
+{
+	UBlueprint* InterfaceBlueprint = LoadBP(InterfacePath);
+	if (!InterfaceBlueprint || InterfaceBlueprint->BlueprintType != BPTYPE_Interface)
+	{
+		UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+			TEXT("AddBlueprintInterfaceFunction failed: '%s' is not a Blueprint Interface asset"),
+			*InterfacePath);
+		return false;
+	}
+
+	const FName RequestedName(*FunctionName.TrimStartAndEnd());
+	if (RequestedName.IsNone())
+	{
+		UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+			TEXT("AddBlueprintInterfaceFunction failed: FunctionName must not be empty"));
+		return false;
+	}
+
+	for (UEdGraph* Graph : InterfaceBlueprint->FunctionGraphs)
+	{
+		if (Graph && Graph->GetFName() == RequestedName)
+		{
+			return true;
+		}
+	}
+	if (FindObject<UEdGraph>(InterfaceBlueprint, *RequestedName.ToString()))
+	{
+		UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+			TEXT("AddBlueprintInterfaceFunction failed: '%s' conflicts with an existing graph"),
+			*RequestedName.ToString());
+		return false;
+	}
+
+	const FScopedTransaction Transaction(NSLOCTEXT(
+		"UnrealBridge", "AddBlueprintInterfaceFunction",
+		"UnrealBridge: Add Blueprint Interface Function"));
+	InterfaceBlueprint->Modify();
+	UEdGraph* NewGraph = FBlueprintEditorUtils::CreateNewGraph(
+		InterfaceBlueprint, RequestedName, UEdGraph::StaticClass(),
+		UEdGraphSchema_K2::StaticClass());
+	if (!NewGraph)
+	{
+		return false;
+	}
+	FBlueprintEditorUtils::AddFunctionGraph<UClass>(
+		InterfaceBlueprint, NewGraph, /*bIsUserCreated*/ true, nullptr);
+	return true;
 }
 
 // ─── AddBlueprintInterface ──────────────────────────────────
@@ -1850,6 +2023,10 @@ bool UUnrealBridgeBlueprintLibrary::AddBlueprintInterface(
 	if (!InterfaceClass || !InterfaceClass->HasAnyClassFlags(CLASS_Interface))
 	{
 		return false;
+	}
+	if (BridgeBpInterfaceOps::IsImplementedByBlueprint(BP, InterfaceClass))
+	{
+		return true;
 	}
 
 	const FString InterfaceClassName = InterfaceClass->GetPathName();
@@ -1988,6 +2165,13 @@ namespace BridgeBlueprintGraphWriteImpl
 		for (UEdGraph* G : BP->UbergraphPages) { if (G && G->GetName() == GraphName) return G; }
 		for (UEdGraph* G : BP->MacroGraphs)    { if (G && G->GetName() == GraphName) return G; }
 		for (UEdGraph* G : BP->DelegateSignatureGraphs) { if (G && G->GetName() == GraphName) return G; }
+		for (const FBPInterfaceDescription& Interface : BP->ImplementedInterfaces)
+		{
+			for (UEdGraph* G : Interface.Graphs)
+			{
+				if (G && G->GetName() == GraphName) return G;
+			}
+		}
 
 		// Deep walk: covers AnimBlueprint interiors (state-machine graphs,
 		// state BoundGraphs, transition rule graphs) and nested K2 SubGraphs
@@ -1999,6 +2183,10 @@ namespace BridgeBlueprintGraphWriteImpl
 		Stack.Append(BP->UbergraphPages);
 		Stack.Append(BP->MacroGraphs);
 		Stack.Append(BP->DelegateSignatureGraphs);
+		for (const FBPInterfaceDescription& Interface : BP->ImplementedInterfaces)
+		{
+			Stack.Append(Interface.Graphs);
+		}
 
 		TSet<UEdGraph*> Visited;
 		while (Stack.Num() > 0)
@@ -2038,6 +2226,67 @@ namespace BridgeBlueprintGraphWriteImpl
 		for (UEdGraphNode* N : Graph->Nodes)
 		{
 			if (N && N->NodeGuid == Guid) return N;
+		}
+		return nullptr;
+	}
+
+	UEdGraphPin* ResolvePinReference(UEdGraphNode* Node, const FString& PinReference,
+		EEdGraphPinDirection PreferredDirection)
+	{
+		if (!Node) return nullptr;
+		const FString Requested = PinReference.TrimStartAndEnd();
+		if (Requested.IsEmpty()) return nullptr;
+
+		// Internal pin names are the stable contract. FName lookup is already
+		// case-insensitive, so this also accepts "Execute" for "execute".
+		if (UEdGraphPin* Internal = Node->FindPin(FName(*Requested), PreferredDirection))
+		{
+			return Internal;
+		}
+		if (UEdGraphPin* InternalAnyDirection = Node->FindPin(FName(*Requested)))
+		{
+			return InternalAnyDirection;
+		}
+
+		// CallFunction / Message nodes display PN_Self as "Target" in the UI.
+		// Agents naturally use that visible label, while the old implementation
+		// only accepted "self" and therefore made interface-message wiring fail.
+		if (Requested.Equals(TEXT("Target"), ESearchCase::IgnoreCase))
+		{
+			if (UEdGraphPin* SelfPin = Node->FindPin(UEdGraphSchema_K2::PN_Self))
+			{
+				if (SelfPin->Direction == PreferredDirection)
+				{
+					return SelfPin;
+				}
+			}
+		}
+
+		TArray<UEdGraphPin*> PreferredMatches;
+		TArray<UEdGraphPin*> AllMatches;
+		for (UEdGraphPin* Pin : Node->Pins)
+		{
+			if (!Pin || Pin->PinFriendlyName.IsEmpty()) continue;
+			if (!Pin->PinFriendlyName.ToString().Equals(Requested, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+			AllMatches.Add(Pin);
+			if (Pin->Direction == PreferredDirection)
+			{
+				PreferredMatches.Add(Pin);
+			}
+		}
+
+		if (PreferredMatches.Num() == 1) return PreferredMatches[0];
+		if (PreferredMatches.Num() == 0 && AllMatches.Num() == 1) return AllMatches[0];
+		if (PreferredMatches.Num() > 1 || AllMatches.Num() > 1)
+		{
+			UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+				TEXT("ResolvePinReference failed: visible pin name '%s' is ambiguous on node '%s' (%s)"),
+				*Requested,
+				*Node->GetNodeTitle(ENodeTitleType::ListView).ToString(),
+				*Node->NodeGuid.ToString(EGuidFormats::Digits));
 		}
 		return nullptr;
 	}
@@ -2287,9 +2536,18 @@ bool UUnrealBridgeBlueprintLibrary::ConnectGraphPins(
 	UEdGraphNode* DstNode = BridgeBlueprintGraphWriteImpl::FindNodeByGuid(Graph, TargetNodeGuid);
 	if (!SrcNode || !DstNode) return false;
 
-	UEdGraphPin* SrcPin = SrcNode->FindPin(SourcePinName);
-	UEdGraphPin* DstPin = DstNode->FindPin(TargetPinName);
-	if (!SrcPin || !DstPin) return false;
+	UEdGraphPin* SrcPin = BridgeBlueprintGraphWriteImpl::ResolvePinReference(
+		SrcNode, SourcePinName, EGPD_Output);
+	UEdGraphPin* DstPin = BridgeBlueprintGraphWriteImpl::ResolvePinReference(
+		DstNode, TargetPinName, EGPD_Input);
+	if (!SrcPin || !DstPin)
+	{
+		UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+			TEXT("ConnectGraphPins failed: Blueprint='%s' Graph='%s' Source='%s:%s' Target='%s:%s' (pin not found or ambiguous)"),
+			*BlueprintPath, *GraphName, *SourceNodeGuid, *SourcePinName,
+			*TargetNodeGuid, *TargetPinName);
+		return false;
+	}
 
 	const UEdGraphSchema* Schema = Graph->GetSchema();
 	if (!Schema) return false;
@@ -2841,12 +3099,133 @@ FString UUnrealBridgeBlueprintLibrary::AddDispatcherBindNode(
 
 // ─── Interface override ─────────────────────────────────────────
 
+namespace BridgeBpInterfaceGraphOps
+{
+	static UEdGraph* FindDefaultEventGraph(UBlueprint* BP)
+	{
+		if (!BP) return nullptr;
+		for (UEdGraph* Graph : BP->UbergraphPages)
+		{
+			if (Graph && Graph->GetFName() == UEdGraphSchema_K2::GN_EventGraph)
+			{
+				return Graph;
+			}
+		}
+		return BP->UbergraphPages.Num() > 0 ? BP->UbergraphPages[0] : nullptr;
+	}
+
+	static FString EnsureInterfaceEventNode(UBlueprint* BP, UEdGraph* Graph,
+		UClass* InterfaceClass, UFunction* Function, int32 X, int32 Y,
+		bool bRepositionExisting)
+	{
+		if (!BP || !Graph || !InterfaceClass || !Function) return FString();
+		if (!BridgeBpInterfaceOps::IsImplementedByBlueprint(BP, InterfaceClass))
+		{
+			UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+				TEXT("AddInterfaceEventNode failed: Blueprint '%s' does not implement '%s'"),
+				*BP->GetPathName(), *InterfaceClass->GetPathName());
+			return FString();
+		}
+		if (!UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Function))
+		{
+			UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+				TEXT("AddInterfaceEventNode failed: '%s' has output/return parameters and must be implemented as a function graph"),
+				*Function->GetName());
+			return FString();
+		}
+		const UEdGraphSchema* Schema = Graph->GetSchema();
+		if (!Schema || Schema->GetGraphType(Graph) != EGraphType::GT_Ubergraph)
+		{
+			UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+				TEXT("AddInterfaceEventNode failed: graph '%s' is not an EventGraph/Ubergraph"),
+				*Graph->GetName());
+			return FString();
+		}
+
+		const FName FunctionName = Function->GetFName();
+		UClass* ContextClass = BP->SkeletonGeneratedClass
+			? static_cast<UClass*>(BP->SkeletonGeneratedClass)
+			: (BP->GeneratedClass ? static_cast<UClass*>(BP->GeneratedClass) : BP->ParentClass);
+		for (UEdGraphNode* ExistingNode : Graph->Nodes)
+		{
+			UK2Node_Event* ExistingEvent = Cast<UK2Node_Event>(ExistingNode);
+			if (!ExistingEvent || ExistingEvent->EventReference.GetMemberName() != FunctionName)
+			{
+				continue;
+			}
+			if (ExistingEvent->EventReference.GetMemberParentClass(ContextClass) != InterfaceClass)
+			{
+				continue;
+			}
+
+			if (bRepositionExisting)
+			{
+				ExistingEvent->Modify();
+				ExistingEvent->NodePosX = X;
+				ExistingEvent->NodePosY = Y;
+				FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+				Graph->NotifyGraphChanged();
+			}
+			return ExistingEvent->NodeGuid.ToString(EGuidFormats::Digits);
+		}
+
+		const FScopedTransaction Transaction(NSLOCTEXT(
+			"UnrealBridge", "AddInterfaceEventNode",
+			"UnrealBridge: Add Interface Event Node"));
+		BP->Modify();
+		Graph->Modify();
+		UK2Node_Event* Node = NewObject<UK2Node_Event>(Graph);
+		Node->EventReference.SetExternalMember(FunctionName, InterfaceClass);
+		Node->bOverrideFunction = true;
+		BridgeBpP0Impl::FinalizeNewNode(Graph, Node, X, Y);
+		Graph->NotifyGraphChanged();
+		FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+		return Node->NodeGuid.ToString(EGuidFormats::Digits);
+	}
+
+	static UFunction* ResolveCallableFunction(UClass* InterfaceClass,
+		const FString& FunctionName, const TCHAR* Operation)
+	{
+		if (!InterfaceClass || !InterfaceClass->HasAnyClassFlags(CLASS_Interface))
+		{
+			UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+				TEXT("%s failed: interface class could not be resolved"), Operation);
+			return nullptr;
+		}
+		UFunction* Function = InterfaceClass->FindFunctionByName(FName(*FunctionName));
+		if (!Function)
+		{
+			UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+				TEXT("%s failed: function '%s' was not found on '%s'"),
+				Operation, *FunctionName, *InterfaceClass->GetPathName());
+			return nullptr;
+		}
+		if (!Function->HasAnyFunctionFlags(FUNC_BlueprintCallable | FUNC_BlueprintPure))
+		{
+			UE_LOG(LogUnrealBridgeBlueprintGraph, Warning,
+				TEXT("%s failed: interface function '%s' is not Blueprint-callable"),
+				Operation, *FunctionName);
+			return nullptr;
+		}
+		return Function;
+	}
+}
+
 bool UUnrealBridgeBlueprintLibrary::ImplementInterfaceFunction(
 	const FString& BlueprintPath, const FString& InterfacePath, const FString& FunctionName)
 {
 	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return false;
 	UClass* IFace = BridgeBpInterfaceOps::ResolveInterfaceClass(InterfacePath);
-	if (!IFace) return false;
+	if (!IFace || !IFace->HasAnyClassFlags(CLASS_Interface)) return false;
+	UFunction* Fn = IFace->FindFunctionByName(FName(*FunctionName));
+	if (!Fn) return false;
+
+	if (UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Fn))
+	{
+		UEdGraph* EventGraph = BridgeBpInterfaceGraphOps::FindDefaultEventGraph(BP);
+		return !BridgeBpInterfaceGraphOps::EnsureInterfaceEventNode(
+			BP, EventGraph, IFace, Fn, 0, 0, /*bRepositionExisting*/ false).IsEmpty();
+	}
 
 	FBPInterfaceDescription* Desc = nullptr;
 	for (FBPInterfaceDescription& D : BP->ImplementedInterfaces)
@@ -2854,13 +3233,6 @@ bool UUnrealBridgeBlueprintLibrary::ImplementInterfaceFunction(
 		if (D.Interface == IFace) { Desc = &D; break; }
 	}
 	if (!Desc) return false;
-
-	UFunction* Fn = IFace->FindFunctionByName(FName(*FunctionName));
-	if (!Fn) return false;
-
-	// Event-type interface members (BlueprintImplementableEvent with no return, no out params)
-	// don't use a dedicated function graph — caller should use AddEventNode on the EventGraph.
-	if (UEdGraphSchema_K2::FunctionCanBePlacedAsEvent(Fn)) return false;
 
 	// Already implemented?
 	for (UEdGraph* G : Desc->Graphs) { if (G && G->GetFName() == Fn->GetFName()) return true; }
@@ -2878,6 +3250,48 @@ bool UUnrealBridgeBlueprintLibrary::ImplementInterfaceFunction(
 	return true;
 }
 
+FString UUnrealBridgeBlueprintLibrary::AddInterfaceCallNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& InterfacePath, const FString& FunctionName, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+	UClass* IFace = BridgeBpInterfaceOps::ResolveInterfaceClass(InterfacePath);
+	UFunction* Fn = BridgeBpInterfaceGraphOps::ResolveCallableFunction(
+		IFace, FunctionName, TEXT("AddInterfaceCallNode"));
+	if (!Fn) return FString();
+
+	const FScopedTransaction Transaction(NSLOCTEXT(
+		"UnrealBridge", "AddInterfaceCallNode",
+		"UnrealBridge: Add Interface Call Node"));
+	Graph->Modify();
+	BP->Modify();
+	UK2Node_CallFunction* Node = NewObject<UK2Node_CallFunction>(Graph);
+	// SetFromFunction establishes bIsInterfaceCall and the interface-typed
+	// self pin. It must happen before AllocateDefaultPins.
+	Node->SetFromFunction(Fn);
+	BridgeBpP0Impl::FinalizeNewNode(Graph, Node, X, Y);
+	Graph->NotifyGraphChanged();
+	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
+	return Node->NodeGuid.ToString(EGuidFormats::Digits);
+}
+
+FString UUnrealBridgeBlueprintLibrary::AddInterfaceEventNode(
+	const FString& BlueprintPath, const FString& GraphName,
+	const FString& InterfacePath, const FString& FunctionName, int32 X, int32 Y)
+{
+	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
+	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName);
+	if (!Graph) return FString();
+	UClass* IFace = BridgeBpInterfaceOps::ResolveInterfaceClass(InterfacePath);
+	if (!IFace || !IFace->HasAnyClassFlags(CLASS_Interface)) return FString();
+	UFunction* Fn = IFace->FindFunctionByName(FName(*FunctionName));
+	if (!Fn) return FString();
+	return BridgeBpInterfaceGraphOps::EnsureInterfaceEventNode(
+		BP, Graph, IFace, Fn, X, Y, /*bRepositionExisting*/ true);
+}
+
 FString UUnrealBridgeBlueprintLibrary::AddInterfaceMessageNode(
 	const FString& BlueprintPath, const FString& GraphName,
 	const FString& InterfacePath, const FString& FunctionName, int32 X, int32 Y)
@@ -2885,14 +3299,20 @@ FString UUnrealBridgeBlueprintLibrary::AddInterfaceMessageNode(
 	UBlueprint* BP = LoadBP(BlueprintPath); if (!BP) return FString();
 	UEdGraph* Graph = BridgeBlueprintGraphWriteImpl::FindGraphByName(BP, GraphName); if (!Graph) return FString();
 	UClass* IFace = BridgeBpInterfaceOps::ResolveInterfaceClass(InterfacePath);
-	if (!IFace || !IFace->HasAnyClassFlags(CLASS_Interface)) return FString();
-	UFunction* Fn = IFace->FindFunctionByName(FName(*FunctionName));
+	UFunction* Fn = BridgeBpInterfaceGraphOps::ResolveCallableFunction(
+		IFace, FunctionName, TEXT("AddInterfaceMessageNode"));
 	if (!Fn) return FString();
 
+	const FScopedTransaction Transaction(NSLOCTEXT(
+		"UnrealBridge", "AddInterfaceMessageNode",
+		"UnrealBridge: Add Interface Message Node"));
 	Graph->Modify(); BP->Modify();
 	UK2Node_Message* Node = NewObject<UK2Node_Message>(Graph);
-	Node->FunctionReference.SetExternalMember(Fn->GetFName(), IFace);
+	// UK2Node_Message overrides CreateSelfPin to expose an object-typed
+	// message Target. Configure the function before pins are allocated.
+	Node->SetFromFunction(Fn);
 	BridgeBpP0Impl::FinalizeNewNode(Graph, Node, X, Y);
+	Graph->NotifyGraphChanged();
 	FBlueprintEditorUtils::MarkBlueprintAsModified(BP);
 	return Node->NodeGuid.ToString(EGuidFormats::Digits);
 }

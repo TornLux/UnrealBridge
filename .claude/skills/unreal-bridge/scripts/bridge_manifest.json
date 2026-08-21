@@ -1809,6 +1809,30 @@
           ],
           "returns": "bool"
         },
+        "duplicate_asset": {
+          "doc": "X.duplicate_asset(source_asset_path, destination_asset_path, save=True) -> BridgeAssetDuplicateResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "source_asset_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "destination_asset_path",
+              "type": ""
+            },
+            {
+              "default": "True",
+              "has_default": true,
+              "name": "save",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeAssetDuplicateResult"
+        },
         "find_assets_referencing_searchable_name": {
           "doc": "X.find_assets_referencing_searchable_name(struct_type, value_name, package_path_filter, max_results) -> Array[str]",
           "params": [
@@ -2671,6 +2695,24 @@
               "default": null,
               "has_default": false,
               "name": "interface_path",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
+        "add_blueprint_interface_function": {
+          "doc": "X.add_blueprint_interface_function(interface_path, function_name) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "interface_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "function_name",
               "type": ""
             }
           ],
@@ -3606,8 +3648,92 @@
           ],
           "returns": "str"
         },
+        "add_interface_call_node": {
+          "doc": "X.add_interface_call_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str  The visible Target pin is internally named 'self'; connect_graph_pins accepts either spelling. See bridge-blueprint-api.md.",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blueprint_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "interface_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "function_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_pos_x",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_pos_y",
+              "type": ""
+            }
+          ],
+          "returns": "str"
+        },
+        "add_interface_event_node": {
+          "doc": "X.add_interface_event_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "blueprint_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "interface_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "function_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_pos_x",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_pos_y",
+              "type": ""
+            }
+          ],
+          "returns": "str"
+        },
         "add_interface_message_node": {
-          "doc": "X.add_interface_message_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str",
+          "doc": "X.add_interface_message_node(blueprint_path, graph_name, interface_path, function_name, node_pos_x, node_pos_y) -> str  The visible Target pin is internally named 'self'; connect_graph_pins accepts either spelling. See bridge-blueprint-api.md.",
           "params": [
             {
               "default": null,
@@ -4447,7 +4573,7 @@
           "returns": "(str, out_new_graph_name=str)"
         },
         "connect_graph_pins": {
-          "doc": "X.connect_graph_pins(blueprint_path, graph_name, source_node_guid, source_pin_name, target_node_guid, target_pin_name) -> bool",
+          "doc": "X.connect_graph_pins(blueprint_path, graph_name, source_node_guid, source_pin_name, target_node_guid, target_pin_name) -> bool  Accepts internal or editor-visible pin names; interface Target aliases internal 'self'. See bridge-blueprint-api.md.",
           "params": [
             {
               "default": null,
@@ -4487,6 +4613,24 @@
             }
           ],
           "returns": "bool"
+        },
+        "create_blueprint_interface_asset": {
+          "doc": "X.create_blueprint_interface_asset(asset_path, save=True) -> str  Destination must be a new /Game/.../AssetName path; existing assets are never overwritten. See bridge-blueprint-api.md.",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "asset_path",
+              "type": ""
+            },
+            {
+              "default": "True",
+              "has_default": true,
+              "name": "save",
+              "type": ""
+            }
+          ],
+          "returns": "str"
         },
         "create_function_graph": {
           "doc": "X.create_function_graph(blueprint_path, function_name) -> bool",
@@ -29531,6 +29675,15 @@
       "maximum_root_speed",
       "minimum_foot_height",
       "samples",
+      "success"
+    ],
+    "BridgeAssetDuplicateResult": [
+      "asset_class_path",
+      "destination_asset_path",
+      "error",
+      "package_dirty",
+      "saved",
+      "source_asset_path",
       "success"
     ],
     "BridgeAssetInfo": [

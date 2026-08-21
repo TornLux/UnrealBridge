@@ -61,6 +61,41 @@ struct FBridgeAssetInfo
 	TArray<FBridgeAssetTag> Tags;
 };
 
+/** Detailed outcome of duplicating one existing asset to a new /Game path. */
+USTRUCT(BlueprintType)
+struct FBridgeAssetDuplicateResult
+{
+	GENERATED_BODY()
+
+	/** True when duplication and the requested save both completed. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	bool bSuccess = false;
+
+	/** True only when this call wrote the duplicated package to disk. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	bool bSaved = false;
+
+	/** Dirty state of the duplicated package after the operation. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	bool bPackageDirty = false;
+
+	/** Canonical object path of the source asset. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	FString SourceAssetPath;
+
+	/** Canonical object path of the duplicate, populated once duplication succeeds. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	FString DestinationAssetPath;
+
+	/** TopLevelAssetPath of the duplicated asset class. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	FString AssetClassPath;
+
+	/** Empty on success; otherwise explains the validation, duplication, or save failure. */
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	FString Error;
+};
+
 /** Per-LOD stats for a static / skeletal mesh. */
 USTRUCT(BlueprintType)
 struct FBridgeMeshLODStats
@@ -436,6 +471,22 @@ public:
 	static void GetSubFolderNames(
 		const FName& FolderPath,
 		TArray<FName>& OutSubFolderNames);
+
+	// ── Asset Duplication ─────────────────────────────────────
+
+	/**
+	 * Duplicate one existing asset through UEditorAssetLibrary::DuplicateAsset.
+	 * SourceAssetPath may reference any mounted content root. DestinationAssetPath
+	 * must be a new /Game asset path; existing assets are never overwritten.
+	 * This is a shallow asset copy: dependencies are not recursively duplicated or
+	 * relinked, and the source asset is never modified or saved by this call.
+	 * Set bSave=false to leave the new package dirty in memory.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static FBridgeAssetDuplicateResult DuplicateAsset(
+		const FString& SourceAssetPath,
+		const FString& DestinationAssetPath,
+		bool bSave = true);
 
 	// ── Registry Metadata (no load) ───────────────────────────
 

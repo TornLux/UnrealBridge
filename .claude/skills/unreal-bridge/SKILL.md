@@ -182,6 +182,7 @@ Bypass with `--no-preflight` (rare). Preview with `bridge.py preflight <path>`.
 | `print('中文' / '한글' / '日本語')` shows `���` or `涓枃` mojibake | Almost always **display-only** — the wire is byte-perfect UTF-8. See "Non-ASCII output (CJK / Greek / emoji)" below. |
 | Need "where is this GameplayTag used?" / Find References on a tag | `unreal.UnrealBridgeGameplayTagLibrary.find_assets_referencing_tag(tag, include_children, ...)`. Mutations: `add_gameplay_tag` / `rename_gameplay_tag` (auto-redirect) / `remove_gameplay_tag`; pick the target ini via `list_tag_source_inis(...)`. For `PrimaryAssetId` / other named-value structs use the generic `UnrealBridgeAssetLibrary.find_assets_referencing_searchable_name(struct_type, value, ...)`. See `bridge-gameplaytag-api.md`. |
 | Need to change default materials on a StaticMesh / SkeletalMesh asset | Use `Asset.get_mesh_material_slots(...)` then `set_mesh_material`, `set_mesh_material_by_slot_name`, or atomic `set_mesh_materials`. Pass `save=False` for an undoable in-memory comparison. Do not mutate the raw `Materials` UPROPERTY. |
+| Need an independent working copy of an existing asset | Use `Asset.duplicate_asset(source_asset_path=..., destination_asset_path=..., save=True)`. The destination must be a new `/Game/.../AssetName` path and is never overwritten. Duplication is non-recursive, so copy/relink dependencies explicitly when isolation requires it. See `bridge-asset-api.md`. |
 
 ## Verify before you call — don't lean on preflight
 
@@ -216,7 +217,7 @@ Signatures are now mechanically enforced (preflight). References carry semantic 
 
 | Topic | File | When to read |
 |-------|------|------|
-| Blueprint queries + authoring | `references/bridge-blueprint-api.md` | Class hierarchy, variables/functions/components, node search, write ops, auto-layout flow, lint loop |
+| Blueprint queries + authoring | `references/bridge-blueprint-api.md` | Class hierarchy, variables/functions/components, full Blueprint Interface asset/signature/event/typed-call/message workflows, friendly/internal pin-name wiring, node search, write ops, auto-layout flow, lint loop |
 | Asset queries | `references/bridge-asset-api.md` | Asset lookup, search, references/dependencies, **`SoftObjectPath` stringification** (top-of-file block) |
 | UMG / Widget | `references/bridge-umg-api.md` | **Read before any Widget Blueprint write.** Asset/tree/layout/style authoring, UI-material brushes, batched widget animations, UE 5.7+ MVVM, compile validation, and PIE functional verification. |
 | Animation | `references/bridge-anim-api.md` | ABP state machines, slots, sequences, montages, blend spaces. **Authoring an ABP? Read the "Authoring an Animation Blueprint (agent workflow)" section first.** |

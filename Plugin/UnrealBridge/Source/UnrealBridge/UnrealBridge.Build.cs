@@ -73,6 +73,7 @@ public class UnrealBridge : ModuleRules
 			"StateTreeEditorModule",
 			"GameplayStateTreeModule",
 			"AssetTools",
+			"EditorScriptingUtilities",
 			"MotionWarping",
 			// Geometry Script — Lane 2 of the procedural-content roadmap
 			// (UnrealBridgeGeometryLibrary). UDynamicMesh + the runtime BP

@@ -72,6 +72,13 @@
       "reason": "Bridge wrapper has the same shape but is audited + token-cost-counted; raw call walks the registry without telemetry."
     },
     {
+      "id": "editor_asset_library_duplicate_asset",
+      "match_type": "direct_call",
+      "raw_pattern": "unreal.EditorAssetLibrary.duplicate_asset",
+      "bridge_replacement": "from unreal_bridge import Asset\nresult = Asset.duplicate_asset(source_asset_path=..., destination_asset_path=..., save=True)",
+      "reason": "The bridge wrapper rejects overwrites and non-/Game destinations, reports save failures structurally, and keeps the operation visible to preflight and audit logging."
+    },
+    {
       "id": "editor_asset_library_find_asset_data",
       "match_type": "direct_call",
       "raw_pattern": "unreal.EditorAssetLibrary.find_asset_data",
