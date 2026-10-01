@@ -610,16 +610,38 @@ static bool ResolveTargetOutput(UNiagaraSystem* System, const FString& EmitterId
 	{
 		return SetError(FString::Printf(TEXT("stack output '%s' was not found"), *UsageToString(Usage)));
 	}
+	UEdGraphPin* Cursor = GetParameterMapPin(OutOutput, EGPD_Input);
+	TSet<UEdGraphNode*> Visited;
+	bool bHasInput = false;
+	while (Cursor && !Cursor->LinkedTo.IsEmpty())
+	{
+		UEdGraphNode* Upstream = Cursor->LinkedTo[0]->GetOwningNode();
+		if (!Upstream || Visited.Contains(Upstream)) break;
+		Visited.Add(Upstream);
+		if (Cast<UNiagaraNodeInput>(Upstream)) { bHasInput = true; break; }
+		Cursor = GetParameterMapPin(Upstream, EGPD_Input);
+	}
+	if (!bHasInput)
+		return SetError(FString::Printf(TEXT("stack '%s' has no connected input/output chain; repair the graph before inserting modules"), *UsageToString(Usage)));
 	return true;
+}
+
+static FString ScopedModuleId(const FNiagaraEmitterHandle* Handle, const UNiagaraNodeFunctionCall* Node)
+{
+	return (Handle ? Handle->GetId().ToString(EGuidFormats::DigitsWithHyphens) : TEXT("system"))
+		+ TEXT("/") + Node->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens);
 }
 
 static bool FindModuleContext(UNiagaraSystem* System, const FString& ModuleId, FModuleContext& OutContext)
 {
+	FString Scope, NodeId = ModuleId;
+	const bool bScoped = ModuleId.Split(TEXT("/"), &Scope, &NodeId);
 	FGuid Wanted;
-	if (!FGuid::Parse(ModuleId, Wanted)) return SetError(FString::Printf(TEXT("'%s' is not a valid module node GUID"), *ModuleId));
+	if (!FGuid::Parse(NodeId, Wanted)) return SetError(FString::Printf(TEXT("'%s' is not a valid module identifier"), *ModuleId));
 	auto SearchGraph = [&](FNiagaraEmitterHandle* Handle, UNiagaraGraph* Graph) -> bool
 	{
 		if (!Graph) return false;
+		if (bScoped && !Scope.Equals(Handle ? Handle->GetId().ToString(EGuidFormats::DigitsWithHyphens) : TEXT("system"), ESearchCase::IgnoreCase)) return false;
 		TArray<UNiagaraNodeOutput*> Outputs;
 		Graph->GetNodesOfClass(Outputs);
 		for (UNiagaraNodeOutput* Output : Outputs)
@@ -641,14 +663,41 @@ static bool FindModuleContext(UNiagaraSystem* System, const FString& ModuleId, F
 					return true;
 				}
 			}
+			// Dynamic inputs are function calls upstream of a stack module, not stack entries themselves.
+			// 动态输入位于模块的输入链上，不会出现在模块列表中。
+			TArray<UEdGraphNode*> Pending{Output};
+			TSet<UEdGraphNode*> Visited;
+			while (!Pending.IsEmpty())
+			{
+				UEdGraphNode* Node = Pending.Pop(EAllowShrinking::No);
+				if (!Node || Visited.Contains(Node)) continue;
+				Visited.Add(Node);
+				if (auto* Function = Cast<UNiagaraNodeFunctionCall>(Node); Function && Function->NodeGuid == Wanted)
+				{
+					OutContext.System = System;
+					OutContext.Handle = Handle;
+					OutContext.EmitterData = Handle ? Handle->GetEmitterData() : nullptr;
+					OutContext.Graph = Graph; OutContext.Output = Output; OutContext.Node = Function;
+					OutContext.Usage = Output->GetUsage(); OutContext.Index = INDEX_NONE;
+					return true;
+				}
+				for (UEdGraphPin* Pin : Node->Pins)
+					if (Pin && Pin->Direction == EGPD_Input)
+						for (UEdGraphPin* Linked : Pin->LinkedTo)
+							if (Linked) Pending.Add(Linked->GetOwningNode());
+			}
 		}
 		return false;
 	};
-	if (SearchGraph(nullptr, GetSystemGraph(System))) return true;
+	// Duplicating emitters preserves graph node GUIDs. Bare GUIDs must never silently edit the first emitter.
+	// 复制发射器会保留节点 GUID；旧的裸 GUID 存在歧义时必须拒绝，不能改到第一个发射器。
+	int32 Matches = SearchGraph(nullptr, GetSystemGraph(System)) ? 1 : 0;
 	for (FNiagaraEmitterHandle& Handle : System->GetEmitterHandles())
 	{
-		if (SearchGraph(&Handle, GetEmitterGraph(&Handle))) return true;
+		if (SearchGraph(&Handle, GetEmitterGraph(&Handle))) ++Matches;
 	}
+	if (Matches == 1) return true;
+	if (Matches > 1) return SetError(TEXT("ambiguous module GUID; use the scoped id returned by list_niagara_modules"));
 	return SetError(FString::Printf(TEXT("module '%s' was not found in '%s'"), *ModuleId, *System->GetPathName()));
 }
 
@@ -1313,7 +1362,7 @@ static FBridgeNiagaraModuleInfo BuildModuleInfo(const BridgeNiagaraImpl::FModule
 	using namespace BridgeNiagaraImpl;
 	FBridgeNiagaraModuleInfo Info;
 	if (!Context.Node) return Info;
-	Info.Id = Context.Node->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens);
+	Info.Id = ScopedModuleId(Context.Handle, Context.Node);
 	Info.EmitterId = Context.Handle ? Context.Handle->GetId().ToString(EGuidFormats::DigitsWithHyphens) : FString();
 	Info.EmitterName = Context.Handle ? Context.Handle->GetName().ToString() : TEXT("System");
 	Info.Usage = UsageToString(Context.Usage);
@@ -1420,6 +1469,19 @@ TArray<FBridgeNiagaraModuleInputInfo> UUnrealBridgeNiagaraLibrary::ListNiagaraMo
 	FCompileConstantResolver Resolver = Context.Handle
 		? FCompileConstantResolver(Context.Handle->GetInstance(), Context.Usage)
 		: FCompileConstantResolver(System, Context.Usage);
+	TArray<UEdGraphPin*> SwitchPins;
+	TSet<UEdGraphPin*> HiddenSwitches;
+	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*Context.Node, SwitchPins, HiddenSwitches, Resolver);
+	for (UEdGraphPin* Pin : SwitchPins)
+	{
+		if (!Pin || (!bIncludeHidden && HiddenSwitches.Contains(Pin))) continue;
+		FBridgeNiagaraModuleInputInfo Info;
+		Info.ModuleId = ModuleId; Info.Name = StripModuleNamespace(Pin->PinName.ToString());
+		Info.Type = UEdGraphSchema_Niagara::PinToTypeDefinition(Pin).GetName();
+		Info.bStatic = true; Info.bHidden = HiddenSwitches.Contains(Pin);
+		Info.Mode = TEXT("Local"); Info.Value = Pin->DefaultValue;
+		Result.Add(MoveTemp(Info));
+	}
 	TArray<FNiagaraVariable> Inputs;
 	TSet<FNiagaraVariable> Hidden;
 	FNiagaraStackGraphUtilities::GetStackFunctionInputs(*Context.Node, Inputs, Hidden, Resolver,
@@ -1526,7 +1588,7 @@ FBridgeNiagaraOperationResult UUnrealBridgeNiagaraLibrary::AddNiagaraModule(cons
 	if (!FinishSystemMutation(System, bSave)) { Result.Message = LastError; return Result; }
 	Result.bSuccess = true;
 	Result.AssetPath = System->GetPathName();
-	Result.Id = Node->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens);
+	Result.Id = ScopedModuleId(Handle, Node);
 	Result.Message = TEXT("module added");
 	return Result;
 }
@@ -1592,8 +1654,23 @@ bool UUnrealBridgeNiagaraLibrary::SetNiagaraModuleInput(const FString& SystemPat
 	FModuleContext Context;
 	FNiagaraVariable Input;
 	FGuid VariableId;
-	if (!System || !FindModuleContext(System, ModuleId, Context)
-		|| !ResolveFunctionInput(Context, InputName, Input, VariableId)) return false;
+	if (!System || !FindModuleContext(System, ModuleId, Context)) return false;
+	FCompileConstantResolver Resolver = Context.Handle
+		? FCompileConstantResolver(Context.Handle->GetInstance(), Context.Usage)
+		: FCompileConstantResolver(System, Context.Usage);
+	TArray<UEdGraphPin*> SwitchPins;
+	TSet<UEdGraphPin*> HiddenSwitches;
+	FNiagaraStackGraphUtilities::GetStackFunctionStaticSwitchPins(*Context.Node, SwitchPins, HiddenSwitches, Resolver);
+	for (UEdGraphPin* Switch : SwitchPins)
+	{
+		if (!Switch || NormalizeToken(StripModuleNamespace(Switch->PinName.ToString())) != NormalizeToken(StripModuleNamespace(InputName))) continue;
+		const auto* Schema = Cast<UEdGraphSchema_Niagara>(Context.Graph->GetSchema());
+		if (!Schema) return SetError(TEXT("Niagara graph schema is unavailable"));
+		Context.Node->Modify(); Switch->Modify();
+		Schema->TrySetDefaultValue(*Switch, Value, true);
+		return FinishSystemMutation(System, bSave);
+	}
+	if (!ResolveFunctionInput(Context, InputName, Input, VariableId)) return false;
 	UEdGraphPin* Pin = GetOrCreateOverridePin(Context, Input, VariableId);
 	Pin->Modify();
 	Pin->BreakAllPinLinks();
@@ -1662,7 +1739,7 @@ FBridgeNiagaraOperationResult UUnrealBridgeNiagaraLibrary::SetNiagaraModuleDynam
 	}
 	Result.bSuccess = true;
 	Result.AssetPath = System->GetPathName();
-	Result.Id = DynamicNode->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens);
+	Result.Id = ScopedModuleId(Context.Handle, DynamicNode);
 	Result.Message = TEXT("dynamic input created");
 	return Result;
 }
@@ -1871,7 +1948,7 @@ FBridgeNiagaraOperationResult UUnrealBridgeNiagaraLibrary::AddNiagaraParameterAs
 	}
 	Result.bSuccess = true;
 	Result.AssetPath = System->GetPathName();
-	Result.Id = Node->NodeGuid.ToString(EGuidFormats::DigitsWithHyphens);
+	Result.Id = ScopedModuleId(Handle, Node);
 	Result.Message = TEXT("parameter assignment added");
 	return Result;
 }

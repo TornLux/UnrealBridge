@@ -193,7 +193,8 @@ struct FBridgeNiagaraModuleInfo
 {
 	GENERATED_BODY()
 
-	/** Stable graph node GUID used by all module mutation calls. */
+	/** Opaque scoped identifier (emitter GUID/node GUID, or system/node GUID). Use unchanged in module calls.
+	 * 发射器/系统作用域内的节点标识；原样传入模块操作，避免复制发射器后节点 GUID 重复。 */
 	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Niagara")
 	FString Id;
 

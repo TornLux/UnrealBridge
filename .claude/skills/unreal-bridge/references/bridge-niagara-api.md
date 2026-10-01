@@ -149,6 +149,19 @@ the same Niagara type.
 
 ## User parameters
 
+Module identifiers returned by module listing/creation and dynamic-input creation
+are opaque scoped strings (`emitter-guid/node-guid`, or `system/node-guid`). Pass
+them back unchanged. Duplicated emitters can have identical node GUIDs; legacy
+bare GUIDs remain supported only when unique and are rejected when ambiguous.
+Nested dynamic-input IDs support the same input list/set/link operations as stack
+modules. Static switches are included with `static=True`; use their discovered
+export-text enum/bool values with `set_niagara_module_input`, then re-list inputs
+because changing a switch can expose/hide other inputs. Module insertion rejects
+disconnected parameter-map stacks with a diagnostic instead of asserting.
+
+模块 ID 带发射器/系统作用域，必须原样传回；重复的裸 GUID 会被拒绝。动态输入可继续
+嵌套配置；静态开关使用列表返回的枚举/布尔导出值，修改后重新查询有效输入。
+
 | Function | Notes |
 |---|---|
 | `list_niagara_user_parameters(system_path)` | Returns full `User.*` name, type, exported default, and object/DI flags. |
