@@ -592,19 +592,7 @@ bool UUnrealBridgeEditorLibrary::Redo()
 
 // ─── Console / CVar ─────────────────────────────────────────
 
-namespace BridgeEditorImpl
-{
-	class FCaptureDevice : public FOutputDevice
-	{
-	public:
-		FString Output;
-		virtual void Serialize(const TCHAR* V, ELogVerbosity::Type, const FName&) override
-		{
-			Output += V;
-			Output += TEXT("\n");
-		}
-	};
-}
+#include "UnrealBridgeConsoleCapture.h"
 
 FString UUnrealBridgeEditorLibrary::ExecuteConsoleCommand(const FString& Command)
 {
@@ -615,7 +603,7 @@ FString UUnrealBridgeEditorLibrary::ExecuteConsoleCommand(const FString& Command
 		GEngine->Exec(BridgeEditorImpl::GetEditorWorld(), *Command, Dev);
 	}
 	GLog->RemoveOutputDevice(&Dev);
-	return Dev.Output;
+	return Dev.Snapshot();
 }
 
 FString UUnrealBridgeEditorLibrary::ExecutePIEConsoleCommand(const FString& Command)
@@ -639,10 +627,10 @@ FString UUnrealBridgeEditorLibrary::ExecutePIEConsoleCommand(const FString& Comm
 	}
 	else
 	{
-		Dev.Output = TEXT("UnrealBridge: engine is unavailable.\n");
+		Dev.Serialize(TEXT("UnrealBridge: engine is unavailable."),ELogVerbosity::Display,NAME_None);
 	}
 	GLog->RemoveOutputDevice(&Dev);
-	return Dev.Output;
+	return Dev.Snapshot();
 }
 
 FString UUnrealBridgeEditorLibrary::GetCVar(const FString& Name)
