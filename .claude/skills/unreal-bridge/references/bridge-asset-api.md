@@ -1,5 +1,9 @@
 # UnrealBridge Asset Library API
 
+## duplicate_asset(source_asset_path, destination_asset_path, save=False)
+
+Native AssetTools duplication into a new `/Game` package. Accepts source package/object paths; rejects existing loaded or on-disk destinations, non-project destinations, PIE, and World assets (use `Editor.save_current_level_as` for maps). Returns `BridgeAssetDuplicateResult` with `success`, `created`, `saved`, `asset_path`, `error`. `created=True, success=False` can indicate a save failure; recover the existing copy rather than duplicating again. Only the new package is saved when requested. References to other assets remain shared until explicitly reassigned. Source in-memory changes are included in the copy and the source is not saved.
+
 Module: `unreal.UnrealBridgeAssetLibrary`
 
 > **Reading the path string out of a `SoftObjectPath` return.** Most search / list / lookup calls below return `list[SoftObjectPath]` (or pairs of them). `SoftObjectPath` is a UE struct, **not a string**. Stringifying it directly does NOT work:

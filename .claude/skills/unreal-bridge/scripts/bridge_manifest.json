@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-08-30T15:57:44+00:00",
+  "generated_at": "2026-10-26T10:31:33+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -1832,6 +1832,30 @@
             }
           ],
           "returns": "bool"
+        },
+        "duplicate_asset": {
+          "doc": "X.duplicate_asset(source_asset_path, destination_asset_path, save=False) -> BridgeAssetDuplicateResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "source_asset_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "destination_asset_path",
+              "type": ""
+            },
+            {
+              "default": "False",
+              "has_default": true,
+              "name": "save",
+              "type": ""
+            }
+          ],
+          "returns": "BridgeAssetDuplicateResult"
         },
         "find_assets_referencing_searchable_name": {
           "doc": "X.find_assets_referencing_searchable_name(struct_type, value_name, package_path_filter, max_results) -> Array[str]",
@@ -9703,6 +9727,24 @@
         "save_current_level": {
           "doc": "X.save_current_level() -> bool",
           "params": [],
+          "returns": "bool"
+        },
+        "save_current_level_as": {
+          "doc": "X.save_current_level_as(asset_path, overwrite=False) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "asset_path",
+              "type": ""
+            },
+            {
+              "default": "False",
+              "has_default": true,
+              "name": "overwrite",
+              "type": ""
+            }
+          ],
           "returns": "bool"
         },
         "set_auto_save_enabled": {
@@ -19533,6 +19575,42 @@
     },
     "UnrealBridgePCGLibrary": {
       "functions": {
+        "add_pcg_graph_node": {
+          "doc": "X.add_pcg_graph_node(graph_path, settings_class_path, title, position_x, position_y) -> BridgePCGAuthoringResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "settings_class_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "title",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "position_x",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "position_y",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePCGAuthoringResult"
+        },
         "cleanup_pcg_component": {
           "doc": "X.cleanup_pcg_component(actor_label, component_name, remove_components=False) -> bool",
           "params": [
@@ -19556,6 +19634,150 @@
             }
           ],
           "returns": "bool"
+        },
+        "configure_pcg_static_mesh_spawner": {
+          "doc": "X.configure_pcg_static_mesh_spawner(graph_path, node_path, mesh_paths, weights, material_overrides, collision_profile_name, cast_shadow=True) -> BridgePCGAuthoringResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "node_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "mesh_paths",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "weights",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "material_overrides",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "collision_profile_name",
+              "type": ""
+            },
+            {
+              "default": "True",
+              "has_default": true,
+              "name": "cast_shadow",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePCGAuthoringResult"
+        },
+        "connect_pcg_graph_nodes": {
+          "doc": "X.connect_pcg_graph_nodes(graph_path, source_node_path, source_pin, target_node_path, target_pin) -> BridgePCGAuthoringResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "source_node_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "source_pin",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "target_node_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "target_pin",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePCGAuthoringResult"
+        },
+        "create_pcg_graph": {
+          "doc": "X.create_pcg_graph(asset_path, save=False) -> BridgePCGAuthoringResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "asset_path",
+              "type": ""
+            },
+            {
+              "default": "False",
+              "has_default": true,
+              "name": "save",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePCGAuthoringResult"
+        },
+        "create_pcg_spline_actor": {
+          "doc": "X.create_pcg_spline_actor(graph_path, actor_label, points, seed=0) -> BridgePCGAuthoringResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_path",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "actor_label",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "points",
+              "type": ""
+            },
+            {
+              "default": "0",
+              "has_default": true,
+              "name": "seed",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePCGAuthoringResult"
+        },
+        "get_pcg_actor_mesh_outputs": {
+          "doc": "X.get_pcg_actor_mesh_outputs(actor_label) -> Array[BridgePCGMeshOutput]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "actor_label",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgePCGMeshOutput]"
         },
         "get_pcg_component_overrides": {
           "doc": "X.get_pcg_component_overrides(actor_label, component_name) -> Array[BridgePCGOverrideEntry]",
@@ -19593,6 +19815,18 @@
           ],
           "returns": "BridgePCGComponentState"
         },
+        "get_pcg_graph_nodes": {
+          "doc": "X.get_pcg_graph_nodes(graph_path) -> Array[BridgePCGNodeInfo]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_path",
+              "type": ""
+            }
+          ],
+          "returns": "Array[BridgePCGNodeInfo]"
+        },
         "list_pcg_components_in_level": {
           "doc": "X.list_pcg_components_in_level(level_filter, max=200) -> Array[BridgePCGComponentEntry]",
           "params": [
@@ -19629,6 +19863,30 @@
           ],
           "returns": "Array[str]"
         },
+        "set_pcg_component_graph": {
+          "doc": "X.set_pcg_component_graph(actor_label, component_name, graph_path) -> BridgePCGAuthoringResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "actor_label",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "component_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "graph_path",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePCGAuthoringResult"
+        },
         "set_pcg_component_override": {
           "doc": "X.set_pcg_component_override(actor_label, component_name, name, exported_value) -> bool",
           "params": [
@@ -19658,6 +19916,36 @@
             }
           ],
           "returns": "bool"
+        },
+        "set_pcg_spline_points": {
+          "doc": "X.set_pcg_spline_points(actor_label, component_name, points, closed_loop=False) -> BridgePCGAuthoringResult",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "actor_label",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "component_name",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "points",
+              "type": ""
+            },
+            {
+              "default": "False",
+              "has_default": true,
+              "name": "closed_loop",
+              "type": ""
+            }
+          ],
+          "returns": "BridgePCGAuthoringResult"
         },
         "trigger_pcg_generate": {
           "doc": "X.trigger_pcg_generate(actor_label, component_name, force=False) -> bool",
@@ -29364,7 +29652,7 @@
       }
     }
   },
-  "project_path": "G:/UEProjects/GameplayLocomotion/GameplayLocomotion.uproject",
+  "project_path": "G:/UEProjects/ProjectRiot/ProjectRiot.uproject",
   "structs": {
     "BridgeAbilityCooldownInfo": [
       "ability_class_name",
@@ -29567,6 +29855,13 @@
       "maximum_root_speed",
       "minimum_foot_height",
       "samples",
+      "success"
+    ],
+    "BridgeAssetDuplicateResult": [
+      "asset_path",
+      "created",
+      "error",
+      "saved",
       "success"
     ],
     "BridgeAssetInfo": [
@@ -30998,6 +31293,14 @@
       "is_dirty",
       "path"
     ],
+    "BridgePCGAuthoringResult": [
+      "actor_label",
+      "component_name",
+      "error",
+      "object_path",
+      "settings_path",
+      "success"
+    ],
     "BridgePCGComponentEntry": [
       "actor_label",
       "component_name",
@@ -31012,6 +31315,25 @@
       "generating",
       "graph_path",
       "last_generation_iso"
+    ],
+    "BridgePCGMeshOutput": [
+      "bounds_max",
+      "bounds_min",
+      "collision_profile_name",
+      "component_name",
+      "instance_count",
+      "material_paths",
+      "mesh_path"
+    ],
+    "BridgePCGNodeInfo": [
+      "input_pins",
+      "node_path",
+      "output_pins",
+      "position_x",
+      "position_y",
+      "settings_class_path",
+      "settings_path",
+      "title"
     ],
     "BridgePCGOverrideEntry": [
       "name",

@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-08-30T15:57:44+00:00'
+_GENERATED_AT = '2026-10-26T10:31:33+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -390,6 +390,11 @@ class Asset:
     def does_folder_exist(*, folder_path):
         """X.does_folder_exist(folder_path) -> bool"""
         return unreal.UnrealBridgeAssetLibrary.does_folder_exist(folder_path)
+
+    @staticmethod
+    def duplicate_asset(*, source_asset_path, destination_asset_path, save=False):
+        """X.duplicate_asset(source_asset_path, destination_asset_path, save=False) -> BridgeAssetDuplicateResult"""
+        return unreal.UnrealBridgeAssetLibrary.duplicate_asset(source_asset_path, destination_asset_path, save)
 
     @staticmethod
     def find_assets_referencing_searchable_name(*, struct_type, value_name, package_path_filter, max_results):
@@ -2425,6 +2430,11 @@ class Editor:
     def save_current_level():
         """X.save_current_level() -> bool"""
         return unreal.UnrealBridgeEditorLibrary.save_current_level()
+
+    @staticmethod
+    def save_current_level_as(*, asset_path, overwrite=False):
+        """X.save_current_level_as(asset_path, overwrite=False) -> bool"""
+        return unreal.UnrealBridgeEditorLibrary.save_current_level_as(asset_path, overwrite)
 
     @staticmethod
     def set_auto_save_enabled(*, enabled):
@@ -4973,9 +4983,39 @@ class PCG:
     """Wraps unreal.UnrealBridgePCGLibrary (kwargs-only)."""
 
     @staticmethod
+    def add_pcg_graph_node(*, graph_path, settings_class_path, title, position_x, position_y):
+        """X.add_pcg_graph_node(graph_path, settings_class_path, title, position_x, position_y) -> BridgePCGAuthoringResult"""
+        return unreal.UnrealBridgePCGLibrary.add_pcg_graph_node(graph_path, settings_class_path, title, position_x, position_y)
+
+    @staticmethod
     def cleanup_pcg_component(*, actor_label, component_name, remove_components=False):
         """X.cleanup_pcg_component(actor_label, component_name, remove_components=False) -> bool"""
         return unreal.UnrealBridgePCGLibrary.cleanup_pcg_component(actor_label, component_name, remove_components)
+
+    @staticmethod
+    def configure_pcg_static_mesh_spawner(*, graph_path, node_path, mesh_paths, weights, material_overrides, collision_profile_name, cast_shadow=True):
+        """X.configure_pcg_static_mesh_spawner(graph_path, node_path, mesh_paths, weights, material_overrides, collision_profile_name, cast_shadow=True) -> BridgePCGAuthoringResult"""
+        return unreal.UnrealBridgePCGLibrary.configure_pcg_static_mesh_spawner(graph_path, node_path, mesh_paths, weights, material_overrides, collision_profile_name, cast_shadow)
+
+    @staticmethod
+    def connect_pcg_graph_nodes(*, graph_path, source_node_path, source_pin, target_node_path, target_pin):
+        """X.connect_pcg_graph_nodes(graph_path, source_node_path, source_pin, target_node_path, target_pin) -> BridgePCGAuthoringResult"""
+        return unreal.UnrealBridgePCGLibrary.connect_pcg_graph_nodes(graph_path, source_node_path, source_pin, target_node_path, target_pin)
+
+    @staticmethod
+    def create_pcg_graph(*, asset_path, save=False):
+        """X.create_pcg_graph(asset_path, save=False) -> BridgePCGAuthoringResult"""
+        return unreal.UnrealBridgePCGLibrary.create_pcg_graph(asset_path, save)
+
+    @staticmethod
+    def create_pcg_spline_actor(*, graph_path, actor_label, points, seed=0):
+        """X.create_pcg_spline_actor(graph_path, actor_label, points, seed=0) -> BridgePCGAuthoringResult"""
+        return unreal.UnrealBridgePCGLibrary.create_pcg_spline_actor(graph_path, actor_label, points, seed)
+
+    @staticmethod
+    def get_pcg_actor_mesh_outputs(*, actor_label):
+        """X.get_pcg_actor_mesh_outputs(actor_label) -> Array[BridgePCGMeshOutput]"""
+        return unreal.UnrealBridgePCGLibrary.get_pcg_actor_mesh_outputs(actor_label)
 
     @staticmethod
     def get_pcg_component_overrides(*, actor_label, component_name):
@@ -4988,6 +5028,11 @@ class PCG:
         return unreal.UnrealBridgePCGLibrary.get_pcg_component_state(actor_label, component_name)
 
     @staticmethod
+    def get_pcg_graph_nodes(*, graph_path):
+        """X.get_pcg_graph_nodes(graph_path) -> Array[BridgePCGNodeInfo]"""
+        return unreal.UnrealBridgePCGLibrary.get_pcg_graph_nodes(graph_path)
+
+    @staticmethod
     def list_pcg_components_in_level(*, level_filter, max=200):
         """X.list_pcg_components_in_level(level_filter, max=200) -> Array[BridgePCGComponentEntry]"""
         return unreal.UnrealBridgePCGLibrary.list_pcg_components_in_level(level_filter, max)
@@ -4998,9 +5043,19 @@ class PCG:
         return unreal.UnrealBridgePCGLibrary.list_pcg_graph_assets(filter, max)
 
     @staticmethod
+    def set_pcg_component_graph(*, actor_label, component_name, graph_path):
+        """X.set_pcg_component_graph(actor_label, component_name, graph_path) -> BridgePCGAuthoringResult"""
+        return unreal.UnrealBridgePCGLibrary.set_pcg_component_graph(actor_label, component_name, graph_path)
+
+    @staticmethod
     def set_pcg_component_override(*, actor_label, component_name, name, exported_value):
         """X.set_pcg_component_override(actor_label, component_name, name, exported_value) -> bool"""
         return unreal.UnrealBridgePCGLibrary.set_pcg_component_override(actor_label, component_name, name, exported_value)
+
+    @staticmethod
+    def set_pcg_spline_points(*, actor_label, component_name, points, closed_loop=False):
+        """X.set_pcg_spline_points(actor_label, component_name, points, closed_loop=False) -> BridgePCGAuthoringResult"""
+        return unreal.UnrealBridgePCGLibrary.set_pcg_spline_points(actor_label, component_name, points, closed_loop)
 
     @staticmethod
     def trigger_pcg_generate(*, actor_label, component_name, force=False):

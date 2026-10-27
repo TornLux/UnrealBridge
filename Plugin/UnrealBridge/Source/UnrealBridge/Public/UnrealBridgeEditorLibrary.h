@@ -317,6 +317,11 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool SaveCurrentLevel();
 
+	/** 将当前编辑器关卡另存为完整包路径。默认拒绝覆盖已有文件；只保存当前关卡，不保存其他脏资产。
+	 * Save the current editor level to a full package path. Existing files are rejected unless overwrite is explicit; unrelated dirty assets are not saved. */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
+	static bool SaveCurrentLevelAs(const FString& AssetPath, bool bOverwrite = false);
+
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static bool ReloadAsset(const FString& AssetPath);
 

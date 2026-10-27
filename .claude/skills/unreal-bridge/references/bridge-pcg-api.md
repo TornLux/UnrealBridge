@@ -1,9 +1,61 @@
 # bridge-pcg-api
 
-`unreal.UnrealBridgePCGLibrary` — Lane 3 of the procedural-content roadmap.
-**Read-only graph access + override edit + Generate/Cleanup trigger** for
-existing PCG content. **No graph editing** — bridge does not duplicate the
-PCG visual editor (roadmap §5/§8).
+`unreal.UnrealBridgePCGLibrary` provides inspection, bounded native graph
+authoring, component overrides and editor generation. Use the kwargs-only
+`unreal_bridge.PCG` wrapper. Graph topology is created through native PCG
+methods; never edit private node/edge arrays through Property.
+
+## Native authoring
+
+- `create_pcg_graph(asset_path, save=False)` creates a new project/plugin
+  graph. Existing packages and packages outside this project are rejected.
+- `add_pcg_graph_node(graph_path, settings_class_path, title, position_x,
+  position_y)` adds a concrete `UPCGSettings` class. The result contains
+  `object_path` for the node and `settings_path` for its settings object.
+- `get_pcg_graph_nodes(graph_path)` returns settings classes, paths, exact
+  pin labels and layout, including the input/output nodes.
+- `connect_pcg_graph_nodes(graph_path, source_node_path, source_pin,
+  target_node_path, target_pin)` adds a native edge. Cross-graph nodes,
+  missing/wrong-direction pins, self edges and cycles are rejected;
+  an existing identical edge succeeds without duplication. It does not
+  replace a connection on an already occupied single-connection input.
+- `configure_pcg_static_mesh_spawner(graph_path, node_path, mesh_paths,
+  weights, material_overrides, collision_profile_name, cast_shadow=True)`
+  validates all assets, weights and the collision profile before replacing
+  that spawner's weighted mesh entries. Empty weights use 1 per mesh;
+  empty material overrides retain mesh defaults. Mesh count is 1..256.
+- `create_pcg_spline_actor(graph_path, actor_label, points, seed=0)` creates
+  one editor actor with a registered root spline and PCG component. Points
+  are finite world-space cm, 2..10000. Labels must be unique. Native spline
+  point types are Linear. Generation is on demand, with no automatic run.
+- `set_pcg_spline_points(actor_label, component_name, points,
+  closed_loop=False)` changes the input through native spline APIs and
+  refreshes spline caches. Empty component name selects the first spline.
+  PCG input is dirtied, but no cleanup or generation is performed.
+- `set_pcg_component_graph(actor_label, component_name, graph_path)` uses
+  native SetGraph so parameter layouts and delegates are initialized.
+  Empty component name selects the first PCG component. Do not assign the
+  nested Graph pointer through Level/Property as a substitute.
+- `get_pcg_actor_mesh_outputs(actor_label)` reads meshes, material paths,
+  collision profiles, bounds and actual instance counts owned by the actor.
+  This includes its own authored components, excludes attached actors and
+  is not a claim of managed-resource ownership. A Generated flag alone
+  does not prove that any meshes were emitted.
+
+Authoring results expose `success`, `error`, `object_path`, `settings_path`,
+`actor_label` and `component_name`; check success before consuming paths.
+Settings can be inspected/configured through the Property wrapper using the
+returned settings path after checking their reflected fields and native
+semantics. Save finished graph assets with `Editor.save_asset`.
+
+`Editor.save_current_level_as(asset_path, overwrite=False)` saves the current
+editor level to a project/plugin package path without saving unrelated dirty
+assets. The path has no object suffix. Existing targets are rejected unless
+overwrite is explicitly requested; use `save_current_level` for later saves.
+
+Graph and spline changes are undoable. Creation/spline editing require an
+editor world without PIE. Engine/plugin reference graphs outside this project
+are available for inspection/binding, not topology edits.
 
 Hard contract:
 - **UE 5.7+ only.** Older engines compile to logged-warning stubs.
@@ -20,7 +72,7 @@ Hard contract:
   so the bridge enforces non-empty + snapshot-restores the prior value when
   the parser refuses to consume any chars).
 
-## What's shipped (8 ops)
+## Inspection and generation
 
 - `list_pcg_graph_assets(filter, max=200) -> list[str]` (L3-1)
 - `list_pcg_components_in_level(level_filter, max=200) -> list[FBridgePCGComponentEntry]` (L3-2)

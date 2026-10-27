@@ -19,6 +19,7 @@
 #include "UObject/UnrealType.h"
 #include "StructUtils/InstancedStruct.h"
 #include "StructUtils/PropertyBag.h"
+#include "ScopedTransaction.h"
 
 #define LOCTEXT_NAMESPACE "UnrealBridgePCG"
 
@@ -261,6 +262,9 @@ bool UUnrealBridgePCGLibrary::SetPCGComponentOverride(
 			return false;
 		}
 
+		const FScopedTransaction Transaction(NSLOCTEXT("UnrealBridge", "SetPCGOverride", "Set PCG Component Override"));
+		C->Modify();
+		GI->Modify();
 		void* Addr = Desc.CachedProperty->ContainerPtrToValuePtr<void>(Memory);
 
 		// Snapshot the current value so we can restore on parse failure. UE's
@@ -286,7 +290,8 @@ bool UUnrealBridgePCGLibrary::SetPCGComponentOverride(
 				*Name, *ExportedValue, *Desc.CachedProperty->GetCPPType(), *OriginalExport);
 			return false;
 		}
-		C->Modify();
+		GI->UpdatePropertyOverride(Desc.CachedProperty, true);
+		GI->OnGraphParametersChanged(EPCGGraphParameterEvent::ValueModifiedLocally, Desc.Name);
 		return true;
 	}
 

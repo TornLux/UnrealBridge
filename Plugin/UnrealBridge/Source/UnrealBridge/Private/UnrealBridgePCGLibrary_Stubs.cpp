@@ -9,6 +9,60 @@
 
 #if UE_VERSION_OLDER_THAN(5, 7, 0)
 
+FBridgePCGAuthoringResult UUnrealBridgePCGLibrary::CreatePCGGraph(const FString& AssetPath, bool bSave)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::CreatePCGGraph requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgePCGAuthoringResult{};
+}
+
+FBridgePCGAuthoringResult UUnrealBridgePCGLibrary::AddPCGGraphNode(const FString& GraphPath, const FString& SettingsClassPath, const FString& Title, int32 PositionX, int32 PositionY)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::AddPCGGraphNode requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgePCGAuthoringResult{};
+}
+
+FBridgePCGAuthoringResult UUnrealBridgePCGLibrary::ConnectPCGGraphNodes(const FString& GraphPath, const FString& SourceNodePath, const FString& SourcePin, const FString& TargetNodePath, const FString& TargetPin)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::ConnectPCGGraphNodes requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgePCGAuthoringResult{};
+}
+
+TArray<FBridgePCGNodeInfo> UUnrealBridgePCGLibrary::GetPCGGraphNodes(const FString& GraphPath)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::GetPCGGraphNodes requires UE 5.7+ — call ignored on this engine version"));
+	return TArray<FBridgePCGNodeInfo>{};
+}
+
+FBridgePCGAuthoringResult UUnrealBridgePCGLibrary::ConfigurePCGStaticMeshSpawner(const FString& GraphPath, const FString& NodePath, const TArray<FString>& MeshPaths, const TArray<int32>& Weights, const TArray<FString>& MaterialOverrides, const FString& CollisionProfileName, bool bCastShadow)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::ConfigurePCGStaticMeshSpawner requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgePCGAuthoringResult{};
+}
+
+FBridgePCGAuthoringResult UUnrealBridgePCGLibrary::SetPCGComponentGraph(const FString& ActorLabel, const FString& ComponentName, const FString& GraphPath)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::SetPCGComponentGraph requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgePCGAuthoringResult{};
+}
+
+FBridgePCGAuthoringResult UUnrealBridgePCGLibrary::CreatePCGSplineActor(const FString& GraphPath, const FString& ActorLabel, const TArray<FVector>& Points, int32 Seed)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::CreatePCGSplineActor requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgePCGAuthoringResult{};
+}
+
+FBridgePCGAuthoringResult UUnrealBridgePCGLibrary::SetPCGSplinePoints(const FString& ActorLabel, const FString& ComponentName, const TArray<FVector>& Points, bool bClosedLoop)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::SetPCGSplinePoints requires UE 5.7+ — call ignored on this engine version"));
+	return FBridgePCGAuthoringResult{};
+}
+
+TArray<FBridgePCGMeshOutput> UUnrealBridgePCGLibrary::GetPCGActorMeshOutputs(const FString& ActorLabel)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::GetPCGActorMeshOutputs requires UE 5.7+ — call ignored on this engine version"));
+	return TArray<FBridgePCGMeshOutput>{};
+}
+
 TArray<FString> UUnrealBridgePCGLibrary::ListPCGGraphAssets(const FString& Filter, int32 Max)
 {
 	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgePCGLibrary::ListPCGGraphAssets requires UE 5.7+ — call ignored on this engine version"));

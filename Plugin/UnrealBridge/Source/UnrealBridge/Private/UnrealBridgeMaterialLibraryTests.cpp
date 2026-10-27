@@ -541,4 +541,36 @@ bool FBridgeMaterialGraphCompositeExpansionTest::RunTest(const FString& Paramete
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FBridgeMaterialConnectedOutputTest,
+	"UnrealBridge.Material.GraphSafety.ConnectedOutputsDisableConstants",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FBridgeMaterialConnectedOutputTest::RunTest(const FString& Parameters)
+{
+	using namespace BridgeMaterialGraphSafetyTests;
+	TStrongObjectPtr<UPackage> Package = BridgeTextureRefreshTests::MakePackage(TEXT("ConnectedOutput"));
+	TStrongObjectPtr<UMaterial> Material = MakeMaterial(*Package, TEXT("M_ConnectedOutput"));
+	UMaterialExpressionConstant* Constant = AddExpression<UMaterialExpressionConstant>(*Material);
+	if (!TestNotNull(TEXT("Output source"), Constant)) return false;
+	UMaterialEditorOnlyData* Data = Material->GetEditorOnlyData();
+	Data->OpacityMask.UseConstant = true;
+	Data->OpacityMask.Constant = 1.0f;
+	TestTrue(TEXT("Single output connects"), UUnrealBridgeMaterialLibrary::ConnectMaterialOutput(
+		Material->GetPathName(), Constant->MaterialExpressionGuid, TEXT(""), TEXT("OpacityMask")));
+	TestFalse(TEXT("Connected mask compiles its expression, not constant one"), !!Data->OpacityMask.UseConstant);
+	TestEqual(TEXT("Constant fallback value is preserved"), Data->OpacityMask.Constant, 1.0f);
+	Data->Roughness.UseConstant = true;
+	Data->Roughness.Constant = 0.7f;
+	FBridgeMaterialGraphOp Op = MakeOp(TEXT("connect_out"));
+	Op.SrcRef = Constant->MaterialExpressionGuid.ToString();
+	Op.Property = TEXT("Roughness");
+	const FBridgeMaterialGraphOpResult Result = UUnrealBridgeMaterialLibrary::ApplyMaterialGraphOps(
+		Material->GetPathName(), {Op}, false);
+	TestTrue(TEXT("Batch output connects"), Result.bSuccess);
+	TestFalse(TEXT("Batch also disables constant bypass"), !!Data->Roughness.UseConstant);
+	TestEqual(TEXT("Unrelated constant value is preserved"), Data->Roughness.Constant, 0.7f);
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS && !UE_VERSION_OLDER_THAN(5, 7, 0)

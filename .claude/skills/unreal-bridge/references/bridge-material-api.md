@@ -719,6 +719,10 @@ Returns False if either guid is missing or the pin names don't resolve.
 
 **M2-6.** Wire an expression into one of the main material outputs.
 
+Connecting an output also disables that input's `UseConstant` bypass, including batch `connect_out`.
+The stored constant fallback value is preserved. Without this, source materials can display a wire while
+compiling constant opacity 1 and ignoring the mask. 连接输出同时关闭该输入的常量旁路，保留常量备用值，确保连线实际参与编译。
+
 `property_name`: `"BaseColor"` / `"Metallic"` / `"Roughness"` / `"Normal"` / `"EmissiveColor"` / `"Opacity"` / `"OpacityMask"` / `"WorldPositionOffset"` / `"Refraction"` / `"AmbientOcclusion"` / `"PixelDepthOffset"` / `"SubsurfaceColor"` / `"Tangent"` / `"Anisotropy"` / `"FrontMaterial"` / `"MaterialAttributes"` / `"CustomizedUVs0..7"` / `"CustomData0..1"` — same set that shows up in `get_material_graph` → `output_connections` → `dst_property_name`.
 
 ```python
@@ -779,6 +783,12 @@ Note: `Constant3Vector` defaults to `(0,0,0)`; `ScalarParameter` defaults to `0`
 ## set_material_expression_property(material_path, guid, property_name, value) -> bool
 
 **M2-7.** Set a single UPROPERTY on an expression, by name, using UE's ImportText format (the same format UE uses for `.uasset` text export).
+
+The setter sends a named-property editor notification. `GetMaterialAttributes.AttributeGetTypes`
+and `SetMaterialAttributes.AttributeSetTypes` also rebuild native pin storage without an open
+material editor. Set-attribute inputs retain their connections by attribute GUID; get-attribute
+outputs may be appended but existing indices cannot be removed or reordered. Unknown/duplicate
+attribute IDs are rejected before mutation. Pass GUID arrays in native export format.
 
 ```python
 L.set_material_expression_property(mat, bc.guid, "Constant",

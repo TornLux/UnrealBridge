@@ -84,8 +84,7 @@ public class UnrealBridge : ModuleRules
 			"GeometryScriptingCore",
 			"GeometryFramework",
 			"GeometryScriptingEditor",
-			// PCG — Lane 3 of the procedural-content roadmap. Read-only +
-			// trigger only (we do not edit PCG graphs — see roadmap §5/§8).
+			// PCG inspection, native graph authoring and editor generation.
 			"PCG",
 			// TraceLog hosts UE::Trace::EnumerateChannels (used by M4-4
 			// list_trace_channels). Core publicly forwards TraceLog headers

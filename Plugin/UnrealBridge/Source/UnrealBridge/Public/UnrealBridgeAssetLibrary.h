@@ -94,6 +94,23 @@ struct FBridgeDataAssetCreateResult
 	FString Error;
 };
 
+/** Result of a non-overwriting native asset duplication. / 原生资产复制结果，不覆盖目标。 */
+USTRUCT(BlueprintType)
+struct FBridgeAssetDuplicateResult
+{
+	GENERATED_BODY()
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	bool bSuccess = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	bool bCreated = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	bool bSaved = false;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	FString AssetPath;
+	UPROPERTY(BlueprintReadOnly, Category = "UnrealBridge|Asset")
+	FString Error;
+};
+
 /** Per-LOD stats for a static / skeletal mesh. */
 USTRUCT(BlueprintType)
 struct FBridgeMeshLODStats
@@ -453,6 +470,17 @@ public:
 		const FString& AssetPath,
 		const FString& DataAssetClassPath,
 		bool bSave = true);
+
+	/**
+	 * Duplicate a loaded asset with native AssetTools. SourceAssetPath accepts a package or object path.
+	 * DestinationAssetPath must be a new package under /Game; existing loaded or on-disk targets are rejected.
+	 * bSave=false leaves the copy dirty in memory; true saves only the new package. Worlds require level save-as.
+	 * 使用原生 AssetTools 复制资产。源路径接受包或对象路径；目标必须为 /Game 下的新包，不覆盖已有资产。
+	 * bSave=false 仅创建内存副本；true 只保存新包。关卡请使用 SaveCurrentLevelAs。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Asset")
+	static FBridgeAssetDuplicateResult DuplicateAsset(
+		const FString& SourceAssetPath, const FString& DestinationAssetPath, bool bSave = false);
 
 	// ── Folder / Path Queries ─────────────────────────────────
 

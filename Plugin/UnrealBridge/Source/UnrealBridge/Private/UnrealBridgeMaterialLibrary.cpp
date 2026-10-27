@@ -12,6 +12,9 @@
 #include "Materials/MaterialInterface.h"
 #include "Materials/MaterialExpression.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionGetMaterialAttributes.h"
+#include "Materials/MaterialExpressionSetMaterialAttributes.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionScalarParameter.h"
@@ -99,10 +102,33 @@
 #include "String/LexFromString.h"
 #include "UObject/StrongObjectPtr.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UnrealType.h"
 
 namespace BridgeMaterialImpl
 {
 	using namespace BridgeMaterialParameterHelpers;
+
+	/** Connected outputs must compile their expression, rather than a source material's constant.
+	 * 连接输出后启用表达式，避免源材质保留的常量开关让连线在渲染时完全失效。 */
+	static void EnableConnectedMaterialInput(UMaterial* Material, const EMaterialProperty Property)
+	{
+		UMaterialEditorOnlyData* Data = Material->GetEditorOnlyData();
+		FExpressionInput* Input = Material->GetExpressionInputForProperty(Property);
+		if (!Data || !Input) return;
+		for (TFieldIterator<FStructProperty> It(Data->GetClass()); It; ++It)
+		{
+			for (int32 Index = 0; Index < It->ArrayDim; ++Index)
+			{
+				if (It->ContainerPtrToValuePtr<void>(Data, Index) != Input) continue;
+				if (FProperty* Flag = It->Struct->FindPropertyByName(TEXT("UseConstant")))
+				{
+					Data->Modify();
+					Flag->ImportText_Direct(TEXT("False"), Flag->ContainerPtrToValuePtr<void>(Input), Data, PPF_None);
+				}
+				return;
+			}
+		}
+	}
 
 	/**
 	 * 将引擎参数身份复制到稳定的反射字段，避免同名的全局、层和混合参数失去区别。
@@ -2960,6 +2986,7 @@ bool UUnrealBridgeMaterialLibrary::ConnectMaterialOutput(
 	const bool bOK = UMaterialEditingLibrary::ConnectMaterialProperty(Src, NormalizePinName(SrcOutputName), Prop);
 	if (bOK)
 	{
+		EnableConnectedMaterialInput(Material, Prop);
 		Material->MarkPackageDirty();
 	}
 	return bOK;
@@ -3057,6 +3084,49 @@ namespace BridgeMaterialImpl
 				*PropertyName, *Expr->GetClass()->GetName());
 			return false;
 		}
+		// These reflected arrays own dynamic pins as well as GUIDs. Importing only
+		// the GUIDs leaves headless expressions with inconsistent pin storage.
+		const bool bGetAttributes = Expr->IsA<UMaterialExpressionGetMaterialAttributes>()
+			&& PropertyName == TEXT("AttributeGetTypes");
+		const bool bSetAttributes = Expr->IsA<UMaterialExpressionSetMaterialAttributes>()
+			&& PropertyName == TEXT("AttributeSetTypes");
+		if (bGetAttributes || bSetAttributes)
+		{
+			TArray<FGuid> Desired;
+			if (!Prop->ImportText_Direct(*Value, &Desired, Expr, PPF_None)) return false;
+			TSet<FGuid> Seen;
+			for (const FGuid& ID : Desired)
+			{
+				const EMaterialProperty Attribute = FMaterialAttributeDefinitionMap::GetProperty(ID);
+				if (!ID.IsValid() || Seen.Contains(ID) || Attribute == MP_MAX || Attribute == MP_MaterialAttributes)
+					return false;
+				Seen.Add(ID);
+			}
+			if (UMaterialExpressionSetMaterialAttributes* Set = Cast<UMaterialExpressionSetMaterialAttributes>(Expr))
+			{
+				const TArray<FGuid> Previous = Set->AttributeSetTypes;
+				const TArray<FExpressionInput> PreviousInputs = Set->Inputs;
+				Set->AttributeSetTypes.Reset();
+				Set->Inputs.SetNum(1);
+				for (const FGuid& ID : Desired)
+				{
+					const int32 Index = Set->CreateOrGetInputAttribute(FMaterialAttributeDefinitionMap::GetProperty(ID));
+					const int32 OldIndex = Previous.Find(ID);
+					if (OldIndex != INDEX_NONE && PreviousInputs.IsValidIndex(OldIndex + 1))
+						Set->Inputs[Index] = PreviousInputs[OldIndex + 1];
+				}
+			}
+			else if (UMaterialExpressionGetMaterialAttributes* Get = Cast<UMaterialExpressionGetMaterialAttributes>(Expr))
+			{
+				// Existing consumers use output indices: preserve their ordering.
+				for (int32 Index = 0; Index < Get->AttributeGetTypes.Num(); ++Index)
+					if (!Desired.IsValidIndex(Index) || Desired[Index] != Get->AttributeGetTypes[Index]) return false;
+				for (const FGuid& ID : Desired)
+					Get->CreateOrGetOutputAttribute(FMaterialAttributeDefinitionMap::GetProperty(ID));
+			}
+			if (Expr->GraphNode) Expr->GraphNode->ReconstructNode();
+			return true;
+		}
 
 		void* Container = Prop->ContainerPtrToValuePtr<void>(Expr);
 		const TCHAR* Remaining = Prop->ImportText_Direct(*Value, Container, Expr, PPF_None);
@@ -3084,9 +3154,17 @@ bool UUnrealBridgeMaterialLibrary::SetMaterialExpressionProperty(
 	UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
 	if (!Expr) return false;
 
-	Expr->PreEditChange(nullptr);
+	FProperty* ChangedProperty = FindFProperty<FProperty>(Expr->GetClass(), FName(*PropertyName));
+	if (!ChangedProperty) return false;
+	Expr->Modify();
+	Expr->PreEditChange(ChangedProperty);
 	const bool bOK = ApplyPropertyString(Expr, PropertyName, Value);
-	Expr->PostEditChange();
+	// Attribute arrays and function calls rebuild their pins in the named-property
+	// notification. A null notification can leave Inputs shorter than the attribute
+	// list and crash material cached-data compilation.
+	const bool bManagedAttributePins = PropertyName == TEXT("AttributeGetTypes") || PropertyName == TEXT("AttributeSetTypes");
+	FPropertyChangedEvent ChangeEvent(bManagedAttributePins ? nullptr : ChangedProperty, EPropertyChangeType::ValueSet);
+	Expr->PostEditChangeProperty(ChangeEvent);
 
 	if (bOK)
 	{
@@ -3108,7 +3186,22 @@ int32 UUnrealBridgeMaterialLibrary::SetMaterialExpressionProperties(
 	UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
 	if (!Expr) return 0;
 
-	Expr->PreEditChange(nullptr);
+	FProperty* ChangedProperty = nullptr;
+	for (const FBridgeExpressionPropSet& P : Properties)
+	{
+		FProperty* Candidate = FindFProperty<FProperty>(Expr->GetClass(), FName(*P.Name));
+		if (!Candidate) continue;
+		if (!ChangedProperty) ChangedProperty = Candidate;
+		if (P.Name == TEXT("AttributeGetTypes") || P.Name == TEXT("AttributeSetTypes")
+			|| P.Name == TEXT("MaterialFunction"))
+		{
+			ChangedProperty = Candidate;
+			break;
+		}
+	}
+	if (!ChangedProperty) return 0;
+	Expr->Modify();
+	Expr->PreEditChange(ChangedProperty);
 	int32 Applied = 0;
 	for (const FBridgeExpressionPropSet& P : Properties)
 	{
@@ -3117,7 +3210,9 @@ int32 UUnrealBridgeMaterialLibrary::SetMaterialExpressionProperties(
 			++Applied;
 		}
 	}
-	Expr->PostEditChange();
+	const bool bManagedAttributePins = ChangedProperty->GetFName() == TEXT("AttributeGetTypes") || ChangedProperty->GetFName() == TEXT("AttributeSetTypes");
+	FPropertyChangedEvent ChangeEvent(bManagedAttributePins ? nullptr : ChangedProperty, EPropertyChangeType::ValueSet);
+	Expr->PostEditChangeProperty(ChangeEvent);
 
 	if (Applied > 0)
 	{
@@ -3351,6 +3446,7 @@ namespace BridgeMaterialImpl
 				{
 					return Fail(i, FString::Printf(TEXT("op %d (connect_out): ConnectMaterialProperty returned false"), i));
 				}
+				EnableConnectedMaterialInput(Material, Prop);
 			}
 			else if (Op == TEXT("disconnect_in"))
 			{
