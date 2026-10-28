@@ -7,7 +7,7 @@
 #include "Selection.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
-#include "ContentBrowserItemPath.h"
+#include "UnrealBridgeContentBrowserPath.h"
 #include "FileHelpers.h"
 #include "PackageTools.h"
 #include "GameFramework/Actor.h"
@@ -227,7 +227,7 @@ FString UUnrealBridgeEditorLibrary::GetContentBrowserPath()
 		return FString();
 	}
 	FContentBrowserModule& CBM = FModuleManager::GetModuleChecked<FContentBrowserModule>("ContentBrowser");
-	return CBM.Get().GetCurrentPath().GetInternalPathString();
+	return BridgeEditorImpl::GetContentBrowserInternalPath(CBM.Get().GetCurrentPath());
 }
 
 FBridgeViewportCamera UUnrealBridgeEditorLibrary::GetEditorViewportCamera()

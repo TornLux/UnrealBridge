@@ -282,7 +282,7 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static TArray<FString> GetContentBrowserSelection();
 
-	/** Currently-focused Content Browser path (e.g. "/Game/MyFolder"). Empty if unavailable. */
+	/** Current Content Browser internal path (e.g. "/Game/MyFolder"). Empty if unavailable or virtual-only. */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Editor")
 	static FString GetContentBrowserPath();
 
