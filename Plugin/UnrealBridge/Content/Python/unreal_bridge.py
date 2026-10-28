@@ -16,7 +16,7 @@ structural rather than mnemonic.
 
 import unreal
 
-_GENERATED_AT = '2026-10-26T10:31:33+00:00'
+_GENERATED_AT = '2026-10-27T13:33:03+00:00'
 _UE_VERSION = '5.7.1-48512491+++UE5+Release-5.7'
 
 class Anim:
@@ -3538,6 +3538,11 @@ class Geometry:
         return unreal.UnrealBridgeGeometryLibrary.append_cylinder(handle, origin, radius, height, radial_segments)
 
     @staticmethod
+    def append_dynamic_mesh(*, target_handle, source_handle, transform):
+        """X.append_dynamic_mesh(target_handle, source_handle, transform) -> bool"""
+        return unreal.UnrealBridgeGeometryLibrary.append_dynamic_mesh(target_handle, source_handle, transform)
+
+    @staticmethod
     def append_sphere(*, handle, origin, radius, resolution_uv):
         """X.append_sphere(handle, origin, radius, resolution_uv) -> bool"""
         return unreal.UnrealBridgeGeometryLibrary.append_sphere(handle, origin, radius, resolution_uv)
@@ -3566,6 +3571,11 @@ class Geometry:
     def get_mesh_info(*, handle):
         """X.get_mesh_info(handle) -> BridgeMeshInfo"""
         return unreal.UnrealBridgeGeometryLibrary.get_mesh_info(handle)
+
+    @staticmethod
+    def get_mesh_triangle_vertices(*, handle, max_triangles=100000):
+        """X.get_mesh_triangle_vertices(handle, max_triangles=100000) -> Array[Vector]"""
+        return unreal.UnrealBridgeGeometryLibrary.get_mesh_triangle_vertices(handle, max_triangles)
 
     @staticmethod
     def list_dynamic_mesh_handles():
@@ -3618,9 +3628,9 @@ class Geometry:
         return unreal.UnrealBridgeGeometryLibrary.mesh_uniform_remesh(handle, target_tri_count)
 
     @staticmethod
-    def mesh_uv_unwrap(*, handle, method):
-        """X.mesh_uv_unwrap(handle, method) -> bool"""
-        return unreal.UnrealBridgeGeometryLibrary.mesh_uv_unwrap(handle, method)
+    def mesh_uv_unwrap(*, handle, method, projection_size_cm=0.000000):
+        """X.mesh_uv_unwrap(handle, method, projection_size_cm=0.000000) -> bool"""
+        return unreal.UnrealBridgeGeometryLibrary.mesh_uv_unwrap(handle, method, projection_size_cm)
 
     @staticmethod
     def mesh_voxel_merge(*, handles, cell_size_cm):

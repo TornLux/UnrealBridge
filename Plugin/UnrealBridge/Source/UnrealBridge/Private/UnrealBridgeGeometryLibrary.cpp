@@ -5,6 +5,7 @@
 #if !UE_VERSION_OLDER_THAN(5, 7, 0)
 
 #include "UDynamicMesh.h"
+#include "DynamicMesh/DynamicMesh3.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Editor.h"                          // GEditor
@@ -408,6 +409,45 @@ FBridgeMeshInfo UUnrealBridgeGeometryLibrary::GetMeshInfo(int32 Handle)
 	Info.bHasVertexColors = UGeometryScriptLibrary_MeshQueryFunctions::GetHasVertexColors(Mesh);
 	Info.Bounds          = UGeometryScriptLibrary_MeshQueryFunctions::GetMeshBoundingBox(Mesh);
 	return Info;
+}
+
+TArray<FVector> UUnrealBridgeGeometryLibrary::GetMeshTriangleVertices(int32 Handle, int32 MaxTriangles)
+{
+	TArray<FVector> Vertices;
+	UDynamicMesh* Mesh = BridgeGeometryImpl::ResolveHandle(Handle);
+	if (!Mesh || MaxTriangles < 1 || MaxTriangles > 1000000)
+	{
+		return Vertices;
+	}
+	Mesh->ProcessMesh([&](const UE::Geometry::FDynamicMesh3& ReadMesh)
+	{
+		if (ReadMesh.TriangleCount() > MaxTriangles)
+		{
+			UE_LOG(LogTemp, Warning, TEXT("UnrealBridge|Geometry: triangle read exceeds limit %d"), MaxTriangles);
+			return;
+		}
+		Vertices.Reserve(ReadMesh.TriangleCount() * 3);
+		for (int32 TriangleId : ReadMesh.TriangleIndicesItr())
+		{
+			const UE::Geometry::FIndex3i Triangle = ReadMesh.GetTriangle(TriangleId);
+			for (int32 Corner = 0; Corner < 3; ++Corner)
+			{
+				Vertices.Add(FVector(ReadMesh.GetVertex(Triangle[Corner])));
+			}
+		}
+	});
+	return Vertices;
+}
+
+bool UUnrealBridgeGeometryLibrary::AppendDynamicMesh(int32 TargetHandle, int32 SourceHandle, FTransform Transform)
+{
+	using namespace BridgeGeometryImpl;
+	if (TargetHandle == SourceHandle || !Transform.IsValid()) return false;
+	UDynamicMesh* Target = ResolveHandle(TargetHandle);
+	UDynamicMesh* Source = ResolveHandle(SourceHandle);
+	if (!Target || !Source) return false;
+	return UGeometryScriptLibrary_MeshBasicEditFunctions::AppendMesh(
+		Target, Source, Transform, false, FGeometryScriptAppendMeshOptions(), nullptr) == Target;
 }
 
 bool UUnrealBridgeGeometryLibrary::MeshBoolean(int32 HandleA, int32 HandleB, const FString& Op)
@@ -874,12 +914,17 @@ bool UUnrealBridgeGeometryLibrary::BakeOcclusionToVertexColor(int32 Handle, int3
 	return Result == Mesh;
 }
 
-bool UUnrealBridgeGeometryLibrary::MeshUVUnwrap(int32 Handle, const FString& Method)
+bool UUnrealBridgeGeometryLibrary::MeshUVUnwrap(int32 Handle, const FString& Method, float ProjectionSizeCm)
 {
 	using namespace BridgeGeometryImpl;
 	UDynamicMesh* Mesh = ResolveHandle(Handle);
 	if (!Mesh)
 	{
+		return false;
+	}
+	if (!FMath::IsFinite(ProjectionSizeCm) || ProjectionSizeCm < 0.f)
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge|Geometry: projection size must be finite and nonnegative"));
 		return false;
 	}
 
@@ -894,7 +939,7 @@ bool UUnrealBridgeGeometryLibrary::MeshUVUnwrap(int32 Handle, const FString& Met
 	UGeometryScriptLibrary_MeshUVFunctions::SetNumUVSets(Mesh, FMath::Max(1, 1), /*Debug=*/nullptr);
 
 	const FVector  Center = Bounds.GetCenter();
-	const FVector  Size   = Bounds.GetSize();
+	const FVector  Size   = ProjectionSizeCm > 0.f ? FVector(ProjectionSizeCm) : Bounds.GetSize();
 	const FTransform PlaneXform(FRotator::ZeroRotator, Center, Size);  // FTransform(rot, loc, scale)
 	FGeometryScriptMeshSelection EmptySelection;
 	UDynamicMesh* Result = nullptr;

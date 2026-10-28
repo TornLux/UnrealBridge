@@ -177,6 +177,27 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Geometry")
 	static FBridgeMeshInfo GetMeshInfo(int32 Handle);
 
+	/**
+	 * Read local mesh positions as contiguous triangle triples (A, B, C), in cm.
+	 * Vertex/triangle IDs are not preserved. MaxTriangles must be 1..1000000;
+	 * invalid handles, invalid limits or meshes exceeding the limit return an empty array.
+	 * No mesh or asset is modified.
+	 * 按连续三角形三元组读取网格局部顶点，单位 cm，不保留原始顶点或三角形 ID。
+	 * MaxTriangles 有效范围为 1..1000000；句柄无效、范围无效或超限时返回空数组，不修改网格及资产。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Geometry")
+	static TArray<FVector> GetMeshTriangleVertices(int32 Handle, int32 MaxTriangles = 100000);
+
+	/**
+	 * Append a copy of SourceHandle to TargetHandle using Transform (local positions in cm).
+	 * UVs and mesh attributes are copied without resampling; disconnected pieces remain disconnected.
+	 * SourceHandle is unchanged. Invalid handles, self-append or an invalid transform return false.
+	 * 将源网格的副本按 Transform 追加到目标网格，局部坐标单位 cm；保留 UV 与属性，不重采样，不焊接独立部件。
+	 * 不修改源网格；无效句柄、自身追加或无效变换返回 false。两个句柄均需由调用方释放。
+	 */
+	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Geometry")
+	static bool AppendDynamicMesh(int32 TargetHandle, int32 SourceHandle, FTransform Transform);
+
 	// ─── M5/M6 — P2 priority subset (boolean / smooth / decimate / recompute_normals) ─
 
 	/**
@@ -382,17 +403,20 @@ public:
 	/**
 	 * Generate UVs on UV channel 0 by projection. Wraps `MeshUVFunctions::Set-
 	 * MeshUVsFrom*Projection`. The projection volume is centered on the mesh's
-	 * local-space bounding box and sized to match it.
+	 * local-space bounding box and sized to match it by default.
 	 *
 	 * @param Handle Target mesh.
 	 * @param Method Case-insensitive: `"box"` (tri-planar projection, hardest
 	 *               UVs but no stretching), `"cylinder"` (good for capsule-like
 	 *               meshes; SplitAngle=45°), `"plane"` (single planar projection
 	 *               from +Z, simplest but worst on non-planar geometry).
+	 * @param ProjectionSizeCm 0 keeps bounding-box sizing; >0 uses a uniform
+	 *               projection cube of this side length in cm. Negative/nonfinite values fail.
+	 *               0 使用原包围盒尺寸；正值按指定厘米边长统一投影，保持纹理密度；负值或非有限值失败。
 	 * @return true on success. Unknown method strings fail loudly + return false.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "UnrealBridge|Geometry")
-	static bool MeshUVUnwrap(int32 Handle, const FString& Method);
+	static bool MeshUVUnwrap(int32 Handle, const FString& Method, float ProjectionSizeCm = 0.0f);
 
 	// ─── M5-10/11 — Selection state + extrude ────────────────────
 

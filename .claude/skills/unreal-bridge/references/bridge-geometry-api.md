@@ -103,6 +103,28 @@ All currently-registered handles. Sorted ascending. Useful for leak detection ("
 
 ---
 
+## get_mesh_triangle_vertices(handle, max_triangles=100000) -> list[Vector]
+
+`get_mesh_triangle_vertices(handle, max_triangles=100000)` reads local-space cm
+positions in contiguous `(A, B, C)` triangle triples without changing the mesh.
+The limit is 1..1000000 triangles; invalid handles/limits and over-limit meshes
+return an empty array. IDs are not preserved. Use it for geometric measurements
+and cross sections after loading a mesh, then release the handle normally.
+局部三角形顶点读取用于测量与截面提取；返回连续三元组，不保留 ID，不修改源资产。
+
+`mesh_uv_unwrap(handle, method, projection_size_cm=0)` keeps its existing
+bounding-box projection when the size is zero. A positive size uses a uniform
+projection cube in cm, so new procedural parts can match a fixed texture density;
+negative or nonfinite sizes fail. 指定正值边长可固定生成构件的 UV 密度，0 保留旧行为。
+
+## append_dynamic_mesh(target_handle, source_handle, transform) -> bool
+
+`append_dynamic_mesh(target_handle, source_handle, transform)` appends a copy
+with the given local-space transform (positions in cm), preserving UVs and
+attributes without welding disconnected pieces or changing the source handle.
+Invalid handles, self-append or an invalid transform return false. Release both
+handles after use. 用于保留原 UV 的裁切部件拼合，不会重采样或修改源网格。
+
 ## load_mesh_from_static_mesh(handle, asset_path, lod=0) -> bool
 
 Replace the handle's mesh with the geometry of a `UStaticMesh` asset. Wraps `CopyMeshFromStaticMeshV2` with default options (apply build settings, request tangents, use section materials).

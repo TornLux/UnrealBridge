@@ -31,7 +31,7 @@
       "TIMER"
     ]
   },
-  "generated_at": "2026-10-26T10:31:33+00:00",
+  "generated_at": "2026-10-27T13:33:03+00:00",
   "libraries": {
     "UnrealBridgeAnimLibrary": {
       "functions": {
@@ -13389,6 +13389,30 @@
           ],
           "returns": "bool"
         },
+        "append_dynamic_mesh": {
+          "doc": "X.append_dynamic_mesh(target_handle, source_handle, transform) -> bool",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "target_handle",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "source_handle",
+              "type": ""
+            },
+            {
+              "default": null,
+              "has_default": false,
+              "name": "transform",
+              "type": ""
+            }
+          ],
+          "returns": "bool"
+        },
         "append_sphere": {
           "doc": "X.append_sphere(handle, origin, radius, resolution_uv) -> bool",
           "params": [
@@ -13501,6 +13525,24 @@
             }
           ],
           "returns": "BridgeMeshInfo"
+        },
+        "get_mesh_triangle_vertices": {
+          "doc": "X.get_mesh_triangle_vertices(handle, max_triangles=100000) -> Array[Vector]",
+          "params": [
+            {
+              "default": null,
+              "has_default": false,
+              "name": "handle",
+              "type": ""
+            },
+            {
+              "default": "100000",
+              "has_default": true,
+              "name": "max_triangles",
+              "type": ""
+            }
+          ],
+          "returns": "Array[Vector]"
         },
         "list_dynamic_mesh_handles": {
           "doc": "X.list_dynamic_mesh_handles() -> Array[int32]",
@@ -13693,7 +13735,7 @@
           "returns": "bool"
         },
         "mesh_uv_unwrap": {
-          "doc": "X.mesh_uv_unwrap(handle, method) -> bool",
+          "doc": "X.mesh_uv_unwrap(handle, method, projection_size_cm=0.000000) -> bool",
           "params": [
             {
               "default": null,
@@ -13705,6 +13747,12 @@
               "default": null,
               "has_default": false,
               "name": "method",
+              "type": ""
+            },
+            {
+              "default": "0.000000",
+              "has_default": true,
+              "name": "projection_size_cm",
               "type": ""
             }
           ],

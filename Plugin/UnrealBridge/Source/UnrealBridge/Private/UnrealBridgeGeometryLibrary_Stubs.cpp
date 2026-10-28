@@ -57,6 +57,18 @@ FBridgeMeshInfo UUnrealBridgeGeometryLibrary::GetMeshInfo(int32 Handle)
 	return FBridgeMeshInfo{};
 }
 
+TArray<FVector> UUnrealBridgeGeometryLibrary::GetMeshTriangleVertices(int32 Handle, int32 MaxTriangles)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeGeometryLibrary::GetMeshTriangleVertices requires UE 5.7+ — call ignored on this engine version"));
+	return TArray<FVector>{};
+}
+
+bool UUnrealBridgeGeometryLibrary::AppendDynamicMesh(int32 TargetHandle, int32 SourceHandle, FTransform Transform)
+{
+	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeGeometryLibrary::AppendDynamicMesh requires UE 5.7+ — call ignored on this engine version"));
+	return bool{};
+}
+
 bool UUnrealBridgeGeometryLibrary::MeshBoolean(int32 HandleA, int32 HandleB, const FString& Op)
 {
 	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeGeometryLibrary::MeshBoolean requires UE 5.7+ — call ignored on this engine version"));
@@ -129,7 +141,7 @@ bool UUnrealBridgeGeometryLibrary::MeshVoxelMerge(const TArray<int32>& Handles, 
 	return bool{};
 }
 
-bool UUnrealBridgeGeometryLibrary::MeshUVUnwrap(int32 Handle, const FString& Method)
+bool UUnrealBridgeGeometryLibrary::MeshUVUnwrap(int32 Handle, const FString& Method, float ProjectionSizeCm)
 {
 	UE_LOG(LogTemp, Warning, TEXT("UUnrealBridgeGeometryLibrary::MeshUVUnwrap requires UE 5.7+ — call ignored on this engine version"));
 	return bool{};
