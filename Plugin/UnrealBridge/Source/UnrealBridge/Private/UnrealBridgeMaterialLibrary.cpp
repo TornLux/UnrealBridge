@@ -3034,6 +3034,13 @@ bool UUnrealBridgeMaterialLibrary::DeleteMaterialExpression(
 
 	UMaterialExpression* Expr = FindExpressionByGuid(Material, Guid);
 	if (!Expr) return false;
+	// Python/editor inspectors may retain a rooted expression. Engine deletion marks it as garbage and asserts.
+	// Python/编辑器检查器可能持有Rooted节点；引擎删除会MarkAsGarbage并断言，必须拒绝，不能擅自解除其Root。
+	if (Expr->IsRooted())
+	{
+		UE_LOG(LogTemp, Warning, TEXT("UnrealBridge: DeleteMaterialExpression refused; expression is rooted by an active owner."));
+		return false;
+	}
 
 	TArray<FString> DependencyDiagnostics;
 	if (!HasCompleteMaterialDependencies(Material, &DependencyDiagnostics))
@@ -3491,6 +3498,7 @@ namespace BridgeMaterialImpl
 				if (!ResolveRef(O.DstRef, Result.Guids, DstGuid)) return Fail(i, FString::Printf(TEXT("op %d (delete): bad dst_ref '%s'"), i, *O.DstRef));
 				UMaterialExpression* Dst = FindExpressionByGuid(Material, DstGuid);
 				if (!Dst) return Fail(i, FString::Printf(TEXT("op %d (delete): not found"), i));
+				if (Dst->IsRooted()) return Fail(i, FString::Printf(TEXT("op %d (delete): expression is rooted by an active owner; deletion refused"), i));
 
 				TArray<FString> DeleteDiagnostics;
 				if (!HasCompleteMaterialDependencies(Material, &DeleteDiagnostics))
@@ -3541,6 +3549,23 @@ namespace BridgeMaterialImpl
 		{
 			Result.Error = TEXT("material is null");
 			return Result;
+		}
+
+		// Root state is not copied into the sandbox. Check existing live targets before any mutation.
+		// Sandbox不会复制Root状态；首次修改前先验证原材质上的已存在删除目标。
+		for (int32 Index=0;Index<Ops.Num();++Index)
+		{
+			const auto& Op=Ops[Index];FGuid Guid;
+			if (Op.Op.Equals(TEXT("delete"),ESearchCase::IgnoreCase) && !Op.DstRef.StartsWith(TEXT("$"))
+				&& FGuid::Parse(Op.DstRef,Guid))
+			{
+				if (const auto* Target=FindExpressionByGuid(Material,Guid);Target && Target->IsRooted())
+				{
+					Result.FailedAtIndex=Index;
+					Result.Error=FString::Printf(TEXT("op %d (delete): live expression is rooted by an active owner; deletion refused"),Index);
+					return Result;
+				}
+			}
 		}
 
 		const FName SandboxName = MakeUniqueObjectName(
