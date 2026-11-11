@@ -96,7 +96,7 @@ Return object paths of assets currently selected in the Content Browser.
 
 ### get_content_browser_path() -> str
 
-Currently-focused folder path (e.g. `/Game/MyFolder`). Empty if unavailable.
+Current internal folder path (e.g. `/Game/MyFolder`). Returns an empty string if the Content Browser is unavailable, has no current path, or is showing a virtual-only folder such as `/All` or `/All/Plugins`. Virtual UI paths are never returned as package paths.
 
 ### set_content_browser_selection(asset_paths) -> bool
 
